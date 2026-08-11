@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StackSim } from "../../src/server.js";
+import { waitForTableActive } from "../support/dynamodb.js";
 
 let simulator: StackSim;
 let dataDir: string;
@@ -42,6 +43,7 @@ test.describe("DynamoDB query and search console", () => {
         KeySchema: [{ AttributeName: "tenant", KeyType: "HASH" }, { AttributeName: "sk", KeyType: "RANGE" }],
         GlobalSecondaryIndexes: [{ IndexName: "ByCategory", KeySchema: [{ AttributeName: "category", KeyType: "HASH" }, { AttributeName: "rank", KeyType: "RANGE" }], Projection: { ProjectionType: "KEYS_ONLY" } }],
       }));
+      await waitForTableActive(client, "BrowserQueryExplorer");
       await Promise.all(Array.from({ length: 18 }, (_, index) => client.send(new PutItemCommand({ TableName: "BrowserQueryExplorer", Item: {
         tenant: { S: "tenant-a" }, sk: { N: String(index) }, category: { S: "guides" }, rank: { N: String(index) }, title: { S: index % 2 === 0 ? `Guide ${index}` : `Reference ${index}` }, notes: { S: `unprojected-${index}` },
       } }))));
@@ -171,6 +173,7 @@ test.describe("DynamoDB query and search console", () => {
     const client = new DynamoDBClient(sdkOptions());
     try {
       await client.send(new CreateTableCommand({ TableName: "BrowserPartiqlSearch", BillingMode: "PAY_PER_REQUEST", AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }], KeySchema: [{ AttributeName: "id", KeyType: "HASH" }] }));
+      await waitForTableActive(client, "BrowserPartiqlSearch");
       await client.send(new PutItemCommand({ TableName: "BrowserPartiqlSearch", Item: { id: { S: "one" }, title: { S: "PartiQL guide" } } }));
       await client.send(new PutItemCommand({ TableName: "BrowserPartiqlSearch", Item: { id: { S: "two" }, title: { S: "Reference" } } }));
       await Promise.all(Array.from({ length: 11 }, (_, index) => client.send(new PutItemCommand({ TableName: "BrowserPartiqlSearch", Item: { id: { S: `guide-${index}` }, title: { S: `PartiQL guide ${index}` }, exactNumber: { N: index === 0 ? "12345678901234567890123456789012345678" : String(index) } } }))));
@@ -249,7 +252,10 @@ test.describe("DynamoDB query and search console", () => {
   test("collects every ListTables page for table inventory and global resource search", async ({ page }) => {
     const client = new DynamoDBClient(sdkOptions());
     try {
-      for (const TableName of ["PagedTableOne", "PagedTableTwo"]) await client.send(new CreateTableCommand({ TableName, BillingMode: "PAY_PER_REQUEST", AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }], KeySchema: [{ AttributeName: "id", KeyType: "HASH" }] }));
+      for (const TableName of ["PagedTableOne", "PagedTableTwo"]) {
+        await client.send(new CreateTableCommand({ TableName, BillingMode: "PAY_PER_REQUEST", AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }], KeySchema: [{ AttributeName: "id", KeyType: "HASH" }] }));
+        await waitForTableActive(client, TableName);
+      }
       const errors = browserErrors(page); const listRequests: any[] = [];
       await page.route("**/*", async route => {
         const request = route.request();
@@ -298,6 +304,7 @@ test.describe("DynamoDB query and search console", () => {
     const client = new DynamoDBClient(sdkOptions());
     try {
       await client.send(new CreateTableCommand({ TableName: "BrowserMonitor", BillingMode: "PROVISIONED", ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }, AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }, { AttributeName: "category", AttributeType: "S" }], KeySchema: [{ AttributeName: "id", KeyType: "HASH" }], GlobalSecondaryIndexes: [{ IndexName: "ByCategory", KeySchema: [{ AttributeName: "category", KeyType: "HASH" }], Projection: { ProjectionType: "ALL" }, ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 4 } }] }));
+      await waitForTableActive(client, "BrowserMonitor");
       const errors = browserErrors(page); const metricRequests: any[] = [];
       page.on("request", request => { if (request.headers()["x-amz-target"]?.endsWith(".GetMetricData")) metricRequests.push(request.postDataJSON()); });
       await page.goto(`${consoleUrl}#/dynamodb/tables/BrowserMonitor/monitor`);
@@ -335,6 +342,7 @@ test.describe("DynamoDB query and search console", () => {
         AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }],
         KeySchema: [{ AttributeName: "id", KeyType: "HASH" }],
       }));
+      await waitForTableActive(client, table);
 
       await expectHelp("/dynamodb/contributor-insights", ["Contributor insights resources"]);
       await expectHelp(`/dynamodb/tables/${table}/items`, ["Scan or query items"]);

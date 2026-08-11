@@ -9,6 +9,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StackSim } from "../../src/server.js";
+import { waitForTableActive } from "../support/dynamodb.js";
 
 let simulator: StackSim;
 let dataDir: string;
@@ -57,6 +58,7 @@ async function createTable(target: StackSim, tableName: string, withItem = false
       AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }],
       KeySchema: [{ AttributeName: "id", KeyType: "HASH" }],
     }));
+    await waitForTableActive(dynamodb, tableName);
     if (withItem) await dynamodb.send(new PutItemCommand({ TableName: tableName, Item: { id: { S: "fixture" }, value: { S: "browser route audit" } } }));
   } finally {
     dynamodb.destroy();

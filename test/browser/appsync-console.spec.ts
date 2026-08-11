@@ -13,6 +13,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StackSim } from "../../src/server.js";
+import { waitForTableActive } from "../support/dynamodb.js";
 
 let simulator: StackSim;
 let dataDir: string;
@@ -70,6 +71,7 @@ async function createDynamoResources() {
       AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }],
       KeySchema: [{ AttributeName: "id", KeyType: "HASH" }],
     }));
+    await waitForTableActive(dynamodb, tableName);
     const role = await iam.send(new CreateRoleCommand({
       RoleName: roleName,
       AssumeRolePolicyDocument: JSON.stringify({
