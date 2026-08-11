@@ -125,7 +125,7 @@ test("raw CloudFormation Query uses AWS list encoding, escaping, request IDs, an
     const endpoint = `http://127.0.0.1:${simulator.port}`;
     client = new CloudFormationClient({ endpoint, region, credentials, maxAttempts: 1 });
     const template = JSON.stringify({
-      Parameters: { Message: { Type: "String" }, Defaulted: { Type: "String", Default: "fallback" } },
+      Parameters: { Message: { Type: "String" }, TimestampLike: { Type: "String" }, Defaulted: { Type: "String", Default: "fallback" } },
       Resources: { Metadata: { Type: "AWS::CDK::Metadata", Properties: { Analytics: { Ref: "Message" } } } },
       Outputs: { Echo: { Value: { Ref: "Message" } } },
     });
@@ -135,8 +135,12 @@ test("raw CloudFormation Query uses AWS list encoding, escaping, request IDs, an
       TemplateBody: template,
       "Parameters.member.1.ParameterKey": "Message",
       "Parameters.member.1.ParameterValue": "a&<b>",
+      "Parameters.member.2.ParameterKey": "TimestampLike",
+      "Parameters.member.2.ParameterValue": "2026-08-11T12:00:00Z",
       "Tags.member.1.Key": "team",
       "Tags.member.1.Value": "api & web",
+      "Tags.member.2.Key": "released",
+      "Tags.member.2.Value": "2026-08-11T12:00:00Z",
       "Capabilities.member.1": "CAPABILITY_IAM",
       "Capabilities.member.2": "CAPABILITY_AUTO_EXPAND",
       "NotificationARNs.member.1": "arn:aws:sns:eu-west-1:000000000000:first",
@@ -149,10 +153,12 @@ test("raw CloudFormation Query uses AWS list encoding, escaping, request IDs, an
 
     const described = await query(endpoint, { Action: "DescribeStacks", StackName: "wire-stack" });
     assert.equal(described.status, 200); assertRequestId(described);
-    assert.match(described.text, /<Parameters><member><ParameterKey>Defaulted<\/ParameterKey><ParameterValue>fallback<\/ParameterValue><\/member><member><ParameterKey>Message<\/ParameterKey><ParameterValue>a&amp;&lt;b&gt;<\/ParameterValue><\/member><\/Parameters>/);
+    assert.match(described.text, /<Parameters><member><ParameterKey>Defaulted<\/ParameterKey><ParameterValue>fallback<\/ParameterValue><\/member><member><ParameterKey>Message<\/ParameterKey><ParameterValue>a&amp;&lt;b&gt;<\/ParameterValue><\/member>/);
+    assert.match(described.text, /<ParameterKey>TimestampLike<\/ParameterKey><ParameterValue>2026-08-11T12:00:00Z<\/ParameterValue>/);
     assert.match(described.text, /<Capabilities><member>CAPABILITY_IAM<\/member><member>CAPABILITY_AUTO_EXPAND<\/member><\/Capabilities>/);
     assert.match(described.text, /<NotificationARNs><member>arn:aws:sns:eu-west-1:000000000000:first<\/member><member>arn:aws:sns:eu-west-1:000000000000:second<\/member><\/NotificationARNs>/);
-    assert.match(described.text, /<Tags><member><Key>team<\/Key><Value>api &amp; web<\/Value><\/member><\/Tags>/);
+    assert.match(described.text, /<Key>team<\/Key><Value>api &amp; web<\/Value>/);
+    assert.match(described.text, /<Key>released<\/Key><Value>2026-08-11T12:00:00Z<\/Value>/);
     assert.match(described.text, /<Outputs><member><OutputKey>Echo<\/OutputKey><OutputValue>a&amp;&lt;b&gt;<\/OutputValue><\/member><\/Outputs>/);
 
     const filtered = await query(endpoint, { Action: "ListStacks", "StackStatusFilter.member.1": "CREATE_COMPLETE", "StackStatusFilter.member.2": "UPDATE_COMPLETE" });

@@ -145,6 +145,22 @@ function lambdaDestination(value: unknown, context: ProviderContext): value is s
   return Boolean(match && match[1] === context.partition && match[2] === context.region && match[3] === context.accountId);
 }
 
+function snsDestination(value: unknown, context: ProviderContext): value is string {
+  if (typeof value !== "string") return false;
+  const match = /^arn:([^:]+):sns:([^:]+):(\d{12}):([A-Za-z0-9_-]{1,256})$/.exec(value);
+  return Boolean(match && match[1] === context.partition && match[2] === context.region && match[3] === context.accountId);
+}
+
+function eventBusDestination(value: unknown, context: ProviderContext): value is string {
+  if (typeof value !== "string") return false;
+  const match = /^arn:([^:]+):events:([^:]+):(\d{12}):event-bus\/([A-Za-z0-9._-]{1,256})$/.exec(value);
+  return Boolean(match && match[1] === context.partition && match[2] === context.region && match[3] === context.accountId);
+}
+
+function asyncInvokeDestination(value: unknown, context: ProviderContext): value is string {
+  return lambdaDestination(value, context) || standardSqsDestination(value, context) || snsDestination(value, context) || eventBusDestination(value, context);
+}
+
 function integer(value: unknown, path: string, minimum: number, maximum: number, issues: ProviderValidationIssue[], allowMinusOne = false): void {
   if (!Number.isInteger(value) || (!(allowMinusOne && value === -1) && (Number(value) < minimum || Number(value) > maximum))) issue(issues, path, `${path.split(".").at(-1)} must be ${allowMinusOne ? "-1 or " : ""}an integer between ${minimum} and ${maximum}`);
 }
@@ -390,7 +406,11 @@ export function createLambdaEventSourceMappingProvider(lambda: LambdaService): P
       } catch (error) { return providerFailure(error); }
     },
     async read(physicalId: string, context: ProviderContext): Promise<ProviderReadResult<LambdaEventSourceMappingModel>> {
-      try { const view = await get(physicalId, context); return ["Creating", "Updating", "Deleting"].includes(String(view.State)) ? mappingInProgress(physicalId, `Waiting for event source mapping ${physicalId} to stabilize`) : mappingSuccess(view, context); }
+      try {
+        const view = await get(physicalId, context);
+        if (!await owned(view, context)) return { status: "FAILED", errorCode: "OwnershipConflict", message: `Event source mapping ${physicalId} is not owned by this stack resource` };
+        return ["Creating", "Updating", "Deleting"].includes(String(view.State)) ? mappingInProgress(physicalId, `Waiting for event source mapping ${physicalId} to stabilize`) : mappingSuccess(view, context);
+      }
       catch (error) { return isNotFound(error, ["ResourceNotFoundException"]) ? { status: "NOT_FOUND", physicalId } : providerFailure(error); }
     },
     async update(physicalId: string, _previous: LambdaEventSourceMappingModel, desired: LambdaEventSourceMappingModel, context: ProviderContext): Promise<ProviderUpdateResult<LambdaEventSourceMappingModel>> {
@@ -418,7 +438,7 @@ export function createLambdaEventSourceMappingProvider(lambda: LambdaService): P
 function validateInvokeDestination(value: unknown, path: string, context: ProviderContext, issues: ProviderValidationIssue[]): void {
   if (!isRecord(value)) { issue(issues, path, `${path.split(".").at(-1)} must be an object`); return; }
   exactKeys(value, ["Destination"], path, issues);
-  if (!lambdaDestination(value.Destination, context) && !standardSqsDestination(value.Destination, context)) issue(issues, `${path}.Destination`, "CFN-09 async destinations must identify a local Lambda function or Standard SQS queue; SNS, S3, and EventBridge destinations belong to their later CloudFormation slices");
+  if (!asyncInvokeDestination(value.Destination, context)) issue(issues, `${path}.Destination`, "CFN-09 async destinations must identify a local Lambda function, Standard SQS queue, Standard SNS topic, or EventBridge event bus");
 }
 
 function validateEventInvokeConfig(properties: unknown, context: ProviderContext): ProviderValidationIssue[] {
@@ -473,8 +493,8 @@ function invokeConfigInput(model: LambdaEventInvokeConfigModel): Record<string, 
 function invokeConfigFromView(view: any, identity: { FunctionName: string; Qualifier: string }, context: ProviderContext): LambdaEventInvokeConfigModel {
   for (const condition of ["OnFailure", "OnSuccess"] as const) {
     const target = view.DestinationConfig?.[condition]?.Destination;
-    if (target && !lambdaDestination(target, context) && !standardSqsDestination(target, context)) {
-      throw new AwsError("UnsupportedResourceState", `Async invocation ${condition} destination is outside the CFN-09 local Lambda/SQS boundary`, 409);
+    if (target && !asyncInvokeDestination(target, context)) {
+      throw new AwsError("UnsupportedResourceState", `Async invocation ${condition} destination is outside the CFN-09 local Lambda/SQS/SNS/EventBridge boundary`, 409);
     }
   }
   const destination = view.DestinationConfig ? {

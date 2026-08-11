@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CloudFormationClient, CreateStackCommand, DeleteStackCommand, DescribeStackResourceCommand, DescribeStacksCommand, UpdateStackCommand } from "@aws-sdk/client-cloudformation";
 import { CreateRoleCommand, IAMClient } from "@aws-sdk/client-iam";
-import { CreateFunctionCommand, GetAliasCommand, GetPolicyCommand, LambdaClient, ListVersionsByFunctionCommand } from "@aws-sdk/client-lambda";
+import { CreateFunctionCommand, GetAliasCommand, GetFunctionCommand, GetPolicyCommand, LambdaClient, ListVersionsByFunctionCommand } from "@aws-sdk/client-lambda";
 import type { PrincipalContext } from "../src/auth/sigv4.js";
 import { createLambdaFunctionProvider } from "../src/cloudformation/providers/lambda-function.js";
 import { createLambdaAliasProvider, createLambdaPermissionProvider, createLambdaVersionProvider } from "../src/cloudformation/providers/lambda-companions.js";
@@ -77,6 +77,29 @@ test("Lambda permission, immutable version, and alias providers use real Lambda 
     assert.equal((await aliasProvider.delete(aliasResult.physicalId, alias, context("Alias"))).status, "SUCCESS");
     assert.equal((await versionProvider.delete(versionResult.physicalId, version, context("Version"))).status, "SUCCESS");
     assert.equal((await functionProvider.delete(fn.FunctionName, fn, context("Function"))).status, "SUCCESS");
+  } finally { iam?.destroy(); lambdaClient?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
+});
+
+test("Lambda Version read retains CodeSha256 and provisioned concurrency after restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-lambda-version-read-")); let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "off" });
+  let iam: IAMClient | undefined; let lambdaClient: LambdaClient | undefined;
+  try {
+    await simulator.start(); ({ iam, lambda: lambdaClient } = await createTestFunction(simulator, "version-read-handler", "version-read-role"));
+    const codeSha256 = (await lambdaClient.send(new GetFunctionCommand({ FunctionName: "version-read-handler" }))).Configuration!.CodeSha256!;
+    let provider = createLambdaVersionProvider(simulator.lambda); const versionContext = context("ReadVersion");
+    const desired = provider.canonicalize({ FunctionName: "version-read-handler", CodeSha256: codeSha256, Description: "read after restart", ProvisionedConcurrencyConfig: { ProvisionedConcurrentExecutions: 1 } }, versionContext);
+    const created = await finish(provider, desired, "ReadVersion"); assert.equal(created.status, "SUCCESS");
+
+    const mismatch = provider.canonicalize({ FunctionName: "version-read-handler", CodeSha256: "not-the-current-code-hash" }, context("MismatchedVersion"));
+    const rejected = await finish(provider, mismatch, "MismatchedVersion"); assert.equal(rejected.status, "FAILED"); assert.equal(rejected.errorCode, "PreconditionFailedException");
+
+    iam.destroy(); lambdaClient.destroy(); iam = undefined; lambdaClient = undefined; await simulator.stop();
+    simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "off" }); await simulator.start(); provider = createLambdaVersionProvider(simulator.lambda);
+    const read = await provider.read(created.physicalId, versionContext); assert.equal(read.status, "SUCCESS");
+    assert.equal(read.model.properties.CodeSha256, codeSha256);
+    assert.deepEqual(read.model.properties.ProvisionedConcurrencyConfig, { ProvisionedConcurrentExecutions: 1 });
+    assert.equal(provider.plan(read.model.properties, desired, versionContext).action, "NO_OP");
+    assert.equal((await provider.delete(created.physicalId, desired, versionContext)).status, "SUCCESS");
   } finally { iam?.destroy(); lambdaClient?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
 });
 
