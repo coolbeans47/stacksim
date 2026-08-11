@@ -1,0 +1,1157 @@
+{
+  "format": 1,
+  "milestone": "AMX-05 exact generated VTL function and pipeline resolver surface",
+  "counts": {
+    "functionConfigurations": 26,
+    "pipelineResolvers": 8
+  },
+  "functionConfigurations": [
+    {
+      "template": "todo",
+      "logicalId": "QuerygetTodoauth0FunctionQuerygetTodoauth0FunctionAppSyncFunction846D8436",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "QuerygetTodoauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/74c1522efb7733193e4d75cee5b96595110452c456623a36d786f743aea94e7c.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "QuerygetTodopostAuth0FunctionQuerygetTodopostAuth0FunctionAppSyncFunction6BE14593",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "QuerygetTodopostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "QueryGetTodoDataResolverFnQueryGetTodoDataResolverFnAppSyncFunctionE2B57DAD",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Fn::GetAtt": [
+            "TodoDataSource",
+            "Name"
+          ]
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "QueryGetTodoDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/08f4d557693d96c1a4efba0f9dc91330e4b19772fd5477c156468843e3d9cb5e.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/4c6a2d29f01c6091bd1d9afe16e5849d456c96f17c3b215938c8067399532719.vtl"
+        }
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "QuerylistTodosauth0FunctionQuerylistTodosauth0FunctionAppSyncFunction7D761961",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "QuerylistTodosauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/74c1522efb7733193e4d75cee5b96595110452c456623a36d786f743aea94e7c.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "QuerylistTodospostAuth0FunctionQuerylistTodospostAuth0FunctionAppSyncFunction154D8577",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "QuerylistTodospostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "QueryListTodosDataResolverFnQueryListTodosDataResolverFnAppSyncFunctionF825FE47",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Fn::GetAtt": [
+            "TodoDataSource",
+            "Name"
+          ]
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "QueryListTodosDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/9fcbe070ecd3023c5bf5b966fa9584757db9762eef123bad0820bd87591b2174.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/cc01911d0269d4080ea57505dc445dfc315ef7ad85d3d9d4ea1357858bff451d.vtl"
+        }
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationcreateTodoinit0FunctionMutationcreateTodoinit0FunctionAppSyncFunction54DE5B8B",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationcreateTodoinit0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/a183ddccbd956316c38ef97177b8f088ef0826f62023323f5ae6053d348ccffc.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationcreateTodoauth0FunctionMutationcreateTodoauth0FunctionAppSyncFunction21817E36",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationcreateTodoauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/eda4511e01e0956a1b97d4ca904a6671ee21a1a583dff170fb18cbbd4f9dd6e6.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationcreateTodopostAuth0FunctionMutationcreateTodopostAuth0FunctionAppSyncFunctionED59EB9F",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationcreateTodopostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationCreateTodoDataResolverFnMutationCreateTodoDataResolverFnAppSyncFunction900EC5CF",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Fn::GetAtt": [
+            "TodoDataSource",
+            "Name"
+          ]
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationCreateTodoDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/2bf64327ca5682da4be84d0d16440204e25abc3a221195b41f2d21dfa432e5ab.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249.vtl"
+        }
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationupdateTodoinit0FunctionMutationupdateTodoinit0FunctionAppSyncFunction1B95BB19",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationupdateTodoinit0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/06db846fd14e6fc371f22b12b5545ba8e2dbfeda85d8c8d586c71c282166657b.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationupdateTodoauth0FunctionMutationupdateTodoauth0FunctionAppSyncFunction1E4A3112",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Fn::GetAtt": [
+            "TodoDataSource",
+            "Name"
+          ]
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationupdateTodoauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/1f5fed297da9c32ae3af922bf3a38ccf23b956078887d16891ec06c20c64722c.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/cd0b7103bd7f11aa4b0201590c636ce2c0edbf9e5dd157cb5e0819bc7d7f4738.vtl"
+        }
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationupdateTodopostAuth0FunctionMutationupdateTodopostAuth0FunctionAppSyncFunction50C507D7",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationupdateTodopostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationUpdateTodoDataResolverFnMutationUpdateTodoDataResolverFnAppSyncFunctionBC238C49",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Fn::GetAtt": [
+            "TodoDataSource",
+            "Name"
+          ]
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationUpdateTodoDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/474bf0776ec2164a13191d1a0a9e057154931e4918fea5086f49850d02a5371b.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249.vtl"
+        }
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationdeleteTodoauth0FunctionMutationdeleteTodoauth0FunctionAppSyncFunctionC82C218C",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Fn::GetAtt": [
+            "TodoDataSource",
+            "Name"
+          ]
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationdeleteTodoauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/1f5fed297da9c32ae3af922bf3a38ccf23b956078887d16891ec06c20c64722c.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/0064bfbd7fdaea51ef97e8494f036beca0be53bc5c1c7b05c29a27f9cdb28bd2.vtl"
+        }
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationdeleteTodopostAuth0FunctionMutationdeleteTodopostAuth0FunctionAppSyncFunction483271A2",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationdeleteTodopostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationDeleteTodoDataResolverFnMutationDeleteTodoDataResolverFnAppSyncFunction3879153F",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Fn::GetAtt": [
+            "TodoDataSource",
+            "Name"
+          ]
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationDeleteTodoDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/4f7907d1209a2c9953a0c053df402c634e359546d70c7cc5c2e8e21ea734880f.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249.vtl"
+        }
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononCreateTodoauth0FunctionSubscriptiononCreateTodoauth0FunctionAppSyncFunction042EF9E1",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptiononCreateTodoauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/0064bfbd7fdaea51ef97e8494f036beca0be53bc5c1c7b05c29a27f9cdb28bd2.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononCreateTodopostAuth0FunctionSubscriptiononCreateTodopostAuth0FunctionAppSyncFunction18E34C4E",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptiononCreateTodopostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptionOnCreateTodoDataResolverFnSubscriptionOnCreateTodoDataResolverFnAppSyncFunction462A70C9",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptionOnCreateTodoDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/fe3c43ada4b9d681a5e2312663ef7a73386424d73b73e51f8e2e9d4b50f7c502.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/e0cff47fb007f0bbf2a4e43ca256d6aa7ec109821769fd79fa7c5e83f0e7f9fc.vtl"
+        }
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononUpdateTodoauth0FunctionSubscriptiononUpdateTodoauth0FunctionAppSyncFunction80D0DFA3",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptiononUpdateTodoauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/0064bfbd7fdaea51ef97e8494f036beca0be53bc5c1c7b05c29a27f9cdb28bd2.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononUpdateTodopostAuth0FunctionSubscriptiononUpdateTodopostAuth0FunctionAppSyncFunction04445BC7",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptiononUpdateTodopostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptionOnUpdateTodoDataResolverFnSubscriptionOnUpdateTodoDataResolverFnAppSyncFunction523DF0E4",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptionOnUpdateTodoDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/fe3c43ada4b9d681a5e2312663ef7a73386424d73b73e51f8e2e9d4b50f7c502.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/e0cff47fb007f0bbf2a4e43ca256d6aa7ec109821769fd79fa7c5e83f0e7f9fc.vtl"
+        }
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononDeleteTodoauth0FunctionSubscriptiononDeleteTodoauth0FunctionAppSyncFunctionF69F2220",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptiononDeleteTodoauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/0064bfbd7fdaea51ef97e8494f036beca0be53bc5c1c7b05c29a27f9cdb28bd2.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononDeleteTodopostAuth0FunctionSubscriptiononDeleteTodopostAuth0FunctionAppSyncFunctionE131CBE7",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptiononDeleteTodopostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptionOnDeleteTodoDataResolverFnSubscriptionOnDeleteTodoDataResolverFnAppSyncFunction3E641E8C",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptionOnDeleteTodoDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/fe3c43ada4b9d681a5e2312663ef7a73386424d73b73e51f8e2e9d4b50f7c502.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/e0cff47fb007f0bbf2a4e43ca256d6aa7ec109821769fd79fa7c5e83f0e7f9fc.vtl"
+        }
+      }
+    }
+  ],
+  "pipelineResolvers": [
+    {
+      "template": "todo",
+      "logicalId": "GetTodoResolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "FieldName": "getTodo",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "QuerygetTodoauth0FunctionQuerygetTodoauth0FunctionAppSyncFunction846D8436",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "QuerygetTodopostAuth0FunctionQuerygetTodopostAuth0FunctionAppSyncFunction6BE14593",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "QueryGetTodoDataResolverFnQueryGetTodoDataResolverFnAppSyncFunctionE2B57DAD",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Query\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"getTodo\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"AMAZON_DYNAMODB\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n$util.qr($ctx.stash.put(\"tableName\", \"",
+              {
+                "Fn::Select": [
+                  1,
+                  {
+                    "Fn::Split": [
+                      "/",
+                      {
+                        "Fn::Select": [
+                          5,
+                          {
+                            "Fn::Split": [
+                              ":",
+                              {
+                                "Fn::GetAtt": [
+                                  "TodoTable",
+                                  "TableArn"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Query"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "ListTodoResolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "FieldName": "listTodos",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "QuerylistTodosauth0FunctionQuerylistTodosauth0FunctionAppSyncFunction7D761961",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "QuerylistTodospostAuth0FunctionQuerylistTodospostAuth0FunctionAppSyncFunction154D8577",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "QueryListTodosDataResolverFnQueryListTodosDataResolverFnAppSyncFunctionF825FE47",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Query\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"listTodos\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"AMAZON_DYNAMODB\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n$util.qr($ctx.stash.put(\"tableName\", \"",
+              {
+                "Fn::Select": [
+                  1,
+                  {
+                    "Fn::Split": [
+                      "/",
+                      {
+                        "Fn::Select": [
+                          5,
+                          {
+                            "Fn::Split": [
+                              ":",
+                              {
+                                "Fn::GetAtt": [
+                                  "TodoTable",
+                                  "TableArn"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Query"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "CreateTodoResolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "FieldName": "createTodo",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "MutationcreateTodoinit0FunctionMutationcreateTodoinit0FunctionAppSyncFunction54DE5B8B",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationcreateTodoauth0FunctionMutationcreateTodoauth0FunctionAppSyncFunction21817E36",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationcreateTodopostAuth0FunctionMutationcreateTodopostAuth0FunctionAppSyncFunctionED59EB9F",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationCreateTodoDataResolverFnMutationCreateTodoDataResolverFnAppSyncFunction900EC5CF",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Mutation\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"createTodo\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"AMAZON_DYNAMODB\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n$util.qr($ctx.stash.put(\"tableName\", \"",
+              {
+                "Fn::Select": [
+                  1,
+                  {
+                    "Fn::Split": [
+                      "/",
+                      {
+                        "Fn::Select": [
+                          5,
+                          {
+                            "Fn::Split": [
+                              ":",
+                              {
+                                "Fn::GetAtt": [
+                                  "TodoTable",
+                                  "TableArn"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Mutation"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "UpdateTodoResolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "FieldName": "updateTodo",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "MutationupdateTodoinit0FunctionMutationupdateTodoinit0FunctionAppSyncFunction1B95BB19",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationupdateTodoauth0FunctionMutationupdateTodoauth0FunctionAppSyncFunction1E4A3112",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationupdateTodopostAuth0FunctionMutationupdateTodopostAuth0FunctionAppSyncFunction50C507D7",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationUpdateTodoDataResolverFnMutationUpdateTodoDataResolverFnAppSyncFunctionBC238C49",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Mutation\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"updateTodo\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"AMAZON_DYNAMODB\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n$util.qr($ctx.stash.put(\"tableName\", \"",
+              {
+                "Fn::Select": [
+                  1,
+                  {
+                    "Fn::Split": [
+                      "/",
+                      {
+                        "Fn::Select": [
+                          5,
+                          {
+                            "Fn::Split": [
+                              ":",
+                              {
+                                "Fn::GetAtt": [
+                                  "TodoTable",
+                                  "TableArn"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Mutation"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "DeleteTodoResolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "FieldName": "deleteTodo",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "MutationdeleteTodoauth0FunctionMutationdeleteTodoauth0FunctionAppSyncFunctionC82C218C",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationdeleteTodopostAuth0FunctionMutationdeleteTodopostAuth0FunctionAppSyncFunction483271A2",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationDeleteTodoDataResolverFnMutationDeleteTodoDataResolverFnAppSyncFunction3879153F",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Mutation\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"deleteTodo\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"AMAZON_DYNAMODB\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n$util.qr($ctx.stash.put(\"tableName\", \"",
+              {
+                "Fn::Select": [
+                  1,
+                  {
+                    "Fn::Split": [
+                      "/",
+                      {
+                        "Fn::Select": [
+                          5,
+                          {
+                            "Fn::Split": [
+                              ":",
+                              {
+                                "Fn::GetAtt": [
+                                  "TodoTable",
+                                  "TableArn"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Mutation"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononCreateTodoResolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "FieldName": "onCreateTodo",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "SubscriptiononCreateTodoauth0FunctionSubscriptiononCreateTodoauth0FunctionAppSyncFunction042EF9E1",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "SubscriptiononCreateTodopostAuth0FunctionSubscriptiononCreateTodopostAuth0FunctionAppSyncFunction18E34C4E",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "SubscriptionOnCreateTodoDataResolverFnSubscriptionOnCreateTodoDataResolverFnAppSyncFunction462A70C9",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Subscription\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"onCreateTodo\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"NONE\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Subscription"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononUpdateTodoResolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "FieldName": "onUpdateTodo",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "SubscriptiononUpdateTodoauth0FunctionSubscriptiononUpdateTodoauth0FunctionAppSyncFunction80D0DFA3",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "SubscriptiononUpdateTodopostAuth0FunctionSubscriptiononUpdateTodopostAuth0FunctionAppSyncFunction04445BC7",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "SubscriptionOnUpdateTodoDataResolverFnSubscriptionOnUpdateTodoDataResolverFnAppSyncFunction523DF0E4",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Subscription\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"onUpdateTodo\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"NONE\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Subscription"
+      }
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononDeleteTodoResolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+        },
+        "FieldName": "onDeleteTodo",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "SubscriptiononDeleteTodoauth0FunctionSubscriptiononDeleteTodoauth0FunctionAppSyncFunctionF69F2220",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "SubscriptiononDeleteTodopostAuth0FunctionSubscriptiononDeleteTodopostAuth0FunctionAppSyncFunctionE131CBE7",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "SubscriptionOnDeleteTodoDataResolverFnSubscriptionOnDeleteTodoDataResolverFnAppSyncFunction3E641E8C",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Subscription\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"onDeleteTodo\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"NONE\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPI21884E71ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Subscription"
+      }
+    }
+  ],
+  "vtlAssets": [
+    {
+      "id": "0064bfbd7fdaea51ef97e8494f036beca0be53bc5c1c7b05c29a27f9cdb28bd2",
+      "sha256": "675d5720397894160ff0daaa457f300ca7dcd68553b5bdc4af074521019bfcf2",
+      "bytes": 644
+    },
+    {
+      "id": "06db846fd14e6fc371f22b12b5545ba8e2dbfeda85d8c8d586c71c282166657b",
+      "sha256": "0140a28b1c5d13ee37a69d841b9762c8fc694c48d8bf652f6a1c78873adc87e8",
+      "bytes": 350
+    },
+    {
+      "id": "08f4d557693d96c1a4efba0f9dc91330e4b19772fd5477c156468843e3d9cb5e",
+      "sha256": "e89cfb26233f47073a95604efd936fdab7d3296ffc5929656f5656c91a84f676",
+      "bytes": 1208
+    },
+    {
+      "id": "1f5fed297da9c32ae3af922bf3a38ccf23b956078887d16891ec06c20c64722c",
+      "sha256": "6e162a95640c4a8a9fabc38c8b017c87439ab49b392b0089bfb1c362321ddad0",
+      "bytes": 394
+    },
+    {
+      "id": "2bf64327ca5682da4be84d0d16440204e25abc3a221195b41f2d21dfa432e5ab",
+      "sha256": "816b56b10da7deb19bc3d061529603bc3e4c4f6c7abb09ace0f7cc8417a8fc8a",
+      "bytes": 2238
+    },
+    {
+      "id": "474bf0776ec2164a13191d1a0a9e057154931e4918fea5086f49850d02a5371b",
+      "sha256": "0c6a3d9ed1d168b9f3f151daf7746d9544c12d96ae6d0f5664031a7fd1235e5f",
+      "bytes": 4371
+    },
+    {
+      "id": "4c6a2d29f01c6091bd1d9afe16e5849d456c96f17c3b215938c8067399532719",
+      "sha256": "3f59bdf6ce29bb866d20b80de1033fe605c519a935a4a48313344ec9c3981b08",
+      "bytes": 381
+    },
+    {
+      "id": "4f7907d1209a2c9953a0c053df402c634e359546d70c7cc5c2e8e21ea734880f",
+      "sha256": "c7125e4d9d0343961a8665049296c35aed4220e3128b53d9941f773da527634c",
+      "bytes": 1847
+    },
+    {
+      "id": "74c1522efb7733193e4d75cee5b96595110452c456623a36d786f743aea94e7c",
+      "sha256": "8f194c9c45a5576755afa62813c574cad8099cc260dbcc85e81f8d1ebc7637b8",
+      "bytes": 713
+    },
+    {
+      "id": "9fcbe070ecd3023c5bf5b966fa9584757db9762eef123bad0820bd87591b2174",
+      "sha256": "d465836395626ef0ea84366d111e3f2e68445cda8145f7bd0d558eebabdacabd",
+      "bytes": 1794
+    },
+    {
+      "id": "a183ddccbd956316c38ef97177b8f088ef0826f62023323f5ae6053d348ccffc",
+      "sha256": "0b21ad5c230ec3fda3bf68049d992f55d1fca8e6a12032aad86115f83db0d479",
+      "bytes": 475
+    },
+    {
+      "id": "c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77",
+      "sha256": "cef4ef4aa3f3f97c3ed8c7e2bf6acd1821405f33f4457840247725612b344494",
+      "bytes": 378
+    },
+    {
+      "id": "cc01911d0269d4080ea57505dc445dfc315ef7ad85d3d9d4ea1357858bff451d",
+      "sha256": "54f3cee8f80896a9a5c7799810f2c32575445ab5681432ea5fd784e5e5c82a7c",
+      "bytes": 169
+    },
+    {
+      "id": "cd0b7103bd7f11aa4b0201590c636ce2c0edbf9e5dd157cb5e0819bc7d7f4738",
+      "sha256": "da0bcbe3a4d2a0905c4c06c9b10cfcab038c34676207b12ae60368f257d3c5d5",
+      "bytes": 1446
+    },
+    {
+      "id": "e0cff47fb007f0bbf2a4e43ca256d6aa7ec109821769fd79fa7c5e83f0e7f9fc",
+      "sha256": "a95a848d61227d2208f59481faa82321f0cf19821e9bdf3de7c8d34101538628",
+      "bytes": 249
+    },
+    {
+      "id": "eda4511e01e0956a1b97d4ca904a6671ee21a1a583dff170fb18cbbd4f9dd6e6",
+      "sha256": "a13ec8de14d9deada14e98102d386e93d388f3a0ab113ae2edff02acede48e3b",
+      "bytes": 998
+    },
+    {
+      "id": "f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249",
+      "sha256": "6483ee775c0280187a9884184f1c7d1d8fa0807f743a85a774e39f12563ee952",
+      "bytes": 222
+    },
+    {
+      "id": "fe3c43ada4b9d681a5e2312663ef7a73386424d73b73e51f8e2e9d4b50f7c502",
+      "sha256": "7d4c412d7cb73a01ba41593bcc007187adb3590c6cc175ae7db7416660d54f4f",
+      "bytes": 148
+    }
+  ],
+  "negativeSurface": {
+    "functionRuntimeOrCode": false,
+    "resolverRuntimeOrCode": false,
+    "graphQlApiLogConfig": false,
+    "appsyncJsActive": false
+  },
+  "signals": {
+    "namespace": "AWS/AppSync",
+    "metrics": [
+      "GraphQLRequestCount",
+      "ResolverRequestCount",
+      "ResolverErrorCount",
+      "ResolverLatency",
+      "DataSourceLatency",
+      "Latency",
+      "4XXError",
+      "5XXError"
+    ],
+    "graphqlApiLogConfig": "absent from the frozen graph; no field logs are emitted",
+    "templateLogs": "bounded request-local diagnostics only; never persisted as GraphQLApi.LogConfig output"
+  }
+}

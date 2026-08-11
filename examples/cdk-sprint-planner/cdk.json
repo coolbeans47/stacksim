@@ -1,0 +1,7 @@
+{
+  "app": "npx tsx app.ts",
+  "versionReporting": false,
+  "context": {
+    "@aws-cdk/core:defaultCrossStackReferences": "strong"
+  }
+}

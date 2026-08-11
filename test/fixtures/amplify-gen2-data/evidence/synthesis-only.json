@@ -1,0 +1,31 @@
+{
+  "command": "node <pinned ampx.js> sandbox --once --identifier amx01 (CloudFormation mutation denied by evidence harness)",
+  "result": {
+    "code": 0,
+    "signal": null
+  },
+  "stateAfterRun": {
+    "stacks": 0,
+    "buckets": 1,
+    "functions": 0,
+    "tables": 0,
+    "appsyncApis": 0
+  },
+  "firstBlockedMutation": {
+    "phase": "sandbox-once",
+    "service": "cloudformation",
+    "action": "CreateStack",
+    "method": "POST",
+    "path": "/",
+    "signingName": "cloudformation",
+    "account": "000000000000",
+    "region": "eu-west-1",
+    "hostClass": "approved-loopback",
+    "assumedRole": "arn:aws:iam::000000000000:role/cdk-hnb659fds-deploy-role-000000000000-eu-west-1",
+    "resultClass": "blocked:synthesis-only-no-workload-mutation"
+  },
+  "workloadMutation": false,
+  "networkHostClasses": [
+    "approved-loopback"
+  ]
+}

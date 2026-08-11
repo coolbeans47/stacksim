@@ -1,0 +1,5 @@
+* text=auto
+
+# These frozen fixtures are hashed as LF-delimited UTF-8 text. Keep their
+# checked-out representation identical on Windows, macOS, and Linux.
+test/fixtures/amplify-gen2-data/** text=auto eol=lf

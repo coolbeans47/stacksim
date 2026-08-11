@@ -1,0 +1,31 @@
+{
+  "name": "stacksim-cognito-saml-idp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A local React SAML identity provider for learning stacksim Cognito federation",
+  "scripts": {
+    "dev": "node server/server.mjs --dev",
+    "build": "vite build",
+    "start": "node server/server.mjs",
+    "setup:cognito": "node scripts/setup-cognito.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "3.1094.0",
+    "@xmldom/xmldom": "0.9.10",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "xml-crypto": "6.1.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.0.4",
+    "vite": "8.1.5"
+  },
+  "allowScripts": {
+    "fsevents@2.3.3": true
+  }
+}

@@ -1,0 +1,24 @@
+import { createPrivateKey } from "node:crypto";
+
+// This key is deliberately committed and is safe only for this local learning app.
+// It is the matching key for DEMO_CERTIFICATE_BASE64 below.
+function urlBase64(value) {
+  return value.replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+export const DEMO_CERTIFICATE_BASE64 = "MIICqTCCAZGgAwIBAgIJALZkmVRXHgJ3MA0GCSqGSIb3DQEBCwUAMBQxEjAQBgNVBAMTCXNhbWwudGVzdDAeFw0yNjA3MjUxNzUwMzNaFw0zMTA3MjYxNzUwMzNaMBQxEjAQBgNVBAMTCXNhbWwudGVzdDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBANF1gM4f+AuUp5opXiPeYLzaP51KP2le2Uv1h/xMIHEweZq9vys5cU3VeMilE3BQSKhdhMqUwRzem7YPheeIeChgJ5MyTxFGyFBVfpSXRUTvKaKrinPoHBX8oXYZWCf8RfMpLi2FMGMF+WcXHVcZiN0RQyE34ndlUuZc9nqXrh1uVQYm4KXrMg0kpPXv5x5vTJH60yJH77LImpPkkQMUAJUurWNvZrdSYxpwHZ7gcW5XZ0IjC+RYrl6DcFryiFsDCOz4OuObLhRUNtyMN74NTaSdkca8WOF9YStl4jgOK11i9NhLITmvpbrw9OdgWe3N4UXk6rWnsjqxmpSgHvGaq30CAwEAATANBgkqhkiG9w0BAQsFAAOCAQEASr4nCS+nEP0CTN93tmA8OYkyRTW6ZTIX/L9bdU2FKdI8rEqsr3w7TvfteEyBvIgOCMQGciSdynxClie8ncGGspqSlZHWVIVYAm0mP+zghznai/3BcHMtKbOVjKa6SvePeEyF9kcHlSJoZ/Ex7zAPR5kZkhpCuwHfgglWHbLALlD6UMfXs+KzOXFT4ixqIMd8+g6OKANl2wWLpqcCh/MHHKvO+KD6zA0/MNyLSst8AFZbHcmA8qMYRqL0nOgSKEyP7c1kotZm6u7UF126A0WSoIj2JxQRrEfvYHdcNhSXxrj5/5DgSuIZ9n6opXT3jOJ8SSp2HUipKFFdoTNk18tN5g==";
+
+export const DEMO_PRIVATE_KEY = createPrivateKey({
+  format: "jwk",
+  key: {
+    kty: "RSA",
+    n: urlBase64("0XWAzh/4C5SnmileI95gvNo/nUo/aV7ZS/WH/EwgcTB5mr2/KzlxTdV4yKUTcFBIqF2EypTBHN6btg+F54h4KGAnkzJPEUbIUFV+lJdFRO8poquKc+gcFfyhdhlYJ/xF8ykuLYUwYwX5ZxcdVxmI3RFDITfid2VS5lz2epeuHW5VBibgpesyDSSk9e/nHm9MkfrTIkfvssiak+SRAxQAlS6tY29mt1JjGnAdnuBxbldnQiML5FiuXoNwWvKIWwMI7Pg645suFFQ23Iw3vg1NpJ2RxrxY4X1hK2XiOA4rXWL02EshOa+luvD052BZ7c3hReTqtaeyOrGalKAe8ZqrfQ=="),
+    e: "AQAB",
+    d: urlBase64("vHu+Yr4F2XX1tBYRrrlH1+mVYRcVJN7DL0VND035y6FRbFvfEShpux6jx/o0GddE6qzs99cQR8hR2mzxlD4L0llkg2K8H9HQI+orM89D+Bo3Hzi6KD7wNyDUso9v8ttinsOp2DCIMDOKEKiOMHi73iLQg63kToiRJtb0vbCMb9Hdxmj/poiXLn6YTxKYj2fM6zdzNAPV9Cgr9XXi3ulTuIpz9KCabbu32sI2GjPfkeQjPh1Qsy6WrDMI0jmM68Hp0Im1rxW+cyhRQ55VWXZmHGI4x+E84Dfn2oslCy8gBMHheGdSBkwbPLNRWgwdreb7GUec2eJz4vCa/tiyl5FgyQ=="),
+    p: urlBase64("88tJ2qBNHBaI//wcNQly2+aFN6318FcstsNABGFHNWUwk1JUv0CsBGm40YeW8Iwbja3HIW8NocrysPrnt2wO+M8uR7F0K9Cg/Li1AfdpFnssdPeQP97rmLhuCcFUiPT/M5cJP1OhophEjVPOFzfn3Mr8aTGq/ihXMb452iYZhks="),
+    q: urlBase64("2/IkLeHQEW91oc74PSfVK8RC/ZZFMSXgdUwiHNeBMtcHjdwgGgtXoLjQ2knKCdKZYfO3qVezNIkJIi+UMR0BtDNFChqMj9ExT5oHE8doFBwu7Ro1erwR5l+PXKsuBqXz45cVBZCrMreC/gI0qdL4kO7ZuGL9m3haeHeUCqSlGFc="),
+    dp: urlBase64("55AbGT8Tnu9Et6iWfkX4RCjENmvU47FZtkrkvoRLp8ryhaw49OQPv61PsC2Sz+60qTD7qKUcFKZ5OGNJvu4zll7rvYsvJgLnNsSWoUSIG6NpSbxv1kr+CrR7SGbKzb+vuyflz7G3IIJy8q48Xc9rO0vOzngvy3MzxvrBZpSzv9s="),
+    dq: urlBase64("Nj5yw8oUSaiGh2CHAnYnccLWjroX2HYx9FvRcfGIUKSNnWPzmti/RMkv4RYfuOpyn6C+5AnYDZXaZc78KlywBeQ7G7HOhs2d7rbbFfqw5XzJ6fnzxJBLjdh1f/JLyKH3E2M4cQXr4vc1XDXpDRUV7pCpq3rmdwhor5s2LKXMfcM="),
+    qi: urlBase64("cbHnzqA52heaCF9sjixdzWGzkdJK6t/Irsla127a+sRqcy5I6P3Uci2l/HOzlbE/nABakLikTXeMEyA2MXD9PFwfytNh4js34eJH+UdLCZErqWK9cDFdWwLbTROfgi2cA9EMUaPZ25W6Q503FRU6qmUY4P6LZhF4bVTvQQYcQys="),
+  },
+});

@@ -1,0 +1,1 @@
+CFN-04 standard CDK file-publishing negative fixture.

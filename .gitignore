@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.DS_Store
+.tmp/
+.stacksim/
+examples/lambda/function.zip
+.lambda-build/
+*.log
+test/fixtures/cdk/**/cdk.out/

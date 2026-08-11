@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "accountId": "000000000000",
+  "region": "eu-west-1",
+  "controlPlaneEndpoint": "http://127.0.0.1:4566",
+  "invokeEndpoint": "http://127.0.0.1:4567",
+  "bootstrapAdmin": {
+    "email": "admin@sprint-planner.test",
+    "displayName": "Alex Morgan"
+  },
+  "email": {
+    "fromAddress": "planner@sprint-planner.test"
+  }
+}

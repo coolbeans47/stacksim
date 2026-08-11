@@ -1,0 +1,556 @@
+{
+  "format": 1,
+  "milestone": "AMX-08 frozen generated Todo AppSync realtime subscription surface",
+  "protectedEvidence": {
+    "amx04-helper-manifest.json": "16200269bb57a1e015770e3e0c318bb813305d6ecb0d667350506ea29c55aaf2",
+    "amx05-appsync-manifest.json": "273fe7171f89b09084334ca3836cc0ab1ea71333fa98bb2bd5018f06551e1e31",
+    "amx06-authorization-manifest.json": "2e2e8fb4937b16ca262a5b6f31a9b015896b75e36a1ea01a629c05d74a81349d",
+    "amx07-data-manifest.json": "8a10980c50ed9fe162128e57b0d98ec69f432816e43cf69f1ce2efe635c2ec3e",
+    "graph-manifest.json": "4b796f05936b1943ab1f22f57395219d1b840573d959fdd0669818cb1b1f7868"
+  },
+  "schema": {
+    "asset": {
+      "id": "941821462168d0c1c15b579e764e675a5ed57595aa8875d0c10071b408b77513",
+      "sha256": "5ae32ac3471520959d80d3ff235eadc11effddfed222da95a8fd75600fa13b50",
+      "bytes": 4722
+    },
+    "subscriptionFields": [
+      {
+        "name": "onCreateTodo",
+        "type": "Todo",
+        "arguments": [
+          {
+            "name": "filter",
+            "type": "ModelSubscriptionTodoFilterInput"
+          }
+        ],
+        "mutationLinks": [
+          "createTodo"
+        ],
+        "authorizationDirectives": [
+          "aws_api_key",
+          "aws_iam"
+        ]
+      },
+      {
+        "name": "onDeleteTodo",
+        "type": "Todo",
+        "arguments": [
+          {
+            "name": "filter",
+            "type": "ModelSubscriptionTodoFilterInput"
+          }
+        ],
+        "mutationLinks": [
+          "deleteTodo"
+        ],
+        "authorizationDirectives": [
+          "aws_api_key",
+          "aws_iam"
+        ]
+      },
+      {
+        "name": "onUpdateTodo",
+        "type": "Todo",
+        "arguments": [
+          {
+            "name": "filter",
+            "type": "ModelSubscriptionTodoFilterInput"
+          }
+        ],
+        "mutationLinks": [
+          "updateTodo"
+        ],
+        "authorizationDirectives": [
+          "aws_api_key",
+          "aws_iam"
+        ]
+      }
+    ],
+    "inputTypes": {
+      "ModelSubscriptionTodoFilterInput": [
+        {
+          "name": "title",
+          "type": "ModelSubscriptionStringInput"
+        },
+        {
+          "name": "description",
+          "type": "ModelSubscriptionStringInput"
+        },
+        {
+          "name": "priority",
+          "type": "ModelSubscriptionIntInput"
+        },
+        {
+          "name": "completed",
+          "type": "ModelSubscriptionBooleanInput"
+        },
+        {
+          "name": "dueAt",
+          "type": "ModelSubscriptionStringInput"
+        },
+        {
+          "name": "id",
+          "type": "ModelSubscriptionIDInput"
+        },
+        {
+          "name": "createdAt",
+          "type": "ModelSubscriptionStringInput"
+        },
+        {
+          "name": "updatedAt",
+          "type": "ModelSubscriptionStringInput"
+        },
+        {
+          "name": "and",
+          "type": "[ModelSubscriptionTodoFilterInput]"
+        },
+        {
+          "name": "or",
+          "type": "[ModelSubscriptionTodoFilterInput]"
+        }
+      ],
+      "ModelSubscriptionStringInput": [
+        {
+          "name": "ne",
+          "type": "String"
+        },
+        {
+          "name": "eq",
+          "type": "String"
+        },
+        {
+          "name": "le",
+          "type": "String"
+        },
+        {
+          "name": "lt",
+          "type": "String"
+        },
+        {
+          "name": "ge",
+          "type": "String"
+        },
+        {
+          "name": "gt",
+          "type": "String"
+        },
+        {
+          "name": "contains",
+          "type": "String"
+        },
+        {
+          "name": "notContains",
+          "type": "String"
+        },
+        {
+          "name": "between",
+          "type": "[String]"
+        },
+        {
+          "name": "beginsWith",
+          "type": "String"
+        },
+        {
+          "name": "in",
+          "type": "[String]"
+        },
+        {
+          "name": "notIn",
+          "type": "[String]"
+        }
+      ],
+      "ModelSubscriptionIDInput": [
+        {
+          "name": "ne",
+          "type": "ID"
+        },
+        {
+          "name": "eq",
+          "type": "ID"
+        },
+        {
+          "name": "le",
+          "type": "ID"
+        },
+        {
+          "name": "lt",
+          "type": "ID"
+        },
+        {
+          "name": "ge",
+          "type": "ID"
+        },
+        {
+          "name": "gt",
+          "type": "ID"
+        },
+        {
+          "name": "contains",
+          "type": "ID"
+        },
+        {
+          "name": "notContains",
+          "type": "ID"
+        },
+        {
+          "name": "between",
+          "type": "[ID]"
+        },
+        {
+          "name": "beginsWith",
+          "type": "ID"
+        },
+        {
+          "name": "in",
+          "type": "[ID]"
+        },
+        {
+          "name": "notIn",
+          "type": "[ID]"
+        }
+      ],
+      "ModelSubscriptionIntInput": [
+        {
+          "name": "ne",
+          "type": "Int"
+        },
+        {
+          "name": "eq",
+          "type": "Int"
+        },
+        {
+          "name": "le",
+          "type": "Int"
+        },
+        {
+          "name": "lt",
+          "type": "Int"
+        },
+        {
+          "name": "ge",
+          "type": "Int"
+        },
+        {
+          "name": "gt",
+          "type": "Int"
+        },
+        {
+          "name": "between",
+          "type": "[Int]"
+        },
+        {
+          "name": "in",
+          "type": "[Int]"
+        },
+        {
+          "name": "notIn",
+          "type": "[Int]"
+        }
+      ],
+      "ModelSubscriptionBooleanInput": [
+        {
+          "name": "ne",
+          "type": "Boolean"
+        },
+        {
+          "name": "eq",
+          "type": "Boolean"
+        }
+      ]
+    },
+    "selection": {
+      "aliases": true,
+      "fragments": true,
+      "variables": true,
+      "multipleOperationsRequireOperationName": true,
+      "defaultGeneratedTodoFields": [
+        "title",
+        "description",
+        "priority",
+        "completed",
+        "dueAt",
+        "id",
+        "createdAt",
+        "updatedAt",
+        "__typename"
+      ],
+      "mutationSelectionDependency": "event source is the successfully completed linked mutation field result after its mutation selection; absent nullable fields complete as null and absent non-null fields produce GraphQL error paths/null propagation"
+    }
+  },
+  "pipelines": [
+    {
+      "typeName": "Subscription",
+      "fieldName": "onCreateTodo",
+      "functions": [
+        {
+          "logicalId": "SubscriptiononCreateTodoauth0FunctionSubscriptiononCreateTodoauth0FunctionAppSyncFunction042EF9E1",
+          "name": "SubscriptiononCreateTodoauth0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "requestAsset": "0064bfbd7fdaea51ef97e8494f036beca0be53bc5c1c7b05c29a27f9cdb28bd2"
+        },
+        {
+          "logicalId": "SubscriptiononCreateTodopostAuth0FunctionSubscriptiononCreateTodopostAuth0FunctionAppSyncFunction18E34C4E",
+          "name": "SubscriptiononCreateTodopostAuth0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "requestAsset": "c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77"
+        },
+        {
+          "logicalId": "SubscriptionOnCreateTodoDataResolverFnSubscriptionOnCreateTodoDataResolverFnAppSyncFunction462A70C9",
+          "name": "SubscriptionOnCreateTodoDataResolverFn",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "requestAsset": "fe3c43ada4b9d681a5e2312663ef7a73386424d73b73e51f8e2e9d4b50f7c502",
+          "responseAsset": "e0cff47fb007f0bbf2a4e43ca256d6aa7ec109821769fd79fa7c5e83f0e7f9fc"
+        }
+      ]
+    },
+    {
+      "typeName": "Subscription",
+      "fieldName": "onDeleteTodo",
+      "functions": [
+        {
+          "logicalId": "SubscriptiononDeleteTodoauth0FunctionSubscriptiononDeleteTodoauth0FunctionAppSyncFunctionF69F2220",
+          "name": "SubscriptiononDeleteTodoauth0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "requestAsset": "0064bfbd7fdaea51ef97e8494f036beca0be53bc5c1c7b05c29a27f9cdb28bd2"
+        },
+        {
+          "logicalId": "SubscriptiononDeleteTodopostAuth0FunctionSubscriptiononDeleteTodopostAuth0FunctionAppSyncFunctionE131CBE7",
+          "name": "SubscriptiononDeleteTodopostAuth0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "requestAsset": "c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77"
+        },
+        {
+          "logicalId": "SubscriptionOnDeleteTodoDataResolverFnSubscriptionOnDeleteTodoDataResolverFnAppSyncFunction3E641E8C",
+          "name": "SubscriptionOnDeleteTodoDataResolverFn",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "requestAsset": "fe3c43ada4b9d681a5e2312663ef7a73386424d73b73e51f8e2e9d4b50f7c502",
+          "responseAsset": "e0cff47fb007f0bbf2a4e43ca256d6aa7ec109821769fd79fa7c5e83f0e7f9fc"
+        }
+      ]
+    },
+    {
+      "typeName": "Subscription",
+      "fieldName": "onUpdateTodo",
+      "functions": [
+        {
+          "logicalId": "SubscriptiononUpdateTodoauth0FunctionSubscriptiononUpdateTodoauth0FunctionAppSyncFunction80D0DFA3",
+          "name": "SubscriptiononUpdateTodoauth0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "requestAsset": "0064bfbd7fdaea51ef97e8494f036beca0be53bc5c1c7b05c29a27f9cdb28bd2"
+        },
+        {
+          "logicalId": "SubscriptiononUpdateTodopostAuth0FunctionSubscriptiononUpdateTodopostAuth0FunctionAppSyncFunction04445BC7",
+          "name": "SubscriptiononUpdateTodopostAuth0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "requestAsset": "c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77"
+        },
+        {
+          "logicalId": "SubscriptionOnUpdateTodoDataResolverFnSubscriptionOnUpdateTodoDataResolverFnAppSyncFunction523DF0E4",
+          "name": "SubscriptionOnUpdateTodoDataResolverFn",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "requestAsset": "fe3c43ada4b9d681a5e2312663ef7a73386424d73b73e51f8e2e9d4b50f7c502",
+          "responseAsset": "e0cff47fb007f0bbf2a4e43ca256d6aa7ec109821769fd79fa7c5e83f0e7f9fc"
+        }
+      ]
+    }
+  ],
+  "endpoint": {
+    "descriptor": "GraphQLApi.uris.REALTIME and AWS::AppSync::GraphQLApi GetAtt RealtimeUrl",
+    "shape": "ws(s)://<GraphQL host>/graphql/${Region}/${GraphQLAPIId}/realtime",
+    "currentClient": "aws-amplify@6.20.0",
+    "localClientConfiguration": "AMX-08 configures the generated subscription client with the descriptor's ws GraphQL base so its unchanged custom-domain derivation appends /realtime; AMX-09 output generation remains open",
+    "encodings": [
+      "graphql-ws plus header-<base64url(JSON authorization headers)> subprotocol",
+      "header=<base64/base64url JSON>&payload=<base64/base64url {}> query encoding"
+    ],
+    "selectedSubprotocol": "graphql-ws (AppSync message semantics, not generic graphql-ws)"
+  },
+  "protocol": {
+    "clientMessages": [
+      "connection_init",
+      "start",
+      "stop"
+    ],
+    "serverMessages": [
+      "connection_ack",
+      "connection_error",
+      "start_ack",
+      "data",
+      "ka",
+      "complete",
+      "error"
+    ],
+    "connectionAck": {
+      "connectionTimeoutMs": 300000
+    },
+    "closeSignals": {
+      "protocol": 4400,
+      "authorization": 4401,
+      "initializationTimeout": 4408,
+      "repeatedInitialization": 4429,
+      "connectionQueue": 1013,
+      "generationOrShutdown": 1012,
+      "idleOrLifetime": 1001
+    },
+    "registrationError": "id-scoped error; unrelated registrations survive",
+    "stop": "id-scoped complete followed by no further delivery"
+  },
+  "authorization": {
+    "modes": [
+      "API_KEY",
+      "AWS_IAM"
+    ],
+    "connectionBinding": [
+      "API generation",
+      "authorization mode",
+      "API-key id or IAM principal/access-key identity digest"
+    ],
+    "registrationRecheck": "per-start authorization is independently verified and must match the connection identity",
+    "deliveryRecheck": "API key existence/expiry, IAM identity/session existence, schema directive, and live appsync:GraphQL field policy",
+    "rejected": [
+      "wrong/expired/deleted key",
+      "missing/tampered/stale signature",
+      "implicit deny",
+      "explicit deny",
+      "cross-account",
+      "cross-Region",
+      "cross-API",
+      "cross-mode",
+      "cross-key",
+      "cross-principal"
+    ]
+  },
+  "delivery": {
+    "trigger": "successful linked AppSync mutation resolver, response functions, GraphQL field completion, and bounded response serialization only",
+    "excludedTriggers": [
+      "DynamoDB direct writes",
+      "DynamoDB Streams",
+      "replay",
+      "restart recovery"
+    ],
+    "isolation": "authorization, filtering, selection completion, queueing, and socket send are evaluated per registration and never fail the mutation or another healthy registration",
+    "commitBoundary": "socket loss after mutation completion may lose the live event; the mutation is never rolled back, retried, or synthesized"
+  },
+  "limits": {
+    "connectionsPerRegion": 100,
+    "connectionsPerApi": 50,
+    "registrationsPerConnection": 100,
+    "registrationsPerApi": 1000,
+    "incomingMessageBytes": 262144,
+    "outgoingMessageBytes": 1048576,
+    "authorizationHeaderBytes": 16384,
+    "queryBytes": 262144,
+    "variablesBytes": 262144,
+    "documentDepth": 75,
+    "documentFields": 1000,
+    "registrationQueueMessages": 16,
+    "registrationQueueBytes": 1048576,
+    "connectionQueueMessages": 64,
+    "connectionQueueBytes": 4194304,
+    "fanoutPerMutation": 1000,
+    "initializationMs": 15000,
+    "keepAliveMs": 60000,
+    "idleMs": 300000,
+    "lifetimeMs": 7200000,
+    "overflow": "registration queue/message overflow sends safe id-scoped error+complete and drops that registration; connection queue overflow closes only that connection with 1013"
+  },
+  "lifecycle": {
+    "generations": [
+      "API",
+      "schema",
+      "authorization configuration",
+      "resolver/function/data-source configuration"
+    ],
+    "updateBehavior": "close sockets for the affected API on API/schema/auth-configuration/resolver generation changes, but only sockets bound to an updated/deleted API key on key lifecycle changes; use 1012 and require reconnect/re-registration; mutation snapshots cannot cross-deliver into another generation",
+    "identityInvalidation": "key deletion/expiry or IAM identity invalidation prevents delivery; key lifecycle closure is isolated by key id and field-policy denial errors/completes only that registration",
+    "persistence": "only API/schema/resolver/subscription configuration is durable; connections, registrations, timers, queues, and pending messages are process-local with no replay/outbox"
+  },
+  "signals": {
+    "namespace": "AWS/AppSync",
+    "metrics": [
+      "RealtimeConnectionAdmission",
+      "RealtimeConnectionClose",
+      "RealtimeSubscriptionRegistrationAdmission",
+      "RealtimeSubscriptionRegistrationRejected",
+      "RealtimeSubscriptionStop",
+      "RealtimeMutationCompletion",
+      "RealtimeSubscriptionAuthorizationAdmission",
+      "RealtimeSubscriptionFilterAdmission",
+      "RealtimeSubscriptionFilterRejection",
+      "RealtimeSubscriptionQueueDrop",
+      "RealtimeSocketDelivery",
+      "RealtimeSocketDeliveryFailure"
+    ],
+    "dimensions": [
+      "GraphQLAPIId",
+      "AuthenticationType",
+      "Reason"
+    ],
+    "privateDiagnostics": "256 process-local safe summaries; server connection ids and hashed client registration ids only",
+    "cloudWatchLogs": "none: the frozen GraphQLApi has no LogConfig",
+    "crashSemantics": {
+      "connectionAndRegistration": "may be absent or duplicated around process failure; state is non-durable",
+      "mutationCompletion": "metric/diagnostic may be lost; no event outbox is implied",
+      "authorizationFilterQueueDelivery": "may be lost or duplicated as telemetry around a crash; application event is at-most-live-delivery with no replay"
+    },
+    "redacted": [
+      "GraphQL documents",
+      "variables",
+      "application payloads",
+      "API keys",
+      "authorization headers",
+      "SigV4 material",
+      "session tokens",
+      "credentials",
+      "raw policies",
+      "private resolver context"
+    ]
+  },
+  "failureInjection": [
+    "registration-admission",
+    "mutation-completion",
+    "queueing",
+    "socket-send"
+  ],
+  "client": {
+    "package": "aws-amplify@6.20.0",
+    "methods": [
+      "onCreate",
+      "onUpdate",
+      "onDelete"
+    ],
+    "model": "Todo",
+    "sourceGeneratedAtRuntimeFromPinnedModelIntrospection": true
+  },
+  "negativeSurface": [
+    "Cognito",
+    "Lambda authorization",
+    "OIDC",
+    "enhanced subscription filters",
+    "subscription invalidation",
+    "AppSync Events",
+    "generic graphql-ws",
+    "MQTT",
+    "DynamoDB Streams fan-out",
+    "AMX-09 deployment/output generation"
+  ]
+}

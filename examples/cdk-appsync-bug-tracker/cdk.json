@@ -1,0 +1,8 @@
+{
+  "app": "npx tsx app.ts",
+  "output": "cdk.out",
+  "context": {
+    "@aws-cdk/core:bootstrapQualifier": "hnb659fds",
+    "@aws-cdk/aws-s3:createDefaultLoggingPolicy": false
+  }
+}

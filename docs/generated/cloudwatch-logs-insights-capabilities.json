@@ -1,0 +1,1153 @@
+{
+  "schemaVersion": 1,
+  "generatedBy": "scripts/generate-cloudwatch-logs-insights-capabilities.mjs",
+  "designSnapshot": "2026-08-01",
+  "claim": "CloudWatch Logs Insights QL core subset",
+  "languages": [
+    {
+      "name": "CWLI",
+      "state": "partial",
+      "requirement": "CWLI-P0-001"
+    },
+    {
+      "name": "PPL",
+      "state": "unsupported",
+      "requirement": "CWLI-P1-015"
+    },
+    {
+      "name": "SQL",
+      "state": "unsupported",
+      "requirement": "CWLI-P1-017"
+    }
+  ],
+  "grammar": {
+    "commands": [
+      {
+        "name": "comments",
+        "requirement": "CWLI-P0-002",
+        "production": "query := trivia? stage (PIPE trivia? stage)*",
+        "state": "supported"
+      },
+      {
+        "name": "fields",
+        "requirement": "CWLI-P0-004",
+        "production": "fields := selection (COMMA selection)*",
+        "state": "supported"
+      },
+      {
+        "name": "display",
+        "requirement": "CWLI-P0-004",
+        "production": "display := selection (COMMA selection)*",
+        "state": "supported"
+      },
+      {
+        "name": "filter",
+        "requirement": "CWLI-P0-005",
+        "production": "filter := expression",
+        "state": "supported"
+      },
+      {
+        "name": "parse",
+        "requirement": "CWLI-P0-006",
+        "production": "parse := expression? (glob | regex) (AS field (COMMA field)*)?",
+        "state": "supported"
+      },
+      {
+        "name": "sort",
+        "requirement": "CWLI-P0-007",
+        "production": "sort := selection direction? (COMMA selection direction?)*",
+        "state": "supported"
+      },
+      {
+        "name": "limit",
+        "requirement": "CWLI-P0-008",
+        "production": "limit := ANY? integer[1..100000]",
+        "state": "supported"
+      },
+      {
+        "name": "dedup",
+        "requirement": "CWLI-P0-008",
+        "production": "dedup := selection (COMMA selection)*; following-command := limit",
+        "state": "supported"
+      },
+      {
+        "name": "stats",
+        "requirement": "CWLI-P0-010",
+        "production": "stats := aggregate-expression (COMMA aggregate-expression)* (BY selection (COMMA selection)*)? (OFFSET period)?",
+        "state": "supported"
+      },
+      {
+        "name": "filterIndex",
+        "requirement": "CWLI-P1-001",
+        "production": "filterIndex := indexed-comparison",
+        "state": "unsupported"
+      },
+      {
+        "name": "SOURCE",
+        "requirement": "CWLI-P1-002",
+        "production": "SOURCE := source-selector (COMMA source-selector)*",
+        "state": "unsupported"
+      },
+      {
+        "name": "unnest",
+        "requirement": "CWLI-P1-004",
+        "production": "unnest := expression AS field",
+        "state": "unsupported"
+      },
+      {
+        "name": "expand",
+        "requirement": "CWLI-P1-004",
+        "production": "expand := expression AS field",
+        "state": "unsupported"
+      },
+      {
+        "name": "addtotals",
+        "requirement": "CWLI-P1-005",
+        "production": "addtotals := options",
+        "state": "unsupported"
+      },
+      {
+        "name": "lookup",
+        "requirement": "CWLI-P1-006",
+        "production": "lookup := table ON fields output?",
+        "state": "unsupported"
+      },
+      {
+        "name": "join",
+        "requirement": "CWLI-P1-007",
+        "production": "join := join-type? subquery ON equality",
+        "state": "unsupported"
+      },
+      {
+        "name": "subquery",
+        "requirement": "CWLI-P1-008",
+        "production": "subquery := filter field IN LPAREN query RPAREN",
+        "state": "unsupported"
+      },
+      {
+        "name": "pattern",
+        "requirement": "CWLI-P1-009",
+        "production": "pattern := fields?",
+        "state": "unsupported"
+      },
+      {
+        "name": "diff",
+        "requirement": "CWLI-P1-010",
+        "production": "diff := period?",
+        "state": "unsupported"
+      },
+      {
+        "name": "anomaly",
+        "requirement": "CWLI-P1-011",
+        "production": "anomaly := fields?",
+        "state": "unsupported"
+      },
+      {
+        "name": "relevantfields",
+        "requirement": "CWLI-P1-012",
+        "production": "relevantfields := options",
+        "state": "unsupported"
+      },
+      {
+        "name": "unmask",
+        "requirement": "CWLI-P1-013",
+        "production": "unmask",
+        "state": "unsupported"
+      }
+    ],
+    "operators": [
+      "+",
+      "-",
+      "*",
+      "/",
+      "^",
+      "%",
+      "and",
+      "or",
+      "not",
+      "=",
+      "!=",
+      "<",
+      ">",
+      "<=",
+      ">=",
+      "like",
+      "not like",
+      "in",
+      "not in",
+      "=~"
+    ],
+    "identifiers": [
+      "plain",
+      "backtick",
+      "dot-access",
+      "bracket-access"
+    ],
+    "literals": [
+      "string",
+      "number",
+      "boolean",
+      "null",
+      "regex",
+      "period",
+      "list",
+      "map"
+    ]
+  },
+  "functions": [
+    {
+      "name": "abs",
+      "signature": "abs(number)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "ceil",
+      "signature": "ceil(number)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "floor",
+      "signature": "floor(number)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "greatest",
+      "signature": "greatest(number, ...numbers)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "least",
+      "signature": "least(number, ...numbers)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "log",
+      "signature": "log(number)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "round",
+      "signature": "round(number)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "round",
+      "signature": "round(number, digits)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "sqrt",
+      "signature": "sqrt(number)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "haversine",
+      "signature": "haversine(lat1, lon1, lat2, lon2)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "toNumber",
+      "signature": "toNumber(field)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "toInt",
+      "signature": "toInt(field)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "toLong",
+      "signature": "toLong(field)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "toDouble",
+      "signature": "toDouble(field)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "bin",
+      "signature": "bin(period)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "datefloor",
+      "signature": "datefloor(timestamp, period)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "dateceil",
+      "signature": "dateceil(timestamp, period)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "fromMillis",
+      "signature": "fromMillis(number)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "toMillis",
+      "signature": "toMillis(timestamp)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "now",
+      "signature": "now()",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "parseDate",
+      "signature": "parseDate(string, format)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "parseDate",
+      "signature": "parseDate(string, format, timezone)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "formatDate",
+      "signature": "formatDate(timestamp, format)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "formatDate",
+      "signature": "formatDate(timestamp, format, timezone)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "strftime",
+      "signature": "strftime(timestamp, format)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "strftime",
+      "signature": "strftime(timestamp, format, timezone)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "queryStartTime",
+      "signature": "queryStartTime()",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "queryEndTime",
+      "signature": "queryEndTime()",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "queryTimeRange",
+      "signature": "queryTimeRange()",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "ispresent",
+      "signature": "ispresent(field)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "coalesce",
+      "signature": "coalesce(field, ...fields)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "case",
+      "signature": "case(condition, value, ...branches, default?)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "if",
+      "signature": "if(condition, trueValue, falseValue)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "isNumeric",
+      "signature": "isNumeric(field)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "messageSize",
+      "signature": "messageSize(field)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "isempty",
+      "signature": "isempty(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "isblank",
+      "signature": "isblank(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "concat",
+      "signature": "concat(string, ...strings)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "ltrim",
+      "signature": "ltrim(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "ltrim",
+      "signature": "ltrim(string, characters)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "rtrim",
+      "signature": "rtrim(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "rtrim",
+      "signature": "rtrim(string, characters)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "trim",
+      "signature": "trim(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "trim",
+      "signature": "trim(string, characters)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "strlen",
+      "signature": "strlen(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "toupper",
+      "signature": "toupper(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "tolower",
+      "signature": "tolower(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "substr",
+      "signature": "substr(string, start)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "substr",
+      "signature": "substr(string, start, length)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "replace",
+      "signature": "replace(string, search, replacement)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "regexReplace",
+      "signature": "regexReplace(string, pattern, replacement)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "strcontains",
+      "signature": "strcontains(string, search)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "strcontains",
+      "signature": "strcontains(string, search, caseInsensitive)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "startsWith",
+      "signature": "startsWith(string, search)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "endsWith",
+      "signature": "endsWith(string, search)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "urlencode",
+      "signature": "urlencode(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "urldecode",
+      "signature": "urldecode(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "base64encode",
+      "signature": "base64encode(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "base64decode",
+      "signature": "base64decode(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "split",
+      "signature": "split(string, delimiter)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "hexToAscii",
+      "signature": "hexToAscii(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "hexToDec",
+      "signature": "hexToDec(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "decToHex",
+      "signature": "decToHex(number)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "md5",
+      "signature": "md5(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "sha256",
+      "signature": "sha256(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "isValidIp",
+      "signature": "isValidIp(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "isValidIpV4",
+      "signature": "isValidIpV4(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "isValidIpV6",
+      "signature": "isValidIpV6(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "isIpInSubnet",
+      "signature": "isIpInSubnet(string, subnet)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "isIpv4InSubnet",
+      "signature": "isIpv4InSubnet(string, subnet)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "isIpv6InSubnet",
+      "signature": "isIpv6InSubnet(string, subnet)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "ipv4ToNumber",
+      "signature": "ipv4ToNumber(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "isPrivateIP",
+      "signature": "isPrivateIP(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "isPublicIP",
+      "signature": "isPublicIP(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "isReservedIP",
+      "signature": "isReservedIP(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-009",
+      "state": "supported"
+    },
+    {
+      "name": "jsonParse",
+      "signature": "jsonParse(string)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-012",
+      "state": "supported"
+    },
+    {
+      "name": "jsonStringify",
+      "signature": "jsonStringify(mapOrList)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-012",
+      "state": "supported"
+    },
+    {
+      "name": "jsonArraySize",
+      "signature": "jsonArraySize(array)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-012",
+      "state": "supported"
+    },
+    {
+      "name": "jsonArrayContains",
+      "signature": "jsonArrayContains(array, value)",
+      "family": "scalar",
+      "requirement": "CWLI-P0-012",
+      "state": "supported"
+    },
+    {
+      "name": "avg",
+      "signature": "avg(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "count",
+      "signature": "count()",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "count",
+      "signature": "count(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "count(*)",
+      "signature": "count(*)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "count_distinct",
+      "signature": "count_distinct(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "max",
+      "signature": "max(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "min",
+      "signature": "min(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "pct",
+      "signature": "pct(field, percentile)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "stddev",
+      "signature": "stddev(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "sum",
+      "signature": "sum(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "values",
+      "signature": "values(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "collect_values",
+      "signature": "collect_values(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "variance",
+      "signature": "variance(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "topk",
+      "signature": "topk(k, field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "earliest",
+      "signature": "earliest(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "latest",
+      "signature": "latest(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "sortsFirst",
+      "signature": "sortsFirst(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "sortsLast",
+      "signature": "sortsLast(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "rate",
+      "signature": "rate(field, period)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-011",
+      "state": "supported"
+    },
+    {
+      "name": "count_over_time",
+      "signature": "count_over_time(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-011",
+      "state": "supported"
+    },
+    {
+      "name": "sum_over_time",
+      "signature": "sum_over_time(field)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-011",
+      "state": "supported"
+    },
+    {
+      "name": "histogram",
+      "signature": "histogram(field, buckets)",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-011",
+      "state": "supported"
+    },
+    {
+      "name": "countDistinct",
+      "signature": "countDistinct(field)",
+      "aliasOf": "count_distinct",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    },
+    {
+      "name": "collectValues",
+      "signature": "collectValues(field)",
+      "aliasOf": "collect_values",
+      "family": "aggregate",
+      "requirement": "CWLI-P0-010",
+      "state": "supported"
+    }
+  ],
+  "apis": [
+    {
+      "name": "StartQuery",
+      "requirement": "CWLI-P0-014",
+      "state": "supported"
+    },
+    {
+      "name": "GetQueryResults",
+      "requirement": "CWLI-P0-014",
+      "state": "supported"
+    },
+    {
+      "name": "StopQuery",
+      "requirement": "CWLI-P0-014",
+      "state": "supported"
+    },
+    {
+      "name": "DescribeQueries",
+      "requirement": "CWLI-P0-014",
+      "state": "supported"
+    },
+    {
+      "name": "GetLogRecord",
+      "requirement": "CWLI-P0-016",
+      "state": "supported"
+    },
+    {
+      "name": "GetLogObject",
+      "requirement": "CWLI-P0-016",
+      "state": "supported"
+    },
+    {
+      "name": "GetLogGroupFields",
+      "requirement": "CWLI-P0-016",
+      "state": "supported"
+    },
+    {
+      "name": "GetLogFields",
+      "requirement": "CWLI-P0-016",
+      "state": "supported"
+    },
+    {
+      "name": "ListLogGroupsForQuery",
+      "requirement": "CWLI-P1-002",
+      "state": "unsupported"
+    },
+    {
+      "name": "PutQueryDefinition",
+      "requirement": "CWLI-P0-017",
+      "state": "supported"
+    },
+    {
+      "name": "DescribeQueryDefinitions",
+      "requirement": "CWLI-P0-017",
+      "state": "supported"
+    },
+    {
+      "name": "DeleteQueryDefinition",
+      "requirement": "CWLI-P0-017",
+      "state": "supported"
+    },
+    {
+      "name": "AWS::Logs::QueryDefinition",
+      "requirement": "CWLI-P0-017",
+      "state": "supported"
+    },
+    {
+      "name": "PutIndexPolicy",
+      "requirement": "CWLI-P1-001",
+      "state": "unsupported"
+    },
+    {
+      "name": "DeleteIndexPolicy",
+      "requirement": "CWLI-P1-001",
+      "state": "unsupported"
+    },
+    {
+      "name": "DescribeIndexPolicies",
+      "requirement": "CWLI-P1-001",
+      "state": "unsupported"
+    },
+    {
+      "name": "DescribeFieldIndexes",
+      "requirement": "CWLI-P1-001",
+      "state": "unsupported"
+    },
+    {
+      "name": "PutAccountPolicy",
+      "requirement": "CWLI-P1-001",
+      "state": "unsupported"
+    },
+    {
+      "name": "DeleteAccountPolicy",
+      "requirement": "CWLI-P1-001",
+      "state": "unsupported"
+    },
+    {
+      "name": "DescribeAccountPolicies",
+      "requirement": "CWLI-P1-001",
+      "state": "unsupported"
+    },
+    {
+      "name": "ListAggregateLogGroupSummaries",
+      "requirement": "CWLI-P2-003",
+      "state": "unsupported"
+    },
+    {
+      "name": "CreateLookupTable",
+      "requirement": "CWLI-P1-006",
+      "state": "unsupported"
+    },
+    {
+      "name": "GetLookupTable",
+      "requirement": "CWLI-P1-006",
+      "state": "unsupported"
+    },
+    {
+      "name": "DescribeLookupTables",
+      "requirement": "CWLI-P1-006",
+      "state": "unsupported"
+    },
+    {
+      "name": "UpdateLookupTable",
+      "requirement": "CWLI-P1-006",
+      "state": "unsupported"
+    },
+    {
+      "name": "DeleteLookupTable",
+      "requirement": "CWLI-P1-006",
+      "state": "unsupported"
+    },
+    {
+      "name": "CreateScheduledQuery",
+      "requirement": "CWLI-P2-005",
+      "state": "unsupported"
+    },
+    {
+      "name": "GetScheduledQuery",
+      "requirement": "CWLI-P2-005",
+      "state": "unsupported"
+    },
+    {
+      "name": "ListScheduledQueries",
+      "requirement": "CWLI-P2-005",
+      "state": "unsupported"
+    },
+    {
+      "name": "UpdateScheduledQuery",
+      "requirement": "CWLI-P2-005",
+      "state": "unsupported"
+    },
+    {
+      "name": "DeleteScheduledQuery",
+      "requirement": "CWLI-P2-005",
+      "state": "unsupported"
+    },
+    {
+      "name": "GetScheduledQueryHistory",
+      "requirement": "CWLI-P2-005",
+      "state": "unsupported"
+    },
+    {
+      "name": "AssociateKmsKey(query-result)",
+      "requirement": "CWLI-P2-006",
+      "state": "unsupported"
+    },
+    {
+      "name": "DisassociateKmsKey(query-result)",
+      "requirement": "CWLI-P2-006",
+      "state": "unsupported"
+    },
+    {
+      "name": "TagResource",
+      "requirement": "CWLI-P2-007",
+      "state": "partial"
+    },
+    {
+      "name": "UntagResource",
+      "requirement": "CWLI-P2-007",
+      "state": "partial"
+    },
+    {
+      "name": "ListTagsForResource",
+      "requirement": "CWLI-P2-007",
+      "state": "partial"
+    },
+    {
+      "name": "GenerateQuery",
+      "requirement": "CWLI-P2-010",
+      "state": "unsupported"
+    },
+    {
+      "name": "GenerateQueryResultsSummary",
+      "requirement": "CWLI-P2-011",
+      "state": "unsupported"
+    }
+  ],
+  "logClasses": [
+    {
+      "name": "STANDARD",
+      "state": "supported",
+      "fieldDiscovery": true,
+      "statsStages": 10,
+      "unsupportedCommands": []
+    },
+    {
+      "name": "INFREQUENT_ACCESS",
+      "state": "partial",
+      "fieldDiscovery": false,
+      "statsStages": 2,
+      "unsupportedCommands": [
+        "pattern",
+        "diff",
+        "unmask",
+        "filterIndex"
+      ]
+    }
+  ],
+  "limits": {
+    "queryCharacters": 10000,
+    "cwliConcurrentQueries": 100,
+    "pplSqlConcurrentQueries": 15,
+    "executionTimeoutMinutes": 60,
+    "resultAvailabilityDays": 7,
+    "explicitLogGroups": 50,
+    "sourceResolvedLogGroups": 10000,
+    "resultRows": 100000,
+    "pageRows": 10000,
+    "discoveredFields": 200,
+    "parseFields": 200
+  }
+}

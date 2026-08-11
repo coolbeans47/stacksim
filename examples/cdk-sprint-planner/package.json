@@ -1,0 +1,67 @@
+{
+  "name": "stacksim-sprint-planner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A collaborative Sprint Planner CDK showcase for stacksim",
+  "scripts": {
+    "build:lambdas": "node scripts/build-lambdas.mjs",
+    "build:frontend": "node frontend/build.mjs",
+    "synth": "npm run build:lambdas && cdk synth --no-notices",
+    "verify:assembly": "node scripts/verify-assembly.mjs",
+    "build": "npm run build:frontend && npm run synth && npm run verify:assembly",
+    "check:cognito": "node scripts/check-cognito.mjs",
+    "deploy": "node scripts/deploy.mjs",
+    "replay:outbox": "node scripts/replay-outbox.mjs",
+    "seed": "node scripts/seed.mjs",
+    "smoke": "node scripts/smoke-test.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:visual": "node scripts/visual-test.mjs",
+    "test:e2e": "node scripts/e2e-test.mjs",
+    "test:collaboration": "node scripts/collaboration-test.mjs",
+    "capture": "node scripts/capture.mjs",
+    "destroy": "cdk destroy --all --force"
+  },
+  "allowScripts": {
+    "fsevents@2.3.2": true,
+    "fsevents@2.3.3": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.1": true
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-apigatewaymanagementapi": "3.1089.0",
+    "@aws-sdk/client-cognito-identity-provider": "3.1094.0",
+    "@aws-sdk/client-cloudformation": "3.1079.0",
+    "@aws-sdk/client-dynamodb": "3.1094.0",
+    "@aws-sdk/client-eventbridge": "3.1094.0",
+    "@aws-sdk/client-lambda": "3.1094.0",
+    "@aws-sdk/client-ses": "3.1093.0",
+    "@aws-sdk/client-sqs": "3.1094.0",
+    "@aws-sdk/lib-dynamodb": "3.1094.0",
+    "@aws-sdk/util-dynamodb": "3.996.7",
+    "@dnd-kit/core": "6.3.1",
+    "@dnd-kit/sortable": "10.0.0",
+    "@dnd-kit/utilities": "3.2.2",
+    "aws-cdk-lib": "2.261.0",
+    "constructs": "10.7.1",
+    "lucide-react": "0.468.0",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "@types/node": "22.15.3",
+    "@types/react": "19.1.2",
+    "@types/react-dom": "19.1.2",
+    "autoprefixer": "10.4.21",
+    "aws-cdk": "2.1132.0",
+    "esbuild": "0.28.1",
+    "postcss": "8.5.6",
+    "tailwindcss": "3.4.17",
+    "tsx": "4.20.0",
+    "typescript": "5.8.3"
+  }
+}

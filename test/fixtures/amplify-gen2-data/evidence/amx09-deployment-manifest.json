@@ -1,0 +1,274 @@
+{
+  "format": 1,
+  "phase": "AMX-09",
+  "contract": "first complete unmodified frozen Amplify Gen 2 sandbox deployment and directly usable generated output",
+  "protectedEvidence": {
+    "amx04-helper-manifest.json": "16200269bb57a1e015770e3e0c318bb813305d6ecb0d667350506ea29c55aaf2",
+    "amx05-appsync-manifest.json": "273fe7171f89b09084334ca3836cc0ab1ea71333fa98bb2bd5018f06551e1e31",
+    "amx06-authorization-manifest.json": "2e2e8fb4937b16ca262a5b6f31a9b015896b75e36a1ea01a629c05d74a81349d",
+    "amx07-data-manifest.json": "8a10980c50ed9fe162128e57b0d98ec69f432816e43cf69f1ce2efe635c2ec3e",
+    "amx08-realtime-manifest.json": "56254bf0e8253adb83bba572e48eea9602bfa3b136f47b4387896eeae9fb2b6f",
+    "graph-manifest.json": "4b796f05936b1943ab1f22f57395219d1b840573d959fdd0669818cb1b1f7868"
+  },
+  "pinnedExecution": {
+    "command": "node node_modules/@aws-amplify/backend-cli/lib/ampx.js sandbox --once --identifier amx01",
+    "workingDirectory": "test/fixtures/amplify-gen2-data",
+    "cliOwns": [
+      "synthesis",
+      "bootstrap lookup",
+      "asset publication",
+      "CloudFormation deployment",
+      "stabilization",
+      "output generation",
+      "amplify_outputs.json write"
+    ],
+    "forbidden": [
+      "template rewriting",
+      "fixture installer",
+      "private state mutation",
+      "parallel Amplify engine",
+      "shadow output generator",
+      "output post-processing",
+      "client patching"
+    ]
+  },
+  "deploymentGraph": {
+    "completeGraphReference": "graph-manifest.json plus dependency-manifest.json; both remain the AMX-01 authoritative 75-resource/dependency corpus",
+    "templates": [
+      {
+        "kind": "root",
+        "resources": 2,
+        "owner": "CloudFormation recursive executor"
+      },
+      {
+        "kind": "data",
+        "resources": 26,
+        "owner": "CloudFormation nested stack data7552DF31"
+      },
+      {
+        "kind": "table-manager",
+        "resources": 9,
+        "owner": "CloudFormation nested AmplifyTableManager stack"
+      },
+      {
+        "kind": "todo",
+        "resources": 38,
+        "owner": "CloudFormation nested Todo stack"
+      }
+    ],
+    "totalResources": 75,
+    "terminalStatus": "CREATE_COMPLETE for root, Data, Table Manager, and Todo",
+    "orderingRule": "CloudFormation dependency graph order; each production provider stabilizes before dependents; nested outputs bind only after child terminal success",
+    "ownership": "Every physical resource remains in its owning service and records stack/root/parent logical ownership",
+    "providers": {
+      "CloudFormation": [
+        "root stack",
+        "three recursive nested stacks",
+        "events",
+        "outputs",
+        "rollback",
+        "delete"
+      ],
+      "AppSync": [
+        "GraphQLApi",
+        "GraphQLSchema",
+        "ApiKey",
+        "DataSource",
+        "26 FunctionConfiguration resources",
+        "8 PIPELINE resolvers"
+      ],
+      "IAM_STS": [
+        "roles",
+        "inline/managed policy attachment",
+        "PassRole",
+        "service sessions"
+      ],
+      "S3": [
+        "versioned assets",
+        "model schema",
+        "BucketDeployment",
+        "auto-delete helper"
+      ],
+      "Lambda": [
+        "generated provider/helper functions",
+        "layers",
+        "ordinary invocation and tag ownership"
+      ],
+      "DynamoDB": [
+        "Todo table",
+        "stream",
+        "CRUD/filter/pagination storage"
+      ],
+      "StepFunctions": [
+        "table-manager waiter"
+      ],
+      "SSM": [
+        "GraphQL API ID parameter",
+        "bootstrap version parameter"
+      ]
+    }
+  },
+  "generatedNames": {
+    "deferredNestedParameters": "Opaque discovery markers are tainted non-service values. Provider semantic validation/canonicalization/planning is deferred only for a resource model containing one; the authoritative resolved model is fully validated at ordinary create/update execution.",
+    "todoRoleNameExpression": "TodoIAMRolecfd440- + authoritative 26-hex AppSync API ID + -NONE",
+    "todoRoleNameLength": 49,
+    "iamBoundary": "Explicit RoleName remains /^[A-Za-z0-9_+=,.@-]{1,64}$/; invalid literal create/update/replacement requests fail and are never truncated, ignored, or admitted.",
+    "lifecycle": "The resolved role name is the stable physical ID for create/read/update/restart/delete/collision/rollback; a RoleName change is normal replacement.",
+    "lambdaGeneratedName": "If stack-logical-suffix exceeds 64 characters, preserve up to 20 sanitized stack characters, then as much sanitized logical ID as fits, then the stable 10-hex suffix. This keeps generated IAM wildcard ownership usable without changing explicit FunctionName."
+  },
+  "bootstrap": {
+    "compatibilityVersion": 23,
+    "policyRevision": 15,
+    "addedOwningPermission": "appsync:*Function* admits appsync:ListFunctions for AWS::AppSync::FunctionConfiguration create stabilization",
+    "deletionBoundary": "Workload deletion preserves the bootstrap bucket, roles, policies, and /cdk-bootstrap/hnb659fds/version parameter"
+  },
+  "outputs": {
+    "retrieval": "GetTemplateSummary(StackName).Metadata JSON string plus DescribeStacks authoritative outputs",
+    "rootKeys": [
+      "deploymentType",
+      "region",
+      "awsAppsyncApiId",
+      "awsAppsyncApiEndpoint",
+      "awsAppsyncAuthenticationType",
+      "awsAppsyncRegion",
+      "amplifyApiModelSchemaS3Uri",
+      "awsAppsyncApiKey",
+      "awsAppsyncAdditionalAuthenticationTypes"
+    ],
+    "dataContributors": [
+      "GraphQLApi.ApiId",
+      "GraphQLApi.GraphQLUrl",
+      "ApiKey.ApiKey",
+      "BucketDeployment.DestinationBucketArn"
+    ],
+    "file": {
+      "path": "amplify_outputs.json",
+      "writer": "pinned backend-cli output lifecycle handler",
+      "atomicity": "Pinned writer uses its observed ordinary writeFile path; AMX-09 does not claim an atomic rename guarantee",
+      "topLevelKeys": [
+        "data",
+        "version"
+      ],
+      "dataKeys": [
+        "api_key",
+        "authorization_types",
+        "aws_region",
+        "default_authorization_type",
+        "model_introspection",
+        "url"
+      ],
+      "version": "1.5",
+      "digestRule": "Evidence records sha256 over canonical generated output after replacing data.api_key with <redacted>; no digest of the secret-bearing raw file is retained",
+      "failureRule": "The harness removes a prior generated artifact before invocation; no client run is admitted unless the CLI reports File written after terminal deployment success"
+    }
+  },
+  "endpoints": {
+    "graphql": "Generated data.url is the authoritative HTTPS loopback GraphQLUrl and is used verbatim by Amplify 6.20",
+    "realtime": "Pinned client derives wss:// from https:// and appends /realtime for the custom loopback URL; the same durable loopback CA-backed listener serves GraphQL and WebSocket upgrades",
+    "trust": "Client proof runs in a fresh Node process with NODE_EXTRA_CA_CERTS set to StackSim's durable loopback CA; client configuration itself is exactly Amplify.configure(parsed amplify_outputs.json)",
+    "noFabricatedField": "The generator emits no realtime field; AMX-09 does not add one"
+  },
+  "clientProof": {
+    "package": "aws-amplify@6.20.0",
+    "configuration": "Amplify.configure(JSON.parse(readFile(amplify_outputs.json)))",
+    "generatedModel": "client.models.Todo",
+    "operations": [
+      "create",
+      "get",
+      "list",
+      "filter",
+      "scoped pagination",
+      "conditional error",
+      "duplicate error",
+      "update",
+      "delete",
+      "onCreate",
+      "onUpdate",
+      "onDelete"
+    ],
+    "authorization": [
+      "API_KEY default remains enforced",
+      "AWS_IAM additional remains enforced",
+      "no field-authorization bypass"
+    ]
+  },
+  "lifecycle": {
+    "restart": "Reopen the same durable data root and listener ports; stack IDs, physical IDs, output identity, and client usability remain unchanged",
+    "deletion": "Signed DeleteStack uses the recursive executor and production providers in reverse dependency-safe order; owned workload reaches DELETE_COMPLETE and bootstrap/unrelated state remains",
+    "isolation": [
+      "account",
+      "Region",
+      "root/child stack ownership",
+      "sandbox identifier",
+      "AppSync API ID",
+      "API key",
+      "resource generation",
+      "pagination scope"
+    ],
+    "outputFailures": [
+      "missing",
+      "invalid schema",
+      "wrong endpoint generation",
+      "wrong API key",
+      "mixed generation",
+      "tampered",
+      "stale after delete"
+    ]
+  },
+  "signals": {
+    "allowed": [
+      "safe signed control-plane action names/result classes",
+      "stack/resource statuses",
+      "safe physical IDs",
+      "output key names",
+      "redacted output shape",
+      "payload-free client pass/fail booleans",
+      "payload-free realtime diagnostics"
+    ],
+    "forbidden": [
+      "credentials",
+      "session tokens",
+      "SigV4 material",
+      "authorization headers",
+      "API-key values",
+      "callback tokens",
+      "raw policies",
+      "GraphQL documents",
+      "variables",
+      "application records",
+      "resolver private context",
+      "output-file secrets"
+    ],
+    "redactions": [
+      "ApiKey output values become <redacted>",
+      "raw output digest is not retained",
+      "trust and inline policies are summarized by names/actions only",
+      "client evidence contains booleans only"
+    ]
+  },
+  "inventories": {
+    "implementation": [
+      "src/cloudformation.ts",
+      "src/cloudformation/bootstrap.ts",
+      "src/cloudformation/providers/lambda-function.ts",
+      "src/server.ts"
+    ],
+    "actions": "docs/designs/amplify-action-inventory.md; AMX-09 adds GetTemplateSummary, S3 GetObject, DeleteStack, and provider ListFunctions",
+    "resources": "docs/designs/amplify-resource-inventory.md and graph-manifest.json",
+    "outputs": "expected-output.schema.json, endpoint-derivation.json, and this manifest's outputs section",
+    "signals": "this manifest's signals section and payload-free capture summary",
+    "client": "scripts/exercise-amplify-output.mjs and this manifest's clientProof section",
+    "utilities": "Generated VTL/model utilities remain byte-protected in amx07-data-manifest.json and amx08-realtime-manifest.json; AMX-09 adds no resolver utility",
+    "designStatus": "docs/designs/amplify-design.md and docs/designs/implemented-phases.md"
+  },
+  "negativeSurface": [
+    "AMX-10 rerun/update/hotswap workflow behavior",
+    "AMX-11 recovery hardening",
+    "AMX-02A Amplify control plane",
+    "Auth/Identity/Storage/Function phases",
+    "broader APS-07 authorization modes",
+    "Cognito/Lambda/OIDC AppSync auth",
+    "enhanced subscription filters/invalidation",
+    "AppSync Events"
+  ]
+}

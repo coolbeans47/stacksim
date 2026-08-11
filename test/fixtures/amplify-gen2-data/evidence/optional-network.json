@@ -1,0 +1,27 @@
+{
+  "attempts": [
+    {
+      "category": "amplify-notices-update-check",
+      "method": "GET",
+      "path": "/notices.json",
+      "hostClass": "approved-loopback",
+      "resultClass": "success-empty-manifest"
+    }
+  ],
+  "isolation": {
+    "amplifyTelemetry": "AMPLIFY_DISABLE_TELEMETRY=1",
+    "amplifyNoticesEndpoint": "isolated approved loopback via AMPLIFY_BACKEND_NOTICES_ENDPOINT",
+    "amplifyConfigRoot": "fresh APPDATA temporary directory",
+    "cdkTelemetry": "CDK_DISABLE_CLI_TELEMETRY=true",
+    "cdkVersionCheck": "CDK_DISABLE_VERSION_CHECK=true",
+    "npmUpdateNotifier": "npm_config_update_notifier=false",
+    "instanceMetadata": "AWS_EC2_METADATA_DISABLED=true",
+    "networkTripwire": "network-tripwire.cjs; loopback proxy and notices ports only"
+  },
+  "sourceProof": {
+    "telemetryOptOut": "@aws-amplify/platform-core/lib/telemetry/telemetry_span_processor_factory.js and lib/usage-data/usage_data_emitter_factory.js read AMPLIFY_DISABLE_TELEMETRY",
+    "noticesOverride": "@aws-amplify/backend-cli/lib/notices/notices_manifest_fetcher.js reads AMPLIFY_BACKEND_NOTICES_ENDPOINT",
+    "windowsConfigIsolation": "@aws-amplify/platform-core/lib/config/get_config_dir_path.js roots configuration under APPDATA/amplify/Config"
+  },
+  "awsDependenciesExcludeOptionalAttempts": true
+}

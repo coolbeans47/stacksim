@@ -1,0 +1,314 @@
+{
+  "format": 1,
+  "milestone": "AMX-04A exact infrastructure-helper graph; no Amplify compatibility claim",
+  "implementationPath": "generated-provider-framework",
+  "decision": "Execute the emitted CDK Provider framework unchanged through the existing CloudFormation custom-resource request/response boundary. A native provider was rejected because it could not preserve the emitted onEvent/isComplete Lambda invocations, Standard Step Functions execution/history, polling retries, callback publication, logs, metrics, physical IDs, and response data.",
+  "unknownDisposition": "reject-before-mutation",
+  "dug04": "not-an-amplify-gate: the sole emitted workflow contains one direct Lambda Task and no Parallel or Map state",
+  "templates": [
+    {
+      "name": "root",
+      "bytes": 11312,
+      "sha256": "1574ef04e3ae48a06f4aea764403a64e7e2770381f45f0a3e58e3a977ec617e6"
+    },
+    {
+      "name": "data",
+      "bytes": 42526,
+      "sha256": "5f586c7297b24f6ef3ba26a6b7b949cbb6ba259d9d0c31a8a735b6401274fa8b"
+    },
+    {
+      "name": "table-manager",
+      "bytes": 21589,
+      "sha256": "fd9a9b4663b45e0ce70097dbea412e7d88130d682ebe98a7bc66ad22d669718f"
+    },
+    {
+      "name": "todo",
+      "bytes": 71932,
+      "sha256": "d2e4e55b1ff5580acc64d29df7f09acbf72a2c91a39748392f7f423b1a13121f"
+    }
+  ],
+  "assets": [
+    {
+      "id": "f2c5bec0e463cae18d0bf683be5923ae6bd676a06af1a994bdfa076a66ac07d6",
+      "kind": "provider-framework-lambda-zip",
+      "bytes": 38771,
+      "sha256": "1c63a69b2543ea994f9d8bd98ae20fc08cf75a3b432c68b5b8d552daeadfe21b"
+    },
+    {
+      "id": "faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6",
+      "kind": "s3-auto-delete-lambda-zip",
+      "bytes": 2169,
+      "sha256": "47064608c1e227229ab6410ef27578500d5ec0b30b66850d750836fc8f85753d"
+    },
+    {
+      "id": "97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f",
+      "kind": "bucket-deployment-python-lambda-zip",
+      "bytes": 5217,
+      "sha256": "4611a9fb36378a50cc3ba78a689386f3876005046a44dc6ffe04e5d52102e371"
+    },
+    {
+      "id": "a72522445441e9b66c2f16956c54d4786af8c61c156b80c48a6e7c32fcc49023",
+      "kind": "bucket-deployment-awscli-layer-zip",
+      "bytes": 21558128,
+      "sha256": "e32c564500d8f80cfaaff79b1211480b95448f76780301d2b09c7133b89b4bd7"
+    },
+    {
+      "id": "0f7665a8e7b1e1ae8c018961a67ede6600792bf5393ac23068f79ccf68608357",
+      "kind": "codegen-bucket-deployment-source-zip",
+      "bytes": 275,
+      "sha256": "ecf426f35425e4275e3a18eed98dbbcc560fa5d9fa3ccdde631be45cb2fd1a5a"
+    },
+    {
+      "id": "5c0312441b16a7cf32bb8e3252a08bd1889a860bba81f5fa32c1053ec5371509",
+      "kind": "introspection-bucket-deployment-source-zip",
+      "bytes": 641,
+      "sha256": "03660d5304e9fae016e348e4bf0086e2ed848a92f94b36122487006bbf303f71"
+    }
+  ],
+  "workflow": {
+    "logicalId": "AmplifyTableWaiterStateMachine060600BC",
+    "definitionSha256": "27abfe2be6e748c733ec42ffde47768f93293cb1e05a8874428ac20083e8e31e",
+    "type": "STANDARD",
+    "states": [
+      "framework-isComplete-task"
+    ],
+    "integration": "direct Lambda ARN task",
+    "retry": {
+      "errorEquals": [
+        "States.ALL"
+      ],
+      "intervalSeconds": 10,
+      "maxAttempts": 360,
+      "backoffRate": 1
+    }
+  },
+  "protocols": {
+    "Custom::AmplifyDynamoDBTable": {
+      "serviceToken": "TableManagerCustomProviderframeworkonEvent1DFC2ECC.Arn",
+      "requestTypes": [
+        "Create",
+        "Update",
+        "Delete"
+      ],
+      "polling": "onEvent starts the Standard waiter with execution name=RequestId; isComplete publishes the standard signed ResponseURL result",
+      "physicalId": "tableName on create/replacement; unchanged on in-place update/delete",
+      "responseData": [
+        "TableArn",
+        "TableStreamArn",
+        "TableName"
+      ],
+      "calls": [
+        "dynamodb:CreateTable",
+        "dynamodb:DeleteTable",
+        "dynamodb:DescribeContinuousBackups",
+        "dynamodb:DescribeTable",
+        "dynamodb:DescribeTimeToLive",
+        "dynamodb:ListTagsOfResource",
+        "dynamodb:TagResource",
+        "dynamodb:UntagResource",
+        "dynamodb:UpdateContinuousBackups",
+        "dynamodb:UpdateTable",
+        "dynamodb:UpdateTimeToLive",
+        "lambda:ListTags",
+        "states:StartExecution"
+      ]
+    },
+    "Custom::S3AutoDeleteObjects": {
+      "serviceToken": "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F.Arn",
+      "requestTypes": [
+        "Create",
+        "Update",
+        "Delete"
+      ],
+      "physicalId": "RequestId on create; BucketName on update; unchanged on delete",
+      "responseData": [],
+      "calls": [
+        "s3:GetBucketPolicy",
+        "s3:GetBucketTagging",
+        "s3:ListBucketVersions",
+        "s3:DeleteObjectVersion",
+        "s3:PutBucketPolicy"
+      ]
+    },
+    "Custom::CDKBucketDeployment": {
+      "serviceToken": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBC5D8AB21.Arn",
+      "runtimeException": "exact generated Python 3.13 BucketDeployment runtime only",
+      "requestTypes": [
+        "Create",
+        "Update",
+        "Delete"
+      ],
+      "scope": "only the two emitted source archives and destination buckets/prefixes"
+    }
+  },
+  "resources": [
+    {
+      "template": "data",
+      "logicalId": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA",
+      "type": "AWS::S3::Bucket",
+      "propertiesSha256": "c40d70cc353e4dbd202f3c1b5b68ae14ef18c94669fe40068eac6a282e69e340"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucketPolicyF1C1C548",
+      "type": "AWS::S3::BucketPolicy",
+      "propertiesSha256": "f87e49ff03a6afa2bbfd1802b9d456a60bcd8b4a7706df2e8f2b72c20c008e28"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucketAutoDeleteObjectsCustomResource437F26F5",
+      "type": "Custom::S3AutoDeleteObjects",
+      "propertiesSha256": "72aaceeee7a7fc4392aac7af7e5a2f4a2a050be391d332f3eeff2ea3324f0415"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsDeploymentAwsCliLayerE322F905",
+      "type": "AWS::Lambda::LayerVersion",
+      "propertiesSha256": "8f74aced978342d3a1be2c1f8f69f6e3f434253601ebbb942f0b0a678bc613a0"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsDeploymentCustomResource1536MiB21775929",
+      "type": "Custom::CDKBucketDeployment",
+      "propertiesSha256": "01d0d91047f1657fcf5a0187bbf6de91387a2a53fcfb9e4caf0275c8871492be"
+    },
+    {
+      "template": "data",
+      "logicalId": "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+      "type": "AWS::IAM::Role",
+      "propertiesSha256": "0490d7a171438e5964c30bf24430dd28dda39f9d247305a8179353ce14ed220d"
+    },
+    {
+      "template": "data",
+      "logicalId": "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F",
+      "type": "AWS::Lambda::Function",
+      "propertiesSha256": "19de9125699b2b5a12096fc6553ae35a93df725d69696025522768a03d6bc238"
+    },
+    {
+      "template": "data",
+      "logicalId": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBServiceRoleA41FC8C2",
+      "type": "AWS::IAM::Role",
+      "propertiesSha256": "73a5fca10933595f97aeac475104891d9ce6f58f1611180f921bed542325dc5c"
+    },
+    {
+      "template": "data",
+      "logicalId": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBServiceRoleDefaultPolicyFF1C635B",
+      "type": "AWS::IAM::Policy",
+      "propertiesSha256": "13a02712a14129915d5703b3102ce51bd106b119ead1024e44c86e5e3d1f51fc"
+    },
+    {
+      "template": "data",
+      "logicalId": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBC5D8AB21",
+      "type": "AWS::Lambda::Function",
+      "propertiesSha256": "055163f23a914479e0526a5fd0506e954f2ff4a273c82c4c28cbfe31801ae2ca"
+    },
+    {
+      "template": "data",
+      "logicalId": "modelIntrospectionSchemaBucketF566B665",
+      "type": "AWS::S3::Bucket",
+      "propertiesSha256": "b8372c635eb24ab5fea6108c7ec4c7fb1ddfb6ee433bc1a710a06749ad8c960d"
+    },
+    {
+      "template": "data",
+      "logicalId": "modelIntrospectionSchemaBucketPolicy4DAB0D15",
+      "type": "AWS::S3::BucketPolicy",
+      "propertiesSha256": "eed71fdf7b5e7f5114baa5e36b5fa3170e3b398236835cf8ccb9a936a0a20c4d"
+    },
+    {
+      "template": "data",
+      "logicalId": "modelIntrospectionSchemaBucketAutoDeleteObjectsCustomResourceFE57309F",
+      "type": "Custom::S3AutoDeleteObjects",
+      "propertiesSha256": "84e457ad65c16642e8cef5fddb201a9f61ac24a99324abb25a1800f6c0da5044"
+    },
+    {
+      "template": "data",
+      "logicalId": "modelIntrospectionSchemaBucketDeploymentAwsCliLayer13C432F7",
+      "type": "AWS::Lambda::LayerVersion",
+      "propertiesSha256": "8f74aced978342d3a1be2c1f8f69f6e3f434253601ebbb942f0b0a678bc613a0"
+    },
+    {
+      "template": "data",
+      "logicalId": "modelIntrospectionSchemaBucketDeploymentCustomResource1536MiB104B97EC",
+      "type": "Custom::CDKBucketDeployment",
+      "propertiesSha256": "cd7491952484b4bcf62b8aa119048d90930bd7f0e0e24d6e56da556808eb8f05"
+    },
+    {
+      "template": "data",
+      "logicalId": "AMPLIFYDATAGRAPHQLENDPOINTParameter1C2CBB16",
+      "type": "AWS::SSM::Parameter",
+      "propertiesSha256": "0411d9dbd772211d6c2322c759033aef3c7766decc6732a130a57465e452b812"
+    },
+    {
+      "template": "data",
+      "logicalId": "AMPLIFYDATAMODELINTROSPECTIONSCHEMABUCKETNAMEParameter47BF4F44",
+      "type": "AWS::SSM::Parameter",
+      "propertiesSha256": "1273942d830531f47fcaefa4fb9839b83f5a950160b9150ee49617b9650303ab"
+    },
+    {
+      "template": "data",
+      "logicalId": "AMPLIFYDATAMODELINTROSPECTIONSCHEMAKEYParameterB6AEAE8A",
+      "type": "AWS::SSM::Parameter",
+      "propertiesSha256": "7bdaea2415445796fe37238d8998af3d4183e21d719e633073271363e6673ea5"
+    },
+    {
+      "template": "data",
+      "logicalId": "AMPLIFYDATADEFAULTNAMEParameterE7C23CC4",
+      "type": "AWS::SSM::Parameter",
+      "propertiesSha256": "b40cab33cdf39171d9b0a431105c4d9644d8c79839d80da74a2688fb89527a7e"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyManagedTableIsCompleteRoleF825222C",
+      "type": "AWS::IAM::Role",
+      "propertiesSha256": "24b898c6bac2f05e78c7160a425b71779ad13c3bed405c2488deeb59ba6d3fe6"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyManagedTableOnEventRoleB4E71DEA",
+      "type": "AWS::IAM::Role",
+      "propertiesSha256": "24b898c6bac2f05e78c7160a425b71779ad13c3bed405c2488deeb59ba6d3fe6"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyManagedTableOnEventRoleDefaultPolicyF6DABCB6",
+      "type": "AWS::IAM::Policy",
+      "propertiesSha256": "4dc66cfa56dbce8383b090dd4c0d0ed9c7fd0ee72cc03153109688b8d7ffd97a"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "TableManagerCustomProviderframeworkonEvent1DFC2ECC",
+      "type": "AWS::Lambda::Function",
+      "propertiesSha256": "d7c918a4a239c2be86e431d2831b4317ccc94394b619e245fd9b9b1483da42e8"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "TableManagerCustomProviderframeworkisComplete2E51021B",
+      "type": "AWS::Lambda::Function",
+      "propertiesSha256": "6ec46c731f63b4388015ae9546a69b82b6046e569d2066626811fc905d3cbc9f"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyTableWaiterStateMachineRole470BE899",
+      "type": "AWS::IAM::Role",
+      "propertiesSha256": "9a51ecef3c06b170ef5952214d6d1153091d4d8da7dc0822a131cf6bb45ef6d9"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyTableWaiterStateMachineRoleDefaultPolicy89F3836A",
+      "type": "AWS::IAM::Policy",
+      "propertiesSha256": "82e54a0a759a5e11ac2c45428d5c6991f166de4fc9e3ec483b78ce5af1f5abb1"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyTableWaiterStateMachine060600BC",
+      "type": "AWS::StepFunctions::StateMachine",
+      "propertiesSha256": "e121cf0726102ea4527e9a48e75c489b88045f59a4b0a8381b9dc1d9d6fb650a"
+    },
+    {
+      "template": "todo",
+      "logicalId": "TodoTable",
+      "type": "Custom::AmplifyDynamoDBTable",
+      "propertiesSha256": "e67e0a9729a21f22ef223acec0000195012435e7523945424d235d9c73b23009"
+    }
+  ]
+}

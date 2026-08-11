@@ -1,0 +1,221 @@
+{
+  "format": 1,
+  "milestone": "AMX-M0 frozen evidence plus protected AMX-04 through AMX-08 manifests and AMX-09 complete frozen deployment/output evidence",
+  "files": [
+    {
+      "path": "amx04-helper-manifest.json",
+      "sha256": "16200269bb57a1e015770e3e0c318bb813305d6ecb0d667350506ea29c55aaf2",
+      "bytes": 12391
+    },
+    {
+      "path": "amx05-appsync-manifest.json",
+      "sha256": "273fe7171f89b09084334ca3836cc0ab1ea71333fa98bb2bd5018f06551e1e31",
+      "bytes": 48255
+    },
+    {
+      "path": "amx06-authorization-manifest.json",
+      "sha256": "2e2e8fb4937b16ca262a5b6f31a9b015896b75e36a1ea01a629c05d74a81349d",
+      "bytes": 2620
+    },
+    {
+      "path": "amx07-data-manifest.json",
+      "sha256": "8a10980c50ed9fe162128e57b0d98ec69f432816e43cf69f1ce2efe635c2ec3e",
+      "bytes": 33788
+    },
+    {
+      "path": "amx08-realtime-manifest.json",
+      "sha256": "56254bf0e8253adb83bba572e48eea9602bfa3b136f47b4387896eeae9fb2b6f",
+      "bytes": 18074
+    },
+    {
+      "path": "amx09-deployment-manifest.json",
+      "sha256": "91b30aefab42051b65afe56277f7bd9648ea059cf928cb58a7c01a1098c19ae3",
+      "bytes": 10778
+    },
+    {
+      "path": "asset-manifest.json",
+      "sha256": "0d7aef5a60f6cfb7360bba53ed90073f6097eecce862e55f4ee3b89ec0226843",
+      "bytes": 22139
+    },
+    {
+      "path": "assets-manifest.json",
+      "sha256": "56cf3cdaf07b621d4a8ec94bda0ae4bc00b4ccbb6c7bbbcfc988bdd52dc4ff94",
+      "bytes": 25313
+    },
+    {
+      "path": "assets/0064bfbd7fdaea51ef97e8494f036beca0be53bc5c1c7b05c29a27f9cdb28bd2.vtl",
+      "sha256": "675d5720397894160ff0daaa457f300ca7dcd68553b5bdc4af074521019bfcf2",
+      "bytes": 644
+    },
+    {
+      "path": "assets/06db846fd14e6fc371f22b12b5545ba8e2dbfeda85d8c8d586c71c282166657b.vtl",
+      "sha256": "0140a28b1c5d13ee37a69d841b9762c8fc694c48d8bf652f6a1c78873adc87e8",
+      "bytes": 350
+    },
+    {
+      "path": "assets/08f4d557693d96c1a4efba0f9dc91330e4b19772fd5477c156468843e3d9cb5e.vtl",
+      "sha256": "e89cfb26233f47073a95604efd936fdab7d3296ffc5929656f5656c91a84f676",
+      "bytes": 1208
+    },
+    {
+      "path": "assets/0f7665a8e7b1e1ae8c018961a67ede6600792bf5393ac23068f79ccf68608357-model-schema.graphql",
+      "sha256": "9ce90e98f2503338cabf4dd05edc385eb09ced06c964375337a0a6c94d112386",
+      "bytes": 167
+    },
+    {
+      "path": "assets/1f5fed297da9c32ae3af922bf3a38ccf23b956078887d16891ec06c20c64722c.vtl",
+      "sha256": "6e162a95640c4a8a9fabc38c8b017c87439ab49b392b0089bfb1c362321ddad0",
+      "bytes": 394
+    },
+    {
+      "path": "assets/2bf64327ca5682da4be84d0d16440204e25abc3a221195b41f2d21dfa432e5ab.vtl",
+      "sha256": "816b56b10da7deb19bc3d061529603bc3e4c4f6c7abb09ace0f7cc8417a8fc8a",
+      "bytes": 2238
+    },
+    {
+      "path": "assets/474bf0776ec2164a13191d1a0a9e057154931e4918fea5086f49850d02a5371b.vtl",
+      "sha256": "0c6a3d9ed1d168b9f3f151daf7746d9544c12d96ae6d0f5664031a7fd1235e5f",
+      "bytes": 4371
+    },
+    {
+      "path": "assets/4c6a2d29f01c6091bd1d9afe16e5849d456c96f17c3b215938c8067399532719.vtl",
+      "sha256": "3f59bdf6ce29bb866d20b80de1033fe605c519a935a4a48313344ec9c3981b08",
+      "bytes": 381
+    },
+    {
+      "path": "assets/4f7907d1209a2c9953a0c053df402c634e359546d70c7cc5c2e8e21ea734880f.vtl",
+      "sha256": "c7125e4d9d0343961a8665049296c35aed4220e3128b53d9941f773da527634c",
+      "bytes": 1847
+    },
+    {
+      "path": "assets/5c0312441b16a7cf32bb8e3252a08bd1889a860bba81f5fa32c1053ec5371509-modelIntrospectionSchema.json",
+      "sha256": "793109405bd0598064397446ae114c9c23d4ba1665fb4e99d7fa11674310c1d2",
+      "bytes": 3208
+    },
+    {
+      "path": "assets/74c1522efb7733193e4d75cee5b96595110452c456623a36d786f743aea94e7c.vtl",
+      "sha256": "8f194c9c45a5576755afa62813c574cad8099cc260dbcc85e81f8d1ebc7637b8",
+      "bytes": 713
+    },
+    {
+      "path": "assets/941821462168d0c1c15b579e764e675a5ed57595aa8875d0c10071b408b77513.graphql",
+      "sha256": "5ae32ac3471520959d80d3ff235eadc11effddfed222da95a8fd75600fa13b50",
+      "bytes": 4722
+    },
+    {
+      "path": "assets/9fcbe070ecd3023c5bf5b966fa9584757db9762eef123bad0820bd87591b2174.vtl",
+      "sha256": "d465836395626ef0ea84366d111e3f2e68445cda8145f7bd0d558eebabdacabd",
+      "bytes": 1794
+    },
+    {
+      "path": "assets/a183ddccbd956316c38ef97177b8f088ef0826f62023323f5ae6053d348ccffc.vtl",
+      "sha256": "0b21ad5c230ec3fda3bf68049d992f55d1fca8e6a12032aad86115f83db0d479",
+      "bytes": 475
+    },
+    {
+      "path": "assets/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl",
+      "sha256": "cef4ef4aa3f3f97c3ed8c7e2bf6acd1821405f33f4457840247725612b344494",
+      "bytes": 378
+    },
+    {
+      "path": "assets/cc01911d0269d4080ea57505dc445dfc315ef7ad85d3d9d4ea1357858bff451d.vtl",
+      "sha256": "54f3cee8f80896a9a5c7799810f2c32575445ab5681432ea5fd784e5e5c82a7c",
+      "bytes": 169
+    },
+    {
+      "path": "assets/cd0b7103bd7f11aa4b0201590c636ce2c0edbf9e5dd157cb5e0819bc7d7f4738.vtl",
+      "sha256": "da0bcbe3a4d2a0905c4c06c9b10cfcab038c34676207b12ae60368f257d3c5d5",
+      "bytes": 1446
+    },
+    {
+      "path": "assets/e0cff47fb007f0bbf2a4e43ca256d6aa7ec109821769fd79fa7c5e83f0e7f9fc.vtl",
+      "sha256": "a95a848d61227d2208f59481faa82321f0cf19821e9bdf3de7c8d34101538628",
+      "bytes": 249
+    },
+    {
+      "path": "assets/eda4511e01e0956a1b97d4ca904a6671ee21a1a583dff170fb18cbbd4f9dd6e6.vtl",
+      "sha256": "a13ec8de14d9deada14e98102d386e93d388f3a0ab113ae2edff02acede48e3b",
+      "bytes": 998
+    },
+    {
+      "path": "assets/f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249.vtl",
+      "sha256": "6483ee775c0280187a9884184f1c7d1d8fa0807f743a85a774e39f12563ee952",
+      "bytes": 222
+    },
+    {
+      "path": "assets/fe3c43ada4b9d681a5e2312663ef7a73386424d73b73e51f8e2e9d4b50f7c502.vtl",
+      "sha256": "7d4c412d7cb73a01ba41593bcc007187adb3590c6cc175ae7db7416660d54f4f",
+      "bytes": 148
+    },
+    {
+      "path": "aws-call-trace.json",
+      "sha256": "c8ff76ac2f04023276c6ede7e1b7f3c7854e5ee9e47b1f67f5920394ada8fc43",
+      "bytes": 66198
+    },
+    {
+      "path": "cloud-assembly.json",
+      "sha256": "e6f01a79cfbc12f8ac5d04bac3d7baa9a9a4ec29ae40493734ed83d7612c9337",
+      "bytes": 27705
+    },
+    {
+      "path": "dependency-manifest.json",
+      "sha256": "295e7d52d7b05dfffd1313745261cf28aba8db20dd4156aaa960be3950cee01d",
+      "bytes": 477256
+    },
+    {
+      "path": "endpoint-derivation.json",
+      "sha256": "48724754f8ac7a5a57d4c2a0a7c27b5e911cd212e96b2549480f27049dd81dde",
+      "bytes": 3219
+    },
+    {
+      "path": "expected-output.schema.json",
+      "sha256": "ad3eb155b73990336a3ef5c3fee2676fd193cca85cfb157d7c490e8760db1731",
+      "bytes": 1559
+    },
+    {
+      "path": "fixture-source-manifest.json",
+      "sha256": "4b75798d7b91adccb6aa71cd38dd034232c4f674cf5dbdbc7e81f39a5c249c10",
+      "bytes": 1061
+    },
+    {
+      "path": "graph-manifest.json",
+      "sha256": "4b796f05936b1943ab1f22f57395219d1b840573d959fdd0669818cb1b1f7868",
+      "bytes": 127418
+    },
+    {
+      "path": "normalization.json",
+      "sha256": "41335fc0defa9ceecdc933a2616084633b34cd80bdd32565141a2388ec6a63ec",
+      "bytes": 508
+    },
+    {
+      "path": "optional-network.json",
+      "sha256": "0a0755c1791dd73e917016d7c74c0ea76f0c5a306ed7fbe6718e71fd240acb1d",
+      "bytes": 1306
+    },
+    {
+      "path": "synthesis-only.json",
+      "sha256": "524fe54d27779ca392a2f7a019816b958758eb30c5701d38230f8c70319abdd1",
+      "bytes": 847
+    },
+    {
+      "path": "templates/data.json",
+      "sha256": "5f586c7297b24f6ef3ba26a6b7b949cbb6ba259d9d0c31a8a735b6401274fa8b",
+      "bytes": 42526
+    },
+    {
+      "path": "templates/root.json",
+      "sha256": "1574ef04e3ae48a06f4aea764403a64e7e2770381f45f0a3e58e3a977ec617e6",
+      "bytes": 11312
+    },
+    {
+      "path": "templates/table-manager.json",
+      "sha256": "fd9a9b4663b45e0ce70097dbea412e7d88130d682ebe98a7bc66ad22d669718f",
+      "bytes": 21589
+    },
+    {
+      "path": "templates/todo.json",
+      "sha256": "d2e4e55b1ff5580acc64d29df7f09acbf72a2c91a39748392f7f423b1a13121f",
+      "bytes": 71932
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "stacksim CFN-07 file asset",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/asset": {
+      "get": {
+        "operationId": "getAssetV1",
+        "responses": {
+          "200": {
+            "description": "v1 response"
+          }
+        },
+        "x-amazon-apigateway-integration": {
+          "type": "mock",
+          "requestTemplates": {
+            "application/json": "{\"statusCode\":200}"
+          },
+          "responses": {
+            "default": {
+              "statusCode": "200",
+              "responseTemplates": {
+                "application/json": "{\"release\":\"v1\"}"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

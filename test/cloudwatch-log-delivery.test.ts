@@ -1,0 +1,82 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { gunzipSync } from "node:zlib";
+import { test } from "node:test";
+import { CloudWatchClient, GetMetricStatisticsCommand } from "@aws-sdk/client-cloudwatch";
+import {
+  CancelExportTaskCommand,
+  CloudWatchLogsClient,
+  CreateExportTaskCommand,
+  CreateLogGroupCommand,
+  CreateLogStreamCommand,
+  DeleteDestinationCommand,
+  DeleteMetricFilterCommand,
+  DeleteResourcePolicyCommand,
+  DeleteSubscriptionFilterCommand,
+  DescribeDestinationsCommand,
+  DescribeExportTasksCommand,
+  DescribeMetricFiltersCommand,
+  DescribeResourcePoliciesCommand,
+  DescribeSubscriptionFiltersCommand,
+  FilterLogEventsCommand,
+  PutDestinationCommand,
+  PutDestinationPolicyCommand,
+  PutLogEventsCommand,
+  PutMetricFilterCommand,
+  PutResourcePolicyCommand,
+  PutSubscriptionFilterCommand,
+  TestMetricFilterCommand,
+} from "@aws-sdk/client-cloudwatch-logs";
+import { IAMClient, CreateRoleCommand, PutRolePolicyCommand } from "@aws-sdk/client-iam";
+import { AddPermissionCommand, CreateFunctionCommand, LambdaClient, PutFunctionEventInvokeConfigCommand } from "@aws-sdk/client-lambda";
+import { TestClock } from "../src/core/clock.js";
+import { createZip } from "../src/core/zip-create.js";
+import { CURRENT_SCHEMA_VERSION } from "../src/migrations/v1-to-v2.js";
+import { StackSim } from "../src/server.js";
+
+const region = "eu-west-1";
+const credentials = { accessKeyId: "admin", secretAccessKey: "password" };
+const options = (simulator: StackSim) => ({ endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials });
+const settle = async () => { await new Promise(resolve => setImmediate(resolve)); };
+async function waitFor<T>(read: () => T | Promise<T>, accept: (value: T) => boolean, timeoutMs = 10_000): Promise<T> { const deadline = Date.now() + timeoutMs; for (;;) { const value = await read(); if (accept(value)) return value; if (Date.now() >= deadline) throw new Error("Timed out waiting for CW-07 asynchronous work"); await new Promise(resolve => setTimeout(resolve, 10)); } }
+async function waitForWithClock<T>(clock: TestClock, read: () => T | Promise<T>, accept: (value: T) => boolean, timeoutMs = 10_000): Promise<T> { return waitFor(async () => { clock.advance(0); await settle(); return read(); }, accept, timeoutMs); }
+async function files(directory: string): Promise<string[]> { const result: string[] = []; for (const entry of await readdir(directory, { withFileTypes: true })) { const path = join(directory, entry.name); if (entry.isDirectory()) result.push(...await files(path)); else result.push(path); } return result; }
+
+test("CloudWatch Logs metric filters, destination policies, resource policies, and local export use current SDK shapes and persist", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cw07-control-")); const output = await mkdtemp(join(tmpdir(), "stacksim-cw07-export-")); const clock = new TestClock(Date.parse("2026-07-17T09:00:00Z")); let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, allowLocalFiles: true, authMode: "off"}); let logs: CloudWatchLogsClient | undefined; let metrics: CloudWatchClient | undefined;
+  try {
+    await simulator.start(); logs = new CloudWatchLogsClient(options(simulator)); metrics = new CloudWatchClient(options(simulator)); await logs.send(new CreateLogGroupCommand({ logGroupName: "/cw07/control" })); await logs.send(new CreateLogStreamCommand({ logGroupName: "/cw07/control", logStreamName: "application" }));
+    const tested = await logs.send(new TestMetricFilterCommand({ filterPattern: "[ip, status = 5*, bytes]", logEventMessages: ["127.0.0.1 500 42", "127.0.0.1 200 10"] })); assert.equal(tested.matches?.length, 1); assert.deepEqual(tested.matches?.[0].extractedValues, { $ip: "127.0.0.1", $status: "500", $bytes: "42" });
+    await logs.send(new PutMetricFilterCommand({ logGroupName: "/cw07/control", filterName: "errors", filterPattern: '{ $.level = "error" }', metricTransformations: [{ metricNamespace: "Learning/Logs", metricName: "ErrorValue", metricValue: "$.value", dimensions: { Route: "$.route" }, unit: "Count" }] }));
+    await logs.send(new PutMetricFilterCommand({ logGroupName: "/cw07/control", filterName: "defaults", filterPattern: '"not-present"', metricTransformations: [{ metricNamespace: "Learning/Logs", metricName: "NoMatches", metricValue: "1", defaultValue: 0 }] }));
+    await logs.send(new PutLogEventsCommand({ logGroupName: "/cw07/control", logStreamName: "application", logEvents: [{ timestamp: clock.now(), message: '{"level":"info","value":2,"route":"/ok"}' }, { timestamp: clock.now() + 1, message: '{"level":"error","value":7,"route":"/orders"}' }] }));
+    const errors = await metrics.send(new GetMetricStatisticsCommand({ Namespace: "Learning/Logs", MetricName: "ErrorValue", Dimensions: [{ Name: "Route", Value: "/orders" }], StartTime: new Date(clock.now() - 60_000), EndTime: new Date(clock.now() + 60_000), Period: 60, Statistics: ["Sum"] })); assert.equal(errors.Datapoints?.[0].Sum, 7);
+    const defaults = await metrics.send(new GetMetricStatisticsCommand({ Namespace: "Learning/Logs", MetricName: "NoMatches", StartTime: new Date(clock.now() - 60_000), EndTime: new Date(clock.now() + 60_000), Period: 60, Statistics: ["Sum"] })); assert.equal(defaults.Datapoints?.length, 1); assert.equal(defaults.Datapoints?.[0].Sum, 0);
+    assert.deepEqual((await logs.send(new DescribeMetricFiltersCommand({ logGroupName: "/cw07/control" }))).metricFilters?.map(filter => filter.filterName), ["defaults", "errors"]); await assert.rejects(logs.send(new PutMetricFilterCommand({ logGroupName: "/cw07/control", filterName: "bad", filterPattern: "", applyOnTransformedLogs: true, metricTransformations: [{ metricNamespace: "Learning/Logs", metricName: "Bad", metricValue: "1" }] })), (error: any) => error.name === "InvalidOperationException");
+
+    const destination = await logs.send(new PutDestinationCommand({ destinationName: "cross-account", targetArn: `arn:aws:kinesis:${region}:000000000000:stream/local-unavailable`, roleArn: "arn:aws:iam::000000000000:role/log-delivery" })); assert.equal(destination.destination?.arn, `arn:aws:logs:${region}:000000000000:destination:cross-account`); const accessPolicy = JSON.stringify({ Version: "2012-10-17", Statement: [] }); await logs.send(new PutDestinationPolicyCommand({ destinationName: "cross-account", accessPolicy })); assert.equal((await logs.send(new DescribeDestinationsCommand({}))).destinations?.[0].accessPolicy, accessPolicy);
+    const accountPolicy = await logs.send(new PutResourcePolicyCommand({ policyName: "service-writers", policyDocument: JSON.stringify({ Version: "2012-10-17", Statement: [] }) })); assert.equal(accountPolicy.resourcePolicy?.policyScope, "ACCOUNT"); const groupArn = `arn:aws:logs:${region}:000000000000:log-group:/cw07/control`; const resourcePolicy = await logs.send(new PutResourcePolicyCommand({ policyName: "group-writers", resourceArn: groupArn, policyDocument: JSON.stringify({ Version: "2012-10-17", Statement: [] }) })); assert.equal(resourcePolicy.resourcePolicy?.policyScope, "RESOURCE"); assert.ok(resourcePolicy.revisionId); await assert.rejects(logs.send(new PutResourcePolicyCommand({ policyName: "group-writers", resourceArn: groupArn, expectedRevisionId: "wrong", policyDocument: JSON.stringify({ Version: "2012-10-17", Statement: [] }) })), (error: any) => error.name === "OperationAbortedException"); assert.equal((await logs.send(new DescribeResourcePoliciesCommand({ policyScope: "RESOURCE", resourceArn: groupArn }))).resourcePolicies?.length, 1);
+
+    const destinationUrl = pathToFileURL(output).href; await assert.rejects(logs.send(new CreateExportTaskCommand({ logGroupName: "/cw07/control", from: clock.now() - 1, to: clock.now() + 1000, destination: "not-an-s3-or-file-target" })), (error: any) => error.name === "InvalidParameterException" && /dependency-blocked/.test(error.message)); const cancelled = await logs.send(new CreateExportTaskCommand({ taskName: "cancel-me", logGroupName: "/cw07/control", from: clock.now() - 1, to: clock.now() + 1000, destination: destinationUrl, destinationPrefix: "cancelled" })); await logs.send(new CancelExportTaskCommand({ taskId: cancelled.taskId! })); assert.equal((await logs.send(new DescribeExportTasksCommand({ taskId: cancelled.taskId }))).exportTasks?.[0].status?.code, "CANCELLED");
+    const exported = await logs.send(new CreateExportTaskCommand({ taskName: "complete-me", logGroupName: "/cw07/control", from: clock.now() - 1, to: clock.now() + 1000, destination: destinationUrl, destinationPrefix: "completed" })); clock.advance(25); await settle(); const completed = await waitFor(() => logs!.send(new DescribeExportTasksCommand({ taskId: exported.taskId })), result => result.exportTasks?.[0].status?.code === "COMPLETED"); assert.match(completed.exportTasks![0].status!.message!, /local file export/); const written = (await files(join(output, "completed"))).filter(path => path.endsWith(".log.gz")); assert.equal(written.length, 1); assert.match(gunzipSync(await readFile(written[0])).toString("utf8"), /"level":"error"/);
+
+    await logs.send(new DeleteMetricFilterCommand({ logGroupName: "/cw07/control", filterName: "defaults" })); await logs.send(new DeleteDestinationCommand({ destinationName: "cross-account" })); await logs.send(new DeleteResourcePolicyCommand({ policyName: "service-writers" })); await logs.send(new DeleteResourcePolicyCommand({ resourceArn: groupArn, expectedRevisionId: resourcePolicy.revisionId })); logs.destroy(); metrics.destroy(); logs = metrics = undefined; await simulator.stop(); simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, allowLocalFiles: true, authMode: "off"}); await simulator.start(); logs = new CloudWatchLogsClient(options(simulator)); assert.deepEqual((await logs.send(new DescribeMetricFiltersCommand({ logGroupName: "/cw07/control" }))).metricFilters?.map(filter => filter.filterName), ["errors"]); assert.equal((await logs.send(new DescribeExportTasksCommand({ taskId: exported.taskId }))).exportTasks?.[0].status?.code, "COMPLETED"); assert.equal(simulator.store.state.schemaVersion, CURRENT_SCHEMA_VERSION);
+  } finally { logs?.destroy(); metrics?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); await rm(output, { recursive: true, force: true }); }
+});
+
+test("CloudWatch Logs Lambda subscriptions validate permission, deliver gzip envelopes, retry durably, checkpoint, and stop recursive loops", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cw07-subscription-")); const clock = new TestClock(Date.now()); const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "enforce", cdkBootstrap: true }); const clients: Array<{ destroy(): void }> = [];
+  try {
+    await simulator.start(); const logs = new CloudWatchLogsClient(options(simulator)); const lambda = new LambdaClient(options(simulator)); const iam = new IAMClient(options(simulator)); clients.push(logs, lambda, iam); const groupName = "/cw07/subscriptions"; const groupArn = `arn:aws:logs:${region}:000000000000:log-group:${groupName}`; await logs.send(new CreateLogGroupCommand({ logGroupName: groupName })); await logs.send(new CreateLogStreamCommand({ logGroupName: groupName, logStreamName: "source" }));
+    const trust = JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { Service: "lambda.amazonaws.com" }, Action: "sts:AssumeRole" }] }); const role = await iam.send(new CreateRoleCommand({ RoleName: "cw07-subscriber", AssumeRolePolicyDocument: trust })); await iam.send(new PutRolePolicyCommand({ RoleName: "cw07-subscriber", PolicyName: "logs", PolicyDocument: JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: `${groupArn}:*` }] }) }));
+    const code = createZip([{ name: "index.mjs", content: `import { gunzipSync } from "node:zlib"; export async function handler(event) { const envelope = JSON.parse(gunzipSync(Buffer.from(event.awslogs.data, "base64")).toString("utf8")); console.log("subscription-received " + JSON.stringify(envelope)); if (envelope.logEvents.some(item => item.message.includes("force-retry"))) throw new Error("retry requested"); return { delivered: envelope.logEvents.length }; }` }]); const fn = await lambda.send(new CreateFunctionCommand({ FunctionName: "cw07-subscriber", Runtime: "nodejs22.x", Role: role.Role!.Arn!, Handler: "index.handler", Code: { ZipFile: code }, LoggingConfig: { LogGroup: groupName, LogFormat: "Text" } })); await settle();
+    const filterInput = { logGroupName: groupName, filterName: "lambda-errors", filterPattern: '{ $.level = "error" }', destinationArn: fn.FunctionArn! }; await assert.rejects(logs.send(new PutSubscriptionFilterCommand(filterInput)), (error: any) => error.name === "AccessDeniedException"); await lambda.send(new AddPermissionCommand({ FunctionName: "cw07-subscriber", StatementId: "cloudwatch-logs", Action: "lambda:InvokeFunction", Principal: `logs.${region}.amazonaws.com`, SourceArn: `${groupArn}:*`, SourceAccount: "000000000000" })); await logs.send(new PutSubscriptionFilterCommand(filterInput)); assert.equal((await logs.send(new DescribeSubscriptionFiltersCommand({ logGroupName: groupName }))).subscriptionFilters?.[0].destinationArn, fn.FunctionArn);
+    await logs.send(new PutLogEventsCommand({ logGroupName: groupName, logStreamName: "source", logEvents: [{ timestamp: clock.now(), message: '{"level":"info","id":"skip"}' }, { timestamp: clock.now() + 1, message: '{"level":"error","id":"deliver"}' }] })); await waitForWithClock(clock, () => Object.values(simulator.store.regionState(region).lambdaAsyncInvocations).length, length => length === 1); const delivered = await waitForWithClock(clock, () => logs.send(new FilterLogEventsCommand({ logGroupName: groupName, filterPattern: '"subscription-received"' })), result => Boolean(result.events?.length)); const line = delivered.events!.at(-1)!.message!; const envelope = JSON.parse(line.slice(line.indexOf("{") )); assert.equal(envelope.messageType, "DATA_MESSAGE"); assert.equal(envelope.owner, "000000000000"); assert.deepEqual(envelope.subscriptionFilters, ["lambda-errors"]); assert.deepEqual(envelope.logEvents.map((event: any) => JSON.parse(event.message).id), ["deliver"]); await waitForWithClock(clock, () => Object.values(simulator.store.regionState(region).lambdaAsyncInvocations).length, length => length === 0);
+
+    await logs.send(new PutSubscriptionFilterCommand({ ...filterInput, filterPattern: "" })); await lambda.send(new PutFunctionEventInvokeConfigCommand({ FunctionName: "cw07-subscriber", MaximumRetryAttempts: 1, MaximumEventAgeInSeconds: 120 })); await logs.send(new PutLogEventsCommand({ logGroupName: groupName, logStreamName: "source", logEvents: [{ timestamp: clock.now() + 2, message: "force-retry" }] })); const queued = await waitForWithClock(clock, () => Object.values(simulator.store.regionState(region).lambdaAsyncInvocations)[0], Boolean); await waitForWithClock(clock, () => Object.values(simulator.store.regionState(region).lambdaAsyncInvocations)[0], event => event?.attempts === 1 && event.status === "QUEUED"); await settle(); clock.advance(60_000); await waitForWithClock(clock, () => Object.values(simulator.store.regionState(region).lambdaAsyncInvocations).length, length => length === 0); assert.equal(Object.values(simulator.store.regionState(region).lambdaAsyncInvocations).length, 0, "recursive function logs do not create another delivery"); const checkpoint = simulator.store.regionState(region).logs[groupName].subscriptionFilters["lambda-errors"].checkpoints.source; assert.equal(checkpoint, simulator.store.regionState(region).logs[groupName].streams.source.sequence); assert.ok(queued.eventId);
+    await logs.send(new DeleteSubscriptionFilterCommand({ logGroupName: groupName, filterName: "lambda-errors" })); assert.equal((await logs.send(new DescribeSubscriptionFiltersCommand({ logGroupName: groupName }))).subscriptionFilters?.length, 0);
+  } finally { clients.forEach(client => client.destroy()); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
+});

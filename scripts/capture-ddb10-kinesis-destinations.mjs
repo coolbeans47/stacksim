@@ -1,0 +1,13 @@
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { chromium } from "playwright";
+import { CreateTableCommand, DynamoDBClient, EnableKinesisStreamingDestinationCommand } from "@aws-sdk/client-dynamodb";
+import { StackSim } from "../dist/src/server.js";
+
+const root = await mkdtemp(join(tmpdir(), "stacksim-ddb10-kinesis-capture-")); const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region: "eu-west-1" }); const viewports = [["desktop-1440x900.jpg", 1440, 900], ["desktop-1280x800.jpg", 1280, 800], ["mobile-390x844.jpg", 390, 844]]; let browser; let dynamodb;
+try {
+  await simulator.start(); dynamodb = new DynamoDBClient({ endpoint: `http://127.0.0.1:${simulator.port}`, region: "eu-west-1", credentials: { accessKeyId: "admin", secretAccessKey: "password" } }); await dynamodb.send(new CreateTableCommand({ TableName: "LearningDestinations", BillingMode: "PAY_PER_REQUEST", AttributeDefinitions: [{ AttributeName: "recordId", AttributeType: "S" }], KeySchema: [{ AttributeName: "recordId", KeyType: "HASH" }] })); browser = await chromium.launch({ channel: "chrome", headless: true });
+  const capture = async (state, prepare) => { const output = resolve("docs/ui-reference/2026-07-15/dynamodb/kinesis-destinations", state, "final"); await mkdir(output, { recursive: true }); for (const [name, width, height] of viewports) { const context = await browser.newContext({ viewport: { width, height } }); const page = await context.newPage(); await page.goto(`http://127.0.0.1:${simulator.port}/_stacksim/console#/dynamodb/tables/LearningDestinations/streams`); await page.locator("main").waitFor(); if (prepare) await prepare(page); await page.waitForTimeout(200); await page.screenshot({ path: join(output, name), type: "jpeg", quality: 88, fullPage: true }); await context.close(); } };
+  await capture("disconnected"); await dynamodb.send(new EnableKinesisStreamingDestinationCommand({ TableName: "LearningDestinations", StreamArn: "arn:aws:kinesis:eu-west-1:000000000000:stream/learning-events", EnableKinesisStreamingConfiguration: { ApproximateCreationDateTimePrecision: "MILLISECOND" } })); await new Promise(resolve => setTimeout(resolve, 75)); await capture("active"); await capture("configuration-modal", async page => { await page.locator(".kinesis-destination-card").getByRole("button", { name: "Change precision" }).click(); await page.getByRole("dialog").waitFor(); });
+} finally { dynamodb?.destroy(); await browser?.close(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }); }

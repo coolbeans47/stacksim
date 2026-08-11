@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-08-01",
+  "sdk": {
+    "package": "@aws-sdk/client-dynamodb",
+    "version": "3.1086.0",
+    "model": "node_modules/@aws-sdk/client-dynamodb/dist-types/models/models_0.d.ts"
+  },
+  "provenance": [
+    "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ql-reference.html",
+    "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ql-reference.select.html",
+    "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ql-functions.html",
+    "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ql-operators.html",
+    "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ql-reference.data-types.html",
+    "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ql-iam.html",
+    "https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_ExecuteStatement.html",
+    "https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_BatchExecuteStatement.html",
+    "https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_ExecuteTransaction.html"
+  ],
+  "grammar": {
+    "statements": ["SELECT", "INSERT", "UPDATE", "DELETE", "transactional EXISTS"],
+    "functions": ["size", "attribute_type", "begins_with", "contains", "list_append", "set_add", "set_delete"],
+    "operators": ["+", "-", "=", "<>", "!=", ">", "<", ">=", "<=", "AND", "OR", "NOT", "BETWEEN", "IN", "IS NULL", "IS MISSING"],
+    "rejected": ["JOIN", "subquery", "multiple statements", "aggregate COUNT", "DDL", "identifier parameter", "unlisted function", "statement LIMIT"],
+    "statementLimitControl": "ExecuteStatement.Limit request field; LIMIT is not in the documented DynamoDB SELECT grammar"
+  },
+  "types": {
+    "literal": ["S", "N", "BOOL", "NULL", "M", "L", "SS", "NS"],
+    "parameterOnly": ["B", "BS"],
+    "numberPrecisionDigits": 38,
+    "documentPathDereferences": 32
+  },
+  "limits": {
+    "statementCharacters": 8192,
+    "executeStatementEvaluatedBytes": 1048576,
+    "partitionKeyInAlternatives": 50,
+    "nonKeyInAlternatives": 100,
+    "partitionKeyInPageItems": 10,
+    "batchStatements": 25,
+    "transactionStatements": 100,
+    "transactionBytes": 4194304,
+    "transactionClientTokenSeconds": 600
+  },
+  "requestFields": {
+    "ExecuteStatement": ["Statement", "Parameters", "ConsistentRead", "Limit", "NextToken", "ReturnConsumedCapacity", "ReturnValuesOnConditionCheckFailure"],
+    "BatchExecuteStatement": ["Statements", "ReturnConsumedCapacity"],
+    "BatchStatementRequest": ["Statement", "Parameters", "ConsistentRead", "ReturnValuesOnConditionCheckFailure"],
+    "ExecuteTransaction": ["TransactStatements", "ClientRequestToken", "ReturnConsumedCapacity"],
+    "ParameterizedStatement": ["Statement", "Parameters", "ReturnValuesOnConditionCheckFailure"]
+  },
+  "responseFields": {
+    "ExecuteStatement": ["Items", "LastEvaluatedKey", "NextToken", "ConsumedCapacity"],
+    "BatchExecuteStatement": ["Responses", "ConsumedCapacity"],
+    "ExecuteTransaction": ["Responses", "ConsumedCapacity"]
+  },
+  "iamContext": ["dynamodb:EnclosingOperation", "dynamodb:FullTableScan", "dynamodb:LeadingKeys", "dynamodb:Attributes", "dynamodb:Select", "aws:ResourceTag/*"],
+  "errors": ["ValidationException", "DuplicateItemException", "ConditionalCheckFailedException", "ResourceNotFoundException", "ProvisionedThroughputExceededException", "TransactionCanceledException", "TransactionConflictException", "IdempotentParameterMismatchException", "InternalServerError"],
+  "localDifferences": [
+    "Computed projection fields without a path name use deterministic ordinal names (_1, _2, ...); current DynamoDB documentation confirms computed projections but does not specify their response-map field names, and no credentialed AWS observation was authorized for this phase.",
+    "Access-plan diagnostics and scan warnings are console-only and are not returned by DynamoDB APIs."
+  ]
+}

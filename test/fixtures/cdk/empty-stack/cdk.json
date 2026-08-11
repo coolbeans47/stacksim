@@ -1,0 +1,7 @@
+{
+  "app": "npx --no-install tsx app.ts",
+  "context": {
+    "@aws-cdk/core:newStyleStackSynthesis": true
+  }
+}
+

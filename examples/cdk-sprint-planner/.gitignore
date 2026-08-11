@@ -1,0 +1,9 @@
+config/local.json
+.runtime/
+.lambda-build/
+cdk.out/
+frontend/dist/
+test-results/
+playwright-report/
+.auth/
+node_modules/

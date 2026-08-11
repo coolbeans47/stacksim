@@ -1,0 +1,11 @@
+{
+  "rule": "The unmodified backend computes AWS::AppSync::ApiKey Expires as synthesis wall-clock time plus 30 days.",
+  "normalizedProperty": "data template AWS::AppSync::ApiKey.Properties.Expires",
+  "derivedValues": [
+    "data nested-template asset hash",
+    "root template references/hash",
+    "asset upload paths for those two templates"
+  ],
+  "invariant": "All other template properties, logical IDs, assets, calls, resources, and outputs remain exact.",
+  "originalArtifactsAreRewritten": false
+}

@@ -1,0 +1,52 @@
+{
+  "package": "aws-amplify@6.20.0",
+  "categories": {
+    "appSyncHttp": {
+      "derivation": "Amplify.configure output data.url becomes API.GraphQL.endpoint and is used verbatim for HTTP unless an operation endpoint or API.GraphQL.customEndpoint is supplied.",
+      "localOverride": "API.GraphQL.customEndpoint and customEndpointRegion are typed configuration fields; an operation endpoint also overrides it.",
+      "source": [
+        "@aws-amplify/api-graphql/src/utils/resolveConfig.ts",
+        "@aws-amplify/api-graphql/src/internals/InternalGraphQLAPI.ts"
+      ]
+    },
+    "appSyncRealtime": {
+      "derivation": "For a standard AppSync data.url, replaces appsync-api with appsync-realtime-api and http/https with wss. A nonstandard/custom GraphQL URL appends /realtime and changes the scheme to wss.",
+      "localOverride": "No distinct realtime output or endpoint field. AMX-09 advertises the CA-backed HTTPS loopback GraphQL endpoint, so the pinned client derives the reachable WSS endpoint by appending /realtime without output rewriting.",
+      "source": [
+        "@aws-amplify/api-graphql/src/Providers/AWSWebSocketProvider/appsyncUrl.ts"
+      ]
+    },
+    "cognitoUserPool": {
+      "derivation": "Defaults to https://cognito-idp.<region>.<AWS DNS suffix>.",
+      "localOverride": "Auth.Cognito.userPoolEndpoint is a documented typed custom endpoint and is passed unchanged to the endpoint resolver.",
+      "source": [
+        "aws-amplify nested @aws-amplify/auth/src/foundation/cognitoUserPoolEndpointResolver.ts",
+        "@aws-amplify/core/src/singleton/Auth/types.ts"
+      ]
+    },
+    "cognitoIdentity": {
+      "derivation": "Defaults to https://cognito-identity.<region>.<AWS DNS suffix>.",
+      "localOverride": "Auth.Cognito.identityPoolEndpoint is a documented typed custom endpoint and is passed unchanged to the endpoint resolver.",
+      "source": [
+        "@aws-amplify/core/src/foundation/factories/serviceClients/cognitoIdentity/cognitoIdentityPoolEndpointResolver.ts",
+        "@aws-amplify/core/src/singleton/Auth/types.ts"
+      ]
+    },
+    "s3": {
+      "derivation": "Defaults to https://s3.<region>.<AWS DNS suffix>, then uses virtual-host bucket addressing unless force-path-style/internal conditions apply.",
+      "localOverride": "The pinned public Storage operation types do not expose customEndpoint. customEndpoint exists only on internal Storage APIs/config and rejects schemes except a package-private test sentinel, so no supported frontend loopback route is frozen.",
+      "source": [
+        "@aws-amplify/storage/src/providers/s3/utils/client/s3data/base.ts",
+        "@aws-amplify/storage/src/providers/s3/types/options.ts"
+      ]
+    },
+    "lambda": {
+      "derivation": "aws-amplify has no direct Lambda invocation category. User functions are normally reached through an explicitly configured GraphQL or REST API endpoint.",
+      "localOverride": "No Lambda service endpoint override exists. API.REST.<name>.endpoint or API.GraphQL endpoint configuration controls the applicable HTTP frontend route.",
+      "source": [
+        "@aws-amplify/api-rest/src/utils/resolveApiUrl.ts",
+        "aws-amplify/package.json exports"
+      ]
+    }
+  }
+}

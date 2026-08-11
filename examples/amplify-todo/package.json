@@ -1,0 +1,40 @@
+{
+  "name": "stacksim-amplify-gen2-data-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A deployment-ready React Todo example for StackSim and Amplify Gen 2 Data",
+  "scripts": {
+    "start": "vite",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "node scripts/ampx-local.mjs sandbox --once --identifier amx01",
+    "backend:watch": "node scripts/ampx-local.mjs sandbox --identifier amx01",
+    "backend:delete": "node scripts/ampx-local.mjs sandbox delete --identifier amx01",
+    "ampx": "node scripts/ampx-local.mjs"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "allowScripts": {
+    "@parcel/watcher@2.6.0": true,
+    "esbuild@0.25.12": true,
+    "fsevents@2.3.3": true,
+    "core-js@2.6.12": true,
+    "esbuild@0.28.1": true,
+    "core-js@3.49.0": true
+  },
+  "dependencies": {
+    "aws-amplify": "6.20.0",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@aws-amplify/backend": "^1.8.0",
+    "@aws-amplify/backend-cli": "1.9.0",
+    "@vitejs/plugin-react": "6.0.4",
+    "typescript": "7.0.2",
+    "vite": "8.1.5"
+  }
+}

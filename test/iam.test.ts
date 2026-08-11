@@ -1,0 +1,33 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { AttachRolePolicyCommand, CreatePolicyCommand, CreatePolicyVersionCommand, CreateRoleCommand, DeletePolicyCommand, DeletePolicyVersionCommand, DeleteRoleCommand, DeleteRolePolicyCommand, DetachRolePolicyCommand, GetPolicyCommand, GetPolicyVersionCommand, GetRoleCommand, GetRolePolicyCommand, IAMClient, ListAttachedRolePoliciesCommand, ListEntitiesForPolicyCommand, ListPoliciesCommand, ListPolicyVersionsCommand, ListRolePoliciesCommand, ListRolesCommand, PutRolePolicyCommand, SetDefaultPolicyVersionCommand, TagRoleCommand, UpdateAssumeRolePolicyCommand, UpdateRoleCommand } from "@aws-sdk/client-iam";
+import { StackSim } from "../src/server.js";
+
+const credentials = { accessKeyId: "admin", secretAccessKey: "password" };
+const trust = JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { AWS: "arn:aws:iam::000000000000:root" }, Action: "sts:AssumeRole" }] });
+const allowRead = JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query"], Resource: "*" }] });
+
+test("IAM SDK Query API supports role, policy, version, attachment, inline policy, tags, conflicts, pagination, and restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-iam-")); let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region: "eu-west-1", authMode: "off"}); let iam: IAMClient | undefined;
+  try {
+    await simulator.start(); iam = new IAMClient({ endpoint: `http://127.0.0.1:${simulator.port}`, region: "eu-west-1", credentials });
+    const role = await iam.send(new CreateRoleCommand({ RoleName: "learning-role", Path: "/training/", AssumeRolePolicyDocument: trust, Description: "Initial", Tags: [{ Key: "course", Value: "aws" }] })); assert.match(role.Role?.Arn ?? "", /role\/training\/learning-role$/); assert.equal(role.Role?.Tags?.[0].Key, "course");
+    await iam.send(new UpdateRoleCommand({ RoleName: "learning-role", Description: "Updated", MaxSessionDuration: 7200 })); await iam.send(new TagRoleCommand({ RoleName: "learning-role", Tags: [{ Key: "team", Value: "platform" }] }));
+    await iam.send(new UpdateAssumeRolePolicyCommand({ RoleName: "learning-role", PolicyDocument: trust })); const fetchedRole = await iam.send(new GetRoleCommand({ RoleName: "learning-role" })); assert.equal(fetchedRole.Role?.Description, "Updated"); assert.equal(fetchedRole.Role?.MaxSessionDuration, 7200);
+    await iam.send(new CreateRoleCommand({ RoleName: "second-role", AssumeRolePolicyDocument: trust })); const firstRoles = await iam.send(new ListRolesCommand({ MaxItems: 1 })); assert.equal(firstRoles.Roles?.length, 1); assert.ok(firstRoles.IsTruncated && firstRoles.Marker); assert.equal((await iam.send(new ListRolesCommand({ MaxItems: 1, Marker: firstRoles.Marker }))).Roles?.length, 1);
+
+    const policy = await iam.send(new CreatePolicyCommand({ PolicyName: "LearningRead", Path: "/training/", PolicyDocument: allowRead, Description: "Read examples", Tags: [{ Key: "owner", Value: "student" }] })); const policyArn = policy.Policy!.Arn!; assert.equal((await iam.send(new GetPolicyCommand({ PolicyArn: policyArn }))).Policy?.DefaultVersionId, "v1");
+    const version = await iam.send(new CreatePolicyVersionCommand({ PolicyArn: policyArn, PolicyDocument: JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "dynamodb:*", Resource: "*" }] }), SetAsDefault: true })); assert.equal(version.PolicyVersion?.VersionId, "v2"); assert.equal((await iam.send(new GetPolicyVersionCommand({ PolicyArn: policyArn, VersionId: "v2" }))).PolicyVersion?.IsDefaultVersion, true); assert.equal((await iam.send(new ListPolicyVersionsCommand({ PolicyArn: policyArn }))).Versions?.length, 2);
+    await assert.rejects(iam.send(new DeletePolicyVersionCommand({ PolicyArn: policyArn, VersionId: "v2" })), (error: any) => error.name.startsWith("DeleteConflict")); await iam.send(new SetDefaultPolicyVersionCommand({ PolicyArn: policyArn, VersionId: "v1" })); await iam.send(new DeletePolicyVersionCommand({ PolicyArn: policyArn, VersionId: "v2" }));
+    await iam.send(new AttachRolePolicyCommand({ RoleName: "learning-role", PolicyArn: policyArn })); assert.equal((await iam.send(new ListAttachedRolePoliciesCommand({ RoleName: "learning-role" }))).AttachedPolicies?.[0].PolicyArn, policyArn); assert.equal((await iam.send(new ListEntitiesForPolicyCommand({ PolicyArn: policyArn }))).PolicyRoles?.[0].RoleName, "learning-role");
+    await iam.send(new PutRolePolicyCommand({ RoleName: "learning-role", PolicyName: "InlineLogs", PolicyDocument: JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "logs:*", Resource: "*" }] }) })); assert.deepEqual((await iam.send(new ListRolePoliciesCommand({ RoleName: "learning-role" }))).PolicyNames, ["InlineLogs"]); assert.match((await iam.send(new GetRolePolicyCommand({ RoleName: "learning-role", PolicyName: "InlineLogs" }))).PolicyDocument ?? "", /logs/);
+    await assert.rejects(iam.send(new DeleteRoleCommand({ RoleName: "learning-role" })), (error: any) => error.name.startsWith("DeleteConflict")); await assert.rejects(iam.send(new DeletePolicyCommand({ PolicyArn: policyArn })), (error: any) => error.name.startsWith("DeleteConflict"));
+    const managed = (await iam.send(new ListPoliciesCommand({ Scope: "AWS" }))).Policies?.find(item => item.PolicyName === "AWSLambdaBasicExecutionRole"); assert.ok(managed); await assert.rejects(iam.send(new DeletePolicyCommand({ PolicyArn: managed!.Arn! })), (error: any) => error.name.startsWith("AccessDenied"));
+
+    iam.destroy(); await simulator.stop(); simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region: "eu-west-1", authMode: "off"}); await simulator.start(); iam = new IAMClient({ endpoint: `http://127.0.0.1:${simulator.port}`, region: "eu-west-1", credentials }); assert.equal((await iam.send(new GetRoleCommand({ RoleName: "learning-role" }))).Role?.Description, "Updated");
+    await iam.send(new DeleteRolePolicyCommand({ RoleName: "learning-role", PolicyName: "InlineLogs" })); await iam.send(new DetachRolePolicyCommand({ RoleName: "learning-role", PolicyArn: policyArn })); await iam.send(new DeletePolicyCommand({ PolicyArn: policyArn })); await iam.send(new DeleteRoleCommand({ RoleName: "learning-role" })); await iam.send(new DeleteRoleCommand({ RoleName: "second-role" }));
+  } finally { iam?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
+});

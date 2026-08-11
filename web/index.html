@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StackSim local console</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%235b5ce2'/%3E%3Cpath d='M7 10l9-5 9 5-9 5zM7 16l9 5 9-5M7 22l9 5 9-5' fill='none' stroke='white' stroke-width='2.4' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/_stacksim/console/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="global-header">
+    <button class="icon-button menu-button" id="navigation-button" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
+    <a class="stacksim-mark" href="#/home" aria-label="StackSim local console home"><img src="/_stacksim/console/assets/stacksim-logo.png" alt=""></a>
+    <button class="services-button" type="button">
+      Services
+      <svg class="services-chevron" aria-hidden="true" focusable="false" viewBox="0 0 16 16">
+        <path d="m4 6 4 4 4-4"></path>
+      </svg>
+    </button>
+    <div class="global-tools" id="global-tools">
+      <label class="global-search"><span aria-hidden="true">⌕</span><input id="global-search" placeholder="Search" aria-label="Search services and resources"><kbd>⌥S</kbd></label>
+      <nav class="global-actions" aria-label="Global navigation">
+        <button class="top-icon" title="Local terminal" aria-label="Local terminal"><span aria-hidden="true">⌘</span><span class="top-label">Terminal</span></button>
+        <button class="top-icon" title="Notifications" aria-label="Notifications"><span aria-hidden="true">♢</span><span class="top-label">Notifications</span></button>
+        <button class="top-icon" id="help-button" type="button" title="Help" aria-label="Help" aria-controls="help-panel" aria-expanded="false"><span aria-hidden="true">?</span><span class="top-label">Help</span></button>
+        <button class="top-icon" title="Settings" aria-label="Settings"><span aria-hidden="true">⚙</span><span class="top-label">Settings</span></button>
+        <button class="region-button" id="region-button">eu-west-1 · Europe (Ireland)</button>
+        <button class="account-button">Sign in</button>
+      </nav>
+    </div>
+    <button class="icon-button mobile-global-button" type="button" aria-label="Open global tools" aria-controls="global-tools" aria-expanded="false">⋮</button>
+  </header>
+  <div class="console-layout">
+    <aside id="sidebar" class="sidebar"></aside>
+    <div class="workspace">
+      <div id="service-header" class="service-header"></div>
+      <main id="main" tabindex="-1"><div class="loading"><span></span>Loading console</div></main>
+    </div>
+  </div>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  <aside id="help-panel" class="help-panel" aria-labelledby="help-panel-title" hidden>
+    <div class="help-panel-header">
+      <h2 id="help-panel-title">Help and tools</h2>
+      <button class="modal-close" type="button" data-help-close aria-label="Close help panel">×</button>
+    </div>
+    <div class="help-panel-body">
+      <h3>StackSim learning environment</h3>
+      <p>Use the JavaScript SDK v3 with the local endpoint shown on the environment page.</p>
+      <p><a class="button" href="#/environment">View endpoint and environment details</a></p>
+      <h3>Keyboard shortcuts</h3>
+      <dl class="key-value help-shortcuts">
+        <dt><kbd>Alt</kbd> + <kbd>S</kbd></dt><dd>Focus global search</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Close an open navigation or help panel</dd>
+      </dl>
+    </div>
+  </aside>
+  <dialog id="modal" aria-labelledby="modal-title"><form method="dialog"><div id="modal-content"></div></form></dialog>
+  <script type="module" src="/_stacksim/console/app.js"></script>
+</body>
+</html>

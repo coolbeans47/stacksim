@@ -1,0 +1,1 @@
+Pinned generic aws_s3_assets.Asset payload for the CFN-04 local publisher contract.

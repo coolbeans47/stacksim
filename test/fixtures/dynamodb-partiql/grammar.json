@@ -1,0 +1,18 @@
+{
+  "positive": [
+    { "statement": "SELECT profile.name, size(title), score+? FROM \"Records\" WHERE pk=? AND begins_with(sk,?)", "parameters": [{ "N": "1" }, { "S": "tenant" }, { "S": "2026" }] },
+    { "statement": "INSERT INTO \"Records\" VALUE {'pk':?,'sk':'one','values':[1,2],'labels':<<'a','b'>>}", "parameters": [{ "S": "tenant" }] },
+    { "statement": "UPDATE \"Records\" SET score=score+? REMOVE profile.old WHERE pk=? AND sk=?", "parameters": [{ "N": "1" }, { "S": "tenant" }, { "S": "one" }] },
+    { "statement": "DELETE FROM \"Records\" WHERE pk=? AND sk=? RETURNING ALL OLD *", "parameters": [{ "S": "tenant" }, { "S": "one" }] },
+    { "statement": "EXISTS (SELECT * FROM \"Records\" WHERE pk=? AND sk=?)", "parameters": [{ "S": "tenant" }, { "S": "one" }] }
+  ],
+  "negative": [
+    "SELECT * FROM \"Records\" LIMIT 1",
+    "SELECT COUNT(*) FROM \"Records\"",
+    "SELECT * FROM \"Records\"; DELETE FROM \"Records\" WHERE pk='tenant' AND sk='one'",
+    "SELECT * FROM \"Records\" JOIN \"Other\" ON pk=pk",
+    "SELECT mystery(title) FROM \"Records\"",
+    "SELECT * FROM ? WHERE pk='tenant'",
+    "SELECT size(title, score) FROM \"Records\""
+  ]
+}

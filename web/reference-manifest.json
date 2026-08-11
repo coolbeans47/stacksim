@@ -1,0 +1,317 @@
+{
+  "version": 6,
+  "sns01": {
+    "checked": "2026-07-27",
+    "browserSuite": "test/browser/sns-console.spec.ts",
+    "viewports": {
+      "narrow": [390, 844]
+    },
+    "routes": [
+      "#/sns",
+      "#/sns/topics",
+      "#/sns/topics/browser-orders",
+      "#/sns/topics/browser-orders/monitoring",
+      "#/sns/subscriptions"
+    ],
+    "states": [
+      "empty topic catalog",
+      "Standard topic detail",
+      "SQS subscription with related-resource link",
+      "publish form",
+      "AWS/SNS monitoring",
+      "payload-safe delivery health",
+      "exact-name deletion"
+    ],
+    "diagnostics": [
+      "page error",
+      "request failure",
+      "HTTP >= 400",
+      "document overflow",
+      "payload leakage"
+    ],
+    "productionReference": {
+      "captured": false,
+      "authenticatedCapture": false,
+      "pixelEquivalenceClaimed": false
+    }
+  },
+  "viewport": { "desktop": [1440, 900], "desktopCompact": [1280, 800], "mobile": [390, 844] },
+  "capture": {
+    "date": "2026-07-20",
+    "artifactRootOriginalDate": "2026-07-14",
+    "region": "eu-west-1",
+    "theme": "light",
+    "artifactRoot": "docs/ui-reference/2026-07-14/foundation",
+    "localFinalStates": ["home", "list", "create", "details", "empty", "error"],
+    "localEvidenceStates": ["dense-items", "dense-items-right-edge"],
+    "verification": {
+      "captureScript": "scripts/capture-console.mjs",
+      "browserSuite": "test/browser/console-foundation.spec.ts",
+      "concreteRouteCount": 35,
+      "diagnostics": ["console warning/error", "page error", "request failure", "HTTP >= 400"]
+    },
+    "guidanceReferences": [
+      { "name": "DynamoDB console access", "url": "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/AccessingDynamoDB.html", "checked": "2026-07-20" },
+      { "name": "DynamoDB create table", "url": "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/getting-started-step-1.html", "checked": "2026-07-20" },
+      { "name": "DynamoDB write data", "url": "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/getting-started-step-2.html", "checked": "2026-07-20" },
+      { "name": "AWS create a NoSQL table tutorial", "url": "https://aws.amazon.com/tutorials/create-nosql-table/", "checked": "2026-07-20", "pageLastUpdated": "2024-01-12" },
+      { "name": "AWS Console Home guide", "url": "https://docs.aws.amazon.com/awsconsolehelpdocs/latest/gsg/what-is.html", "checked": "2026-07-20" },
+      { "name": "AWS Console Home experience", "url": "https://aws.amazon.com/blogs/aws/a-new-aws-console-home-experience/", "checked": "2026-07-20" },
+      { "name": "Cloudscape service navigation", "url": "https://cloudscape.design/patterns/general/service-navigation/", "checked": "2026-07-20" },
+      { "name": "Cloudscape create resource", "url": "https://cloudscape.design/patterns/resource-management/create/", "checked": "2026-07-20" },
+      { "name": "Cloudscape details page", "url": "https://cloudscape.design/patterns/resource-management/details/details-page/", "checked": "2026-07-20" },
+      { "name": "Cloudscape table view", "url": "https://cloudscape.design/patterns/resource-management/view/table-view/", "checked": "2026-07-20" },
+      { "name": "Cloudscape empty states", "url": "https://cloudscape.design/patterns/general/empty-states/", "checked": "2026-07-20" },
+      { "name": "Cloudscape error messages", "url": "https://cloudscape.design/patterns/general/errors/error-messages/", "checked": "2026-07-20" }
+    ],
+    "productionReference": {
+      "url": "https://console.aws.amazon.com/dynamodbv2/home?region=eu-west-1#tables",
+      "status": "authentication-required",
+      "captured": false,
+      "authenticatedCapture": false,
+      "acceptedForCompletion": false,
+      "evidence": "reference/live-console-auth-blocked-1280x720.png"
+    },
+    "publicReferenceSubstitute": {
+      "authorized": true,
+      "authorizedOn": "2026-07-20",
+      "scope": "FND-02 only",
+      "status": "complete-official-public-material-difference-audit",
+      "acceptedForCompletion": true,
+      "comparison": "comparison.md",
+      "authenticatedCapture": false,
+      "pixelEquivalenceClaimed": false,
+      "masking": "Official images contain public AWS tutorial fixtures and local captures use deterministic simulator fixtures; no private account IDs, dates, random IDs, or customer resource names are present to mask.",
+      "provenance": [
+        {
+          "asset": "reference/aws-official-create-table.png",
+          "publisher": "Amazon Web Services",
+          "sourcePage": "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/getting-started-step-1.html",
+          "sourceImage": "https://docs.aws.amazon.com/images/amazondynamodb/latest/developerguide/images/GettingStarted/CreateTableMusic.png",
+          "checked": "2026-07-20",
+          "sourceCaptureDate": "unknown",
+          "sourceCssViewport": "unknown",
+          "pixelDimensions": [2326, 1178],
+          "sha256": "66b906f63efcc5f837ac76bc72489267fdab31aff491f1a8d699c3bf5551d79f",
+          "coverage": ["create page", "table details fields", "table settings", "single-page information hierarchy"]
+        },
+        {
+          "asset": "reference/aws-official-table-list.png",
+          "publisher": "Amazon Web Services",
+          "sourcePage": "https://aws.amazon.com/tutorials/create-nosql-table/",
+          "sourceImage": "https://d1.awsstatic.com/developer/tutorial-assets/create-nosql-table-create-table.6f1003b835c5a03f5957e9651849971603669c08.png",
+          "pageLastUpdated": "2024-01-12",
+          "checked": "2026-07-20",
+          "sourceCaptureDate": "unknown",
+          "sourceCssViewport": "unknown",
+          "observedRegion": "N. Virginia",
+          "pixelDimensions": [1756, 634],
+          "sha256": "9b5e67f23fe1b7115f1e6464ed4000854b91c23d51c02f34452f0f815c6b5be4",
+          "coverage": ["DynamoDB overview entry point", "service navigation context"]
+        },
+        {
+          "asset": "reference/aws-official-create-form.png",
+          "publisher": "Amazon Web Services",
+          "sourcePage": "https://aws.amazon.com/tutorials/create-nosql-table/",
+          "sourceImage": "https://d1.awsstatic.com/developer/tutorial-assets/create-nosql-table-create-table2.a7d00086f2887ddfd4068e2a2d97a01cf19e6f42.png",
+          "pageLastUpdated": "2024-01-12",
+          "checked": "2026-07-20",
+          "sourceCaptureDate": "unknown",
+          "sourceCssViewport": "unknown",
+          "observedRegion": "N. Virginia",
+          "pixelDimensions": [1757, 573],
+          "sha256": "5dced9d12f2470bec2b4120281dc6a4005ccfb9be9208789a58b190901adcf39",
+          "coverage": ["annotated create form", "field terminology", "primary action placement"]
+        },
+        {
+          "asset": "reference/aws-official-items-list.png",
+          "publisher": "Amazon Web Services",
+          "sourcePage": "https://aws.amazon.com/tutorials/create-nosql-table/",
+          "sourceImage": "https://d1.awsstatic.com/developer/tutorial-assets/create-nosql-table-add-data.a58b397450738b7638ce5b57ca495ea371a603e8.png",
+          "pageLastUpdated": "2024-01-12",
+          "checked": "2026-07-20",
+          "sourceCaptureDate": "unknown",
+          "sourceCssViewport": "unknown",
+          "observedRegion": "N. Virginia",
+          "pixelDimensions": [1758, 831],
+          "sha256": "6ad6af3161c195f769e941e2a59946d1ccc25a28036dece5cdd47447074310be",
+          "coverage": ["Explore items collection", "empty collection", "recovery action"]
+        },
+        {
+          "asset": "reference/aws-official-delete-table.png",
+          "publisher": "Amazon Web Services",
+          "sourcePage": "https://aws.amazon.com/tutorials/create-nosql-table/",
+          "sourceImage": "https://d1.awsstatic.com/developer/tutorial-assets/create-nosql-delete-table.1f332c815dce8b81355d6317376a83dce3a76c1e.png",
+          "pageLastUpdated": "2024-01-12",
+          "checked": "2026-07-20",
+          "sourceCaptureDate": "unknown",
+          "sourceCssViewport": "unknown",
+          "observedRegion": "N. Virginia",
+          "pixelDimensions": [1760, 613],
+          "sha256": "22366b9d4c39b2756c4284da9b007d2606b4d1f9653f705ba4808205da045cb9",
+          "coverage": ["populated table list", "table selection", "destructive action placement"]
+        }
+      ],
+      "externalVisualReferences": [
+        {
+          "publisher": "AWS Cloudscape",
+          "sourcePage": "https://cloudscape.design/patterns/resource-management/view/table-view/",
+          "sourceImage": "https://cloudscape.design/__images/yvlrib0vb3vb/4OVOKqSJpvCkem9gnCcHHi/9980feb26d0d151c139062ca11627e65/automated--example--table-external-light-desktop.png.png",
+          "checked": "2026-07-20",
+          "coverage": ["current collection hierarchy", "filters", "actions", "table containment"]
+        },
+        {
+          "publisher": "AWS Cloudscape",
+          "sourcePage": "https://cloudscape.design/patterns/resource-management/details/details-page/",
+          "sourceImage": "https://cloudscape.design/__images/yvlrib0vb3vb/3IRXeSC9yGcVGA9w0WhLri/ecf9d3c85706700d06638b68f64a12b1/automated--example--details-external-light-desktop.png.png",
+          "checked": "2026-07-20",
+          "coverage": ["current desktop details hierarchy", "breadcrumbs", "actions", "cards"]
+        },
+        {
+          "publisher": "AWS Cloudscape",
+          "sourcePage": "https://cloudscape.design/patterns/resource-management/details/details-page/",
+          "sourceImage": "https://cloudscape.design/__images/yvlrib0vb3vb/51dQ2z1rYICZ4Icpp5jUJ6/4afaeb3e4b3558f8f197a8323575617d/automated--example--details-external-light-mobile.png.png",
+          "checked": "2026-07-20",
+          "coverage": ["current mobile details stacking", "responsive action and card layout"]
+        }
+      ],
+      "coverage": {
+        "home": "AWS Console Home guide/article plus current Cloudscape shell patterns; no like-for-like public screenshot at the target viewports",
+        "list": "Official annotated DynamoDB overview and table-list tutorial images plus current Cloudscape table-view guidance",
+        "create": "Current official DynamoDB documentation screenshot and current Cloudscape create-resource guidance; strongest visual coverage",
+        "details": "Current Cloudscape details-page guidance; no public DynamoDB table-details screenshot at the target viewports",
+        "empty": "Official annotated Explore-items empty state plus current Cloudscape empty-state guidance; not a like-for-like empty table list",
+        "error": "Current Cloudscape error-message guidance; no public DynamoDB route-error screenshot"
+      },
+      "limitations": [
+        "No authenticated AWS Management Console page was captured.",
+        "Public AWS tutorial screenshots are cropped, annotated, and in some cases use the 2024 console shell.",
+        "The public sources do not expose all six target states at 1440x900, 1280x800, and 390x844.",
+        "Only the create page has close service-specific visual coverage; other states use structural AWS or Cloudscape evidence.",
+        "The comparison is a material information-hierarchy, control, state, responsive, and accessibility audit, not a pixel-diff result."
+      ]
+    }
+  },
+  "phaseCapture": {
+    "date": "2026-07-17",
+    "region": "eu-west-1",
+    "theme": "light",
+    "artifactRoot": "docs/ui-reference/2026-07-17",
+    "finalCaptureCount": 279,
+    "status": "verified-current-source-local-captures",
+    "viewports": ["desktop-1440x900", "desktop-1280x800", "mobile-390x844"],
+    "productionReferenceStatus": "not-required-for-selected-phase-acceptance"
+  },
+  "cloudFormationCapture": {
+    "date": "2026-07-21",
+    "region": "eu-west-1",
+    "theme": "light",
+    "artifactRoot": "docs/ui-reference/2026-07-21/cloudformation/cfn01-08",
+    "states": ["change-set-detail", "change-sets", "continue-update-rollback-dialog", "create-change-set-dialog", "create-failed", "delete-dialog", "delete-retry-force-dialog", "delete-retry-standard-dialog", "empty", "events", "events-operation-filter", "export-detail", "exports", "outputs", "overview", "parameters", "replacement-change-set-detail", "replacement-change-set-detail-right-edge", "resources", "rollback-dialog", "setup", "setup-code", "stacks", "tags", "template", "termination-protection", "update-dialog"],
+    "viewports": ["desktop-1440x900", "desktop-1280x800", "mobile-390x844"],
+    "finalCaptureCount": 81,
+    "verification": {
+      "captureScript": "scripts/capture-cloudformation.mjs",
+      "browserSuite": "test/browser/cloudformation-console.spec.ts",
+      "fixture": "real CloudFormation SDK requests against a temporary simulator; no console API route interception",
+      "diagnostics": ["console warning/error", "page error", "request failure", "HTTP >= 400", "document overflow", "main overflow"]
+    },
+    "productionReferenceStatus": "not-captured-no-authorized-session"
+  },
+  "artifactSets": [
+    { "page": "home", "route": "#/home", "setup": "temporary DynamoDB-only visual fixture: LearningNotes with five items; other service counts are empty", "final": { "desktop": "home/final-1440x900.png", "desktopCompact": "home/final-1280x800.png", "mobile": "home/final-390x844.png" }, "reference": { "kind": "official-public-structural", "comparison": "comparison.md", "coverage": "AWS Console Home documentation and Cloudscape shell patterns; no like-for-like public screenshot" } },
+    { "page": "list", "route": "#/dynamodb/tables", "setup": "LearningNotes with five items", "final": { "desktop": "list/final-1440x900.png", "desktopCompact": "list/final-1280x800.png", "mobile": "list/final-390x844.png" }, "reference": { "kind": "official-public-structural", "assets": ["reference/aws-official-table-list.png", "reference/aws-official-delete-table.png"], "comparison": "comparison.md" } },
+    { "page": "create", "route": "#/dynamodb/tables/create", "setup": "dedicated Create table page with Music, Artist, and SongTitle public fixture values", "final": { "desktop": "create/final-1440x900.png", "desktopCompact": "create/final-1280x800.png", "mobile": "create/final-390x844.png" }, "reference": { "kind": "official-public-service-screenshot", "assets": ["reference/aws-official-create-table.png", "reference/aws-official-create-form.png"], "comparison": "comparison.md" } },
+    { "page": "details", "route": "#/dynamodb/tables/LearningNotes/overview", "setup": "LearningNotes with five items", "final": { "desktop": "details/final-1440x900.png", "desktopCompact": "details/final-1280x800.png", "mobile": "details/final-390x844.png" }, "reference": { "kind": "official-public-structural", "comparison": "comparison.md", "coverage": "current Cloudscape details-page pattern; no like-for-like DynamoDB details screenshot" } },
+    { "page": "empty", "route": "#/dynamodb/tables", "setup": "empty temporary simulator", "final": { "desktop": "empty/final-1440x900.png", "desktopCompact": "empty/final-1280x800.png", "mobile": "empty/final-390x844.png" }, "reference": { "kind": "official-public-structural", "assets": ["reference/aws-official-items-list.png"], "comparison": "comparison.md", "coverage": "Explore-items empty collection plus Cloudscape empty-state pattern; not a like-for-like empty table list" } },
+    { "page": "error", "route": "#/not-found", "setup": "unknown route", "final": { "desktop": "error/final-1440x900.png", "desktopCompact": "error/final-1280x800.png", "mobile": "error/final-390x844.png" }, "reference": { "kind": "official-public-structural", "comparison": "comparison.md", "coverage": "current Cloudscape error-message pattern; no like-for-like DynamoDB route-error screenshot" } },
+    { "page": "dense-items", "route": "#/dynamodb/tables/LearningNotes/items", "setup": "LearningNotes with 60 items, page size 100, long titles, and ARN-shaped reference values", "final": { "desktop": "list/dense-1440x900.png", "desktopCompact": "list/dense-1280x800.png", "mobile": "list/dense-390x844.png" }, "rightEdge": { "desktop": "list/dense-right-edge-1440x900.png", "desktopCompact": "list/dense-right-edge-1280x800.png", "mobile": "list/dense-right-edge-390x844.png" }, "reference": null }
+  ],
+  "iamDefaultAdministrator": {
+    "captureDate": "2026-07-27",
+    "artifactRoot": "docs/ui-reference/iam-default-admin",
+    "captureScript": "scripts/capture-console.mjs",
+    "browserSuite": "test/browser/console-auth.spec.ts",
+    "viewports": ["1440x900", "1280x800", "390x844"],
+    "credentialHandling": "One-time generated secrets are visibly redacted before capture. Trace, video, automatic screenshots, and HTML attachments are disabled for the rotation workflow.",
+    "states": [
+      "default-access-key-sign-in",
+      "first-login-offer",
+      "keep-default-outcome",
+      "replacement-key-redacted-one-time-view",
+      "rotation-incomplete",
+      "generated-key-identity",
+      "inactive-configured-key",
+      "iam-users",
+      "iam-groups",
+      "iam-security-credentials",
+      "explicit-deny",
+      "recovery-root-warning",
+      "bootstrap-ready",
+      "bootstrap-disabled",
+      "bootstrap-blocked",
+      "cloudformation-setup",
+      "cloudformation-setup-code"
+    ]
+  },
+  "routes": [
+    { "name": "home", "path": "#/home", "states": ["loaded", "error"] },
+    { "name": "environment", "path": "#/environment", "states": ["loaded"] },
+    { "name": "lambda-list", "path": "#/lambda/functions", "states": ["loaded", "empty", "create", "triggers", "add-trigger", "edit-trigger"] },
+    { "name": "lambda-permissions-tags", "path": "#/lambda/functions/{function}/configuration", "states": ["loaded", "edit-role", "add-policy", "edit-tags", "async-defaults", "async-configured", "async-edit", "async-reset", "destination-dependency", "error"] },
+    { "name": "lambda-monitor", "path": "#/lambda/functions/{function}/monitor", "states": ["loaded", "empty-queue", "queued", "leased", "retry-wait", "async-metrics", "logs", "latest-stream-deep-link", "service-correlation", "error"] },
+    { "name": "lambda-aliases", "path": "#/lambda/functions/{function}/aliases", "states": ["loaded", "empty", "create", "edit", "delete", "weighted-traffic", "error"] },
+    { "name": "lambda-versions", "path": "#/lambda/functions/{function}/versions", "states": ["loaded", "publish", "compare", "delete", "conflict", "error"] },
+    { "name": "dynamodb-list", "path": "#/dynamodb/tables", "states": ["loaded", "empty", "create", "details"] },
+    { "name": "dynamodb-create", "path": "#/dynamodb/tables/create", "states": ["loaded", "validation", "dirty-navigation", "success", "responsive"] },
+    { "name": "dynamodb-transactions", "path": "#/dynamodb/transactions", "states": ["loaded", "preview", "committed", "cancelled", "error"] },
+    { "name": "dynamodb-ttl", "path": "#/dynamodb/tables/{table}/settings", "states": ["off", "turn-on", "enabling", "on", "edit", "turn-off", "disabling", "error"] },
+    { "name": "dynamodb-partiql", "path": "#/dynamodb/partiql", "states": ["editor", "parameterized-result", "pagination", "plain-json", "history", "error"] },
+    { "name": "dynamodb-capacity", "path": "#/dynamodb/tables/{table}/capacity", "states": ["on-demand", "provisioned", "edit", "warm-throughput", "auto-scaling", "error"] },
+    { "name": "dynamodb-additional-settings", "path": "#/dynamodb/tables/{table}/settings", "states": ["table-class", "deletion-protection", "aes256", "kms-dependency-blocked", "edit", "error"] },
+    { "name": "dynamodb-tags", "path": "#/dynamodb/tables/{table}/tags", "states": ["loaded", "empty", "edit", "add", "remove", "invalid-json", "error"] },
+    { "name": "dynamodb-backups", "path": "#/dynamodb/backups", "states": ["loaded", "empty", "creating", "available", "detail", "restore", "delete", "error"] },
+    { "name": "dynamodb-table-backups", "path": "#/dynamodb/tables/{table}/backups", "states": ["pitr-off", "pitr-on", "edit-period", "turn-off", "backup-list", "create-backup", "restore-latest", "restore-specific", "progress", "error"] },
+    { "name": "dynamodb-streams", "path": "#/dynamodb/tables/{table}/streams", "states": ["off", "turn-on", "on", "change-view", "turn-off", "lambda-trigger-empty", "lambda-trigger-create", "lambda-trigger-mapped", "kinesis-disconnected", "kinesis-enable", "kinesis-active", "kinesis-change-precision", "kinesis-disable", "exports-empty", "export-create", "export-complete", "error"] },
+    { "name": "dynamodb-exports", "path": "#/dynamodb/exports", "states": ["disabled", "empty", "create", "in-progress", "completed", "detail", "error"] },
+    { "name": "dynamodb-imports", "path": "#/dynamodb/imports", "states": ["disabled", "empty", "create", "in-progress", "completed", "detail", "error"] },
+    { "name": "dynamodb-contributor-insights", "path": "#/dynamodb/contributor-insights", "states": ["disabled", "enabling", "enabled", "mode-change", "disabling", "error"] },
+    { "name": "dynamodb-table-contributor-insights", "path": "#/dynamodb/tables/{table}/contributors", "states": ["disabled", "configuration", "accessed-keys", "throttled-keys", "custom-metrics", "error"] },
+    { "name": "dynamodb-global-tables", "path": "#/dynamodb/global-tables", "states": ["empty", "loaded", "error"] },
+    { "name": "dynamodb-table-global", "path": "#/dynamodb/tables/{table}/global", "states": ["single-region", "create-replica", "updating", "active", "replication-error", "remove-replica", "dependency-blocked", "error"] },
+    { "name": "dynamodb-permissions", "path": "#/dynamodb/tables/{table}/permissions", "states": ["not-attached", "validation", "attached", "broad-principal-warning", "policy-management-warning", "delete", "error"] },
+    { "name": "api-list", "path": "#/apigateway/apis", "states": ["loaded", "empty", "create", "details", "deploy", "stages"] },
+    { "name": "http-api-detail", "path": "#/apigateway/http-apis/{api}/{section}", "states": ["routes", "authorization", "integrations", "cors", "stages", "monitor", "create", "edit", "delete", "error", "responsive"] },
+    { "name": "websocket-api-detail", "path": "#/apigateway/websocket-apis/{api}/{section}", "states": ["routes", "integrations", "models", "authorization", "stages", "monitor", "test-guidance", "create", "edit", "delete", "error", "responsive"] },
+    { "name": "api-vpc-links", "path": "#/apigateway/vpc-links/{id}", "states": ["empty", "loaded", "available", "failed", "create", "edit", "tags", "delete", "dependency-notice", "responsive", "error"] },
+    { "name": "api-client-certificates", "path": "#/apigateway/client-certificates/{id}", "states": ["empty", "loaded", "generate", "edit", "copy-pem", "delete", "opt-in-notice", "responsive", "error"] },
+    { "name": "api-documentation", "path": "#/apigateway/apis/{api}/documentation", "states": ["empty", "parts", "create", "edit", "delete", "import", "versions", "publish", "associate-stage", "sdk-generation", "dependency-blocked", "responsive", "error"] },
+    { "name": "api-account-settings", "path": "#/apigateway/account-settings", "states": ["loaded", "cloudwatch-role", "throttles", "features", "dependency-notice", "responsive", "error"] },
+    { "name": "api-method-pipeline", "path": "#/apigateway/apis/{api}/resources", "states": ["method-request", "integration-request", "integration-response", "method-response", "test", "test-result", "error"] },
+    { "name": "api-authorizers", "path": "#/apigateway/apis/{api}/authorizers", "states": ["loaded", "empty", "create", "detail", "edit", "test", "delete", "error"] },
+    { "name": "api-resource-policy", "path": "#/apigateway/apis/{api}/policy", "states": ["loaded", "edit", "invalid-json", "saved", "error"] },
+    { "name": "api-stage-authorizer-cache", "path": "#/apigateway/apis/{api}/stages", "states": ["loaded", "flush-cache", "execution-log-link", "access-log-link", "success", "error"] },
+    { "name": "cloudwatch-log-groups", "path": "#/cloudwatch/log-groups", "states": ["loaded", "empty", "create", "details", "related-resources", "service-correlation", "streams", "events", "error"] },
+    { "name": "cloudwatch-log-delivery", "path": "#/cloudwatch/log-groups/{group}/{section}", "states": ["metric-filters", "create-metric-filter", "test-pattern", "subscription-filters", "create-subscription", "permission-guidance", "retry-checkpoint", "recursion-safety", "data-protection-placeholder", "transform-placeholder", "export-data", "local-file", "s3-dependency", "cancel", "responsive", "error"] },
+    { "name": "cloudwatch-logs-insights", "path": "#/cloudwatch/logs-insights", "states": ["ready", "scheduled", "running-partial", "complete", "cancelled", "compile-error", "multiple-groups", "raw-results", "record-detail", "aggregate-results", "visualization", "history", "saved-queries", "responsive"] },
+    { "name": "cloudwatch-dashboards", "path": "#/cloudwatch/dashboards", "states": ["empty", "catalog", "create", "cross-source-view", "text", "metric-line", "number", "gauge", "bar", "pie", "table", "logs-query", "alarm", "explorer", "variables", "annotations", "auto-refresh", "edit", "move", "resize", "widget-source", "dashboard-source", "unsaved-warning", "delete", "unsupported-warning", "responsive"] },
+    { "name": "cloudwatch-alarms", "path": "#/cloudwatch/alarms/{alarm}", "states": ["empty", "metric-catalog", "metric-create", "metric-detail", "composite-catalog", "composite-create", "composite-detail", "anomaly-create", "anomaly-detail", "log-catalog", "log-create", "log-detail", "contributors", "contributor-history", "muted-actions", "expected-band", "rule", "children", "parents", "wait-period", "extension-period", "suppressed-by-alarm", "history", "tags", "cycle-error", "delete", "responsive"] },
+    { "name": "cloudwatch-alarm-mute-rules", "path": "#/cloudwatch/alarm-mute-rules/{rule}", "states": ["empty", "catalog", "create", "detail", "one-time", "recurring", "active", "scheduled", "expired", "edit", "delete", "tags", "responsive"] },
+    { "name": "cloudwatch-anomaly-detection", "path": "#/cloudwatch/anomaly-detection/{detector}", "states": ["empty", "catalog", "create-single-metric", "create-metric-math", "pending-training", "trained", "insufficient-data", "detail", "expected-band", "configuration", "excluded-ranges", "edit", "delete", "responsive"] },
+    { "name": "cloudwatch-metrics-insights", "path": "#/cloudwatch/metrics-insights", "states": ["editor", "builder", "chart", "table", "source", "dataset-default", "dataset-kms-descriptor", "responsive"] },
+    { "name": "cloudwatch-metric-streams", "path": "#/cloudwatch/metric-streams/{stream}", "states": ["empty", "catalog", "search", "state-filter", "create", "edit", "local-json-running", "external-dependency-stopped", "start", "stop", "tags", "delete", "responsive"] },
+    { "name": "cloudwatch-contributor-insights", "path": "#/cloudwatch/contributor-insights/{rule}", "states": ["empty", "catalog", "search", "state-filter", "type-filter", "create", "edit", "custom-report", "managed-discovery", "managed-report", "enable", "disable", "tags", "delete", "responsive"] },
+    { "name": "cloudformation-stacks", "path": "#/cloudformation/stacks", "states": ["loaded", "empty", "filter", "delete", "responsive", "error"] },
+    { "name": "cloudformation-stack-detail", "path": "#/cloudformation/stacks/{stack}/{section}", "states": ["overview", "events", "resources", "outputs", "parameters", "template", "change-sets", "change-set-detail", "tags", "termination-protection", "rollback", "continue-update-rollback", "delete", "responsive", "error"] },
+    { "name": "cloudformation-setup", "path": "#/cloudformation/setup", "states": ["loaded", "bootstrap-ready", "bootstrap-disabled", "bootstrap-blocked", "setup-code", "responsive"] },
+    { "name": "iam-dashboard", "path": "#/iam", "states": ["loaded", "empty"] },
+    { "name": "iam-users", "path": "#/iam/users", "states": ["default-admin", "generated-key-identity", "explicit-deny", "empty", "responsive"] },
+    { "name": "iam-user-detail", "path": "#/iam/users/{user}", "states": ["permissions", "groups", "security-credentials", "one-time-key", "inactive-key", "delete-conflict", "responsive"] },
+    { "name": "iam-groups", "path": "#/iam/groups", "states": ["loaded", "create", "members", "permissions", "delete-conflict", "responsive"] },
+    { "name": "iam-roles", "path": "#/iam/roles", "states": ["loaded", "empty", "create", "details", "attach", "delete"] },
+    { "name": "iam-policies", "path": "#/iam/policies", "states": ["loaded", "create", "details", "versions", "delete"] },
+    { "name": "iam-decisions", "path": "#/iam/decisions", "states": ["loaded", "empty"] },
+    { "name": "not-found", "path": "#/not-found", "states": ["error"] }
+  ],
+  "compare": ["global header", "breadcrumbs", "side navigation", "typography", "spacing", "forms", "tables", "dialogs", "empty states", "errors", "responsive layout", "keyboard focus"]
+}

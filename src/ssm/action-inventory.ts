@@ -1,0 +1,15 @@
+export const PARAMETER_STORE_ACTIONS = new Set([
+  "GetParameter",
+  "GetParameters",
+  "GetParametersByPath",
+  "PutParameter",
+  "DeleteParameter",
+  "DeleteParameters",
+  "DescribeParameters",
+  "AddTagsToResource",
+  "RemoveTagsFromResource",
+  "ListTagsForResource",
+  "GetParameterHistory",
+  "LabelParameterVersion",
+  "UnlabelParameterVersion",
+]);

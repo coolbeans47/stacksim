@@ -1,0 +1,75 @@
+{
+  "format": 1,
+  "milestone": "AMX-06 generated AppSync AWS_IAM configuration and signed root-field authorization",
+  "graphqlApi": {
+    "logicalId": "amplifyDataGraphQLAPI42A6FA33",
+    "authenticationType": "API_KEY",
+    "additionalAuthenticationProviders": [
+      {
+        "AuthenticationType": "AWS_IAM"
+      }
+    ],
+    "rejectedAdditionalModes": [
+      "AMAZON_COGNITO_USER_POOLS",
+      "AWS_LAMBDA",
+      "OPENID_CONNECT"
+    ]
+  },
+  "schema": {
+    "asset": {
+      "id": "941821462168d0c1c15b579e764e675a5ed57595aa8875d0c10071b408b77513",
+      "sha256": "5ae32ac3471520959d80d3ff235eadc11effddfed222da95a8fd75600fa13b50",
+      "bytes": 4722
+    },
+    "directives": {
+      "awsApiKey": 10,
+      "awsIam": 10
+    },
+    "rootFields": {
+      "Query": [
+        "getTodo",
+        "listTodos"
+      ],
+      "Mutation": [
+        "createTodo",
+        "updateTodo",
+        "deleteTodo"
+      ],
+      "Subscription": [
+        "onCreateTodo",
+        "onUpdateTodo",
+        "onDeleteTodo"
+      ]
+    },
+    "subscriptions": "SDL admitted for the unchanged generated graph; HTTP/realtime subscription execution remains AMX-08"
+  },
+  "iam": {
+    "action": "appsync:GraphQL",
+    "exactFieldArn": "arn:aws:appsync:${Region}:${Account}:apis/${GraphQLAPIId}/types/${TypeName}/fields/${FieldName}",
+    "typeWildcard": "arn:aws:appsync:${Region}:${Account}:apis/${GraphQLAPIId}/types/${TypeName}/*",
+    "apiWildcard": "arn:aws:appsync:${Region}:${Account}:apis/${GraphQLAPIId}/*",
+    "evaluator": "shared IAM identity/session-policy/permissions-boundary evaluator"
+  },
+  "requestCorpus": [
+    "official SigV4-compatible POST body, host, path, Region, service, timestamp, and temporary session credentials",
+    "aliases, fragments, variables, multiple operations, explicit operation selection, and introspection",
+    "exact field, root-type wildcard, API wildcard, implicit deny, explicit deny, and cross-account resource mismatch",
+    "mixed nullable/non-null allowed and denied root fields with denied resolver suppression",
+    "session policy, permission boundary, missing token, deleted/expired session, stale/future time, and tampering",
+    "API-key/IAM identity and metric isolation plus credential/policy/header redaction"
+  ],
+  "signals": {
+    "namespace": "AWS/AppSync",
+    "authenticationDimension": "AuthenticationType",
+    "authorizationDecisionFields": [
+      "time",
+      "requestId",
+      "principalArn",
+      "action",
+      "resource",
+      "decision",
+      "reason"
+    ],
+    "cloudWatchFieldLogs": "absent because the frozen GraphQLApi has no LogConfig"
+  }
+}

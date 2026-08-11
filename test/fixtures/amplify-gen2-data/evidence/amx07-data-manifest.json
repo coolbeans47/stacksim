@@ -1,0 +1,1126 @@
+{
+  "format": 1,
+  "milestone": "AMX-07 frozen generated one-model Amplify Data semantics",
+  "schema": {
+    "asset": {
+      "id": "941821462168d0c1c15b579e764e675a5ed57595aa8875d0c10071b408b77513",
+      "sha256": "5ae32ac3471520959d80d3ff235eadc11effddfed222da95a8fd75600fa13b50",
+      "bytes": 4722
+    },
+    "todoFields": [
+      {
+        "name": "title",
+        "type": "String!"
+      },
+      {
+        "name": "description",
+        "type": "String"
+      },
+      {
+        "name": "priority",
+        "type": "Int"
+      },
+      {
+        "name": "completed",
+        "type": "Boolean"
+      },
+      {
+        "name": "dueAt",
+        "type": "AWSDateTime"
+      },
+      {
+        "name": "id",
+        "type": "ID!"
+      },
+      {
+        "name": "createdAt",
+        "type": "AWSDateTime!"
+      },
+      {
+        "name": "updatedAt",
+        "type": "AWSDateTime!"
+      }
+    ],
+    "rootFields": {
+      "Query": [
+        {
+          "name": "getTodo",
+          "type": "Todo",
+          "arguments": [
+            {
+              "name": "id",
+              "type": "ID!"
+            }
+          ]
+        },
+        {
+          "name": "listTodos",
+          "type": "ModelTodoConnection",
+          "arguments": [
+            {
+              "name": "filter",
+              "type": "ModelTodoFilterInput"
+            },
+            {
+              "name": "limit",
+              "type": "Int"
+            },
+            {
+              "name": "nextToken",
+              "type": "String"
+            }
+          ]
+        }
+      ],
+      "Mutation": [
+        {
+          "name": "createTodo",
+          "type": "Todo",
+          "arguments": [
+            {
+              "name": "input",
+              "type": "CreateTodoInput!"
+            },
+            {
+              "name": "condition",
+              "type": "ModelTodoConditionInput"
+            }
+          ]
+        },
+        {
+          "name": "updateTodo",
+          "type": "Todo",
+          "arguments": [
+            {
+              "name": "input",
+              "type": "UpdateTodoInput!"
+            },
+            {
+              "name": "condition",
+              "type": "ModelTodoConditionInput"
+            }
+          ]
+        },
+        {
+          "name": "deleteTodo",
+          "type": "Todo",
+          "arguments": [
+            {
+              "name": "input",
+              "type": "DeleteTodoInput!"
+            },
+            {
+              "name": "condition",
+              "type": "ModelTodoConditionInput"
+            }
+          ]
+        }
+      ]
+    },
+    "inputTypes": {
+      "CreateTodoInput": [
+        {
+          "name": "title",
+          "type": "String!"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "priority",
+          "type": "Int"
+        },
+        {
+          "name": "completed",
+          "type": "Boolean"
+        },
+        {
+          "name": "dueAt",
+          "type": "AWSDateTime"
+        },
+        {
+          "name": "id",
+          "type": "ID"
+        }
+      ],
+      "UpdateTodoInput": [
+        {
+          "name": "title",
+          "type": "String"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "priority",
+          "type": "Int"
+        },
+        {
+          "name": "completed",
+          "type": "Boolean"
+        },
+        {
+          "name": "dueAt",
+          "type": "AWSDateTime"
+        },
+        {
+          "name": "id",
+          "type": "ID!"
+        }
+      ],
+      "ModelTodoConditionInput": [
+        {
+          "name": "title",
+          "type": "ModelStringInput"
+        },
+        {
+          "name": "description",
+          "type": "ModelStringInput"
+        },
+        {
+          "name": "priority",
+          "type": "ModelIntInput"
+        },
+        {
+          "name": "completed",
+          "type": "ModelBooleanInput"
+        },
+        {
+          "name": "dueAt",
+          "type": "ModelStringInput"
+        },
+        {
+          "name": "and",
+          "type": "[ModelTodoConditionInput]"
+        },
+        {
+          "name": "or",
+          "type": "[ModelTodoConditionInput]"
+        },
+        {
+          "name": "not",
+          "type": "ModelTodoConditionInput"
+        },
+        {
+          "name": "createdAt",
+          "type": "ModelStringInput"
+        },
+        {
+          "name": "updatedAt",
+          "type": "ModelStringInput"
+        }
+      ],
+      "ModelTodoFilterInput": [
+        {
+          "name": "title",
+          "type": "ModelStringInput"
+        },
+        {
+          "name": "description",
+          "type": "ModelStringInput"
+        },
+        {
+          "name": "priority",
+          "type": "ModelIntInput"
+        },
+        {
+          "name": "completed",
+          "type": "ModelBooleanInput"
+        },
+        {
+          "name": "dueAt",
+          "type": "ModelStringInput"
+        },
+        {
+          "name": "id",
+          "type": "ModelIDInput"
+        },
+        {
+          "name": "createdAt",
+          "type": "ModelStringInput"
+        },
+        {
+          "name": "updatedAt",
+          "type": "ModelStringInput"
+        },
+        {
+          "name": "and",
+          "type": "[ModelTodoFilterInput]"
+        },
+        {
+          "name": "or",
+          "type": "[ModelTodoFilterInput]"
+        },
+        {
+          "name": "not",
+          "type": "ModelTodoFilterInput"
+        }
+      ],
+      "ModelStringInput": [
+        {
+          "name": "ne",
+          "type": "String"
+        },
+        {
+          "name": "eq",
+          "type": "String"
+        },
+        {
+          "name": "le",
+          "type": "String"
+        },
+        {
+          "name": "lt",
+          "type": "String"
+        },
+        {
+          "name": "ge",
+          "type": "String"
+        },
+        {
+          "name": "gt",
+          "type": "String"
+        },
+        {
+          "name": "contains",
+          "type": "String"
+        },
+        {
+          "name": "notContains",
+          "type": "String"
+        },
+        {
+          "name": "between",
+          "type": "[String]"
+        },
+        {
+          "name": "beginsWith",
+          "type": "String"
+        },
+        {
+          "name": "attributeExists",
+          "type": "Boolean"
+        },
+        {
+          "name": "attributeType",
+          "type": "ModelAttributeTypes"
+        },
+        {
+          "name": "size",
+          "type": "ModelSizeInput"
+        }
+      ],
+      "ModelIDInput": [
+        {
+          "name": "ne",
+          "type": "ID"
+        },
+        {
+          "name": "eq",
+          "type": "ID"
+        },
+        {
+          "name": "le",
+          "type": "ID"
+        },
+        {
+          "name": "lt",
+          "type": "ID"
+        },
+        {
+          "name": "ge",
+          "type": "ID"
+        },
+        {
+          "name": "gt",
+          "type": "ID"
+        },
+        {
+          "name": "contains",
+          "type": "ID"
+        },
+        {
+          "name": "notContains",
+          "type": "ID"
+        },
+        {
+          "name": "between",
+          "type": "[ID]"
+        },
+        {
+          "name": "beginsWith",
+          "type": "ID"
+        },
+        {
+          "name": "attributeExists",
+          "type": "Boolean"
+        },
+        {
+          "name": "attributeType",
+          "type": "ModelAttributeTypes"
+        },
+        {
+          "name": "size",
+          "type": "ModelSizeInput"
+        }
+      ],
+      "ModelIntInput": [
+        {
+          "name": "ne",
+          "type": "Int"
+        },
+        {
+          "name": "eq",
+          "type": "Int"
+        },
+        {
+          "name": "le",
+          "type": "Int"
+        },
+        {
+          "name": "lt",
+          "type": "Int"
+        },
+        {
+          "name": "ge",
+          "type": "Int"
+        },
+        {
+          "name": "gt",
+          "type": "Int"
+        },
+        {
+          "name": "between",
+          "type": "[Int]"
+        },
+        {
+          "name": "attributeExists",
+          "type": "Boolean"
+        },
+        {
+          "name": "attributeType",
+          "type": "ModelAttributeTypes"
+        }
+      ],
+      "ModelBooleanInput": [
+        {
+          "name": "ne",
+          "type": "Boolean"
+        },
+        {
+          "name": "eq",
+          "type": "Boolean"
+        },
+        {
+          "name": "attributeExists",
+          "type": "Boolean"
+        },
+        {
+          "name": "attributeType",
+          "type": "ModelAttributeTypes"
+        }
+      ],
+      "ModelSizeInput": [
+        {
+          "name": "ne",
+          "type": "Int"
+        },
+        {
+          "name": "eq",
+          "type": "Int"
+        },
+        {
+          "name": "le",
+          "type": "Int"
+        },
+        {
+          "name": "lt",
+          "type": "Int"
+        },
+        {
+          "name": "ge",
+          "type": "Int"
+        },
+        {
+          "name": "gt",
+          "type": "Int"
+        },
+        {
+          "name": "between",
+          "type": "[Int]"
+        }
+      ]
+    }
+  },
+  "pipelines": [
+    {
+      "typeName": "Mutation",
+      "fieldName": "createTodo",
+      "before": {
+        "kind": "inline",
+        "sha256": "12f1fa993d4eab9989214c7caafc73fc5e9a00528f0e6114bbd69d4b2bfd781b",
+        "bytes": 759
+      },
+      "after": {
+        "kind": "inline",
+        "sha256": "c3b9217151e438da0ba3851dc03e2d5ea29c9371099b06fd65a0d25fd33da772",
+        "bytes": 30
+      },
+      "functions": [
+        {
+          "logicalId": "MutationcreateTodoinit0FunctionMutationcreateTodoinit0FunctionAppSyncFunction54DE5B8B",
+          "name": "MutationcreateTodoinit0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "request": {
+            "kind": "asset",
+            "id": "a183ddccbd956316c38ef97177b8f088ef0826f62023323f5ae6053d348ccffc",
+            "sha256": "0b21ad5c230ec3fda3bf68049d992f55d1fca8e6a12032aad86115f83db0d479",
+            "bytes": 475
+          },
+          "response": {
+            "kind": "inline",
+            "sha256": "698c122c0de38613417f4dedc9a1e14d92c6084bb67285ab4ea7d8630157caa4",
+            "bytes": 16
+          },
+          "operation": null
+        },
+        {
+          "logicalId": "MutationcreateTodoauth0FunctionMutationcreateTodoauth0FunctionAppSyncFunction21817E36",
+          "name": "MutationcreateTodoauth0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "request": {
+            "kind": "asset",
+            "id": "eda4511e01e0956a1b97d4ca904a6671ee21a1a583dff170fb18cbbd4f9dd6e6",
+            "sha256": "a13ec8de14d9deada14e98102d386e93d388f3a0ab113ae2edff02acede48e3b",
+            "bytes": 998
+          },
+          "response": {
+            "kind": "inline",
+            "sha256": "698c122c0de38613417f4dedc9a1e14d92c6084bb67285ab4ea7d8630157caa4",
+            "bytes": 16
+          },
+          "operation": null
+        },
+        {
+          "logicalId": "MutationcreateTodopostAuth0FunctionMutationcreateTodopostAuth0FunctionAppSyncFunctionED59EB9F",
+          "name": "MutationcreateTodopostAuth0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "request": {
+            "kind": "asset",
+            "id": "c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77",
+            "sha256": "cef4ef4aa3f3f97c3ed8c7e2bf6acd1821405f33f4457840247725612b344494",
+            "bytes": 378
+          },
+          "response": {
+            "kind": "inline",
+            "sha256": "698c122c0de38613417f4dedc9a1e14d92c6084bb67285ab4ea7d8630157caa4",
+            "bytes": 16
+          },
+          "operation": null
+        },
+        {
+          "logicalId": "MutationCreateTodoDataResolverFnMutationCreateTodoDataResolverFnAppSyncFunction900EC5CF",
+          "name": "MutationCreateTodoDataResolverFn",
+          "dataSource": {
+            "Fn::GetAtt": [
+              "TodoDataSource",
+              "Name"
+            ]
+          },
+          "request": {
+            "kind": "asset",
+            "id": "2bf64327ca5682da4be84d0d16440204e25abc3a221195b41f2d21dfa432e5ab",
+            "sha256": "816b56b10da7deb19bc3d061529603bc3e4c4f6c7abb09ace0f7cc8417a8fc8a",
+            "bytes": 2238
+          },
+          "response": {
+            "kind": "asset",
+            "id": "f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249",
+            "sha256": "6483ee775c0280187a9884184f1c7d1d8fa0807f743a85a774e39f12563ee952",
+            "bytes": 222
+          },
+          "operation": "PutItem"
+        }
+      ]
+    },
+    {
+      "typeName": "Mutation",
+      "fieldName": "deleteTodo",
+      "before": {
+        "kind": "inline",
+        "sha256": "3dd787edc1094ee96ef71ad8418a5f6b238dc0709bccc1c5fdf4fbdcbcc1fd5b",
+        "bytes": 759
+      },
+      "after": {
+        "kind": "inline",
+        "sha256": "c3b9217151e438da0ba3851dc03e2d5ea29c9371099b06fd65a0d25fd33da772",
+        "bytes": 30
+      },
+      "functions": [
+        {
+          "logicalId": "MutationdeleteTodoauth0FunctionMutationdeleteTodoauth0FunctionAppSyncFunctionC82C218C",
+          "name": "MutationdeleteTodoauth0Function",
+          "dataSource": {
+            "Fn::GetAtt": [
+              "TodoDataSource",
+              "Name"
+            ]
+          },
+          "request": {
+            "kind": "asset",
+            "id": "1f5fed297da9c32ae3af922bf3a38ccf23b956078887d16891ec06c20c64722c",
+            "sha256": "6e162a95640c4a8a9fabc38c8b017c87439ab49b392b0089bfb1c362321ddad0",
+            "bytes": 394
+          },
+          "response": {
+            "kind": "asset",
+            "id": "0064bfbd7fdaea51ef97e8494f036beca0be53bc5c1c7b05c29a27f9cdb28bd2",
+            "sha256": "675d5720397894160ff0daaa457f300ca7dcd68553b5bdc4af074521019bfcf2",
+            "bytes": 644
+          },
+          "operation": "GetItem"
+        },
+        {
+          "logicalId": "MutationdeleteTodopostAuth0FunctionMutationdeleteTodopostAuth0FunctionAppSyncFunction483271A2",
+          "name": "MutationdeleteTodopostAuth0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "request": {
+            "kind": "asset",
+            "id": "c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77",
+            "sha256": "cef4ef4aa3f3f97c3ed8c7e2bf6acd1821405f33f4457840247725612b344494",
+            "bytes": 378
+          },
+          "response": {
+            "kind": "inline",
+            "sha256": "698c122c0de38613417f4dedc9a1e14d92c6084bb67285ab4ea7d8630157caa4",
+            "bytes": 16
+          },
+          "operation": null
+        },
+        {
+          "logicalId": "MutationDeleteTodoDataResolverFnMutationDeleteTodoDataResolverFnAppSyncFunction3879153F",
+          "name": "MutationDeleteTodoDataResolverFn",
+          "dataSource": {
+            "Fn::GetAtt": [
+              "TodoDataSource",
+              "Name"
+            ]
+          },
+          "request": {
+            "kind": "asset",
+            "id": "4f7907d1209a2c9953a0c053df402c634e359546d70c7cc5c2e8e21ea734880f",
+            "sha256": "c7125e4d9d0343961a8665049296c35aed4220e3128b53d9941f773da527634c",
+            "bytes": 1847
+          },
+          "response": {
+            "kind": "asset",
+            "id": "f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249",
+            "sha256": "6483ee775c0280187a9884184f1c7d1d8fa0807f743a85a774e39f12563ee952",
+            "bytes": 222
+          },
+          "operation": "DeleteItem"
+        }
+      ]
+    },
+    {
+      "typeName": "Mutation",
+      "fieldName": "updateTodo",
+      "before": {
+        "kind": "inline",
+        "sha256": "c3d862af92f3fa583eb6f3534e67bc1a381a2f06683b69be4d6442115e983d44",
+        "bytes": 759
+      },
+      "after": {
+        "kind": "inline",
+        "sha256": "c3b9217151e438da0ba3851dc03e2d5ea29c9371099b06fd65a0d25fd33da772",
+        "bytes": 30
+      },
+      "functions": [
+        {
+          "logicalId": "MutationupdateTodoinit0FunctionMutationupdateTodoinit0FunctionAppSyncFunction1B95BB19",
+          "name": "MutationupdateTodoinit0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "request": {
+            "kind": "asset",
+            "id": "06db846fd14e6fc371f22b12b5545ba8e2dbfeda85d8c8d586c71c282166657b",
+            "sha256": "0140a28b1c5d13ee37a69d841b9762c8fc694c48d8bf652f6a1c78873adc87e8",
+            "bytes": 350
+          },
+          "response": {
+            "kind": "inline",
+            "sha256": "698c122c0de38613417f4dedc9a1e14d92c6084bb67285ab4ea7d8630157caa4",
+            "bytes": 16
+          },
+          "operation": null
+        },
+        {
+          "logicalId": "MutationupdateTodoauth0FunctionMutationupdateTodoauth0FunctionAppSyncFunction1E4A3112",
+          "name": "MutationupdateTodoauth0Function",
+          "dataSource": {
+            "Fn::GetAtt": [
+              "TodoDataSource",
+              "Name"
+            ]
+          },
+          "request": {
+            "kind": "asset",
+            "id": "1f5fed297da9c32ae3af922bf3a38ccf23b956078887d16891ec06c20c64722c",
+            "sha256": "6e162a95640c4a8a9fabc38c8b017c87439ab49b392b0089bfb1c362321ddad0",
+            "bytes": 394
+          },
+          "response": {
+            "kind": "asset",
+            "id": "cd0b7103bd7f11aa4b0201590c636ce2c0edbf9e5dd157cb5e0819bc7d7f4738",
+            "sha256": "da0bcbe3a4d2a0905c4c06c9b10cfcab038c34676207b12ae60368f257d3c5d5",
+            "bytes": 1446
+          },
+          "operation": "GetItem"
+        },
+        {
+          "logicalId": "MutationupdateTodopostAuth0FunctionMutationupdateTodopostAuth0FunctionAppSyncFunction50C507D7",
+          "name": "MutationupdateTodopostAuth0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "request": {
+            "kind": "asset",
+            "id": "c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77",
+            "sha256": "cef4ef4aa3f3f97c3ed8c7e2bf6acd1821405f33f4457840247725612b344494",
+            "bytes": 378
+          },
+          "response": {
+            "kind": "inline",
+            "sha256": "698c122c0de38613417f4dedc9a1e14d92c6084bb67285ab4ea7d8630157caa4",
+            "bytes": 16
+          },
+          "operation": null
+        },
+        {
+          "logicalId": "MutationUpdateTodoDataResolverFnMutationUpdateTodoDataResolverFnAppSyncFunctionBC238C49",
+          "name": "MutationUpdateTodoDataResolverFn",
+          "dataSource": {
+            "Fn::GetAtt": [
+              "TodoDataSource",
+              "Name"
+            ]
+          },
+          "request": {
+            "kind": "asset",
+            "id": "474bf0776ec2164a13191d1a0a9e057154931e4918fea5086f49850d02a5371b",
+            "sha256": "0c6a3d9ed1d168b9f3f151daf7746d9544c12d96ae6d0f5664031a7fd1235e5f",
+            "bytes": 4371
+          },
+          "response": {
+            "kind": "asset",
+            "id": "f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249",
+            "sha256": "6483ee775c0280187a9884184f1c7d1d8fa0807f743a85a774e39f12563ee952",
+            "bytes": 222
+          },
+          "operation": "UpdateItem"
+        }
+      ]
+    },
+    {
+      "typeName": "Query",
+      "fieldName": "getTodo",
+      "before": {
+        "kind": "inline",
+        "sha256": "64402ab601117e79134b0d7d8906e8d7852a09a5c2219c845fd36c674209196d",
+        "bytes": 753
+      },
+      "after": {
+        "kind": "inline",
+        "sha256": "c3b9217151e438da0ba3851dc03e2d5ea29c9371099b06fd65a0d25fd33da772",
+        "bytes": 30
+      },
+      "functions": [
+        {
+          "logicalId": "QuerygetTodoauth0FunctionQuerygetTodoauth0FunctionAppSyncFunction846D8436",
+          "name": "QuerygetTodoauth0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "request": {
+            "kind": "asset",
+            "id": "74c1522efb7733193e4d75cee5b96595110452c456623a36d786f743aea94e7c",
+            "sha256": "8f194c9c45a5576755afa62813c574cad8099cc260dbcc85e81f8d1ebc7637b8",
+            "bytes": 713
+          },
+          "response": {
+            "kind": "inline",
+            "sha256": "698c122c0de38613417f4dedc9a1e14d92c6084bb67285ab4ea7d8630157caa4",
+            "bytes": 16
+          },
+          "operation": null
+        },
+        {
+          "logicalId": "QuerygetTodopostAuth0FunctionQuerygetTodopostAuth0FunctionAppSyncFunction6BE14593",
+          "name": "QuerygetTodopostAuth0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "request": {
+            "kind": "asset",
+            "id": "c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77",
+            "sha256": "cef4ef4aa3f3f97c3ed8c7e2bf6acd1821405f33f4457840247725612b344494",
+            "bytes": 378
+          },
+          "response": {
+            "kind": "inline",
+            "sha256": "698c122c0de38613417f4dedc9a1e14d92c6084bb67285ab4ea7d8630157caa4",
+            "bytes": 16
+          },
+          "operation": null
+        },
+        {
+          "logicalId": "QueryGetTodoDataResolverFnQueryGetTodoDataResolverFnAppSyncFunctionE2B57DAD",
+          "name": "QueryGetTodoDataResolverFn",
+          "dataSource": {
+            "Fn::GetAtt": [
+              "TodoDataSource",
+              "Name"
+            ]
+          },
+          "request": {
+            "kind": "asset",
+            "id": "08f4d557693d96c1a4efba0f9dc91330e4b19772fd5477c156468843e3d9cb5e",
+            "sha256": "e89cfb26233f47073a95604efd936fdab7d3296ffc5929656f5656c91a84f676",
+            "bytes": 1208
+          },
+          "response": {
+            "kind": "asset",
+            "id": "4c6a2d29f01c6091bd1d9afe16e5849d456c96f17c3b215938c8067399532719",
+            "sha256": "3f59bdf6ce29bb866d20b80de1033fe605c519a935a4a48313344ec9c3981b08",
+            "bytes": 381
+          },
+          "operation": "Query"
+        }
+      ]
+    },
+    {
+      "typeName": "Query",
+      "fieldName": "listTodos",
+      "before": {
+        "kind": "inline",
+        "sha256": "48843cf705ccdb73f5862a633c0e59b7b6a2470cf4ec88fdc5f971b8bc941e96",
+        "bytes": 755
+      },
+      "after": {
+        "kind": "inline",
+        "sha256": "c3b9217151e438da0ba3851dc03e2d5ea29c9371099b06fd65a0d25fd33da772",
+        "bytes": 30
+      },
+      "functions": [
+        {
+          "logicalId": "QuerylistTodosauth0FunctionQuerylistTodosauth0FunctionAppSyncFunction7D761961",
+          "name": "QuerylistTodosauth0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "request": {
+            "kind": "asset",
+            "id": "74c1522efb7733193e4d75cee5b96595110452c456623a36d786f743aea94e7c",
+            "sha256": "8f194c9c45a5576755afa62813c574cad8099cc260dbcc85e81f8d1ebc7637b8",
+            "bytes": 713
+          },
+          "response": {
+            "kind": "inline",
+            "sha256": "698c122c0de38613417f4dedc9a1e14d92c6084bb67285ab4ea7d8630157caa4",
+            "bytes": 16
+          },
+          "operation": null
+        },
+        {
+          "logicalId": "QuerylistTodospostAuth0FunctionQuerylistTodospostAuth0FunctionAppSyncFunction154D8577",
+          "name": "QuerylistTodospostAuth0Function",
+          "dataSource": {
+            "Ref": "referencetoamplifystacksimamplifygen2datafixtureamx01sandbox26187e8ba5dataamplifyDataGraphQLAPINONEDSEC2D1B67Name"
+          },
+          "request": {
+            "kind": "asset",
+            "id": "c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77",
+            "sha256": "cef4ef4aa3f3f97c3ed8c7e2bf6acd1821405f33f4457840247725612b344494",
+            "bytes": 378
+          },
+          "response": {
+            "kind": "inline",
+            "sha256": "698c122c0de38613417f4dedc9a1e14d92c6084bb67285ab4ea7d8630157caa4",
+            "bytes": 16
+          },
+          "operation": null
+        },
+        {
+          "logicalId": "QueryListTodosDataResolverFnQueryListTodosDataResolverFnAppSyncFunctionF825FE47",
+          "name": "QueryListTodosDataResolverFn",
+          "dataSource": {
+            "Fn::GetAtt": [
+              "TodoDataSource",
+              "Name"
+            ]
+          },
+          "request": {
+            "kind": "asset",
+            "id": "9fcbe070ecd3023c5bf5b966fa9584757db9762eef123bad0820bd87591b2174",
+            "sha256": "d465836395626ef0ea84366d111e3f2e68445cda8145f7bd0d558eebabdacabd",
+            "bytes": 1794
+          },
+          "response": {
+            "kind": "asset",
+            "id": "cc01911d0269d4080ea57505dc445dfc315ef7ad85d3d9d4ea1357858bff451d",
+            "sha256": "54f3cee8f80896a9a5c7799810f2c32575445ab5681432ea5fd784e5e5c82a7c",
+            "bytes": 169
+          },
+          "operation": "Scan"
+        }
+      ]
+    }
+  ],
+  "dynamodbDocuments": [
+    {
+      "rootField": "createTodo",
+      "functionName": "MutationCreateTodoDataResolverFn",
+      "operation": "PutItem",
+      "requestAsset": "2bf64327ca5682da4be84d0d16440204e25abc3a221195b41f2d21dfa432e5ab",
+      "responseAsset": "f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249"
+    },
+    {
+      "rootField": "deleteTodo",
+      "functionName": "MutationdeleteTodoauth0Function",
+      "operation": "GetItem",
+      "requestAsset": "1f5fed297da9c32ae3af922bf3a38ccf23b956078887d16891ec06c20c64722c",
+      "responseAsset": "0064bfbd7fdaea51ef97e8494f036beca0be53bc5c1c7b05c29a27f9cdb28bd2"
+    },
+    {
+      "rootField": "deleteTodo",
+      "functionName": "MutationDeleteTodoDataResolverFn",
+      "operation": "DeleteItem",
+      "requestAsset": "4f7907d1209a2c9953a0c053df402c634e359546d70c7cc5c2e8e21ea734880f",
+      "responseAsset": "f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249"
+    },
+    {
+      "rootField": "getTodo",
+      "functionName": "QueryGetTodoDataResolverFn",
+      "operation": "Query",
+      "requestAsset": "08f4d557693d96c1a4efba0f9dc91330e4b19772fd5477c156468843e3d9cb5e",
+      "responseAsset": "4c6a2d29f01c6091bd1d9afe16e5849d456c96f17c3b215938c8067399532719"
+    },
+    {
+      "rootField": "listTodos",
+      "functionName": "QueryListTodosDataResolverFn",
+      "operation": "Scan",
+      "operationForm": "$operation resolves to Scan for the frozen no-index Todo list branch; query/index branches remain unsupported",
+      "requestAsset": "9fcbe070ecd3023c5bf5b966fa9584757db9762eef123bad0820bd87591b2174",
+      "responseAsset": "cc01911d0269d4080ea57505dc445dfc315ef7ad85d3d9d4ea1357858bff451d"
+    },
+    {
+      "rootField": "updateTodo",
+      "functionName": "MutationupdateTodoauth0Function",
+      "operation": "GetItem",
+      "requestAsset": "1f5fed297da9c32ae3af922bf3a38ccf23b956078887d16891ec06c20c64722c",
+      "responseAsset": "cd0b7103bd7f11aa4b0201590c636ce2c0edbf9e5dd157cb5e0819bc7d7f4738"
+    },
+    {
+      "rootField": "updateTodo",
+      "functionName": "MutationUpdateTodoDataResolverFn",
+      "operation": "UpdateItem",
+      "requestAsset": "474bf0776ec2164a13191d1a0a9e057154931e4918fea5086f49850d02a5371b",
+      "responseAsset": "f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249"
+    }
+  ],
+  "expressionCorpus": {
+    "comparison": [
+      "eq",
+      "ne",
+      "lt",
+      "le",
+      "gt",
+      "ge"
+    ],
+    "stringAndId": [
+      "contains",
+      "notContains",
+      "between",
+      "beginsWith",
+      "attributeExists",
+      "attributeType",
+      "size"
+    ],
+    "number": [
+      "between",
+      "attributeExists",
+      "attributeType"
+    ],
+    "boolean": [
+      "attributeExists",
+      "attributeType"
+    ],
+    "recursive": [
+      "and",
+      "or",
+      "not"
+    ],
+    "updateActions": [
+      "SET non-null input/default fields",
+      "REMOVE explicitly null non-key fields"
+    ],
+    "keyConditions": [
+      "create id attribute_not_exists",
+      "update/delete id attribute_exists"
+    ]
+  },
+  "utilities": [
+    "authType",
+    "autoId",
+    "defaultIfNull",
+    "dynamodb.toDynamoDB",
+    "dynamodb.toDynamoDBJson",
+    "dynamodb.toMapValues",
+    "error",
+    "isNull",
+    "isNullOrBlank",
+    "isNullOrEmpty",
+    "list.copyAndRemoveAll",
+    "map.copyAndRemoveAllKeys",
+    "map.copyAndRetainAllKeys",
+    "parseJson",
+    "qr",
+    "time.nowISO8601",
+    "toJson",
+    "transform.toDynamoDBConditionExpression",
+    "transform.toDynamoDBFilterExpression",
+    "unauthorized"
+  ],
+  "defaultsAndRecords": {
+    "id": "$util.autoId() UUID when create input omits id; explicit input id wins",
+    "createdAt": "$util.time.nowISO8601() once during create init",
+    "updatedAt": "same create instant, then $util.time.nowISO8601() during every update init",
+    "typename": "Todo persisted as __typename",
+    "nullAndAbsent": "omitted update fields are preserved; explicit nullable fields emit REMOVE; createdAt is never rewritten by update",
+    "list": "Scan with emitted default limit 100, DynamoDB filter-after-limit ordering, empty intermediate pages allowed"
+  },
+  "pagination": {
+    "opaqueSigned": true,
+    "encoding": "versioned AES-256-GCM authenticated encryption derived from the installation pagination secret; traversal state is not inspectable",
+    "ttlMilliseconds": 3600000,
+    "scopes": [
+      "account",
+      "Region",
+      "API id/generation",
+      "schema generation",
+      "root type/field",
+      "function generation/revision",
+      "data-source generation/revision",
+      "table replacement id",
+      "index",
+      "authorization mode",
+      "authorization identity digest",
+      "filter/expression document",
+      "limit",
+      "traversal key"
+    ],
+    "rejects": [
+      "malformed",
+      "expired",
+      "cross-API",
+      "cross-field",
+      "cross-filter",
+      "cross-limit",
+      "cross-account",
+      "cross-Region",
+      "cross-auth-mode/identity",
+      "stale function/schema/data-source/table generation"
+    ]
+  },
+  "failureContract": {
+    "request": "template/document failures occur before authoritative DynamoDB access and do not run the data response template",
+    "setup": "missing table, role assumption, identity/resource policy denial run generated pipeline response VTL with result null and safe message/type",
+    "invoked": "DynamoDB conditional/validation/service failures run generated pipeline response VTL with result null and safe message/type",
+    "response": "get/list responses preserve modeled DynamoDB errors; mutation response VTL touches null result before its error branch and therefore raises MappingTemplate for those emitted error paths",
+    "completion": "GraphQL applies standard nullable/non-null propagation and partial-data paths after response VTL",
+    "committedWrites": "never rolled back or automatically reinvoked after response VTL, serialization, or GraphQL completion failure",
+    "dug08": "equivalent behavior implemented for shared generated PIPELINE functions; the owning UNIT resolver path remains open"
+  },
+  "authorization": {
+    "admission": [
+      "API_KEY @aws_api_key",
+      "AWS_IAM @aws_iam plus appsync:GraphQL field ARN"
+    ],
+    "executionRoleActions": [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:DeleteItem",
+      "dynamodb:Query",
+      "dynamodb:Scan"
+    ],
+    "order": "schema/field admission before resolver; data-source role and resource policy before item operation"
+  },
+  "client": {
+    "package": "aws-amplify@6.20.0",
+    "methods": [
+      "create",
+      "get",
+      "list",
+      "update",
+      "delete"
+    ],
+    "model": "Todo",
+    "generatedDocumentsOutsideFixture": false
+  },
+  "negativeSurface": [
+    "relationships",
+    "secondary indexes",
+    "custom identifiers",
+    "conflict sync",
+    "custom operations",
+    "search",
+    "SQL",
+    "generated documents outside the frozen client/model-introspection corpus",
+    "HTTP/realtime subscriptions (AMX-08)",
+    "complete deployment/output generation and overlength generated RoleName (AMX-09)"
+  ],
+  "signals": {
+    "namespace": "AWS/AppSync",
+    "metrics": [
+      "GraphQLRequestCount",
+      "GraphQLErrorCount",
+      "ResolverRequestCount",
+      "ResolverErrorCount",
+      "ResolverLatency",
+      "DataSourceLatency",
+      "Latency",
+      "4XXError",
+      "5XXError"
+    ],
+    "dimensions": [
+      "GraphQLAPIId",
+      "TypeName",
+      "FieldName",
+      "DataSource",
+      "AuthenticationType"
+    ],
+    "logs": "GraphQLApi.LogConfig absent; VTL diagnostics remain request-local and are not persisted",
+    "redacted": [
+      "variables",
+      "record payloads",
+      "credentials",
+      "session tokens",
+      "signatures",
+      "authorization/x-api-key headers",
+      "raw policies",
+      "private resolver/DynamoDB context"
+    ]
+  }
+}

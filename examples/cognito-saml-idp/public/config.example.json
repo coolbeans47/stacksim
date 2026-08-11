@@ -1,0 +1,12 @@
+{
+  "configured": true,
+  "region": "eu-west-1",
+  "poolId": "eu-west-1_example",
+  "clientId": "example-client-id",
+  "providerName": "LearningSAML",
+  "domain": "saml-learning-local",
+  "callbackUrl": "http://localhost:5174/callback",
+  "authorizeUrl": "http://localhost:4566/_stacksim/cognito-domain/saml-learning-local/oauth2/authorize",
+  "tokenUrl": "http://localhost:4566/_stacksim/cognito-domain/saml-learning-local/oauth2/token",
+  "metadataUrl": "http://127.0.0.1:5174/saml/metadata"
+}

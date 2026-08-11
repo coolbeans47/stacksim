@@ -1,0 +1,54 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "stacksim CFN-07 file asset",
+    "version": "2.0.0"
+  },
+  "paths": {
+    "/asset": {
+      "get": {
+        "operationId": "getAssetV2",
+        "responses": {
+          "200": {
+            "description": "v2 response"
+          }
+        },
+        "x-amazon-apigateway-integration": {
+          "type": "mock",
+          "requestTemplates": {
+            "application/json": "{\"statusCode\":200}"
+          },
+          "responses": {
+            "default": {
+              "statusCode": "200",
+              "responseTemplates": {
+                "application/json": "{\"release\":\"v2\"}"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/asset-v2": {
+      "get": {
+        "operationId": "getAssetOnlyV2",
+        "responses": {
+          "204": {
+            "description": "v2-only response"
+          }
+        },
+        "x-amazon-apigateway-integration": {
+          "type": "mock",
+          "requestTemplates": {
+            "application/json": "{\"statusCode\":204}"
+          },
+          "responses": {
+            "default": {
+              "statusCode": "204"
+            }
+          }
+        }
+      }
+    }
+  }
+}

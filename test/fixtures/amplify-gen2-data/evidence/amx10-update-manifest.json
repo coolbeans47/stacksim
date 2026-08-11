@@ -1,0 +1,91 @@
+{
+  "format": 1,
+  "phase": "AMX-10",
+  "contract": "pinned Amplify Gen 2 repeat, watch/edit, native hotswap plus fallback, unsupported-edit retention, named delete/recreate, and two-identifier isolation",
+  "pinnedCommands": {
+    "watch": "node node_modules/@aws-amplify/backend-cli/lib/ampx.js sandbox --identifier amx10a",
+    "repeat": "node node_modules/@aws-amplify/backend-cli/lib/ampx.js sandbox --once --identifier amx10a",
+    "delete": "node node_modules/@aws-amplify/backend-cli/lib/ampx.js sandbox delete --identifier amx10a --yes",
+    "secondIdentifier": "node node_modules/@aws-amplify/backend-cli/lib/ampx.js sandbox --once --identifier amx10b"
+  },
+  "protectedEvidence": {
+    "amx09-deployment-manifest.json": "91b30aefab42051b65afe56277f7bd9648ea059cf928cb58a7c01a1098c19ae3",
+    "graph-manifest.json": "4b796f05936b1943ab1f22f57395219d1b840573d959fdd0669818cb1b1f7868",
+    "amx04-helper-manifest.json": "16200269bb57a1e015770e3e0c318bb813305d6ecb0d667350506ea29c55aaf2",
+    "amx05-appsync-manifest.json": "273fe7171f89b09084334ca3836cc0ab1ea71333fa98bb2bd5018f06551e1e31",
+    "amx06-authorization-manifest.json": "2e2e8fb4937b16ca262a5b6f31a9b015896b75e36a1ea01a629c05d74a81349d",
+    "amx07-data-manifest.json": "8a10980c50ed9fe162128e57b0d98ec69f432816e43cf69f1ce2efe635c2ec3e",
+    "amx08-realtime-manifest.json": "56254bf0e8253adb83bba572e48eea9602bfa3b136f47b4387896eeae9fb2b6f"
+  },
+  "liveEvidence": {
+    "amx10-repeat.json": "7aeb59363bf40278d903af636c18528ec52c18cfa5c113e31a056fe2406728d3",
+    "amx10-watch-edit.json": "5c981532d4d3ea5e5390d57e9aabd2f59d9f403e3ec339f8279d08cb210516a4"
+  },
+  "repeatInventory": {
+    "classification": "The pinned CLI performs a harmless CloudFormation reconciliation because the generated API-key expiry is time-relative.",
+    "invariants": [
+      "all root/nested stack IDs and logical-to-physical resource mappings remain unchanged",
+      "one AppSync API, one Todo table, and four generated/helper Lambda functions remain",
+      "the generated output bytes and redacted digest remain unchanged",
+      "the managed bootstrap descriptor and all shared asset version counts remain unchanged",
+      "no duplicate API, API key, table, function, subscription configuration, stack, or shared asset version is created"
+    ]
+  },
+  "serviceActionInventory": {
+    "directHotswapObserved": {
+      "Lambda": ["Invoke on the two CloudFormation-owned Custom::CDKBucketDeployment provider functions"],
+      "AppSync": []
+    },
+    "directHotswapImplementedForPinnedCdk": {
+      "Lambda": ["Invoke", "UpdateFunctionCode", "UpdateFunctionConfiguration"],
+      "AppSync": ["StartSchemaCreation/GetSchemaCreationStatus", "UpdateApiKey", "UpdateFunction", "UpdateResolver"]
+    },
+    "fallbackObserved": ["CloudFormation UpdateStack after the scalar edit", "CloudFormation UpdateStack for the API-key expiry edit"],
+    "classificationRule": "Only the standard cdk-hotswap/success-<service> user agent enters drift accounting; ordinary direct SDK calls retain their existing semantics."
+  },
+  "resourceEditDiffInventory": [
+    {
+      "edit": "add optional Todo.notes string",
+      "direct": "two successful Lambda Invoke calls update the model-introspection and generated-code bucket deployments",
+      "fallback": "ordinary recursive CloudFormation UpdateStack reconciles the schema and generated graph",
+      "preserved": ["root and nested stack identities", "Todo table physical identity", "existing backend records", "last stabilized output until CLI rewrite"]
+    },
+    {
+      "edit": "change API-key expiresInDays from 30 to 29",
+      "direct": "none in the pinned trace",
+      "fallback": "ordinary CloudFormation UpdateStack updates the generated API-key expiration",
+      "preserved": ["API ID", "API-key ID", "Todo table", "resolver/function physical identities"]
+    },
+    {
+      "edit": "use nonexistent a.unsupportedScalar()",
+      "direct": "none",
+      "fallback": "none",
+      "result": "synthesis rejects with TypeError before workload mutation; prior backend and output remain usable"
+    }
+  ],
+  "ownershipAndDrift": {
+    "index": "account/Region reverse keys for physical ID, ARN, Lambda function, and AppSync schema/function/resolver/API-key identity map to stack ID, logical ID, root ID, and completed deployment generation",
+    "admission": "unmanaged, ambiguous, or stale ownership rejects before direct mutation",
+    "operationRecord": ["exact raw request SHA-256", "prior service revision", "current service revision", "owning completed generation", "PENDING/INTENTIONAL/FAILED state"],
+    "cloudFormationIsolation": "direct success mutates service state only; it does not mutate stored templates, events, stack status, outputs, or completed resource generations",
+    "convergence": "the subsequent completed root deployment publishes a new generation, rebuilds ownership, and clears current drift while retaining bounded operation history"
+  },
+  "fallbackAndFailureInventory": [
+    "pre-call unsupported synthesis: no direct call and no CloudFormation fallback",
+    "pre-call unmanaged/ambiguous/stale target: deterministic 409 rejection for pinned CDK fallback handling",
+    "before-direct-call injected fault: FAILED operation with unchanged service revision",
+    "after-direct-call injected fault: new service revision remains recorded as INTENTIONAL partial runtime drift",
+    "ordinary fallback after successful direct calls: direct operation history remains and completed CloudFormation generation clears current drift",
+    "failed AppSync schema stabilization: pending operation becomes FAILED on GetSchemaCreationStatus"
+  ],
+  "deleteRecreateInventory": {
+    "selector": "--identifier is mandatory in the frozen command; no default or sibling selection is inferred",
+    "deleteOrder": "recursive provider dependencies delete generated custom resources before their helper functions/roles and remove nested stacks before the root completes",
+    "preserved": ["managed bootstrap", "unrelated stack", "amx10b stack and all of its workload"],
+    "sameIdentifierRecreation": "amx10a recreates with a new root stack ID, immediately reuses its exact SSM names after owned deletion, writes a new stabilized output, and passes the complete Amplify client workflow"
+  },
+  "limits": [
+    "The frozen scalar/API-key source corpus emitted no direct AppSync hotswap call; AppSync direct support is regression-tested at the ordinary service endpoints and must not be claimed as observed CLI behavior for these two edits.",
+    "The pinned Windows watcher emits two file events for one atomic source write and queues a second deployment; evidence records both instead of deduplicating or bypassing CLI watch behavior."
+  ]
+}
