@@ -21,6 +21,7 @@ import {
   DescribeUserPoolCommand,
   ForgetDeviceCommand,
   GetDeviceCommand,
+  GetTokensFromRefreshTokenCommand,
   InitiateAuthCommand,
   ListDevicesCommand,
   RespondToAuthChallengeCommand,
@@ -387,6 +388,89 @@ test("DUG-11 first login issues pending NewDeviceMetadata and confirms protected
   }
 });
 
+test("COGGAP-27 refresh paths validate devices and issue restart-durable replacement metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-dug11-refresh-"));
+  let simulator: StackSim | undefined;
+  let client: CognitoIdentityProviderClient | undefined;
+  try {
+    simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "off" });
+    await simulator.start();
+    client = sdk(simulator);
+    const poolId = await createTrackedPool(client, {
+      ChallengeRequiredOnNewDevice: true,
+      DeviceOnlyRememberedOnUserPrompt: false,
+    });
+    const clientId = await createPasswordClient(client, poolId, "refresh-device-client");
+    const email = "refresh-device@example.test";
+    const password = "Valid-password-1!";
+    await createConfirmedUser(client, poolId, email, password);
+    const first = await passwordAuth(client, clientId, email, password);
+    const refreshToken = first.AuthenticationResult!.RefreshToken!;
+    const original = first.AuthenticationResult!.NewDeviceMetadata!;
+    const originalSecret = randomBytes(16).toString("base64url");
+    await client.send(new ConfirmDeviceCommand({
+      AccessToken: first.AuthenticationResult!.AccessToken!,
+      DeviceKey: original.DeviceKey!,
+      DeviceSecretVerifierConfig: deviceVerifierConfig(
+        original.DeviceGroupKey!,
+        original.DeviceKey!,
+        originalSecret,
+      ),
+    }));
+
+    const direct = await client.send(new GetTokensFromRefreshTokenCommand({
+      ClientId: clientId,
+      RefreshToken: refreshToken,
+      DeviceKey: original.DeviceKey!,
+    }));
+    assert(direct.AuthenticationResult?.AccessToken);
+    assert.equal(direct.AuthenticationResult?.NewDeviceMetadata, undefined);
+    const flow = await client.send(new InitiateAuthCommand({
+      ClientId: clientId,
+      AuthFlow: "REFRESH_TOKEN_AUTH",
+      AuthParameters: { REFRESH_TOKEN: refreshToken, DEVICE_KEY: original.DeviceKey! },
+    }));
+    assert(flow.AuthenticationResult?.AccessToken);
+    assert.equal(flow.AuthenticationResult?.NewDeviceMetadata, undefined);
+
+    const replacement = await client.send(new GetTokensFromRefreshTokenCommand({
+      ClientId: clientId,
+      RefreshToken: refreshToken,
+    }));
+    assert(replacement.AuthenticationResult?.NewDeviceMetadata?.DeviceKey);
+    assert.notEqual(replacement.AuthenticationResult!.NewDeviceMetadata!.DeviceKey, original.DeviceKey);
+    const replacementMetadata = replacement.AuthenticationResult!.NewDeviceMetadata!;
+    const replacementAccess = replacement.AuthenticationResult!.AccessToken!;
+
+    client.destroy();
+    await simulator.stop();
+    simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "off" });
+    await simulator.start();
+    client = sdk(simulator);
+    const replacementSecret = randomBytes(16).toString("base64url");
+    await client.send(new ConfirmDeviceCommand({
+      AccessToken: replacementAccess,
+      DeviceKey: replacementMetadata.DeviceKey!,
+      DeviceSecretVerifierConfig: deviceVerifierConfig(
+        replacementMetadata.DeviceGroupKey!,
+        replacementMetadata.DeviceKey!,
+        replacementSecret,
+      ),
+    }));
+
+    const wrong = await client.send(new GetTokensFromRefreshTokenCommand({
+      ClientId: clientId,
+      RefreshToken: refreshToken,
+      DeviceKey: `${region}_00000000-0000-4000-8000-000000000000`,
+    }));
+    assert(wrong.AuthenticationResult?.NewDeviceMetadata?.DeviceKey);
+  } finally {
+    client?.destroy();
+    await simulator?.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function cryptoRandomUuid(): string {
   return randomBytes(16).toString("hex").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
 }
@@ -442,6 +526,14 @@ test("DUG-11 remembered device replaces MFA with DEVICE_SRP_AUTH and DEVICE_PASS
     }));
     assert.equal(confirmed.UserConfirmationNecessary, false);
 
+    const tokenSources: string[] = [];
+    const service = simulator.cognito as any;
+    const originalInvokeTrigger = service.invokeTrigger.bind(service);
+    service.invokeTrigger = async (...args: any[]) => {
+      if (args[3] === "preTokenGeneration") tokenSources.push(args[4]);
+      return originalInvokeTrigger(...args);
+    };
+
     const rememberedLogin = await passwordAuth(
       client,
       clientId,
@@ -463,6 +555,7 @@ test("DUG-11 remembered device replaces MFA with DEVICE_SRP_AUTH and DEVICE_PASS
     );
     assert.ok(completed.AuthenticationResult?.AccessToken);
     assert.ok(completed.AuthenticationResult?.RefreshToken);
+    assert(tokenSources.includes("TokenGeneration_AuthenticateDevice"));
 
     await assert.rejects(
       completeDeviceSrp(

@@ -180,9 +180,9 @@ test("CFN-15 Lambda providers use authoritative layer, URL, code-signing, and pe
     const mismatchedRecovery = await functionProvider.create(functionDesired, context("Function"));
     assert.equal(mismatchedRecovery.status, "FAILED");
     assert.equal(mismatchedRecovery.status === "FAILED" ? mismatchedRecovery.errorCode : "", "OwnershipConflict");
-    await assert.rejects(
-      lambda.send(new GetFunctionCodeSigningConfigCommand({ FunctionName: functionDesired.FunctionName })),
-      (error: any) => error.name === "CodeSigningConfigNotFoundException",
+    assert.equal(
+      (await lambda.send(new GetFunctionCodeSigningConfigCommand({ FunctionName: functionDesired.FunctionName }))).CodeSigningConfigArn,
+      undefined,
       "create recovery must not mutate an unexpectedly drifted code-signing association",
     );
     await lambda.send(new PutFunctionCodeSigningConfigCommand({
@@ -269,9 +269,9 @@ test("CFN-15 Lambda providers use authoritative layer, URL, code-signing, and pe
     const detached = await settle("Function", current =>
       functionProvider.update(functionCreated.physicalId, functionDesired, functionWithoutSigning, current));
     assert.equal(detached.status, "SUCCESS");
-    await assert.rejects(
-      lambda.send(new GetFunctionCodeSigningConfigCommand({ FunctionName: functionDesired.FunctionName })),
-      (error: any) => error.name === "CodeSigningConfigNotFoundException",
+    assert.equal(
+      (await lambda.send(new GetFunctionCodeSigningConfigCommand({ FunctionName: functionDesired.FunctionName }))).CodeSigningConfigArn,
+      undefined,
     );
 
     assert.equal((await functionProvider.delete(

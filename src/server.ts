@@ -2323,6 +2323,7 @@ export class StackSim {
     for (const services of this.regionalServices.values()) services.stepfunctions.beginShutdown();
     for (const services of this.regionalServices.values()) services.ses.beginShutdown();
     for (const services of this.regionalServices.values()) services.secretsmanager.stop();
+    await Promise.all([...this.regionalServices.values()].map(services => services.cognito.stop()));
     await Promise.all([...this.regionalServices.values()].map(services => services.metrics.stop()));
     await Promise.all([...this.regionalServices.values()].map(services => services.sns.stop()));
     await Promise.all([...this.regionalServices.values()].flatMap(services => [services.sqs.stop(), services.eventbridge.stop(), services.eventscheduler.stop()]));

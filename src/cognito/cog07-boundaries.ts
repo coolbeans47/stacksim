@@ -8,7 +8,8 @@ export type CognitoCog07BoundaryCategory =
   | "threat-protection"
   | "log-delivery"
   | "provisioned-limit"
-  | "saml-signing-certificate";
+  | "saml-signing-certificate"
+  | "advanced-token-customization";
 
 const MESSAGES: Record<CognitoCog07BoundaryCategory, string> = {
   webauthn:
@@ -27,6 +28,8 @@ const MESSAGES: Record<CognitoCog07BoundaryCategory, string> = {
     "Provisioned user-pool limits are a billing-tier control that is not implemented in this simulator.",
   "saml-signing-certificate":
     "SAML signing-certificate export requires a SAML identity provider with exportable metadata that is not implemented in this simulator.",
+  "advanced-token-customization":
+    "Advanced token customization for V2_0/V3_0 access tokens and M2M aws_client_metadata is not implemented in this simulator.",
 };
 
 const OPERATION_BOUNDARIES: Record<string, CognitoCog07BoundaryCategory> = {
@@ -63,6 +66,10 @@ export function cog07BoundaryCategory(operation: string): CognitoCog07BoundaryCa
 
 export function throwCog07Boundary(category: CognitoCog07BoundaryCategory): never {
   throw new AwsError("InvalidParameterException", MESSAGES[category]);
+}
+
+export function cog07BoundaryMessage(category: CognitoCog07BoundaryCategory): string {
+  return MESSAGES[category];
 }
 
 export function throwCog07BoundaryForOperation(operation: string): never {

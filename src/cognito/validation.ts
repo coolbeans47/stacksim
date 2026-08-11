@@ -1,5 +1,6 @@
 import { AwsError } from "../errors.js";
 import { parseDeviceConfiguration } from "./devices.js";
+import { throwCog07Boundary } from "./cog07-boundaries.js";
 import { parseMailboxAddress } from "../ses/validation.js";
 import type {
   CognitoAppClientState,
@@ -109,6 +110,12 @@ export function defaultPoolConfiguration(): CognitoUserPoolConfigurationState {
   };
 }
 
+function temporaryPasswordValidityDays(value: unknown): number {
+  if (value === undefined) return DEFAULT_PASSWORD_POLICY.temporaryPasswordValidityDays;
+  const days = integer(value, "Policies.PasswordPolicy.TemporaryPasswordValidityDays", 0, 365);
+  return days === 0 ? DEFAULT_PASSWORD_POLICY.temporaryPasswordValidityDays : days;
+}
+
 function passwordPolicy(value: unknown): CognitoUserPoolConfigurationState["policies"] {
   if (value === undefined) return { passwordPolicy: { ...DEFAULT_PASSWORD_POLICY } };
   const policies = object(value, "Policies");
@@ -135,9 +142,7 @@ function passwordPolicy(value: unknown): CognitoUserPoolConfigurationState["poli
       requireSymbols: password.RequireSymbols === undefined
         ? DEFAULT_PASSWORD_POLICY.requireSymbols
         : boolean(password.RequireSymbols, "Policies.PasswordPolicy.RequireSymbols"),
-      temporaryPasswordValidityDays: password.TemporaryPasswordValidityDays === undefined
-        ? DEFAULT_PASSWORD_POLICY.temporaryPasswordValidityDays
-        : integer(password.TemporaryPasswordValidityDays, "Policies.PasswordPolicy.TemporaryPasswordValidityDays", 0, 365),
+      temporaryPasswordValidityDays: temporaryPasswordValidityDays(password.TemporaryPasswordValidityDays),
       passwordHistorySize: password.PasswordHistorySize === undefined
         ? DEFAULT_PASSWORD_POLICY.passwordHistorySize
         : integer(password.PasswordHistorySize, "Policies.PasswordPolicy.PasswordHistorySize", 0, 24),
@@ -500,7 +505,7 @@ function phaseThreeConfiguration(input: Record<string, any>): Pick<
   if (preTokenConfig) {
     rejectUnknown(preTokenConfig, ["LambdaArn", "LambdaVersion"], "LambdaConfig.PreTokenGenerationConfig");
     if (preTokenConfig.LambdaVersion !== "V1_0") {
-      throw new AwsError("InvalidParameterException", "Only pre-token generation V1_0 is available.");
+      throwCog07Boundary("advanced-token-customization");
     }
   }
   const preTokenGeneration = arn(lambdaConfig.PreTokenGeneration, "LambdaConfig.PreTokenGeneration");
@@ -744,8 +749,13 @@ function oauthUrls(value: unknown, field: string): string[] {
       || parsed.hostname === "[::1]"
       || parsed.hostname === "::1"
       || /^127(?:\.\d{1,3}){3}$/.test(parsed.hostname);
+    const httpScheme = parsed.protocol === "http:" || parsed.protocol === "https:";
+    const customScheme = !httpScheme
+      && /^[a-z][a-z0-9+.-]*:$/.test(parsed.protocol)
+      && !["data:", "file:", "javascript:", "vbscript:"].includes(parsed.protocol)
+      && parsed.hostname.length > 0;
     if (
-      !["http:", "https:"].includes(parsed.protocol)
+      !httpScheme && !customScheme
       || parsed.username
       || parsed.password
       || parsed.hash

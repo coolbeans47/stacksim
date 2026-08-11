@@ -61,7 +61,7 @@ export const COGNITO_USER_POOL_SCHEMA: ProviderSchema = Object.freeze({
   typeName: COGNITO_USER_POOL_TYPE,
   unknownProperties: "REJECT",
   properties: Object.freeze({
-    UserPoolName: stringProperty("REPLACEMENT"),
+    UserPoolName: stringProperty("MUTABLE"),
     Policies: objectProperty("MUTABLE"),
     DeletionProtection: stringProperty("MUTABLE"),
     AutoVerifiedAttributes: arrayProperty("MUTABLE"),
@@ -69,7 +69,7 @@ export const COGNITO_USER_POOL_SCHEMA: ProviderSchema = Object.freeze({
     UsernameAttributes: arrayProperty("REPLACEMENT"),
     UsernameConfiguration: objectProperty("REPLACEMENT"),
     AdminCreateUserConfig: objectProperty("MUTABLE"),
-    Schema: arrayProperty("REPLACEMENT"),
+    Schema: arrayProperty("MUTABLE"),
     AccountRecoverySetting: objectProperty("MUTABLE"),
     EmailConfiguration: objectProperty("MUTABLE"),
     EmailVerificationMessage: stringProperty("MUTABLE"),
@@ -534,7 +534,7 @@ function poolAttributes(context: ProviderContext, poolId: string, arn?: unknown)
 
 function servicePoolInput(model: Model, context: ProviderContext, create: boolean): Json {
   const input: Json = {
-    ...(create ? { PoolName: model.UserPoolName } : {}),
+    PoolName: model.UserPoolName,
     ...Object.fromEntries(USER_POOL_MUTABLE.filter(name => model[name] !== undefined).map(name => [name, model[name]])),
   };
   if (create) {
@@ -627,10 +627,14 @@ function clientModel(raw: Json, generateSecret: boolean): Model {
   }));
 }
 
-async function readClient(service: CognitoService, poolId: string, clientId: string, generateSecret: boolean): Promise<ProviderReadModel<Model>> {
+async function readClient(service: CognitoService, poolId: string, clientId: string): Promise<ProviderReadModel<Model>> {
   const raw = (await service.executeCloudFormationControl("DescribeUserPoolClient", { UserPoolId: poolId, ClientId: clientId })).UserPoolClient as Json;
   const physicalId = cfn10Physical("cognito-client", [poolId, clientId]);
-  return { physicalId, properties: clientModel(raw, generateSecret), attributes: {} };
+  return {
+    physicalId,
+    properties: clientModel(raw, typeof raw.ClientSecret === "string" && raw.ClientSecret.length > 0),
+    attributes: {},
+  };
 }
 
 function createPoolProvider(service: CognitoService): ProductionResourceProvider<Model> {
@@ -665,13 +669,37 @@ function createPoolProvider(service: CognitoService): ProductionResourceProvider
     },
     async update(physicalId, previous, desired, context): Promise<ProviderUpdateResult<Model>> {
       try {
-        if (COGNITO_USER_POOL_SCHEMA.properties.UserPoolName.updateBehavior === "REPLACEMENT" && previous.UserPoolName !== desired.UserPoolName) {
-          throw new AwsError("RequiresReplacement", "UserPoolName changes require replacement", 409);
+        const desiredSchema = new Map((desired.Schema as Json[]).map(attribute => [attribute.Name, attribute]));
+        for (const existing of previous.Schema as Json[]) {
+          const next = desiredSchema.get(existing.Name);
+          if (!next || !cfn10Same(existing, next)) {
+            throw new AwsError(
+              "RequiresReplacement",
+              `Schema attribute ${existing.Name} cannot be removed or changed in place`,
+              409,
+            );
+          }
         }
+        const previousNames = new Set((previous.Schema as Json[]).map(attribute => attribute.Name));
+        const additions = (desired.Schema as Json[]).filter(attribute => !previousNames.has(attribute.Name));
         await service.executeCloudFormationControl("UpdateUserPool", {
           UserPoolId: physicalId,
           ...servicePoolInput(desired, context, false),
         });
+        try {
+          if (additions.length) {
+            await service.executeCloudFormationControl("AddCustomAttributes", {
+              UserPoolId: physicalId,
+              CustomAttributes: additions,
+            });
+          }
+        } catch (error) {
+          await service.executeCloudFormationControl("UpdateUserPool", {
+            UserPoolId: physicalId,
+            ...servicePoolInput(previous, context, false),
+          }).catch(() => undefined);
+          throw error;
+        }
         const current = await readPool(service, physicalId, context);
         const existingTags = (await service.executeCloudFormationControl("ListTagsForResource", { ResourceArn: current.attributes.Arn })).Tags as Record<string, string>;
         const wanted = { ...desired.UserPoolTags, [COGNITO_OWNER_TAG]: owner(context) };
@@ -712,7 +740,7 @@ function createClientProvider(service: CognitoService): ProductionResourceProvid
     async read(physicalId): Promise<ProviderReadResult<Model>> {
       try {
         const [poolId, clientId] = cfn10ParsePhysical(physicalId, "cognito-client", 2);
-        const model = await readClient(service, poolId, clientId, false);
+        const model = await readClient(service, poolId, clientId);
         return { status: "SUCCESS", physicalId, model };
       } catch (error) { return isMissing(error) ? { status: "NOT_FOUND", physicalId } : failed(error); }
     },

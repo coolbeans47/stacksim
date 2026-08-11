@@ -12,9 +12,11 @@ import {
   ConfirmDeviceCommand,
   CreateUserPoolClientCommand,
   CreateUserPoolCommand,
+  CreateUserPoolDomainCommand,
   DeleteUserPoolClientSecretCommand,
   InitiateAuthCommand,
   ListUserPoolClientSecretsCommand,
+  UpdateUserPoolCommand,
 } from "@aws-sdk/client-cognito-identity-provider";
 import { COG07_BOUNDARY_OPERATIONS } from "../src/cognito/cog07-boundaries.js";
 import { clientSecretHash } from "../src/cognito/client-secret.js";
@@ -187,6 +189,53 @@ test("COG-07 dependency boundaries return modeled errors instead of unknown oper
       assert.match(body.__type ?? "", /InvalidParameterException/, operation);
       assert.match(body.message ?? "", /not implemented in this simulator/i, operation);
     }
+  } finally {
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("COGGAP-26 bounds V2/V3 and M2M advanced token customization explicitly", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cog07-token-boundary-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "off" });
+  try {
+    await simulator.start();
+    const client = sdk(simulator);
+    const poolId = await createPool(client);
+    for (const LambdaVersion of ["V2_0", "V3_0"] as const) {
+      await assert.rejects(
+        client.send(new UpdateUserPoolCommand({
+          UserPoolId: poolId,
+          LambdaConfig: {
+            PreTokenGenerationConfig: {
+              LambdaArn: `arn:aws:lambda:${region}:000000000000:function:token-customizer`,
+              LambdaVersion,
+            },
+          },
+        })),
+        (error: any) => error?.name === "InvalidParameterException"
+          && /advanced token customization.*not implemented/i.test(error?.message),
+      );
+    }
+    await client.send(new CreateUserPoolDomainCommand({
+      UserPoolId: poolId,
+      Domain: "coggap-26-local",
+    }));
+    const response = await fetch(
+      `${endpoint(simulator)}/_stacksim/cognito-domain/coggap-26-local/oauth2/token`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          aws_client_metadata: JSON.stringify({ tenant: "local" }),
+        }),
+      },
+    );
+    assert.equal(response.status, 400);
+    const body = await response.json() as { error: string; error_description: string };
+    assert.equal(body.error, "invalid_request");
+    assert.match(body.error_description, /advanced token customization.*not implemented/i);
   } finally {
     await simulator.stop().catch(() => undefined);
     await rm(root, { recursive: true, force: true });

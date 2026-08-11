@@ -175,7 +175,9 @@ function tableDescription(table: TableState, store?: StateStore): any {
     DeletionProtectionEnabled: table.deletionProtectionEnabled,
     TableClassSummary: { TableClass: table.tableClass, ...(table.tableClassLastUpdatedAt !== undefined ? { LastUpdateDateTime: table.tableClassLastUpdatedAt / 1000 } : {}) },
     ...(table.onDemandThroughput && Object.keys(table.onDemandThroughput).length ? { OnDemandThroughput: clone(table.onDemandThroughput) } : {}),
-    ...(table.warmThroughput ? { WarmThroughput: warmThroughputDescription(table.warmThroughput) } : {}),
+    WarmThroughput: table.warmThroughput
+      ? warmThroughputDescription(table.warmThroughput)
+      : { ReadUnitsPerSecond: 12_000, WriteUnitsPerSecond: 4_000, Status: table.status === "CREATING" ? "CREATING" : table.status === "UPDATING" ? "UPDATING" : "ACTIVE" },
     SSEDescription: { SSEType: table.sse.sseType, Status: table.sse.status, ...(table.sse.kmsMasterKeyId ? { KMSMasterKeyArn: table.sse.kmsMasterKeyId } : {}) },
     ...(table.restoreSummary ? { RestoreSummary: { RestoreDateTime: table.restoreSummary.restoreDateTime / 1000, RestoreInProgress: table.restoreSummary.restoreInProgress, ...(table.restoreSummary.sourceBackupArn ? { SourceBackupArn: table.restoreSummary.sourceBackupArn } : {}), ...(table.restoreSummary.sourceTableArn ? { SourceTableArn: table.restoreSummary.sourceTableArn } : {}) } } : {}),
     ...(table.streamSpecification ? { StreamSpecification: clone(table.streamSpecification) } : {}),

@@ -4,10 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+  AdminCreateUserCommand,
+  AdminResetUserPasswordCommand,
+  AdminSetUserPasswordCommand,
+  ConfirmForgotPasswordCommand,
   ConfirmSignUpCommand,
   CognitoIdentityProviderClient,
   CreateUserPoolClientCommand,
   CreateUserPoolCommand,
+  ForgotPasswordCommand,
+  GetUserAttributeVerificationCodeCommand,
   InitiateAuthCommand,
   ListUsersCommand,
   SignUpCommand,
@@ -126,6 +132,9 @@ exports.handler = async event => {
   if (event.triggerSource === "PostAuthentication_Authentication" && metadata.failPost === "true") {
     throw new Error("post authentication denied");
   }
+  if (event.triggerSource.includes("Admin") && event.callerContext.clientId !== "CLIENT_ID_NOT_APPLICABLE") {
+    throw new Error("admin client identity was invented");
+  }
   return event;
 };`,
         }]),
@@ -160,7 +169,7 @@ exports.handler = async event => {
         Username: "denied@example.test",
         Password: "Valid-password-1!",
       })),
-      (error: any) => error?.name === "InvalidLambdaResponseException",
+      (error: any) => error?.name === "UnexpectedLambdaException",
     );
     assert.equal((await cognito.send(new ListUsersCommand({ UserPoolId: poolId }))).Users?.length, 0);
     await lambda.send(new AddPermissionCommand({
@@ -174,7 +183,7 @@ exports.handler = async event => {
     for (const [username, errorName] of [
       ["function-error@example.test", "UserLambdaValidationException"],
       ["malformed-output@example.test", "InvalidLambdaResponseException"],
-      ["timeout@example.test", "UserLambdaValidationException"],
+      ["timeout@example.test", "UnexpectedLambdaException"],
       ["custom-malformed@example.test", "InvalidLambdaResponseException"],
     ] as const) {
       await assert.rejects(
@@ -223,6 +232,31 @@ exports.handler = async event => {
       ClientId: clientId,
       Username: manualEmail,
       ConfirmationCode: confirmationCode,
+      ClientMetadata: { confirmTrace: "confirm-signup" },
+    }));
+
+    const adminEmail = "admin-trigger@example.test";
+    await cognito.send(new AdminCreateUserCommand({
+      UserPoolId: poolId,
+      Username: adminEmail,
+      TemporaryPassword: "Valid-temporary-1!",
+      MessageAction: "SUPPRESS",
+      ClientMetadata: { adminTrace: "create" },
+      UserAttributes: [
+        { Name: "email", Value: adminEmail },
+        { Name: "email_verified", Value: "true" },
+      ],
+    }));
+    await cognito.send(new AdminSetUserPasswordCommand({
+      UserPoolId: poolId,
+      Username: adminEmail,
+      Password: "Valid-admin-password-2!",
+      Permanent: true,
+    }));
+    await cognito.send(new AdminResetUserPasswordCommand({
+      UserPoolId: poolId,
+      Username: adminEmail,
+      ClientMetadata: { adminTrace: "reset" },
     }));
 
     const persistedPool = simulator.store.regionState(region).cognito.pools[poolId];
@@ -261,6 +295,38 @@ exports.handler = async event => {
       Buffer.from(authentication.AuthenticationResult!.IdToken!.split(".")[1], "base64url").toString("utf8"),
     );
     assert.equal(idClaims.trigger_claim, "present");
+    await cognito.send(new GetUserAttributeVerificationCodeCommand({
+      AccessToken: authentication.AuthenticationResult!.AccessToken!,
+      AttributeName: "email",
+      ClientMetadata: { verifyTrace: "manual" },
+    }));
+    await cognito.send(new ForgotPasswordCommand({
+      ClientId: clientId,
+      Username: manualEmail,
+      ClientMetadata: { forgotTrace: "request" },
+    }));
+    const recoveryInbox = await signedFetch(
+      `${endpoint}/_stacksim/api/ses/inbox?recipient=${encodeURIComponent(manualEmail)}&originService=cognito-idp&status=all&pageSize=100`,
+      { service: "ses", region, credentials, headers: { "x-stacksim-region": region } },
+    ).then(response => response.json()) as any;
+    let recoveryCode: string | undefined;
+    for (const descriptor of recoveryInbox.messages) {
+      const recoveryDetail = await signedFetch(
+        `${endpoint}/_stacksim/api/ses/inbox/${encodeURIComponent(descriptor.messageId)}`,
+        { service: "ses", region, credentials, headers: { "x-stacksim-region": region } },
+      ).then(response => response.json()) as any;
+      if (recoveryDetail.message.subject === "Reset your password") {
+        recoveryCode = /\b(\d{6})\b/.exec(recoveryDetail.message.textBody)?.[1];
+      }
+    }
+    assert(recoveryCode);
+    await cognito.send(new ConfirmForgotPasswordCommand({
+      ClientId: clientId,
+      Username: manualEmail,
+      ConfirmationCode: recoveryCode,
+      Password: "Recovered-lambda-password-3!",
+      ClientMetadata: { confirmForgotTrace: "confirmed" },
+    }));
 
     const triggerLogGroup = Object.keys(simulator.store.regionState(region).logs)
       .find(name => name.endsWith("/cognito-trigger"));
@@ -273,6 +339,7 @@ exports.handler = async event => {
       "PreSignUp_SignUp",
       "CustomMessage_SignUp",
       "PostConfirmation_ConfirmSignUp",
+      "PostConfirmation_ConfirmForgotPassword",
       "PreAuthentication_Authentication",
       "TokenGeneration_Authentication",
       "PostAuthentication_Authentication",
@@ -280,6 +347,18 @@ exports.handler = async event => {
       assert.match(combinedLogs, new RegExp(source));
     }
     assert.match(combinedLogs, /lambda-test/);
+    assert.match(combinedLogs, /confirm-signup/);
+    assert.match(combinedLogs, /confirmed/);
+    assert.match(combinedLogs, /CustomMessage_VerifyUserAttribute/);
+    assert.match(combinedLogs, /CLIENT_ID_NOT_APPLICABLE/);
+    assert.match(
+      combinedLogs,
+      /"triggerSource":"PreSignUp_AdminCreateUser"[^\n]*"clientId":"CLIENT_ID_NOT_APPLICABLE"/,
+    );
+    assert.match(
+      combinedLogs,
+      /"triggerSource":"CustomMessage_ForgotPassword"[^\n]*"clientId":"CLIENT_ID_NOT_APPLICABLE"/,
+    );
     assert.doesNotMatch(combinedLogs, /triggered@example\.test|manual-confirm@example\.test/);
     const metricNames = (await simulator.metrics.ListMetrics({ Namespace: "AWS/Cognito" }))
       .Metrics.map((descriptor: any) => descriptor.MetricName);

@@ -2721,6 +2721,7 @@ export interface CognitoRefreshSessionState {
   revocationReason?: "TOKEN_REVOKE" | "GLOBAL_SIGN_OUT" | "USER_DISABLED" | "USER_DELETED" | "PASSWORD_CHANGED" | "ROTATED" | "REPLAY";
   oauthScopes?: string[];
   oauthNonce?: string;
+  deviceKey?: string;
 }
 
 export interface CognitoDeliveryIntentState {
@@ -2738,6 +2739,10 @@ export interface CognitoDeliveryIntentState {
   clientId: string;
   userSub: string;
   userGenerationId: string;
+  targetAttribute?: {
+    name: "email";
+    canonicalValue: string;
+  };
   credential: {
     kind: "DERIVED_CODE";
     derivationVersion: 1;
@@ -2947,7 +2952,8 @@ export interface CognitoIdentityProviderState {
   samlMetadata?: {
     entityId: string;
     ssoUrl: string;
-    certificate: string;
+    certificates: string[];
+    certificate?: string;
     raw: string;
   };
   attributeMapping: Record<string, string>;
@@ -2995,6 +3001,7 @@ export interface CognitoChallengeState {
   purpose:
     | "NEW_PASSWORD_REQUIRED"
     | "PASSWORD_VERIFIER"
+    | "SELECT_MFA_TYPE"
     | "SOFTWARE_TOKEN_MFA"
     | "MFA_SETUP"
     | "EMAIL_OTP"
@@ -3036,6 +3043,7 @@ export interface CognitoDeviceState {
   createdAt: number;
   lastAuthenticatedAt?: number;
   lastModifiedAt: number;
+  clientId?: string;
   /** @deprecated Plaintext COG-07 shape; migrated to passwordVerifier/salt envelopes. */
   secretVerifier?: {
     passwordVerifier: string;

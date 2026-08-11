@@ -37,6 +37,7 @@ import { SignedXml } from "xml-crypto";
 
 const credentials = { accessKeyId: "admin", secretAccessKey: "password" };
 const samlCertificate = "MIICqTCCAZGgAwIBAgIJALZkmVRXHgJ3MA0GCSqGSIb3DQEBCwUAMBQxEjAQBgNVBAMTCXNhbWwudGVzdDAeFw0yNjA3MjUxNzUwMzNaFw0zMTA3MjYxNzUwMzNaMBQxEjAQBgNVBAMTCXNhbWwudGVzdDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBANF1gM4f+AuUp5opXiPeYLzaP51KP2le2Uv1h/xMIHEweZq9vys5cU3VeMilE3BQSKhdhMqUwRzem7YPheeIeChgJ5MyTxFGyFBVfpSXRUTvKaKrinPoHBX8oXYZWCf8RfMpLi2FMGMF+WcXHVcZiN0RQyE34ndlUuZc9nqXrh1uVQYm4KXrMg0kpPXv5x5vTJH60yJH77LImpPkkQMUAJUurWNvZrdSYxpwHZ7gcW5XZ0IjC+RYrl6DcFryiFsDCOz4OuObLhRUNtyMN74NTaSdkca8WOF9YStl4jgOK11i9NhLITmvpbrw9OdgWe3N4UXk6rWnsjqxmpSgHvGaq30CAwEAATANBgkqhkiG9w0BAQsFAAOCAQEASr4nCS+nEP0CTN93tmA8OYkyRTW6ZTIX/L9bdU2FKdI8rEqsr3w7TvfteEyBvIgOCMQGciSdynxClie8ncGGspqSlZHWVIVYAm0mP+zghznai/3BcHMtKbOVjKa6SvePeEyF9kcHlSJoZ/Ex7zAPR5kZkhpCuwHfgglWHbLALlD6UMfXs+KzOXFT4ixqIMd8+g6OKANl2wWLpqcCh/MHHKvO+KD6zA0/MNyLSst8AFZbHcmA8qMYRqL0nOgSKEyP7c1kotZm6u7UF126A0WSoIj2JxQRrEfvYHdcNhSXxrj5/5DgSuIZ9n6opXT3jOJ8SSp2HUipKFFdoTNk18tN5g==";
+const unknownSamlCertificate = Buffer.alloc(Buffer.from(samlCertificate, "base64").length, 0x42).toString("base64");
 
 function urlBase64(value: string): string {
   return value.replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
@@ -141,6 +142,8 @@ test("COG-05 OIDC federation, provider controls, linking, encrypted secrets, and
   const publicJwk = keyPair.publicKey.export({ format: "jwk" });
   let issuer = "";
   let provider: Server | undefined;
+  let endpointProvider: Server | undefined;
+  let endpointOrigin = "";
   let simulator: StackSim | undefined;
   let client: CognitoIdentityProviderClient | undefined;
   let nonce = "";
@@ -215,6 +218,50 @@ test("COG-05 OIDC federation, provider controls, linking, encrypted secrets, and
       }
       res.writeHead(404).end();
     });
+    endpointProvider = createServer(async (req, res) => {
+      const url = new URL(req.url ?? "/", endpointOrigin || "http://127.0.0.1");
+      if (url.pathname === "/token") {
+        assert.equal(req.method, "POST");
+        const form = new URLSearchParams(await body(req));
+        assert.equal(form.get("grant_type"), "authorization_code");
+        assert.equal(form.get("client_id"), "upstream-client");
+        assert.equal(form.get("client_secret"), "upstream-secret-value");
+        assert.equal(form.get("code"), "valid-upstream-code");
+        assert.equal(form.get("redirect_uri"), expectedRedirectUri);
+        const now = Math.floor(Date.now() / 1_000);
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({
+          access_token: "upstream-access-token",
+          token_type: "Bearer",
+          id_token: jwt(keyPair.privateKey, kid, {
+            iss: issuer,
+            aud: "upstream-client",
+            sub: "external-subject-123",
+            nonce,
+            iat: now,
+            exp: now + 300,
+            email: "federated@example.test",
+            email_verified: true,
+            name: "Federated Learner",
+          }),
+        }));
+      }
+      if (url.pathname === "/userinfo") {
+        assert.equal(req.method, "POST");
+        assert.equal(req.headers.authorization, "Bearer upstream-access-token");
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({
+          sub: "external-subject-123",
+          preferred_username: "federated-learner",
+        }));
+      }
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      endpointProvider!.once("error", reject);
+      endpointProvider!.listen(0, "127.0.0.1", resolve);
+    });
+    endpointOrigin = `http://127.0.0.1:${(endpointProvider.address() as { port: number }).port}`;
     await new Promise<void>((resolve, reject) => {
       provider!.once("error", reject);
       provider!.listen(0, "127.0.0.1", resolve);
@@ -248,6 +295,9 @@ test("COG-05 OIDC federation, provider controls, linking, encrypted secrets, and
       client_id: "upstream-client",
       client_secret: "upstream-secret-value",
       authorize_scopes: "openid email profile",
+      token_url: `${endpointOrigin}/token`,
+      attributes_url: `${endpointOrigin}/userinfo`,
+      attributes_request_method: "POST",
     };
     const created = await client.send(new CreateIdentityProviderCommand({
       UserPoolId: poolId,
@@ -283,6 +333,9 @@ test("COG-05 OIDC federation, provider controls, linking, encrypted secrets, and
         oidc_issuer: issuer,
         client_id: "upstream-client",
         authorize_scopes: "openid email profile",
+        token_url: `${endpointOrigin}/token`,
+        attributes_url: `${endpointOrigin}/userinfo`,
+        attributes_request_method: "POST",
       },
       AttributeMapping: {
         email: "email",
@@ -437,6 +490,7 @@ test("COG-05 OIDC federation, provider controls, linking, encrypted secrets, and
     client?.destroy();
     await simulator?.stop().catch(() => undefined);
     await new Promise<void>(resolve => provider?.close(() => resolve()) ?? resolve());
+    await new Promise<void>(resolve => endpointProvider?.close(() => resolve()) ?? resolve());
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -465,7 +519,8 @@ test("COG-05 accepts a correlated signed SAML POST and rejects its replay", asyn
       Schema: [{ Name: "email", Required: true, Mutable: true }],
     }));
     const poolId = pool.UserPool!.Id!;
-    const metadata = `<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" entityID="https://saml-idp.example.test"><md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"><md:KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>${samlCertificate}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor><md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="http://127.0.0.1:39998/saml-authorize"/></md:IDPSSODescriptor></md:EntityDescriptor>`;
+    const metadataFor = (certificates: string[]) => `<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" entityID="https://saml-idp.example.test"><md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">${certificates.map(certificate => `<md:KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>${certificate}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>`).join("")}<md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="http://127.0.0.1:39998/saml-authorize"/></md:IDPSSODescriptor></md:EntityDescriptor>`;
+    const metadata = metadataFor([unknownSamlCertificate, samlCertificate]);
     await client.send(new CreateIdentityProviderCommand({
       UserPoolId: poolId,
       ProviderName: "TestSAML",
@@ -555,6 +610,37 @@ test("COG-05 accepts a correlated signed SAML POST and rejects its replay", asyn
     });
     assert.equal(replayed.status, 400);
     assert(["access_denied", "invalid_request"].includes((await replayed.json() as any).error));
+
+    await client.send(new UpdateIdentityProviderCommand({
+      UserPoolId: poolId,
+      ProviderName: "TestSAML",
+      ProviderDetails: { MetadataFile: metadataFor([unknownSamlCertificate]) },
+    }));
+    const unknownRedirect = await fetch(authorize, { redirect: "manual" });
+    const unknownIdpLocation = new URL(unknownRedirect.headers.get("location")!);
+    const unknownRequestXml = inflateRawSync(
+      Buffer.from(unknownIdpLocation.searchParams.get("SAMLRequest")!, "base64"),
+    ).toString("utf8");
+    const unknownRequestId = unknownRequestXml.match(/\bID="([^"]+)"/)?.[1];
+    const unknownAcsUrl = unknownRequestXml.match(/\bAssertionConsumerServiceURL="([^"]+)"/)?.[1];
+    assert(unknownRequestId && unknownAcsUrl);
+    const unknownOnlyResponse = await fetch(unknownAcsUrl, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        SAMLResponse: signedSamlResponse({
+          poolId,
+          acsUrl: unknownAcsUrl,
+          requestId: unknownRequestId,
+          responseId: "_response-cog05-unknown",
+          assertionId: "_assertion-cog05-unknown",
+        }),
+        RelayState: unknownIdpLocation.searchParams.get("RelayState")!,
+      }),
+    });
+    assert.equal(unknownOnlyResponse.status, 400);
+    assert.equal((await unknownOnlyResponse.json() as any).error, "access_denied");
   } finally {
     client?.destroy();
     await simulator.stop().catch(() => undefined);
