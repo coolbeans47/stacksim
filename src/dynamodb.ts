@@ -27,6 +27,7 @@ import type { DynamoGlobalTableChangeState, DynamoGlobalTableItemVersionState, D
 
 const DYNAMODB_READ_PAGE_BYTES = 1024 * 1024;
 const PARTIQL_TOKEN_TTL_MS = 15 * 60_000;
+export const DYNAMODB_DEFAULT_WARM_THROUGHPUT = Object.freeze({ ReadUnitsPerSecond: 12_000, WriteUnitsPerSecond: 4_000 });
 
 function indexItems(table: TableState, index: DynamoIndexState): Item[] {
   return Object.values(table.items).filter(item => index.keySchema.every(key => item[key.AttributeName]));
@@ -177,7 +178,7 @@ function tableDescription(table: TableState, store?: StateStore): any {
     ...(table.onDemandThroughput && Object.keys(table.onDemandThroughput).length ? { OnDemandThroughput: clone(table.onDemandThroughput) } : {}),
     WarmThroughput: table.warmThroughput
       ? warmThroughputDescription(table.warmThroughput)
-      : { ReadUnitsPerSecond: 12_000, WriteUnitsPerSecond: 4_000, Status: table.status === "CREATING" ? "CREATING" : table.status === "UPDATING" ? "UPDATING" : "ACTIVE" },
+      : { ...DYNAMODB_DEFAULT_WARM_THROUGHPUT, Status: table.status === "CREATING" ? "CREATING" : table.status === "UPDATING" ? "UPDATING" : "ACTIVE" },
     SSEDescription: { SSEType: table.sse.sseType, Status: table.sse.status, ...(table.sse.kmsMasterKeyId ? { KMSMasterKeyArn: table.sse.kmsMasterKeyId } : {}) },
     ...(table.restoreSummary ? { RestoreSummary: { RestoreDateTime: table.restoreSummary.restoreDateTime / 1000, RestoreInProgress: table.restoreSummary.restoreInProgress, ...(table.restoreSummary.sourceBackupArn ? { SourceBackupArn: table.restoreSummary.sourceBackupArn } : {}), ...(table.restoreSummary.sourceTableArn ? { SourceTableArn: table.restoreSummary.sourceTableArn } : {}) } } : {}),
     ...(table.streamSpecification ? { StreamSpecification: clone(table.streamSpecification) } : {}),

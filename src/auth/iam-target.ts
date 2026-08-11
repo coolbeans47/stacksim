@@ -13,6 +13,7 @@ export const IAM_AUTHORIZATION_RESOURCE_MAP = Object.freeze({
   CreateRole: "role",
   GetRole: "role",
   ListRoles: "*",
+  ListInstanceProfilesForRole: "role",
   UpdateRole: "role",
   UpdateAssumeRolePolicy: "role",
   DeleteRole: "role",

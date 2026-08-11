@@ -292,6 +292,46 @@ test("DynamoDB table provider drives the real service through composite create, 
   }
 });
 
+test("DynamoDB provider distinguishes computed default warm throughput from an explicitly managed value", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-dynamodb-default-warm-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "off"});
+  let dynamodb: DynamoDBClient | undefined;
+  try {
+    await simulator.start();
+    dynamodb = new DynamoDBClient({ endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials });
+    const provider = createDynamoDbTableProvider(simulator.dynamodb);
+    const properties = {
+      TableName: "provider-default-warm",
+      AttributeDefinitions: [{ AttributeName: "pk", AttributeType: "S" }],
+      KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }],
+      BillingMode: "PAY_PER_REQUEST",
+      DeletionProtectionEnabled: false,
+    };
+    const omitted = provider.canonicalize(properties, context("DefaultWarmTable"));
+
+    const created = await settle(current => provider.create(omitted, current), "DefaultWarmTable");
+    assert.equal(created.status, "SUCCESS", "a service-computed default must not look like an unsupported removal during create stabilization");
+    assert.deepEqual((await dynamodb.send(new DescribeTableCommand({ TableName: omitted.TableName }))).Table?.WarmThroughput, { ReadUnitsPerSecond: 12_000, WriteUnitsPerSecond: 4_000, Status: "ACTIVE" });
+
+    const unchanged = await settle(current => provider.update(omitted.TableName, omitted, omitted, current), "DefaultWarmTable");
+    assert.equal(unchanged.status, "SUCCESS", "an omitted property must remain stable when DescribeTable reports its computed default");
+
+    const configured = provider.canonicalize({ ...properties, WarmThroughput: { ReadUnitsPerSecond: 20, WriteUnitsPerSecond: 10 } }, context("DefaultWarmTable"));
+    const configuredUpdate = await settle(current => provider.update(omitted.TableName, omitted, configured, current), "DefaultWarmTable");
+    assert.equal(configuredUpdate.status, "SUCCESS");
+    const removal = await provider.update(omitted.TableName, configured, omitted, context("DefaultWarmTable"));
+    assert.equal(removal.status, "FAILED", "an explicitly managed warm-throughput value must keep the service's no-removal boundary");
+    if (removal.status === "FAILED") assert.equal(removal.errorCode, "UnsupportedUpdate");
+
+    const deleted = await settle(current => provider.delete(omitted.TableName, configured, current), "DefaultWarmTable");
+    assert.equal(deleted.status, "SUCCESS");
+  } finally {
+    dynamodb?.destroy();
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("DynamoDB provider accepts the ordinary current CDK table shape and plans exact replacements", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-dynamodb-contract-"));
   const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "off"});

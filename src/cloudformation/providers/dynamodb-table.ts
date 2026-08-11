@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { DynamoDbService } from "../../dynamodb.js";
+import { DYNAMODB_DEFAULT_WARM_THROUGHPUT, type DynamoDbService } from "../../dynamodb.js";
 import { AwsError } from "../../errors.js";
 import {
   ProviderReferenceError,
@@ -654,7 +654,7 @@ export function createDynamoDbTableProvider(dynamodb: DynamoDbService): Producti
     }
   };
 
-  const reconcile = async (desired: DynamoDbTableModel, context: ProviderContext): Promise<ProviderUpdateResult<DynamoDbTableModel>> => {
+  const reconcile = async (desired: DynamoDbTableModel, context: ProviderContext, previous?: DynamoDbTableModel): Promise<ProviderUpdateResult<DynamoDbTableModel>> => {
     let current: DynamoDbTableSnapshot;
     try { current = await describe(desired.TableName); } catch (error) { return failed(error); }
     if (!ownership(current, context)) return { status: "FAILED", errorCode: "OwnershipConflict", message: `Table ${desired.TableName} is not owned by this stack resource` };
@@ -728,7 +728,16 @@ export function createDynamoDbTableProvider(dynamodb: DynamoDbService): Producti
       };
       return mutate(desired.TableName, () => dynamodb.UpdateTable({ TableName: desired.TableName, OnDemandThroughput: update }));
     }
-    if (!same(current.model.WarmThroughput, desired.WarmThroughput)) {
+    // DescribeTable reports AWS's computed warm-throughput default even when
+    // WarmThroughput was omitted. Treat that value as absent only when the
+    // CloudFormation model also omitted it; an explicitly managed value must
+    // still retain the backing service's no-removal behavior.
+    const currentWarmThroughput = previous?.WarmThroughput === undefined
+      && desired.WarmThroughput === undefined
+      && same(current.model.WarmThroughput, DYNAMODB_DEFAULT_WARM_THROUGHPUT)
+      ? undefined
+      : current.model.WarmThroughput;
+    if (!same(currentWarmThroughput, desired.WarmThroughput)) {
       if (!desired.WarmThroughput) return { status: "FAILED", errorCode: "UnsupportedUpdate", message: "Removing WarmThroughput is not supported by the backing service" };
       return mutate(desired.TableName, () => dynamodb.UpdateTable({ TableName: desired.TableName, WarmThroughput: structuredClone(desired.WarmThroughput) }));
     }
@@ -835,9 +844,9 @@ export function createDynamoDbTableProvider(dynamodb: DynamoDbService): Producti
       } catch (error) { return notFound(error) ? { status: "NOT_FOUND", physicalId } : failed(error) as ProviderReadResult<DynamoDbTableModel>; }
     },
 
-    async update(physicalId: string, _previous: DynamoDbTableModel, desired: DynamoDbTableModel, context: ProviderContext): Promise<ProviderUpdateResult<DynamoDbTableModel>> {
+    async update(physicalId: string, previous: DynamoDbTableModel, desired: DynamoDbTableModel, context: ProviderContext): Promise<ProviderUpdateResult<DynamoDbTableModel>> {
       if (physicalId !== desired.TableName) return { status: "FAILED", errorCode: "RequiresReplacement", message: "TableName changes require replacement" };
-      return reconcile(desired, context);
+      return reconcile(desired, context, previous);
     },
 
     async delete(physicalId: string, _previous: DynamoDbTableModel, context: ProviderContext): Promise<ProviderDeleteResult> {

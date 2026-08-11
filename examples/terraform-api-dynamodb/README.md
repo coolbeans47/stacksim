@@ -105,36 +105,13 @@ command -v terraform
 
 Use `darwin_amd64` instead on an Intel Mac.
 
-## Build and start StackSim
+## Start StackSim
 
-From the StackSim repository root, install dependencies and build the project:
-
-```text
-npm ci
-npm run build
-```
-
-Start StackSim and leave it running in this terminal:
+From the StackSim repository root, start StackSim and leave it running in this
+terminal:
 
 ```text
 npm start
-```
-
-StackSim should report its SDK endpoint as `http://127.0.0.1:4566` and its API
-invoke port as `4567`.
-
-Verify the service from a second terminal.
-
-Windows PowerShell:
-
-```powershell
-Invoke-WebRequest -UseBasicParsing http://127.0.0.1:4566/_stacksim/health
-```
-
-macOS:
-
-```bash
-curl --fail http://127.0.0.1:4566/_stacksim/health
 ```
 
 ## Configure Terraform for StackSim
