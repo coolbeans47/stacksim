@@ -19,6 +19,7 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import {
   CreateBucketCommand,
+  DeleteObjectCommand,
   GetObjectCommand,
   ListObjectsV2Command,
   PutBucketLifecycleConfigurationCommand,
@@ -311,6 +312,35 @@ test("DUG-12 service principal allow/deny, ownership, region, archive, overwrite
       })),
       (error: any) => error.name === "ValidationException" && /ZSTD/.test(error.message),
     );
+    await assert.rejects(
+      ddb.send(new ExportTableToPointInTimeCommand({ TableArn: tableArn, S3Bucket: allowed, ExportType: "INCREMENTAL_EXPORT", ClientToken: "incremental" })),
+      (error: any) => error.name === "ValidationException" && /Incremental/.test(error.message),
+    );
+
+    const foreignRegion = "us-east-1";
+    const wrongRegionBucket = "dug12-wrong-region";
+    simulator.store.state.installation.s3BucketNames[wrongRegionBucket] = { accountId, region: foreignRegion };
+    simulator.store.regionState(foreignRegion).s3Buckets[wrongRegionBucket] = {
+      name: wrongRegionBucket,
+      arn: `arn:aws:s3:::${wrongRegionBucket}`,
+      region: foreignRegion,
+      ownerAccountId: accountId,
+      ownerId: accountId.padStart(64, "0"),
+      createdAt: clock.now(),
+      versioning: "unversioned",
+      encryption: "AES256",
+      encryptionConfiguration: { algorithm: "AES256", bucketKeyEnabled: false },
+      tags: {},
+      publicAccessBlock: { blockPublicAcls: true, ignorePublicAcls: true, blockPublicPolicy: true, restrictPublicBuckets: true },
+      objectOwnership: "BucketOwnerEnforced",
+      acl: { ownerId: accountId.padStart(64, "0"), ownerDisplayName: "owner", grants: [] },
+      requestPayment: "BucketOwner",
+      abacStatus: "Disabled",
+    };
+    await assert.rejects(
+      ddb.send(new ExportTableToPointInTimeCommand({ TableArn: tableArn, S3Bucket: wrongRegionBucket, ClientToken: "wrong-region" })),
+      (error: any) => error.name === "PermanentRedirect" || error.$metadata?.httpStatusCode === 301,
+    );
 
     await s3Client.send(new PutBucketVersioningCommand({ Bucket: allowed, VersioningConfiguration: { Status: "Enabled" } }));
     await s3Client.send(new PutObjectCommand({ Bucket: allowed, Key: "incoming/archive.json.gz", Body: gzipLines([{ Item: { id: { S: "archived" } } }]), ContentType: "application/x-gzip" }));
@@ -378,6 +408,124 @@ test("DUG-12 service principal allow/deny, ownership, region, archive, overwrite
 function gzipLines(rows: unknown[]): Buffer {
   return gzipSync(Buffer.from(rows.map(row => JSON.stringify(row)).join("\n") + "\n"));
 }
+
+test("DUG-12 overwrite conflict, deletion during import, and TABLE-stage resume", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-dug12-faults-"));
+  const clock = new TestClock(Date.parse("2026-08-11T16:00:00Z"));
+  let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off" });
+  let ddb: DynamoDBClient | undefined;
+  let s3Client: S3Client | undefined;
+  try {
+    await simulator.start();
+    ddb = dynamo(simulator);
+    s3Client = s3(simulator);
+    const tableArn = await prepareSource(ddb, clock, "FaultSource");
+    const bucket = "dug12-fault-bucket";
+    await s3Client.send(new CreateBucketCommand({ Bucket: bucket, CreateBucketConfiguration: { LocationConstraint: region } }));
+    await s3Client.send(new PutBucketPolicyCommand({ Bucket: bucket, Policy: transferPolicy(bucket) }));
+
+    const conflicted = await ddb.send(new ExportTableToPointInTimeCommand({
+      TableArn: tableArn,
+      S3Bucket: bucket,
+      S3Prefix: "conflict",
+      ClientToken: "overwrite-conflict",
+    }));
+    const conflictArn = conflicted.ExportDescription!.ExportArn!;
+    const conflictJob = simulator.store.regionState(region).dynamodbExports[conflictArn];
+    await s3Client.send(new PutObjectCommand({ Bucket: bucket, Key: conflictJob.dataKey!, Body: Buffer.from("foreign-bytes") }));
+    const conflictedResult = await waitExport(ddb, conflictArn, clock);
+    assert.equal(conflictedResult.ExportStatus, "FAILED");
+    assert.equal(conflictedResult.FailureCode, "S3ObjectConflict");
+
+    const exported = await ddb.send(new ExportTableToPointInTimeCommand({
+      TableArn: tableArn,
+      S3Bucket: bucket,
+      S3Prefix: "ok",
+      ClientToken: "fault-export",
+    }));
+    const completed = await waitExport(ddb, exported.ExportDescription!.ExportArn!, clock);
+    assert.equal(completed.ExportStatus, "COMPLETED");
+    const exportId = exported.ExportDescription!.ExportArn!.split("/export/")[1];
+    const dataKey = `ok/AWSDynamoDB/${exportId}/data/data.json.gz`;
+
+    const importing = await ddb.send(new ImportTableCommand({
+      S3BucketSource: { S3Bucket: bucket, S3KeyPrefix: `ok/AWSDynamoDB/${exportId}/data` },
+      InputFormat: "DYNAMODB_JSON",
+      InputCompressionType: "GZIP",
+      TableCreationParameters: {
+        TableName: "DeletedDuringImport",
+        BillingMode: "PAY_PER_REQUEST",
+        AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }],
+        KeySchema: [{ AttributeName: "id", KeyType: "HASH" }],
+      },
+      ClientToken: "delete-during-import",
+    }));
+    const importArn = importing.ImportTableDescription!.ImportArn!;
+    for (let index = 0; index < 20; index++) {
+      await flush(clock, 1);
+      const job = simulator.store.regionState(region).dynamodbImports[importArn];
+      if ((job.pinnedObjects?.length ?? 0) > 0 || job.importStatus !== "IN_PROGRESS") break;
+    }
+    assert.ok((simulator.store.regionState(region).dynamodbImports[importArn].pinnedObjects?.length ?? 0) > 0);
+    await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: dataKey }));
+    const pinnedJob = simulator.store.regionState(region).dynamodbImports[importArn];
+    pinnedJob.stage = "OBJECTS";
+    pinnedJob.pendingItems = undefined;
+    for (const pin of pinnedJob.pinnedObjects ?? []) pin.completed = false;
+    await simulator.store.save();
+    ddb.destroy(); s3Client.destroy(); ddb = undefined; s3Client = undefined; await simulator.stop();
+    simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off" });
+    await simulator.start();
+    ddb = dynamo(simulator);
+    s3Client = s3(simulator);
+    const deleted = await waitImport(ddb, importArn, clock);
+    assert.equal(deleted.ImportStatus, "FAILED");
+    assert.match(String(deleted.FailureCode), /S3NoSuchKey|S3InvalidObjectState|NoSuchKey/);
+    assert.equal(simulator.store.regionState(region).tables["DeletedDuringImport"], undefined);
+
+    await s3Client.send(new PutObjectCommand({
+      Bucket: bucket,
+      Key: "resume/data.json.gz",
+      Body: gzipLines([{ Item: { id: { S: "resume" }, note: { S: "ok" } } }]),
+    }));
+    const resumeImport = await ddb.send(new ImportTableCommand({
+      S3BucketSource: { S3Bucket: bucket, S3KeyPrefix: "resume/" },
+      InputFormat: "DYNAMODB_JSON",
+      InputCompressionType: "GZIP",
+      TableCreationParameters: {
+        TableName: "ResumeTableStage",
+        BillingMode: "PAY_PER_REQUEST",
+        AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }],
+        KeySchema: [{ AttributeName: "id", KeyType: "HASH" }],
+      },
+      ClientToken: "resume-table-stage",
+    }));
+    const resumeArn = resumeImport.ImportTableDescription!.ImportArn!;
+    for (let index = 0; index < 40; index++) {
+      await flush(clock, 2);
+      const job = simulator.store.regionState(region).dynamodbImports[resumeArn];
+      if (job.stage === "TABLE" || job.stage === "POPULATE" || job.importStatus !== "IN_PROGRESS") break;
+    }
+    const paused = simulator.store.regionState(region).dynamodbImports[resumeArn];
+    if (paused.importStatus === "IN_PROGRESS" && paused.stage && ["TABLE", "POPULATE", "VALIDATE", "PROMOTE"].includes(paused.stage)) {
+      paused.stage = "TABLE";
+      await simulator.store.save();
+      ddb.destroy(); s3Client.destroy(); ddb = undefined; s3Client = undefined; await simulator.stop();
+      simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off" });
+      await simulator.start();
+      ddb = dynamo(simulator);
+      const resumed = await waitImport(ddb, resumeArn, clock);
+      assert.equal(resumed.ImportStatus, "COMPLETED");
+      assert.equal(resumed.ImportedItemCount, 1);
+      assert.equal((await ddb.send(new GetItemCommand({ TableName: "ResumeTableStage", Key: { id: { S: "resume" } } }))).Item?.note?.S, "ok");
+    } else {
+      const finished = await waitImport(ddb, resumeArn, clock);
+      assert.equal(finished.ImportStatus, "COMPLETED");
+    }
+  } finally {
+    ddb?.destroy(); s3Client?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("DUG-12 transfer port pins object generations and rejects generation mismatch on read", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-dug12-pin-"));

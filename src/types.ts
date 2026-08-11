@@ -165,6 +165,8 @@ export interface DynamoImportState {
   destinationKind?: DynamoTransferDestinationKind;
   stage?: DynamoImportStage;
   pinnedObjects?: DynamoPinnedS3ObjectState[];
+  /** Items decoded from pinned objects; retained until the import reaches COMPLETED. */
+  pendingItems?: Item[];
   retainedPartialTable?: boolean;
 }
 

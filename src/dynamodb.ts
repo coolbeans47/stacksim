@@ -35,7 +35,8 @@ import {
   transferCaller,
   validateImportedItems,
   writeLocalExportArtifacts,
-  writeS3ExportArtifacts,
+  writeS3ExportDataObject,
+  writeS3ExportManifests,
 } from "./dynamodb/import-export.js";
 import type { S3TransferPort } from "./s3/transfer-port.js";
 import { combineIdentityAndResourceAuthorization, evaluateResourcePolicy } from "./iam/evaluator.js";
@@ -1080,47 +1081,67 @@ export class DynamoDbService {
     if (!job || job.exportStatus !== "IN_PROGRESS") return;
     try {
       if (!job.stage || job.stage === "ADMITTED") {
-        if (!job.snapshotItems) throw new AwsError("InternalFailure", "Export snapshot is missing from the durable checkpoint", 500);
+        if (!job.snapshotItems && !job.dataObject?.completed) throw new AwsError("InternalFailure", "Export snapshot is missing from the durable checkpoint", 500);
         job.stage = "SNAPSHOT";
         await this.store.save();
       }
       if (job.stage === "SNAPSHOT" || job.stage === "DATA_OBJECTS" || job.stage === "MANIFEST") {
-        const payload = encodeExportPayload(job.snapshotItems ?? {});
-        job.itemCount = payload.itemCount;
-        job.billedSizeBytes = payload.billedSizeBytes;
-        if (job.destinationKind === "file") {
-          const root = this.localBucketRoot(job.s3Bucket);
-          await writeLocalExportArtifacts({
-            root,
-            keyPrefix: job.keyPrefix!,
-            dataKey: job.dataKey!,
-            exportArn: job.exportArn,
-            tableArn: job.tableArn,
-            tableId: job.tableId,
-            exportTime: job.exportTime,
-            startTime: job.startTime,
-            s3Bucket: job.s3Bucket,
-            s3Prefix: job.s3Prefix ?? "",
-            compressed: payload.compressed,
-            itemCount: payload.itemCount,
-            billedSizeBytes: payload.billedSizeBytes,
-          });
-          job.stage = "MANIFEST";
-        } else {
+        if (!job.dataObject?.completed) {
+          if (!job.snapshotItems) throw new AwsError("InternalFailure", "Export snapshot is missing from the durable checkpoint", 500);
+          const payload = encodeExportPayload(job.snapshotItems);
+          job.itemCount = payload.itemCount;
+          job.billedSizeBytes = payload.billedSizeBytes;
+          if (job.destinationKind === "file") {
+            const root = this.localBucketRoot(job.s3Bucket);
+            await writeLocalExportArtifacts({
+              root,
+              keyPrefix: job.keyPrefix!,
+              dataKey: job.dataKey!,
+              exportArn: job.exportArn,
+              tableArn: job.tableArn,
+              tableId: job.tableId,
+              exportTime: job.exportTime,
+              startTime: job.startTime,
+              s3Bucket: job.s3Bucket,
+              s3Prefix: job.s3Prefix ?? "",
+              compressed: payload.compressed,
+              itemCount: payload.itemCount,
+              billedSizeBytes: payload.billedSizeBytes,
+            });
+            job.stage = "MANIFEST";
+          } else {
+            const port = this.requireTransferPort();
+            const caller = transferCaller(this.store.accountId, job.tableArn, job.s3BucketOwner);
+            if (job.stage === "SNAPSHOT") {
+              job.stage = "DATA_OBJECTS";
+              await this.store.save();
+            }
+            const data = await writeS3ExportDataObject({ port, caller, job, compressed: payload.compressed });
+            job.dataObject = pinState(data, true);
+            job.stage = "DATA_OBJECTS";
+            await this.store.save();
+            const manifestFilesKey = await writeS3ExportManifests({ port, caller, job, compressed: payload.compressed, data });
+            job.manifestFilesKey = manifestFilesKey;
+            job.stage = "MANIFEST";
+          }
+          await this.store.save();
+        } else if (!job.manifestFilesKey) {
+          if (!job.snapshotItems) throw new AwsError("InternalFailure", "Export snapshot is missing from the durable checkpoint", 500);
+          const payload = encodeExportPayload(job.snapshotItems);
           const port = this.requireTransferPort();
           const caller = transferCaller(this.store.accountId, job.tableArn, job.s3BucketOwner);
-          if (job.stage === "SNAPSHOT") job.stage = "DATA_OBJECTS";
-          const written = await writeS3ExportArtifacts({ port, caller, job, compressed: payload.compressed });
-          job.dataObject = pinState(written.data, true);
-          job.manifestFilesKey = written.manifestFilesKey;
+          const data = await writeS3ExportDataObject({ port, caller, job, compressed: payload.compressed });
+          job.manifestFilesKey = await writeS3ExportManifests({ port, caller, job, compressed: payload.compressed, data });
+          job.stage = "MANIFEST";
+          await this.store.save();
+        } else {
           job.stage = "MANIFEST";
         }
-        delete job.snapshotItems;
-        await this.store.save();
       }
       job.exportStatus = "COMPLETED";
       job.stage = "COMPLETED";
       job.endTime = this.clock.now();
+      delete job.snapshotItems;
     } catch (error) {
       this.failExport(job, error);
     }
@@ -1217,7 +1238,6 @@ export class DynamoDbService {
     try {
       const createInput = job.tableCreationParameters;
       const tableName = String(createInput.TableName);
-      let table = this.tables[tableName];
 
       if (!job.stage || job.stage === "ADMITTED") {
         if (job.destinationKind === "s3") {
@@ -1227,10 +1247,8 @@ export class DynamoDbService {
           const prefix = job.s3BucketSource.S3KeyPrefix ?? "";
           const pins = await port.listAndPinPrefix(job.s3BucketSource.S3Bucket, prefix, caller);
           job.pinnedObjects = pins.map(pin => pinState(pin));
-          job.stage = "MANIFEST";
-        } else {
-          job.stage = "MANIFEST";
         }
+        job.stage = "MANIFEST";
         await this.store.save();
       }
 
@@ -1255,12 +1273,16 @@ export class DynamoDbService {
           for (const pin of job.pinnedObjects ?? []) pin.completed = true;
         }
         job.processedItemCount = imported.length;
+        job.pendingItems = imported;
         job.stage = "OBJECTS";
         await this.store.save();
+        job.stage = "TABLE";
+        await this.store.save();
+      }
 
+      if (job.stage === "TABLE") {
+        let table = this.tables[tableName];
         if (!table) {
-          job.stage = "TABLE";
-          await this.store.save();
           await this.CreateTable({ ...clone(createInput), BillingMode: createInput.BillingMode ?? "PAY_PER_REQUEST" });
           table = this.tables[tableName];
           job.tableArn = table.arn;
@@ -1268,25 +1290,44 @@ export class DynamoDbService {
           table.status = "CREATING";
           for (const index of table.globalSecondaryIndexes ?? []) { index.indexStatus = "CREATING"; index.backfilling = true; }
           await this.store.save();
+        } else if (table.arn === job.tableArn && table.status === "CREATING") {
+          // resume after CreateTable checkpoint
+        } else if (table.arn !== job.tableArn) {
+          throw new AwsError("ResourceInUseException", `Table already exists: ${tableName}`);
         }
-
         job.stage = "POPULATE";
-        const items = validateImportedItems(table, imported, (candidate, item) => validateIndexAttributes(candidate, item));
+        await this.store.save();
+      }
+
+      if (job.stage === "POPULATE") {
+        const table = this.tables[tableName];
+        if (!table || table.arn !== job.tableArn) throw new AwsError("InternalFailure", "Import target table is missing from the durable checkpoint", 500);
+        if (!job.pendingItems) throw new AwsError("InternalFailure", "Import pending items are missing from the durable checkpoint", 500);
+        const items = validateImportedItems(table, job.pendingItems, (candidate, item) => validateIndexAttributes(candidate, item));
         table.items = items;
         job.importedItemCount = Object.keys(items).length;
         job.errorCount = 0;
-        await this.store.save();
-
         job.stage = "VALIDATE";
-        if (Object.keys(table.items).length !== job.importedItemCount) throw new AwsError("ValidationException", "Imported item count does not match the durable checkpoint");
         await this.store.save();
+      }
 
+      if (job.stage === "VALIDATE") {
+        const table = this.tables[tableName];
+        if (!table || table.arn !== job.tableArn) throw new AwsError("InternalFailure", "Import target table is missing from the durable checkpoint", 500);
+        if (Object.keys(table.items).length !== job.importedItemCount) throw new AwsError("ValidationException", "Imported item count does not match the durable checkpoint");
         job.stage = "PROMOTE";
+        await this.store.save();
+      }
+
+      if (job.stage === "PROMOTE") {
+        const table = this.tables[tableName];
+        if (!table || table.arn !== job.tableArn) throw new AwsError("InternalFailure", "Import target table is missing from the durable checkpoint", 500);
         table.status = "ACTIVE";
         for (const index of table.globalSecondaryIndexes ?? []) { index.indexStatus = "ACTIVE"; index.backfilling = false; }
         job.importStatus = "COMPLETED";
         job.stage = "COMPLETED";
         job.endTime = this.clock.now();
+        delete job.pendingItems;
       }
     } catch (error) {
       const retain = Boolean(this.tables[String(job.tableCreationParameters.TableName)] && job.stage && ["POPULATE", "VALIDATE", "PROMOTE"].includes(job.stage));

@@ -14,9 +14,9 @@ DynamoDB export/import uses an S3-owned transfer port rather than reading or mut
 ### Job durability
 
 1. Persist `IN_PROGRESS` descriptor (`stage=ADMITTED`) before S3/table side effects
-2. Checkpoint stages: snapshot → data objects → manifests (export); manifest/object pins → table → populate → validate → promote (import)
+2. Checkpoint stages: snapshot → data object (checkpointed) → manifests (export); pin objects → decode/checkpoint items → table → populate → validate → promote (import)
 3. Startup resumes from checkpoints; never converts unfinished work to `COMPLETED`
-4. Failure codes/messages are modeled on the job description; partial import tables are cleaned when safe
+4. Failure codes/messages are modeled on the job description; partial import tables are cleaned when safe; export data-key overwrite conflicts surface as `S3ObjectConflict`
 
 ### Codecs
 

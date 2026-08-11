@@ -15,7 +15,7 @@ Completion records for StackSim design phases. This file tracks closed rows and 
 **Evidence:**
 
 - `src/s3/transfer-port.ts` and `S3Service.createTransferPort()` — generation/version-pinned streaming reads/writes under `dynamodb.amazonaws.com`
-- `src/dynamodb/import-export.ts` + `DynamoDbService` admission-before-side-effect stages
+- `src/dynamodb/import-export.ts` + `DynamoDbService` admission-before-side-effect stages with per-stage resume (export data-object checkpoint before manifests; import TABLE/POPULATE/VALIDATE/PROMOTE)
 - Schema migration `v85-to-v86` fails legacy unfinished jobs safely; active jobs resume from checkpoints
 - Tests: `test/dynamodb-dug12.test.ts`, `test/dynamodb-import-export.test.ts`
 - Docs: README, `docs/reference.md`, `docs/dynamodb-console-guide.md`, action inventory

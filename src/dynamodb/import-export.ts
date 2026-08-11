@@ -188,31 +188,51 @@ export async function writeLocalExportArtifacts(input: {
   await writeFile(resolve(directory, "manifest-summary.checksum"), createHash("md5").update(summary).digest("hex"), { mode: 0o600 });
 }
 
-export async function writeS3ExportArtifacts(input: {
+export async function writeS3ExportDataObject(input: {
   port: S3TransferPort;
   caller: S3TransferCaller;
   job: DynamoExportState;
   compressed: Buffer;
-}): Promise<{ data: S3PinnedObject; manifestFilesKey: string }> {
-  const keyPrefix = input.job.keyPrefix!;
-  const dataKey = input.job.dataKey!;
-  const data = await input.port.writeObject(input.job.s3Bucket, dataKey, input.compressed, input.caller, {
+}): Promise<S3PinnedObject> {
+  if (input.job.dataObject?.completed) {
+    return {
+      bucket: input.job.dataObject.bucket,
+      key: input.job.dataObject.key,
+      versionId: input.job.dataObject.versionId,
+      etag: input.job.dataObject.etag,
+      size: input.job.dataObject.size,
+      storageClass: input.job.dataObject.storageClass,
+    };
+  }
+  return input.port.writeObject(input.job.s3Bucket, input.job.dataKey!, input.compressed, input.caller, {
     contentType: "application/x-gzip",
     contentEncoding: "gzip",
-    failIfExists: !input.job.dataObject?.completed,
+    failIfExists: true,
   });
+}
+
+export async function writeS3ExportManifests(input: {
+  port: S3TransferPort;
+  caller: S3TransferCaller;
+  job: DynamoExportState;
+  compressed: Buffer;
+  data: S3PinnedObject;
+}): Promise<string> {
+  const keyPrefix = input.job.keyPrefix!;
   const manifestFilesKey = `${keyPrefix}/manifest-files.json`;
   const manifestFiles = `${JSON.stringify({
     itemCount: input.job.itemCount,
     md5Checksum: createHash("md5").update(input.compressed).digest("base64"),
-    etag: data.etag,
-    dataFileS3Key: dataKey,
+    etag: input.data.etag,
+    dataFileS3Key: input.job.dataKey!,
   })}\n`;
   await input.port.writeObject(input.job.s3Bucket, manifestFilesKey, Buffer.from(manifestFiles), input.caller, {
     contentType: "application/json",
+    failIfExists: false,
   });
   await input.port.writeObject(input.job.s3Bucket, `${keyPrefix}/manifest-files.checksum`, Buffer.from(createHash("md5").update(manifestFiles).digest("hex")), input.caller, {
     contentType: "text/plain",
+    failIfExists: false,
   });
   const summary = JSON.stringify({
     version: "2020-06-30",
@@ -233,10 +253,24 @@ export async function writeS3ExportArtifacts(input: {
   }, null, 2);
   await input.port.writeObject(input.job.s3Bucket, `${keyPrefix}/manifest-summary.json`, Buffer.from(summary), input.caller, {
     contentType: "application/json",
+    failIfExists: false,
   });
   await input.port.writeObject(input.job.s3Bucket, `${keyPrefix}/manifest-summary.checksum`, Buffer.from(createHash("md5").update(summary).digest("hex")), input.caller, {
     contentType: "text/plain",
+    failIfExists: false,
   });
+  return manifestFilesKey;
+}
+
+/** @deprecated Prefer writeS3ExportDataObject + writeS3ExportManifests for checkpoint boundaries. */
+export async function writeS3ExportArtifacts(input: {
+  port: S3TransferPort;
+  caller: S3TransferCaller;
+  job: DynamoExportState;
+  compressed: Buffer;
+}): Promise<{ data: S3PinnedObject; manifestFilesKey: string }> {
+  const data = await writeS3ExportDataObject(input);
+  const manifestFilesKey = await writeS3ExportManifests({ ...input, data });
   return { data, manifestFilesKey };
 }
 
