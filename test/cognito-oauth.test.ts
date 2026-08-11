@@ -152,12 +152,14 @@ test("COG-04 resource servers, managed login, OAuth grants, OIDC tooling, SSO, a
 
     const callback = "http://127.0.0.1:39123/callback";
     const logout = "http://127.0.0.1:39123/signed-out";
+    const mobileCallback = "stacksim-demo://oauth/callback";
+    const mobileLogout = "stacksim-demo://oauth/signed-out";
     const browserClient = await client.send(new CreateUserPoolClientCommand({
       UserPoolId: poolId,
       ClientName: "browser",
       ExplicitAuthFlows: ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
-      CallbackURLs: [callback],
-      LogoutURLs: [logout],
+      CallbackURLs: [callback, mobileCallback],
+      LogoutURLs: [logout, mobileLogout],
       DefaultRedirectURI: callback,
       SupportedIdentityProviders: ["COGNITO"],
       AllowedOAuthFlowsUserPoolClient: true,
@@ -262,11 +264,25 @@ test("COG-04 resource servers, managed login, OAuth grants, OIDC tooling, SSO, a
     const missingPkce = new URL(authorize);
     missingPkce.searchParams.delete("code_challenge");
     missingPkce.searchParams.delete("code_challenge_method");
-    assert.equal((await localFetch(missingPkce, { redirect: "manual" })).status, 400);
+    const assertTrustedAuthorizeError = async (request: URL, expectedError: string, expectedState: string) => {
+      const response = await localFetch(request, { redirect: "manual" });
+      assert.equal(response.status, 302);
+      const location = new URL(response.headers.get("location")!);
+      assert.equal(`${location.origin}${location.pathname}`, callback);
+      assert.equal(location.searchParams.get("error"), expectedError);
+      assert.equal(location.searchParams.get("state"), expectedState);
+      assert(location.searchParams.get("error_description"));
+    };
+    await assertTrustedAuthorizeError(missingPkce, "invalid_request", "exact-state");
     const unknownScope = new URL(authorize);
     unknownScope.searchParams.set("scope", "openid https://orders.example.test/unknown");
-    const unknownScopeResponse = await localFetch(unknownScope, { redirect: "manual" });
-    assert.equal((await unknownScopeResponse.json() as any).error, "invalid_scope");
+    await assertTrustedAuthorizeError(unknownScope, "invalid_scope", "exact-state");
+    const invalidPrompt = new URL(authorize);
+    invalidPrompt.searchParams.set("prompt", "none");
+    await assertTrustedAuthorizeError(invalidPrompt, "invalid_request", "exact-state");
+    const invalidState = new URL(authorize);
+    invalidState.searchParams.set("state", "");
+    await assertTrustedAuthorizeError(invalidState, "invalid_request", "");
 
     const login = await localFetch(authorize, { redirect: "manual" });
     t.diagnostic("authorization page loaded");
@@ -494,12 +510,71 @@ test("COG-04 resource servers, managed login, OAuth grants, OIDC tooling, SSO, a
     assert.equal(refreshed.status, 200);
     assert.equal((await refreshed.json() as any).scope, "openid email https://orders.example.test/read");
 
+    const narrowed = await localFetch(discovery.token_endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: browserClientId,
+        refresh_token: tokens.refresh_token,
+        scope: "openid",
+      }),
+    });
+    assert.equal(narrowed.status, 200);
+    const narrowedTokens = await narrowed.json() as Record<string, any>;
+    assert.equal(narrowedTokens.scope, "openid");
+    const openidOnlyUserInfo = await localFetch(discovery.userinfo_endpoint, {
+      headers: { authorization: `Bearer ${narrowedTokens.access_token}` },
+    });
+    assert.deepEqual(await openidOnlyUserInfo.json(), {
+      sub: parseJwt(narrowedTokens.access_token).sub,
+      username: parseJwt(narrowedTokens.access_token).username,
+      email: "learner@example.test",
+      email_verified: true,
+    });
+    const widened = await localFetch(discovery.token_endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: browserClientId,
+        refresh_token: tokens.refresh_token,
+        scope: "openid profile",
+      }),
+    });
+    assert.equal(widened.status, 400);
+    assert.equal((await widened.json() as any).error, "invalid_scope");
+
     const sso = await localFetch(authorize, {
       redirect: "manual",
       headers: { cookie: authenticatedCookie },
     });
     assert.equal(sso.status, 302);
     assert.equal(new URL(sso.headers.get("location")!).searchParams.get("state"), "exact-state");
+
+    const mobileAuthorize = new URL(authorize);
+    mobileAuthorize.searchParams.set("redirect_uri", mobileCallback);
+    mobileAuthorize.searchParams.set("state", "mobile-state");
+    const mobileAuthorization = await localFetch(mobileAuthorize, {
+      redirect: "manual",
+      headers: { cookie: authenticatedCookie },
+    });
+    assert.equal(mobileAuthorization.status, 302);
+    const mobileResult = new URL(mobileAuthorization.headers.get("location")!);
+    assert.equal(`${mobileResult.protocol}//${mobileResult.host}${mobileResult.pathname}`, mobileCallback);
+    assert.equal(mobileResult.searchParams.get("state"), "mobile-state");
+    const mobileExchange = await localFetch(discovery.token_endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        client_id: browserClientId,
+        redirect_uri: mobileCallback,
+        code: mobileResult.searchParams.get("code")!,
+        code_verifier: verifier,
+      }),
+    });
+    assert.equal(mobileExchange.status, 200);
 
     const machine = await localFetch(discovery.token_endpoint, {
       method: "POST",
@@ -528,12 +603,12 @@ test("COG-04 resource servers, managed login, OAuth grants, OIDC tooling, SSO, a
     assert.equal(badBasic.status, 401);
     assert.equal((await badBasic.json() as any).error, "invalid_client");
 
-    const loggedOut = await localFetch(`${discovery.end_session_endpoint}?client_id=${encodeURIComponent(browserClientId)}&logout_uri=${encodeURIComponent(logout)}`, {
+    const loggedOut = await localFetch(`${discovery.end_session_endpoint}?client_id=${encodeURIComponent(browserClientId)}&logout_uri=${encodeURIComponent(mobileLogout)}`, {
       redirect: "manual",
       headers: { cookie: authenticatedCookie },
     });
     assert.equal(loggedOut.status, 302);
-    assert.equal(loggedOut.headers.get("location"), logout);
+    assert.equal(loggedOut.headers.get("location"), mobileLogout);
     assert.match(loggedOut.headers.get("set-cookie") ?? "", /Max-Age=0/);
     const afterLogout = await localFetch(authorize, {
       redirect: "manual",

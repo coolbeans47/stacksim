@@ -332,7 +332,8 @@ export function createLambdaFunctionProvider(lambda: LambdaService, s3: S3Servic
   const get = async (name: string, context: ProviderContext) => (await invoke<any>(context, "GET", `/2015-03-31/functions/${encodeURIComponent(name)}`)).body;
   const getCodeSigningConfigArn = async (name: string, context: ProviderContext): Promise<string | undefined> => {
     try {
-      return String((await invoke<any>(context, "GET", `/2020-06-30/functions/${encodeURIComponent(name)}/code-signing-config`)).body.CodeSigningConfigArn);
+      const arn = (await invoke<any>(context, "GET", `/2020-06-30/functions/${encodeURIComponent(name)}/code-signing-config`)).body.CodeSigningConfigArn;
+      return typeof arn === "string" && arn ? arn : undefined;
     } catch (error) {
       if (error instanceof AwsError && error.code === "CodeSigningConfigNotFoundException") return undefined;
       throw error;

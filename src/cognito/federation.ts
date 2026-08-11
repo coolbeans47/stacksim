@@ -269,10 +269,7 @@ export async function resolveOidcConfiguration(
   };
   for (const [field, endpoint] of Object.entries(endpoints)) {
     if (endpoint === undefined) continue;
-    const parsed = exactOriginEndpoint(endpoint, field);
-    if (parsed.origin !== issuer.origin) {
-      throw new FederationError("access_denied", `OIDC ${field} must share the issuer origin.`);
-    }
+    exactOriginEndpoint(endpoint, field);
   }
   const clientId = details.client_id;
   if (typeof clientId !== "string" || clientId.length < 1 || clientId.length > 256) {
@@ -411,7 +408,8 @@ function pemCertificate(base64: string): string {
 export interface SamlMetadata {
   entityId: string;
   ssoUrl: string;
-  certificate: string;
+  certificates: string[];
+  certificate?: string;
   raw: string;
 }
 
@@ -430,11 +428,15 @@ export function parseSamlMetadata(xml: string): SamlMetadata {
   const ssoUrl = selected?.getAttribute("Location");
   if (!ssoUrl) throw new FederationError("invalid_request", "SAML metadata has no supported SSO endpoint.");
   exactOriginEndpoint(ssoUrl, "SAML SSO endpoint");
-  const certificates = elements(idp, XMLDSIG, "X509Certificate").map(value => text(value));
-  if (certificates.length !== 1) {
-    throw new FederationError("invalid_request", "SAML metadata must contain exactly one signing certificate.");
+  const certificates = elements(idp, SAML_METADATA, "KeyDescriptor")
+    .filter(value => !value.getAttribute("use") || value.getAttribute("use") === "signing")
+    .flatMap(value => elements(value, XMLDSIG, "X509Certificate"))
+    .map(value => pemCertificate(text(value)));
+  const uniqueCertificates = [...new Set(certificates)];
+  if (uniqueCertificates.length < 1 || uniqueCertificates.length > 5) {
+    throw new FederationError("invalid_request", "SAML metadata must contain from one through five signing certificates.");
   }
-  return { entityId, ssoUrl, certificate: pemCertificate(certificates[0]), raw: xml };
+  return { entityId, ssoUrl, certificates: uniqueCertificates, raw: xml };
 }
 
 export function createSamlRedirect(
@@ -544,11 +546,19 @@ export function verifySamlResponse(
     || transforms[0] !== ENVELOPED_SIGNATURE
     || transforms[1] !== EXCLUSIVE_C14N
   ) throw new FederationError("access_denied", "SAML signature transforms are not allowed.");
-  try {
-    const verifier = new SignedXml({ publicCert: input.metadata.certificate, implicitTransforms: [] });
-    verifier.loadSignature(signature as any);
-    if (!verifier.checkSignature(xml) || verifier.getSignedReferences().length !== 1) throw new Error();
-  } catch {
+  const trustedCertificates = input.metadata.certificates?.length
+    ? input.metadata.certificates
+    : input.metadata.certificate ? [input.metadata.certificate] : [];
+  const signatureValid = trustedCertificates.some(certificate => {
+    try {
+      const verifier = new SignedXml({ publicCert: certificate, implicitTransforms: [] });
+      verifier.loadSignature(signature as any);
+      return verifier.checkSignature(xml) && verifier.getSignedReferences().length === 1;
+    } catch {
+      return false;
+    }
+  });
+  if (!signatureValid) {
     throw new FederationError("access_denied", "SAML signature validation failed.");
   }
   const responseDestination = response.getAttribute("Destination");

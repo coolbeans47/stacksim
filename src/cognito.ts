@@ -27,7 +27,7 @@ import type {
   CognitoUserState,
 } from "./types.js";
 import { cognitoTargetOperation } from "./cognito/action-inventory.js";
-import { throwCog07BoundaryForOperation } from "./cognito/cog07-boundaries.js";
+import { cog07BoundaryMessage, throwCog07BoundaryForOperation } from "./cognito/cog07-boundaries.js";
 import {
   assignClientSecrets,
   clientHasSecret,
@@ -129,6 +129,9 @@ import {
 const MAX_POOLS = 60;
 const MAX_CLIENTS_PER_POOL = 1_000;
 const AUDIT_LIMIT = 1_000;
+const MAX_REFRESH_SESSIONS_PER_USER = 100;
+const MAX_REFRESH_SESSIONS_PER_POOL = 1_000;
+const REFRESH_SESSION_PRUNE_BATCH = 100;
 const CONFIRMATION_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const CONFIRMATION_ATTEMPTS = 5;
 const RESEND_WINDOW_MS = 60 * 60 * 1_000;
@@ -646,6 +649,34 @@ function tokenEligibleUser(user: CognitoUserState): boolean {
   return user.status === "CONFIRMED" || user.status === "EXTERNAL_PROVIDER";
 }
 
+type TokenGenerationCause =
+  | "TokenGeneration_Authentication"
+  | "TokenGeneration_RefreshTokens"
+  | "TokenGeneration_NewPasswordChallenge"
+  | "TokenGeneration_AuthenticateDevice";
+
+function recoveryDeliveryDetails(email: string): Record<string, string> {
+  return {
+    Destination: maskEmail(email),
+    DeliveryMedium: "EMAIL",
+    AttributeName: "email",
+  };
+}
+
+function passwordVerifierFingerprint(user: CognitoUserState): string {
+  const password = user.password;
+  return createHash("sha256").update([
+    password.version,
+    password.algorithm,
+    password.N,
+    password.r,
+    password.p,
+    password.maxmem,
+    password.salt,
+    password.digest,
+  ].join("\0"), "utf8").digest("base64url");
+}
+
 interface CognitoOAuthAuthorizationRequest {
   clientId: string;
   redirectUri: string;
@@ -658,9 +689,18 @@ interface CognitoOAuthAuthorizationRequest {
   providerName?: string;
 }
 
+type CognitoDeliveryOutcome = "DELIVERED" | "CANCELLED" | "MISSING" | "FAILED";
+
 export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthorizerVerifier {
   private mutation = Promise.resolve();
-  private readonly deliveryWork = new Map<string, Promise<void>>();
+  private readonly deliveryWork = new Map<string, Promise<CognitoDeliveryOutcome>>();
+  private deliveryRecoveryTimer?: ReturnType<typeof setTimeout>;
+  private deliveryRecoveryPass?: Promise<void>;
+  private deliveryRecoveryStopped = false;
+  private deliveryRecoveryPoolCursor = 0;
+  private deliveryRecoveryBackoffMs = 25;
+  private readonly refreshDigestIndex = new Map<string, Map<string, string>>();
+  private readonly refreshEventIndex = new Map<string, Map<string, string>>();
   private readonly accessProof = new WeakMap<Record<string, any>, CognitoAccessContext>();
   private readonly refreshProof = new WeakMap<Record<string, any>, CognitoRefreshContext>();
   private readonly challengeProof = new WeakMap<
@@ -702,6 +742,71 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     return new PaginationTokens(this.store.state.installation.paginationSecret);
   }
 
+  private removeRefreshSession(pool: CognitoUserPoolState, sessionId: string): void {
+    const session = pool.refreshSessions[sessionId];
+    if (!session) return;
+    delete pool.refreshSessions[sessionId];
+    const digestIndex = this.refreshDigestIndex.get(pool.id);
+    if (digestIndex?.get(session.tokenDigest) === sessionId) digestIndex.delete(session.tokenDigest);
+    const eventIndex = this.refreshEventIndex.get(pool.id);
+    if (eventIndex?.get(session.eventId) === sessionId) {
+      eventIndex.delete(session.eventId);
+      const replacement = Object.values(pool.refreshSessions)
+        .filter(candidate => candidate.eventId === session.eventId)
+        .sort((left, right) => right.issuedAt - left.issuedAt)[0];
+      if (replacement) eventIndex.set(replacement.eventId, replacement.id);
+    }
+  }
+
+  private indexRefreshSession(pool: CognitoUserPoolState, session: CognitoRefreshSessionState): void {
+    let digestIndex = this.refreshDigestIndex.get(pool.id);
+    if (!digestIndex) this.refreshDigestIndex.set(pool.id, digestIndex = new Map());
+    digestIndex.set(session.tokenDigest, session.id);
+    let eventIndex = this.refreshEventIndex.get(pool.id);
+    if (!eventIndex) this.refreshEventIndex.set(pool.id, eventIndex = new Map());
+    const current = pool.refreshSessions[eventIndex.get(session.eventId) ?? ""];
+    if (!current || current.status !== "ACTIVE" || session.status === "ACTIVE" || session.issuedAt >= current.issuedAt) {
+      eventIndex.set(session.eventId, session.id);
+    }
+  }
+
+  private rebuildRefreshIndexes(pool: CognitoUserPoolState): void {
+    this.refreshDigestIndex.set(pool.id, new Map());
+    this.refreshEventIndex.set(pool.id, new Map());
+    for (const session of Object.values(pool.refreshSessions)) this.indexRefreshSession(pool, session);
+  }
+
+  private pruneRefreshSessionCeilings(pool: CognitoUserPoolState): boolean {
+    let changed = false;
+    const oldestFirst = (left: CognitoRefreshSessionState, right: CognitoRefreshSessionState) =>
+      left.issuedAt - right.issuedAt || left.id.localeCompare(right.id);
+    const byUser = new Map<string, CognitoRefreshSessionState[]>();
+    for (const session of Object.values(pool.refreshSessions)) {
+      const sessions = byUser.get(session.userSub) ?? [];
+      sessions.push(session);
+      byUser.set(session.userSub, sessions);
+    }
+    for (const sessions of byUser.values()) {
+      sessions.sort(oldestFirst);
+      for (const session of sessions.slice(0, Math.max(0, sessions.length - MAX_REFRESH_SESSIONS_PER_USER))) {
+        this.removeRefreshSession(pool, session.id);
+        changed = true;
+      }
+    }
+    const remaining = Object.values(pool.refreshSessions).sort(oldestFirst);
+    for (const session of remaining.slice(0, Math.max(0, remaining.length - MAX_REFRESH_SESSIONS_PER_POOL))) {
+      this.removeRefreshSession(pool, session.id);
+      changed = true;
+    }
+    return changed;
+  }
+
+  private storeRefreshSession(pool: CognitoUserPoolState, session: CognitoRefreshSessionState): void {
+    pool.refreshSessions[session.id] = session;
+    this.indexRefreshSession(pool, session);
+    this.pruneRefreshSessionCeilings(pool);
+  }
+
   private async invokeTrigger(
     pool: CognitoUserPoolState,
     client: CognitoAppClientState | undefined,
@@ -731,7 +836,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       userName: user.username,
       callerContext: {
         awsSdkVersion: "aws-sdk-js-3",
-        clientId: client?.id ?? "ADMIN",
+        clientId: client?.id ?? "CLIENT_ID_NOT_APPLICABLE",
       },
       request: {
         userAttributes: attributes,
@@ -758,7 +863,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     } catch (error) {
       await this.metric(`Lambda:${triggerSource}`, "TriggerFailureCount", pool.id);
       throw new AwsError(
-        "InvalidLambdaResponseException",
+        "UnexpectedLambdaException",
         error instanceof Error ? `Lambda trigger failed: ${error.message}` : "Lambda trigger failed.",
       );
     }
@@ -766,10 +871,15 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     if (result.functionError) {
       await this.metric(`Lambda:${triggerSource}`, "TriggerFailureCount", pool.id);
       let message = "Lambda trigger returned an error.";
+      let errorType: string | undefined;
       try {
         const parsed = JSON.parse(result.payload.toString("utf8"));
         if (typeof parsed?.errorMessage === "string") message = parsed.errorMessage;
+        if (typeof parsed?.errorType === "string") errorType = parsed.errorType;
       } catch { /* Preserve the safe generic message. */ }
+      if (errorType === "TimeoutError") {
+        throw new AwsError("UnexpectedLambdaException", message);
+      }
       throw new AwsError("UserLambdaValidationException", message);
     }
     try {
@@ -794,6 +904,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
   }
 
   async start(): Promise<void> {
+    this.deliveryRecoveryStopped = false;
     try {
       this.secrets.assertAvailable();
     } catch {
@@ -801,6 +912,8 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
     let normalized = false;
     const now = this.clock.now();
+    this.refreshDigestIndex.clear();
+    this.refreshEventIndex.clear();
     for (const pool of Object.values(this.state.pools)) {
       if (!pool.usersBySub) { pool.usersBySub = {}; normalized = true; }
       if (!pool.usernameIndex) { pool.usernameIndex = {}; normalized = true; }
@@ -816,6 +929,15 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       if (!pool.federatedIdentityIndex) { pool.federatedIdentityIndex = {}; normalized = true; }
       if (!pool.federationTransactions) { pool.federationTransactions = {}; normalized = true; }
       if (!pool.federationReplayIds) { pool.federationReplayIds = {}; normalized = true; }
+      for (const provider of Object.values(pool.identityProviders)) {
+        if (provider.samlMetadata && !Array.isArray(provider.samlMetadata.certificates)) {
+          provider.samlMetadata.certificates = provider.samlMetadata.certificate
+            ? [provider.samlMetadata.certificate]
+            : [];
+          delete provider.samlMetadata.certificate;
+          normalized = true;
+        }
+      }
       for (const user of Object.values(pool.usersBySub)) {
         if (!user.externalIdentities) { user.externalIdentities = []; normalized = true; }
         if (!user.pendingDevices) { user.pendingDevices = {}; normalized = true; }
@@ -855,6 +977,17 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           normalized = true;
         }
       }
+      const expiredSessionIds = Object.entries(pool.refreshSessions)
+        .filter(([, session]) => now >= session.expiresAt)
+        .map(([sessionId]) => sessionId);
+      for (let offset = 0; offset < expiredSessionIds.length; offset += REFRESH_SESSION_PRUNE_BATCH) {
+        for (const sessionId of expiredSessionIds.slice(offset, offset + REFRESH_SESSION_PRUNE_BATCH)) {
+          this.removeRefreshSession(pool, sessionId);
+          normalized = true;
+        }
+      }
+      if (this.pruneRefreshSessionCeilings(pool)) normalized = true;
+      this.rebuildRefreshIndexes(pool);
       for (const [digest, code] of Object.entries(pool.authorizationCodes)) {
         if (
           code.status === "CONSUMED"
@@ -946,12 +1079,80 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
 
   async completePostBind(baseUrl?: string): Promise<void> {
     if (baseUrl) this.publicBaseUrl = validateCognitoPublicUrl(baseUrl);
-    const pending = Object.values(this.state.deliveryIntents)
-      .filter(intent => intent.status === "PENDING_DELIVERY")
-      .sort((left, right) => left.issuedAt - right.issuedAt || left.id.localeCompare(right.id));
-    for (const intent of pending.slice(0, 100)) {
-      await this.deliverIntent(intent.id).catch(() => undefined);
+    await this.runDeliveryRecoveryPass();
+  }
+
+  async stop(): Promise<void> {
+    this.deliveryRecoveryStopped = true;
+    if (this.deliveryRecoveryTimer) clearTimeout(this.deliveryRecoveryTimer);
+    this.deliveryRecoveryTimer = undefined;
+    await this.deliveryRecoveryPass?.catch(() => undefined);
+  }
+
+  private pendingDeliveryRecoveryBatch(limit = 100): CognitoDeliveryIntentState[] {
+    const groups = new Map<string, CognitoDeliveryIntentState[]>();
+    for (const intent of Object.values(this.state.deliveryIntents)) {
+      if (intent.status !== "PENDING_DELIVERY") continue;
+      const group = groups.get(intent.poolId) ?? [];
+      group.push(intent);
+      groups.set(intent.poolId, group);
     }
+    const poolIds = [...groups.keys()].sort();
+    if (poolIds.length === 0) return [];
+    for (const intents of groups.values()) {
+      intents.sort((left, right) => left.issuedAt - right.issuedAt || left.id.localeCompare(right.id));
+    }
+    const start = this.deliveryRecoveryPoolCursor % poolIds.length;
+    const orderedPoolIds = [...poolIds.slice(start), ...poolIds.slice(0, start)];
+    this.deliveryRecoveryPoolCursor = (start + 1) % poolIds.length;
+    const selected: CognitoDeliveryIntentState[] = [];
+    while (selected.length < limit) {
+      let progressed = false;
+      for (const poolId of orderedPoolIds) {
+        const intent = groups.get(poolId)?.shift();
+        if (!intent) continue;
+        selected.push(intent);
+        progressed = true;
+        if (selected.length === limit) break;
+      }
+      if (!progressed) break;
+    }
+    return selected;
+  }
+
+  private scheduleDeliveryRecovery(delayMs: number): void {
+    if (this.deliveryRecoveryStopped || this.deliveryRecoveryTimer) return;
+    this.deliveryRecoveryTimer = setTimeout(() => {
+      this.deliveryRecoveryTimer = undefined;
+      void this.runDeliveryRecoveryPass();
+    }, delayMs);
+    this.deliveryRecoveryTimer.unref?.();
+  }
+
+  private runDeliveryRecoveryPass(): Promise<void> {
+    if (this.deliveryRecoveryPass) return this.deliveryRecoveryPass;
+    const pass = (async () => {
+      const batch = this.pendingDeliveryRecoveryBatch();
+      let progress = false;
+      for (const intent of batch) {
+        const outcome = await this.deliverIntent(intent.id);
+        if (outcome !== "FAILED") progress = true;
+      }
+      const hasPending = Object.values(this.state.deliveryIntents)
+        .some(intent => intent.status === "PENDING_DELIVERY");
+      if (!hasPending) {
+        this.deliveryRecoveryBackoffMs = 25;
+        return;
+      }
+      this.deliveryRecoveryBackoffMs = progress
+        ? 25
+        : Math.min(1_000, this.deliveryRecoveryBackoffMs * 2);
+      this.scheduleDeliveryRecovery(this.deliveryRecoveryBackoffMs);
+    })().finally(() => {
+      if (this.deliveryRecoveryPass === pass) this.deliveryRecoveryPass = undefined;
+    });
+    this.deliveryRecoveryPass = pass;
+    return pass;
   }
 
   private async reconcilePendingPool(poolId: string): Promise<void> {
@@ -959,9 +1160,8 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       .filter(intent => intent.poolId === poolId && intent.status === "PENDING_DELIVERY")
       .sort((left, right) => left.issuedAt - right.issuedAt || left.id.localeCompare(right.id));
     for (const intent of pending.slice(0, 100)) {
-      try {
-        await this.deliverIntent(intent.id);
-      } catch {
+      const outcome = await this.deliverIntent(intent.id);
+      if (outcome !== "DELIVERED") {
         throw new AwsError(
           "InternalErrorException",
           "Pending Cognito email delivery could not be reconciled for this user pool.",
@@ -1125,6 +1325,36 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       }
     }
     return attributes;
+  }
+
+  private missingNewPasswordRequiredAttributes(
+    pool: CognitoUserPoolState,
+    client: CognitoAppClientState,
+    user: CognitoUserState,
+  ): string[] {
+    return pool.configuration.schemaAttributes.flatMap(schema => {
+      const name = schema.name === "email" ? "email" : `custom:${schema.name}`;
+      return schema.required
+        && schema.mutable
+        && client.writeAttributes.includes(name)
+        && !user.attributes[name]
+        ? [`userAttributes.${name}`]
+        : [];
+    });
+  }
+
+  private newPasswordChallengeParameters(
+    pool: CognitoUserPoolState,
+    client: CognitoAppClientState,
+    user: CognitoUserState,
+  ): Record<string, string> {
+    return {
+      USER_ID_FOR_SRP: user.username,
+      requiredAttributes: JSON.stringify(this.missingNewPasswordRequiredAttributes(pool, client, user)),
+      userAttributes: JSON.stringify(Object.fromEntries(
+        userAttributesView(user).map(attribute => [attribute.Name, attribute.Value]),
+      )),
+    };
   }
 
   private generatedPassword(pool: CognitoUserPoolState): string {
@@ -1309,6 +1539,16 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     throw new AwsError("NotAuthorizedException", "Unable to verify app-client secret proof.");
   }
 
+  private cognitoJwtTokenUse(token: unknown): "access" | "id" | undefined {
+    if (typeof token !== "string" || token.split(".").length !== 3) return undefined;
+    try {
+      const tokenUse = parseJwt(token).claims.token_use;
+      return tokenUse === "access" || tokenUse === "id" ? tokenUse : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private refreshSession(
     pool: CognitoUserPoolState,
     client: CognitoAppClientState,
@@ -1316,21 +1556,23 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     allowRevoked = false,
     allowRotationReplay = false,
   ): CognitoRefreshContext {
-    let matched: CognitoRefreshSessionState | undefined;
-    for (const session of Object.values(pool.refreshSessions)) {
-      if (
-        session.clientId === client.id
-        && this.secrets.verifyRefreshToken(token, session.tokenDigest, {
-          accountId: this.store.accountId,
-          region: this.region,
-          poolId: pool.id,
-          clientId: client.id,
-        })
-      ) {
-        matched = session;
-        break;
-      }
+    const binding = {
+      accountId: this.store.accountId,
+      region: this.region,
+      poolId: pool.id,
+      clientId: client.id,
+    };
+    let digest: string | undefined;
+    try {
+      digest = this.secrets.refreshTokenDigest(token, binding);
+    } catch {
+      // Invalid and unknown refresh tokens share the same public error below.
     }
+    const matchedId = digest === undefined ? undefined : this.refreshDigestIndex.get(pool.id)?.get(digest);
+    const matched = matchedId === undefined ? undefined : pool.refreshSessions[matchedId];
+    const proofMatches = matched !== undefined
+      && matched.clientId === client.id
+      && this.secrets.verifyRefreshToken(token, matched.tokenDigest, binding);
     const user = matched ? pool.usersBySub[matched.userSub] : undefined;
     const rotationGrace = Boolean(
       matched
@@ -1351,6 +1593,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     );
     if (
       !matched
+      || !proofMatches
       || !user
       || user.generationId !== matched.userGenerationId
       || user.sessionEpoch !== matched.sessionEpoch
@@ -1379,13 +1622,6 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       )
     ) {
       throw new AwsError("InvalidParameterException", "REFRESH_TOKEN_AUTH is not enabled for this app client.");
-    }
-    if (
-      source === "GetTokensFromRefreshToken"
-      && client.refreshTokenRotation.feature !== "ENABLED"
-      && !client.explicitAuthFlows.includes("ALLOW_REFRESH_TOKEN_AUTH")
-    ) {
-      throw new AwsError("InvalidParameterException", "Refresh-token authentication is not enabled for this app client.");
     }
     const token = source === "InitiateAuth"
       ? input.AuthParameters?.REFRESH_TOKEN
@@ -1425,8 +1661,8 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
     const client = verified.pool.clients[verified.claims.clientId];
     const user = verified.pool.usersBySub[verified.claims.sub];
-    const session = Object.values(verified.pool.refreshSessions)
-      .find(candidate => candidate.eventId === verified.claims.eventId);
+    const sessionId = this.refreshEventIndex.get(verified.pool.id)?.get(verified.claims.eventId);
+    const session = sessionId === undefined ? undefined : verified.pool.refreshSessions[sessionId];
     if (
       !client
       || !user
@@ -1439,14 +1675,8 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       || !user.enabled
       || !tokenEligibleUser(user)
       || verified.claims.username !== user.username
-      || client.enableTokenRevocation && (
-        !verified.claims.jti
-        || verified.claims.originJti !== session.originJti
-      )
-      || !client.enableTokenRevocation && (
-        verified.claims.jti !== undefined
-        || verified.claims.originJti !== undefined
-      )
+      || (verified.claims.jti === undefined) !== (verified.claims.originJti === undefined)
+      || verified.claims.jti !== undefined && verified.claims.originJti !== session.originJti
     ) {
       throw new AwsError("NotAuthorizedException", "Access Token has been revoked.");
     }
@@ -1567,7 +1797,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         this.validateSecretHash(pool, client, input.Username, input.SecretHash);
         const parsed = parseSignUp(input, pool, client);
         await this.reconcilePendingPool(pool.id);
-        await this.admit("SIGN_UP", pool, client, parsed.email.canonical, 10);
+        await this.admit("SIGN_UP", pool, client, parsed.email?.canonical ?? parsed.usernameIndexKey, 10);
         return;
       }
       case "ConfirmSignUp": {
@@ -1640,8 +1870,22 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       }
       case "RevokeToken": {
         const { pool, client } = this.appClientAcrossPools(input.ClientId);
-        this.validateDirectClientSecret(pool, client, input.ClientSecret);
-        this.validateRefreshProof(input, "RevokeToken");
+        if (!client.enableTokenRevocation) {
+          throw new AwsError("UnsupportedOperationException", "Token revocation is not enabled for this app client.");
+        }
+        try {
+          this.validateDirectClientSecret(pool, client, input.ClientSecret);
+        } catch {
+          throw new AwsError("UnauthorizedException", "Unable to verify app-client secret proof.");
+        }
+        if (this.cognitoJwtTokenUse(input.Token)) {
+          throw new AwsError("UnsupportedTokenTypeException", "Only refresh tokens can be revoked.");
+        }
+        try {
+          this.validateRefreshProof(input, "RevokeToken");
+        } catch {
+          throw new AwsError("UnauthorizedException", "Invalid Refresh Token.");
+        }
         return;
       }
       case "GetUser":
@@ -1763,6 +2007,14 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       clientId: client.id,
       userSub: user.sub,
       userGenerationId: user.generationId,
+      ...(purpose === "ATTRIBUTE_VERIFICATION"
+        ? {
+            targetAttribute: {
+              name: "email" as const,
+              canonicalValue: cognitoEmail(user.attributes.email.value).canonical,
+            },
+          }
+        : {}),
       credential: { kind: "DERIVED_CODE", derivationVersion: 1, codeDigest: "" },
       message: {
         deliveryProfile: pool.configuration.emailConfiguration.emailSendingAccount,
@@ -1820,14 +2072,27 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     return intent;
   }
 
+  private attributeVerificationTargetMatches(
+    intent: CognitoDeliveryIntentState,
+    user: CognitoUserState,
+  ): boolean {
+    if (intent.purpose !== "ATTRIBUTE_VERIFICATION") return true;
+    const current = user.attributes.email;
+    if (!current) return false;
+    const target = intent.targetAttribute?.canonicalValue
+      ?? cognitoEmail(intent.message.destination).canonical;
+    return cognitoEmail(current.value).canonical === target;
+  }
+
   private async applyCustomMessage(
     pool: CognitoUserPoolState,
     client: CognitoAppClientState,
     user: CognitoUserState,
     intent: CognitoDeliveryIntentState,
     clientMetadata: Record<string, string> = {},
+    options: { triggerSource?: string; triggerClient?: CognitoAppClientState } = {},
   ): Promise<void> {
-    const source = ({
+    const source = options.triggerSource ?? ({
       SIGN_UP: "CustomMessage_SignUp",
       RESEND_SIGN_UP: "CustomMessage_ResendCode",
       PASSWORD_RESET: "CustomMessage_ForgotPassword",
@@ -1835,7 +2100,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       ADMIN_INVITATION: "CustomMessage_AdminCreateUser",
       EMAIL_MFA: "CustomMessage_Authentication",
     } as const)[intent.purpose];
-    const response = await this.invokeTrigger(pool, client, user, "customMessage", source, {
+    const triggerClient = Object.prototype.hasOwnProperty.call(options, "triggerClient")
+      ? options.triggerClient
+      : client;
+    const response = await this.invokeTrigger(pool, triggerClient, user, "customMessage", source, {
       codeParameter: "{####}",
       usernameParameter: "{username}",
       clientMetadata,
@@ -2098,7 +2366,14 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     result: Record<string, unknown>,
     deviceKey?: string,
   ): void {
-    if (!deviceTrackingEnabled(pool.configuration) || deviceKey) return;
+    if (!deviceTrackingEnabled(pool.configuration)) return;
+    if (deviceKey) {
+      const device = user.devices[deviceKey];
+      if (device && (!device.clientId || device.clientId === client.id)) {
+        session.deviceKey = deviceKey;
+      }
+      return;
+    }
     purgeExpiredPendingDevices(user, this.clock.now());
     const pending = createPendingDevice({
       region: this.region,
@@ -2107,6 +2382,48 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       now: this.clock.now(),
     });
     ensurePendingDevices(user)[pending.key] = pending;
+    session.deviceKey = pending.key;
+    result.NewDeviceMetadata = {
+      DeviceKey: pending.key,
+      DeviceGroupKey: pending.groupKey,
+    };
+  }
+
+  private attachRefreshDeviceMetadata(
+    pool: CognitoUserPoolState,
+    client: CognitoAppClientState,
+    user: CognitoUserState,
+    session: CognitoRefreshSessionState,
+    result: Record<string, unknown>,
+    requestedDeviceKey?: string,
+  ): void {
+    if (!deviceTrackingEnabled(pool.configuration)) return;
+    purgeExpiredPendingDevices(user, this.clock.now());
+    const confirmed = requestedDeviceKey ? user.devices[requestedDeviceKey] : undefined;
+    if (
+      confirmed
+      && (!confirmed.clientId || confirmed.clientId === client.id)
+      && (!session.deviceKey || session.deviceKey === requestedDeviceKey)
+    ) {
+      session.deviceKey = requestedDeviceKey;
+      return;
+    }
+    const existingPending = session.deviceKey
+      ? ensurePendingDevices(user)[session.deviceKey]
+      : undefined;
+    const pending = existingPending
+      && existingPending.clientId === client.id
+      && existingPending.eventId === session.eventId
+      && this.clock.now() < existingPending.expiresAt
+      ? existingPending
+      : createPendingDevice({
+          region: this.region,
+          client,
+          eventId: session.eventId,
+          now: this.clock.now(),
+        });
+    ensurePendingDevices(user)[pending.key] = pending;
+    session.deviceKey = pending.key;
     result.NewDeviceMetadata = {
       DeviceKey: pending.key,
       DeviceGroupKey: pending.groupKey,
@@ -2136,12 +2453,52 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     return device;
   }
 
+  private async selectedMfaAuthenticationStep(
+    pool: CognitoUserPoolState,
+    client: CognitoAppClientState,
+    user: CognitoUserState,
+    selected: "SOFTWARE_TOKEN_MFA" | "EMAIL_OTP",
+    clientMetadata: Record<string, string>,
+    deviceKey?: string,
+  ): Promise<CognitoAuthenticationStep> {
+    if (selected === "SOFTWARE_TOKEN_MFA") {
+      const challenge = this.createChallenge(pool, client, user, "SOFTWARE_TOKEN_MFA", clientMetadata);
+      challenge.deviceKey = deviceKey;
+      return {
+        response: {
+          ChallengeName: "SOFTWARE_TOKEN_MFA",
+          Session: challenge.id,
+          ChallengeParameters: { USER_ID_FOR_SRP: user.username },
+        },
+      };
+    }
+    const intent = this.newDeliveryIntent(pool, client, user, "EMAIL_MFA");
+    await this.applyCustomMessage(pool, client, user, intent);
+    const challenge = this.createChallenge(pool, client, user, "EMAIL_OTP", clientMetadata);
+    challenge.deliveryIntentId = intent.id;
+    challenge.deviceKey = deviceKey;
+    this.state.deliveryIntents[intent.id] = intent;
+    return {
+      response: {
+        ChallengeName: "EMAIL_OTP",
+        Session: challenge.id,
+        ChallengeParameters: {
+          USER_ID_FOR_SRP: user.username,
+          CODE_DELIVERY_DELIVERY_MEDIUM: "EMAIL",
+          CODE_DELIVERY_DESTINATION: maskEmail(user.attributes.email!.value),
+        },
+      },
+      deliveryIntentId: intent.id,
+    };
+  }
+
   private async authenticationStep(
     pool: CognitoUserPoolState,
     client: CognitoAppClientState,
     user: CognitoUserState,
     clientMetadata: Record<string, string> = {},
     deviceKey?: string,
+    tokenGenerationCause: TokenGenerationCause = "TokenGeneration_Authentication",
   ): Promise<CognitoAuthenticationStep> {
     purgeExpiredPendingDevices(user, this.clock.now());
     if (this.rememberedDeviceForAuth(pool, user, deviceKey)) {
@@ -2163,7 +2520,22 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     );
     let selected = user.preferredMfaSetting && enabled.includes(user.preferredMfaSetting)
       ? user.preferredMfaSetting
-      : enabled[0];
+      : undefined;
+    if (!selected && enabled.length > 1) {
+      const challenge = this.createChallenge(pool, client, user, "SELECT_MFA_TYPE", clientMetadata);
+      challenge.deviceKey = deviceKey;
+      return {
+        response: {
+          ChallengeName: "SELECT_MFA_TYPE",
+          Session: challenge.id,
+          ChallengeParameters: {
+            USER_ID_FOR_SRP: user.username,
+            MFAS_CAN_CHOOSE: JSON.stringify(enabled),
+          },
+        },
+      };
+    }
+    selected ??= enabled[0];
     if (
       !selected
       && pool.configuration.mfaConfiguration === "ON"
@@ -2172,36 +2544,8 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     ) {
       selected = "EMAIL_OTP";
     }
-    if (selected === "SOFTWARE_TOKEN_MFA") {
-      const challenge = this.createChallenge(pool, client, user, "SOFTWARE_TOKEN_MFA", clientMetadata);
-      challenge.deviceKey = deviceKey;
-      return {
-        response: {
-          ChallengeName: "SOFTWARE_TOKEN_MFA",
-          Session: challenge.id,
-          ChallengeParameters: { USER_ID_FOR_SRP: user.username },
-        },
-      };
-    }
-    if (selected === "EMAIL_OTP") {
-      const intent = this.newDeliveryIntent(pool, client, user, "EMAIL_MFA");
-      await this.applyCustomMessage(pool, client, user, intent);
-      const challenge = this.createChallenge(pool, client, user, "EMAIL_OTP", clientMetadata);
-      challenge.deliveryIntentId = intent.id;
-      challenge.deviceKey = deviceKey;
-      this.state.deliveryIntents[intent.id] = intent;
-      return {
-        response: {
-          ChallengeName: "EMAIL_OTP",
-          Session: challenge.id,
-          ChallengeParameters: {
-            USER_ID_FOR_SRP: user.username,
-            CODE_DELIVERY_DELIVERY_MEDIUM: "EMAIL",
-            CODE_DELIVERY_DESTINATION: maskEmail(user.attributes.email!.value),
-          },
-        },
-        deliveryIntentId: intent.id,
-      };
+    if (selected === "SOFTWARE_TOKEN_MFA" || selected === "EMAIL_OTP") {
+      return this.selectedMfaAuthenticationStep(pool, client, user, selected, clientMetadata, deviceKey);
     }
     if (pool.configuration.mfaConfiguration === "ON") {
       const challenge = this.createChallenge(pool, client, user, "MFA_SETUP", clientMetadata);
@@ -2227,9 +2571,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       created.session,
       created.token,
       clientMetadata,
+      tokenGenerationCause,
     );
     this.attachNewDeviceMetadata(pool, client, user, created.session, result, deviceKey);
-    pool.refreshSessions[created.session.id] = created.session;
+    this.storeRefreshSession(pool, created.session);
     pool.authEvents.push({
       eventId: created.session.eventId,
       userSub: user.sub,
@@ -2255,7 +2600,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
   private async deliverAuthenticationStep(step: CognitoAuthenticationStep): Promise<Record<string, unknown>> {
     if (step.deliveryIntentId) {
       try {
-        await this.deliverIntent(step.deliveryIntentId);
+        if (await this.deliverIntent(step.deliveryIntentId) !== "DELIVERED") throw new Error("Delivery did not complete.");
       } catch {
         throw new AwsError("CodeDeliveryFailureException", "Failed to deliver the MFA code.");
       }
@@ -2292,7 +2637,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
   }
 
-  private deliverIntent(intentId: string): Promise<void> {
+  private deliverIntent(intentId: string): Promise<CognitoDeliveryOutcome> {
     const existing = this.deliveryWork.get(intentId);
     if (existing) return existing;
     const work = this.performDelivery(intentId).finally(() => {
@@ -2302,17 +2647,21 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     return work;
   }
 
-  private async performDelivery(intentId: string): Promise<void> {
+  private async performDelivery(intentId: string): Promise<CognitoDeliveryOutcome> {
     const stored = this.state.deliveryIntents[intentId];
-    if (!stored || stored.status !== "PENDING_DELIVERY") return;
+    if (!stored) return "MISSING";
+    if (stored.status !== "PENDING_DELIVERY") {
+      return stored.status === "DELIVERED" ? "DELIVERED" : "CANCELLED";
+    }
     const intent = structuredClone(stored);
     const pool = this.state.pools[intent.poolId];
     const user = pool?.usersBySub[intent.userSub];
-    const eligible = intent.purpose === "ADMIN_INVITATION"
+    const eligible = (intent.purpose === "ADMIN_INVITATION"
       ? user?.status === "FORCE_CHANGE_PASSWORD"
       : intent.purpose === "SIGN_UP" || intent.purpose === "RESEND_SIGN_UP"
         ? user?.status === "UNCONFIRMED"
-        : user !== undefined && ["CONFIRMED", "RESET_REQUIRED"].includes(user.status);
+        : user !== undefined && ["CONFIRMED", "RESET_REQUIRED"].includes(user.status))
+      && (!user || this.attributeVerificationTargetMatches(intent, user));
     if (!pool || !user || user.generationId !== intent.userGenerationId || !eligible) {
       await this.exclusive(async () => {
         const current = this.state.deliveryIntents[intentId];
@@ -2323,7 +2672,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           await this.store.save();
         }
       });
-      return;
+      return "CANCELLED";
     }
     const binding = this.confirmationBinding(intent);
     const rendered = this.renderedIntent(intent);
@@ -2365,14 +2714,18 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       if (result.MessageId !== intent.sesMessageId) {
         throw new Error("SES returned an inconsistent producer message ID.");
       }
-      await this.exclusive(async () => {
+      const outcome = await this.exclusive(async (): Promise<CognitoDeliveryOutcome> => {
         const current = this.state.deliveryIntents[intentId];
         const currentPool = this.state.pools[intent.poolId];
         const currentUser = currentPool?.usersBySub[intent.userSub];
-        if (!current || current.status !== "PENDING_DELIVERY") return;
+        if (!current) return "MISSING";
+        if (current.status !== "PENDING_DELIVERY") {
+          return current.status === "DELIVERED" ? "DELIVERED" : "CANCELLED";
+        }
         if (
           !currentUser
           || currentUser.generationId !== intent.userGenerationId
+          || !this.attributeVerificationTargetMatches(current, currentUser)
           || (
             intent.purpose === "ADMIN_INVITATION"
               ? currentUser.status !== "FORCE_CHANGE_PASSWORD"
@@ -2424,7 +2777,12 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         }
         this.state.revision += 1;
         await this.store.save();
+        return current.status === "DELIVERED" ? "DELIVERED" : "CANCELLED";
       });
+      if (outcome !== "DELIVERED") {
+        await this.metric(deliveryOperation, "EmailDeliveryFailureCount", intent.poolId);
+        return outcome;
+      }
       await this.metric(deliveryOperation, "EmailDeliverySuccessCount", intent.poolId);
       await this.metric(
         deliveryOperation,
@@ -2433,9 +2791,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         Math.max(0, this.clock.now() - deliveryStartedAt),
         "Milliseconds",
       );
+      return "DELIVERED";
     } catch (error) {
       await this.metric(deliveryOperation, "EmailDeliveryFailureCount", intent.poolId);
-      throw error;
+      return "FAILED";
     } finally {
       rendered.canonical.fill(0);
     }
@@ -3205,7 +3564,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         !details.oidc_issuer
         || !details.client_id
         || !details.authorize_scopes
-        || details.attributes_request_method && details.attributes_request_method !== "GET"
+        || details.attributes_request_method && !["GET", "POST"].includes(details.attributes_request_method)
         || !details.client_secret && !existing?.clientSecret
       ) throw new AwsError("InvalidParameterException", "OIDC provider details are incomplete.");
       let clientSecret = existing?.clientSecret;
@@ -4281,7 +4640,8 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         };
         user.password = hash;
         user.srp = srpCredential(currentPool, user.username, temporaryPassword);
-        user.passwordHistory = [];
+        user.passwordHistory = [previous.password, ...previous.passwordHistory]
+          .slice(0, currentPool.configuration.policies.passwordPolicy.passwordHistorySize ?? 0);
         user.passwordChangedAt = this.clock.now();
         user.temporaryPasswordExpiresAt = this.clock.now()
           + currentPool.configuration.policies.passwordPolicy.temporaryPasswordValidityDays * 86_400_000;
@@ -4294,6 +4654,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
             user,
             intent,
             stringRecord(input.ClientMetadata, "ClientMetadata"),
+            { triggerClient: undefined },
           );
         } catch (error) {
           user.password = previous.password;
@@ -4310,7 +4671,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         await this.store.save();
       });
       try {
-        await this.deliverIntent(intentId!);
+        if (await this.deliverIntent(intentId!) !== "DELIVERED") throw new Error("Delivery did not complete.");
       } catch {
         throw new AwsError("CodeDeliveryFailureException", "Failed to deliver the invitation.");
       }
@@ -4318,13 +4679,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
     if (existing) throw new AwsError("UsernameExistsException", "User account already exists.");
 
-    const requireEmail = pool.configuration.schemaAttributes.some(attribute =>
-      attribute.name === "email" && attribute.required
-    );
     const attributes = this.parsedAttributes(pool, input.UserAttributes, {
       username: submittedUsername,
       allowVerified: true,
-      requireEmail,
+      requireEmail: false,
     });
     await this.invokeTrigger(
       pool,
@@ -4409,6 +4767,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           user,
           invitation,
           stringRecord(input.ClientMetadata, "ClientMetadata"),
+          { triggerClient: undefined },
         );
       }
       current.usersBySub[sub] = user;
@@ -4432,7 +4791,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     });
     if (intentId) {
       try {
-        await this.deliverIntent(intentId);
+        if (await this.deliverIntent(intentId) !== "DELIVERED") throw new Error("Delivery did not complete.");
       } catch {
         throw new AwsError("CodeDeliveryFailureException", "Failed to deliver the invitation.");
       }
@@ -4642,6 +5001,9 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     stringRecord(input.ClientMetadata, "ClientMetadata");
     const pool = this.pool(input.UserPoolId);
     const user = this.adminUser(pool, input.Username);
+    if (!user.enabled) {
+      throw new AwsError("NotAuthorizedException", "User is disabled.");
+    }
     if (!user.attributes.email?.verified) {
       throw new AwsError("InvalidParameterException", "User has no verified email recovery destination.");
     }
@@ -4649,8 +5011,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     await this.exclusive(async () => {
       const currentPool = this.pool(pool.id);
       const current = this.adminUser(currentPool, user.username);
-      const deliveryClient = Object.values(currentPool.clients)[0]
-        ?? ({ id: "ADMIN_RESET_PASSWORD" } as CognitoAppClientState);
+      if (!current.enabled) {
+        throw new AwsError("NotAuthorizedException", "User is disabled.");
+      }
+      const deliveryClient = ({ id: "CLIENT_ID_NOT_APPLICABLE" } as CognitoAppClientState);
       const intent = this.newDeliveryIntent(currentPool, deliveryClient, current, "PASSWORD_RESET");
       await this.applyCustomMessage(
         currentPool,
@@ -4658,6 +5022,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         current,
         intent,
         stringRecord(input.ClientMetadata, "ClientMetadata"),
+        { triggerClient: undefined },
       );
       current.status = "RESET_REQUIRED";
       this.revokeUserSessions(currentPool, current, "PASSWORD_CHANGED");
@@ -4668,7 +5033,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       await this.store.save();
     });
     try {
-      await this.deliverIntent(intentId!);
+      if (await this.deliverIntent(intentId!) !== "DELIVERED") throw new Error("Delivery did not complete.");
     } catch {
       throw new AwsError("CodeDeliveryFailureException", "Failed to deliver the password reset code.");
     }
@@ -5008,11 +5373,11 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
     const parsed = parseSignUp(input, pool, client);
     validatePasswordPolicy(parsed.password, pool.configuration.policies.passwordPolicy);
-    const provisionalUser = {
+    const provisionalUser: { username: string; attributes: Record<string, CognitoUserAttributeState> } = {
       username: pool.configuration.usernameAttributes.includes("email")
-        ? parsed.email.value
+        ? parsed.email!.value
         : parsed.submittedUsername,
-      attributes: { email: { value: parsed.email.value, verified: false } },
+      attributes: parsed.email ? { email: { value: parsed.email.value, verified: false } } : {},
     };
     const preSignUp = await this.invokeTrigger(pool, client, provisionalUser, "preSignUp", "PreSignUp_SignUp", {
       validationData: Object.fromEntries(
@@ -5037,12 +5402,12 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       status: preSignUp?.autoConfirmUser === true ? "CONFIRMED" : "UNCONFIRMED",
       createdAt: now,
       updatedAt: now,
-      attributes: {
+      attributes: parsed.email ? {
         email: {
           value: parsed.email.value,
           verified: preSignUp?.autoVerifyEmail === true,
         },
-      },
+      } : {},
       password,
       srp: srpCredential(
         pool,
@@ -5069,6 +5434,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       if (
         user.status === "UNCONFIRMED"
         && currentPool.configuration.autoVerifiedAttributes.includes("email")
+        && user.attributes.email
       ) {
         const intent = this.newDeliveryIntent(currentPool, currentClient, user, "SIGN_UP");
         await this.applyCustomMessage(
@@ -5084,7 +5450,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       currentPool.usersBySub[sub] = user;
       currentPool.usernameIndex[parsed.usernameIndexKey] = sub;
       if (
-        user.attributes.email.verified
+        user.attributes.email?.verified
         && currentPool.configuration.aliasAttributes.includes("email")
       ) {
         const alias = cognitoEmail(user.attributes.email.value).canonical;
@@ -5098,7 +5464,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     });
     if (intentId) {
       try {
-        await this.deliverIntent(intentId);
+        if (await this.deliverIntent(intentId) !== "DELIVERED") throw new Error("Delivery did not complete.");
       } catch {
         throw new AwsError("CodeDeliveryFailureException", "Failed to deliver the confirmation code.");
       }
@@ -5108,7 +5474,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       UserSub: sub,
       ...(intentId ? {
         CodeDeliveryDetails: {
-          Destination: maskEmail(parsed.email.value),
+          Destination: maskEmail(parsed.email!.value),
           DeliveryMedium: "EMAIL",
           AttributeName: "email",
         },
@@ -5117,8 +5483,11 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
   }
 
   async ConfirmSignUp(input: Record<string, any>): Promise<Record<string, never>> {
-    const unknown = Object.keys(input).find(key => !["ClientId", "SecretHash", "Username", "ConfirmationCode", "ForceAliasCreation"].includes(key));
+    const unknown = Object.keys(input).find(key => ![
+      "ClientId", "SecretHash", "Username", "ConfirmationCode", "ForceAliasCreation", "ClientMetadata",
+    ].includes(key));
     if (unknown) throw new AwsError("InvalidParameterException", `ConfirmSignUp does not support ${unknown} in COG-01.`);
+    const clientMetadata = stringRecord(input.ClientMetadata, "ClientMetadata");
     const { pool, client } = this.appClientAcrossPools(input.ClientId);
     modeledUsername(input.Username);
     if (typeof input.ConfirmationCode !== "string") {
@@ -5211,6 +5580,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       confirmedUser!,
       "postConfirmation",
       "PostConfirmation_ConfirmSignUp",
+      { clientMetadata },
     );
     return {};
   }
@@ -5259,7 +5629,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       };
     }
     try {
-      await this.deliverIntent(intentId);
+      if (await this.deliverIntent(intentId) !== "DELIVERED") throw new Error("Delivery did not complete.");
     } catch {
       throw new AwsError("CodeDeliveryFailureException", "Failed to deliver the confirmation code.");
     }
@@ -5317,6 +5687,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       ...(oauth?.nonce ?? parent?.oauthNonce
         ? { oauthNonce: oauth?.nonce ?? parent?.oauthNonce }
         : {}),
+      ...(parent?.deviceKey ? { deviceKey: parent.deviceKey } : {}),
     };
     return { session, token };
   }
@@ -5328,6 +5699,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     session: CognitoRefreshSessionState,
     refreshToken?: string,
     clientMetadata: Record<string, string> = {},
+    tokenGenerationCause: TokenGenerationCause = "TokenGeneration_Authentication",
   ): Promise<Record<string, unknown>> {
     if (!pool.signingKeys) throw new AwsError("InternalErrorException", "Cognito signing keys are unavailable.", 500);
     const issuer = cognitoIssuer(this.region, pool.id);
@@ -5347,12 +5719,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       .sort((left, right) =>
         (left.precedence ?? Number.MAX_SAFE_INTEGER) - (right.precedence ?? Number.MAX_SAFE_INTEGER)
         || left.name.localeCompare(right.name)
-      );
-    const roles = groups.flatMap(group => group.roleArn ? [group.roleArn] : []);
-    const preferredCandidates = groups.filter(group =>
-      group.roleArn && group.precedence === groups.find(candidate => candidate.roleArn)?.precedence
     );
-    const preferredRole = preferredCandidates.length === 1 ? preferredCandidates[0].roleArn : undefined;
+    const roles = groups.flatMap(group => group.roleArn ? [group.roleArn] : []);
+    const preferredPrecedence = groups.find(group => group.roleArn)?.precedence;
+    const preferredCandidates = new Set(groups
+      .filter(group => group.roleArn && group.precedence === preferredPrecedence)
+      .map(group => group.roleArn!));
+    const preferredRole = preferredCandidates.size === 1 ? [...preferredCandidates][0] : undefined;
     const readableAttributes = Object.fromEntries(
       Object.entries(user.attributes)
         .filter(([name]) => client.readAttributes.includes(name))
@@ -5409,8 +5782,6 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       username: user.username,
       event_id: session.eventId,
       ...(groups.length ? { "cognito:groups": groups.map(group => group.name) } : {}),
-      ...(roles.length ? { "cognito:roles": roles } : {}),
-      ...(preferredRole ? { "cognito:preferred_role": preferredRole } : {}),
       ...(client.enableTokenRevocation
         ? { jti: randomUUID(), origin_jti: session.originJti }
         : {}),
@@ -5420,7 +5791,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       client,
       user,
       "preTokenGeneration",
-      "TokenGeneration_Authentication",
+      tokenGenerationCause,
       {
         clientMetadata,
         groupConfiguration: {
@@ -5467,7 +5838,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       if (!groupOverride || typeof groupOverride !== "object" || Array.isArray(groupOverride)) {
         throw new AwsError("InvalidLambdaResponseException", "Pre-token group overrides are invalid.");
       }
-      const applyGroups = (claims: Record<string, unknown>): void => {
+      const applyGroups = (claims: Record<string, unknown>, includeRoles: boolean): void => {
         if (groupOverride.groupsToOverride !== undefined) {
           if (!Array.isArray(groupOverride.groupsToOverride) || groupOverride.groupsToOverride.some((value: unknown) => typeof value !== "string")) {
             throw new AwsError("InvalidLambdaResponseException", "Pre-token group overrides are invalid.");
@@ -5475,22 +5846,22 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           if (groupOverride.groupsToOverride.length) claims["cognito:groups"] = groupOverride.groupsToOverride;
           else delete claims["cognito:groups"];
         }
-        if (groupOverride.iamRolesToOverride !== undefined) {
+        if (includeRoles && groupOverride.iamRolesToOverride !== undefined) {
           if (!Array.isArray(groupOverride.iamRolesToOverride) || groupOverride.iamRolesToOverride.some((value: unknown) => typeof value !== "string")) {
             throw new AwsError("InvalidLambdaResponseException", "Pre-token role overrides are invalid.");
           }
           if (groupOverride.iamRolesToOverride.length) claims["cognito:roles"] = groupOverride.iamRolesToOverride;
           else delete claims["cognito:roles"];
         }
-        if (groupOverride.preferredRole !== undefined) {
+        if (includeRoles && groupOverride.preferredRole !== undefined) {
           if (typeof groupOverride.preferredRole !== "string") {
             throw new AwsError("InvalidLambdaResponseException", "Pre-token preferred role is invalid.");
           }
           claims["cognito:preferred_role"] = groupOverride.preferredRole;
         }
       };
-      applyGroups(baseIdClaims);
-      applyGroups(baseAccessClaims);
+      applyGroups(baseIdClaims, true);
+      applyGroups(baseAccessClaims, false);
     }
     const idToken = includeIdToken
       ? signCognitoJwt(
@@ -5540,10 +5911,11 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
         throw new AwsError("InvalidParameterException", "AuthParameters is required.");
       }
-      const unsupported = Object.keys(parameters).find(key => !["REFRESH_TOKEN", "SECRET_HASH"].includes(key));
+      const unsupported = Object.keys(parameters).find(key => !["REFRESH_TOKEN", "SECRET_HASH", "DEVICE_KEY"].includes(key));
       if (unsupported || typeof parameters.REFRESH_TOKEN !== "string") {
         throw new AwsError("InvalidParameterException", "REFRESH_TOKEN_AUTH parameters are invalid.");
       }
+      if (parameters.DEVICE_KEY !== undefined) assertDeviceKey(parameters.DEVICE_KEY);
       return this.refreshAuthentication(input);
     }
     if (!admin && input.AuthFlow === "USER_SRP_AUTH") {
@@ -5600,6 +5972,12 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       : assertDeviceKey(parameters.DEVICE_KEY);
     modeledUsername(parameters.USERNAME);
     const user = findUserByModeledUsername(pool, parameters.USERNAME);
+    const passwordSnapshot = user ? {
+      generationId: user.generationId,
+      passwordChangedAt: user.passwordChangedAt,
+      sessionEpoch: user.sessionEpoch,
+      verifierFingerprint: passwordVerifierFingerprint(user),
+    } : undefined;
     const passwordMatches = user
       ? await this.passwords.verify(parameters.PASSWORD, user.password)
       : await this.passwords.dummy(parameters.PASSWORD);
@@ -5637,7 +6015,11 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           const currentUser = currentPool.usersBySub[user.sub];
           if (
             !currentUser
-            || currentUser.generationId !== user.generationId
+            || !passwordSnapshot
+            || currentUser.generationId !== passwordSnapshot.generationId
+            || currentUser.passwordChangedAt !== passwordSnapshot.passwordChangedAt
+            || currentUser.sessionEpoch !== passwordSnapshot.sessionEpoch
+            || passwordVerifierFingerprint(currentUser) !== passwordSnapshot.verifierFingerprint
             || currentUser.status !== "FORCE_CHANGE_PASSWORD"
             || !currentUser.enabled
           ) {
@@ -5662,13 +6044,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           return {
             ChallengeName: "NEW_PASSWORD_REQUIRED",
             Session: session,
-            ChallengeParameters: {
-              USER_ID_FOR_SRP: currentUser.username,
-              requiredAttributes: "[]",
-              userAttributes: JSON.stringify(Object.fromEntries(
-                userAttributesView(currentUser).map(attribute => [attribute.Name, attribute.Value]),
-              )),
-            },
+            ChallengeParameters: this.newPasswordChallengeParameters(currentPool, currentClient, currentUser),
           };
         });
       }
@@ -5683,7 +6059,11 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       const currentUser = currentPool.usersBySub[user.sub];
       if (
         !currentUser
-        || currentUser.generationId !== user.generationId
+        || !passwordSnapshot
+        || currentUser.generationId !== passwordSnapshot.generationId
+        || currentUser.passwordChangedAt !== passwordSnapshot.passwordChangedAt
+        || currentUser.sessionEpoch !== passwordSnapshot.sessionEpoch
+        || passwordVerifierFingerprint(currentUser) !== passwordSnapshot.verifierFingerprint
         || !currentUser.enabled
         || currentUser.status !== "CONFIRMED"
       ) {
@@ -5896,13 +6276,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
             response: {
               ChallengeName: "NEW_PASSWORD_REQUIRED",
               Session: next.id,
-              ChallengeParameters: {
-                USER_ID_FOR_SRP: user.username,
-                requiredAttributes: "[]",
-                userAttributes: JSON.stringify(Object.fromEntries(
-                  userAttributesView(user).map(attribute => [attribute.Name, attribute.Value]),
-                )),
-              },
+              ChallengeParameters: this.newPasswordChallengeParameters(pool, client, user),
             },
           } satisfies CognitoAuthenticationStep;
         }
@@ -5928,6 +6302,45 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
     if (input.ChallengeName === "DEVICE_PASSWORD_VERIFIER") {
       return this.respondDevicePasswordVerifier(input, context, clientMetadata);
+    }
+    if (input.ChallengeName === "SELECT_MFA_TYPE") {
+      const answer = input.ChallengeResponses?.ANSWER;
+      const eligible = context.user.userMfaSettingList.filter(method =>
+        context.pool.configuration.enabledMfas.includes(method)
+      );
+      if (!eligible.includes(answer)) {
+        throw new AwsError("InvalidParameterException", "ANSWER must select an available MFA type.");
+      }
+      const step = await this.exclusive(async () => {
+        const pool = this.pool(context.pool.id);
+        const client = this.appClient(pool, context.client.id);
+        const user = pool.usersBySub[context.user.sub];
+        const challenge = pool.challenges[context.challenge.id];
+        if (
+          !user
+          || !challenge
+          || challenge.status !== "ACTIVE"
+          || challenge.purpose !== "SELECT_MFA_TYPE"
+          || challenge.userGenerationId !== user.generationId
+          || !user.userMfaSettingList.includes(answer)
+          || !pool.configuration.enabledMfas.includes(answer)
+        ) {
+          throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+        }
+        challenge.status = "CONSUMED";
+        const selected = await this.selectedMfaAuthenticationStep(
+          pool,
+          client,
+          user,
+          answer,
+          clientMetadata,
+          challenge.deviceKey,
+        );
+        this.state.revision += 1;
+        await this.store.save();
+        return selected;
+      });
+      return this.deliverAuthenticationStep(step);
     }
     if (input.ChallengeName === "SOFTWARE_TOKEN_MFA") {
       const code = input.ChallengeResponses?.SOFTWARE_TOKEN_MFA_CODE;
@@ -5976,7 +6389,38 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     if (input.ChallengeName !== "NEW_PASSWORD_REQUIRED") {
       throw new AwsError("InvalidParameterException", "ChallengeName is not supported by this challenge session.");
     }
-    const password = input.ChallengeResponses?.NEW_PASSWORD;
+    const responses = input.ChallengeResponses;
+    if (!responses || typeof responses !== "object" || Array.isArray(responses)) {
+      throw new AwsError("InvalidParameterException", "ChallengeResponses is required.");
+    }
+    const requiredAttributeKeys = this.missingNewPasswordRequiredAttributes(
+      context.pool,
+      context.client,
+      context.user,
+    );
+    const requiredAttributeSet = new Set(requiredAttributeKeys);
+    const unsupportedResponse = Object.keys(responses).find(key =>
+      !["USERNAME", "NEW_PASSWORD", "SECRET_HASH"].includes(key)
+      && !requiredAttributeSet.has(key)
+    );
+    if (unsupportedResponse) {
+      throw new AwsError("InvalidParameterException", `Challenge response ${unsupportedResponse} is not writable.`);
+    }
+    if (requiredAttributeKeys.some(key => typeof responses[key] !== "string")) {
+      throw new AwsError("InvalidParameterException", "Required user attributes must be supplied.");
+    }
+    const mergedAttributeInput = [
+      ...Object.entries(context.user.attributes).map(([Name, attribute]) => ({ Name, Value: attribute.value })),
+      ...requiredAttributeKeys.map(key => ({
+        Name: key.slice("userAttributes.".length),
+        Value: responses[key],
+      })),
+    ];
+    const validatedAttributes = this.parsedAttributes(context.pool, mergedAttributeInput, {
+      allowVerified: false,
+      requireEmail: context.pool.configuration.schemaAttributes.some(attribute => attribute.required),
+    });
+    const password = responses.NEW_PASSWORD;
     validatePasswordPolicy(password, context.pool.configuration.policies.passwordPolicy);
     const history = [context.user.password, ...context.user.passwordHistory];
     for (const prior of history.slice(
@@ -6010,6 +6454,15 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       const previousPasswordChangedAt = user.passwordChangedAt;
       const previousTemporaryExpiry = user.temporaryPasswordExpiresAt;
       const previousStatus = user.status;
+      const currentRequiredAttributeKeys = this.missingNewPasswordRequiredAttributes(pool, client, user);
+      if (JSON.stringify(currentRequiredAttributeKeys) !== JSON.stringify(requiredAttributeKeys)) {
+        throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+      }
+      const previousAttributes = structuredClone(user.attributes);
+      for (const key of requiredAttributeKeys) {
+        const name = key.slice("userAttributes.".length);
+        user.attributes[name] = validatedAttributes[name];
+      }
       user.passwordHistory = [user.password, ...user.passwordHistory]
         .slice(0, pool.configuration.policies.passwordPolicy.passwordHistorySize ?? 0);
       user.password = passwordHash;
@@ -6020,7 +6473,14 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       user.updatedAt = this.clock.now();
       let authentication: CognitoAuthenticationStep;
       try {
-        authentication = await this.authenticationStep(pool, client, user, clientMetadata);
+        authentication = await this.authenticationStep(
+          pool,
+          client,
+          user,
+          clientMetadata,
+          undefined,
+          "TokenGeneration_NewPasswordChallenge",
+        );
       } catch (error) {
         user.password = previousPassword;
         user.passwordHistory = previousHistory;
@@ -6028,6 +6488,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         user.passwordChangedAt = previousPasswordChangedAt;
         user.temporaryPasswordExpiresAt = previousTemporaryExpiry;
         user.status = previousStatus;
+        user.attributes = previousAttributes;
         throw error;
       }
       challenge.status = "CONSUMED";
@@ -6210,6 +6671,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       currentDevice.lastAuthenticatedAt = this.clock.now();
       currentDevice.lastModifiedAt = currentDevice.lastAuthenticatedAt;
       const created = this.newRefreshSession(pool, client, user);
+      created.session.deviceKey = deviceKey;
       const authentication = await this.authenticationResult(
         pool,
         client,
@@ -6217,9 +6679,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         created.session,
         created.token,
         clientMetadata,
+        "TokenGeneration_AuthenticateDevice",
       );
       // Successful remembered-device auth does not mint a new pending device.
-      pool.refreshSessions[created.session.id] = created.session;
+      this.storeRefreshSession(pool, created.session);
       pool.authEvents.push({
         eventId: created.session.eventId,
         userSub: user.sub,
@@ -6301,6 +6764,9 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         created.session,
         created.token,
         challenge.clientMetadata ?? {},
+        challenge.purpose === "NEW_PASSWORD_REQUIRED"
+          ? "TokenGeneration_NewPasswordChallenge"
+          : "TokenGeneration_Authentication",
       );
       this.attachNewDeviceMetadata(
         pool,
@@ -6319,7 +6785,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           currentIntent.statusUpdatedAt = this.clock.now();
         }
       }
-      pool.refreshSessions[created.session.id] = created.session;
+      this.storeRefreshSession(pool, created.session);
       pool.authEvents.push({
         eventId: created.session.eventId,
         userSub: user.sub,
@@ -6359,7 +6825,9 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       try { return this.adminUser(pool, input.Username); } catch { return undefined; }
     })();
     if (!user) {
-      if (client.preventUserExistenceErrors === "ENABLED") return {};
+      if (client.preventUserExistenceErrors === "ENABLED") {
+        return { CodeDeliveryDetails: recoveryDeliveryDetails(input.Username) };
+      }
       throw new AwsError("UserNotFoundException", "User does not exist.");
     }
     if (!user.enabled || !["CONFIRMED", "RESET_REQUIRED"].includes(user.status)) {
@@ -6393,16 +6861,12 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       await this.store.save();
     });
     try {
-      await this.deliverIntent(intentId!);
+      if (await this.deliverIntent(intentId!) !== "DELIVERED") throw new Error("Delivery did not complete.");
     } catch {
       throw new AwsError("CodeDeliveryFailureException", "Failed to deliver the password reset code.");
     }
     return {
-      CodeDeliveryDetails: {
-        Destination: maskEmail(user.attributes.email.value),
-        DeliveryMedium: "EMAIL",
-        AttributeName: "email",
-      },
+      CodeDeliveryDetails: recoveryDeliveryDetails(user.attributes.email.value),
     };
   }
 
@@ -6418,8 +6882,11 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     if (input.UserContextData !== undefined) {
       throw new AwsError("InvalidParameterException", "UserContextData is unavailable.");
     }
-    const { pool } = this.appClientAcrossPools(input.ClientId);
+    const { pool, client } = this.appClientAcrossPools(input.ClientId);
     const user = this.adminUser(pool, input.Username);
+    if (!user.enabled) {
+      throw new AwsError("CodeMismatchException", "Invalid verification code provided.");
+    }
     validatePasswordPolicy(input.Password, pool.configuration.policies.passwordPolicy);
     const history = [user.password, ...user.passwordHistory];
     for (const prior of history.slice(0, pool.configuration.policies.passwordPolicy.passwordHistorySize ?? 0)) {
@@ -6428,9 +6895,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       }
     }
     const password = await this.passwords.hash(input.Password);
-    return this.exclusive(async () => {
+    let confirmedUser: CognitoUserState | undefined;
+    await this.exclusive(async () => {
       const currentPool = this.pool(pool.id);
       const currentUser = this.adminUser(currentPool, user.username);
+      if (!currentUser.enabled) {
+        throw new AwsError("CodeMismatchException", "Invalid verification code provided.");
+      }
       const intent = currentUser.activePasswordResetIntentId
         ? this.state.deliveryIntents[currentUser.activePasswordResetIntentId]
         : undefined;
@@ -6475,8 +6946,17 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       this.revokeUserSessions(currentPool, currentUser, "PASSWORD_CHANGED");
       this.state.revision += 1;
       await this.store.save();
-      return {};
+      confirmedUser = structuredClone(currentUser);
     });
+    await this.invokeTrigger(
+      this.pool(pool.id),
+      this.appClient(this.pool(pool.id), client.id),
+      confirmedUser!,
+      "postConfirmation",
+      "PostConfirmation_ConfirmForgotPassword",
+      { clientMetadata: stringRecord(input.ClientMetadata, "ClientMetadata") },
+    );
+    return {};
   }
 
   async ChangePassword(input: Record<string, any>): Promise<Record<string, never>> {
@@ -6604,9 +7084,19 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         }
       }
       const previousAttributes = structuredClone(user.attributes);
+      const previousVerificationIntentId = user.activeAttributeVerificationIntentIds.email;
+      const previousVerificationIntent = previousVerificationIntentId
+        ? this.state.deliveryIntents[previousVerificationIntentId]
+        : undefined;
+      const previousVerificationStatus = previousVerificationIntent?.status;
       try {
         ({ emailChanged } = await this.updateAttributes(pool, user, input.UserAttributes, false));
         if (emailChanged && pool.configuration.autoVerifiedAttributes.includes("email")) {
+          if (previousVerificationIntent && ["PENDING_DELIVERY", "DELIVERED"].includes(previousVerificationIntent.status)) {
+            previousVerificationIntent.status = "SUPERSEDED";
+            previousVerificationIntent.statusUpdatedAt = this.clock.now();
+          }
+          delete user.activeAttributeVerificationIntentIds.email;
           const intent = this.newDeliveryIntent(pool, client, user, "ATTRIBUTE_VERIFICATION");
           await this.applyCustomMessage(pool, client, user, intent, stringRecord(input.ClientMetadata, "ClientMetadata"));
           this.state.deliveryIntents[intent.id] = intent;
@@ -6614,6 +7104,12 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         }
       } catch (error) {
         user.attributes = previousAttributes;
+        if (previousVerificationIntent && previousVerificationStatus) {
+          previousVerificationIntent.status = previousVerificationStatus;
+        }
+        if (previousVerificationIntentId) {
+          user.activeAttributeVerificationIntentIds.email = previousVerificationIntentId;
+        }
         throw error;
       }
       user.updatedAt = this.clock.now();
@@ -6621,7 +7117,9 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       this.state.revision += 1;
       await this.store.save();
     });
-    if (intentId) await this.deliverIntent(intentId);
+    if (intentId && await this.deliverIntent(intentId) !== "DELIVERED") {
+      throw new AwsError("CodeDeliveryFailureException", "Failed to deliver the attribute verification code.");
+    }
     return {
       CodeDeliveryDetailsList: intentId
         ? [{
@@ -6753,13 +7251,22 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       const user = pool.usersBySub[context.user.sub];
       if (!user) throw new AwsError("NotAuthorizedException", "Access Token has been revoked.");
       const intent = this.newDeliveryIntent(pool, client, user, "ATTRIBUTE_VERIFICATION");
-      await this.applyCustomMessage(pool, client, user, intent, stringRecord(input.ClientMetadata, "ClientMetadata"));
+      await this.applyCustomMessage(
+        pool,
+        client,
+        user,
+        intent,
+        stringRecord(input.ClientMetadata, "ClientMetadata"),
+        { triggerSource: "CustomMessage_VerifyUserAttribute" },
+      );
       this.state.deliveryIntents[intent.id] = intent;
       intentId = intent.id;
       this.state.revision += 1;
       await this.store.save();
     });
-    await this.deliverIntent(intentId!);
+    if (await this.deliverIntent(intentId!) !== "DELIVERED") {
+      throw new AwsError("CodeDeliveryFailureException", "Failed to deliver the attribute verification code.");
+    }
     return {
       CodeDeliveryDetails: {
         Destination: maskEmail(context.user.attributes.email.value),
@@ -6789,6 +7296,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         || intent.purpose !== "ATTRIBUTE_VERIFICATION"
         || intent.status !== "DELIVERED"
         || this.clock.now() >= intent.expiresAt
+        || !this.attributeVerificationTargetMatches(intent, user)
       ) {
         throw new AwsError("ExpiredCodeException", "Invalid code provided, please request a code again.");
       }
@@ -7239,6 +7747,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         rememberedStatus: canRemember && !promptOnly ? "remembered" : "not_remembered",
         createdAt: now,
         lastModifiedAt: now,
+        clientId: pending.clientId,
         passwordVerifier: wrapped.passwordVerifier,
         salt: wrapped.salt,
       };
@@ -7457,15 +7966,39 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
     const { pool, user } = this.adminDeviceContext(input);
     const limit = input.MaxResults === undefined ? 60 : input.MaxResults;
-    if (!Number.isInteger(limit) || limit < 1 || limit > 60 || input.NextToken !== undefined) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 60) {
       throw new AwsError("InvalidParameterException", "Auth-event pagination parameters are invalid.");
     }
+    let index = 0;
+    if (input.NextToken !== undefined) {
+      try {
+        const cursor = this.tokens.decode<{
+          poolId: string;
+          userSub: string;
+          revision: number;
+          index: number;
+        }>("AdminListUserAuthEvents", input.NextToken);
+        if (
+          cursor.poolId !== pool.id
+          || cursor.userSub !== user.sub
+          || cursor.revision !== this.state.revision
+          || !Number.isInteger(cursor.index)
+          || cursor.index < 0
+        ) {
+          throw new Error();
+        }
+        index = cursor.index;
+      } catch {
+        throw new AwsError("InvalidParameterException", "NextToken is invalid.");
+      }
+    }
+    const events = pool.authEvents
+      .filter(event => event.userSub === user.sub)
+      .sort((a, b) => b.createdAt - a.createdAt || b.eventId.localeCompare(a.eventId));
+    const page = events.slice(index, index + limit);
+    const next = index + page.length;
     return {
-      AuthEvents: pool.authEvents
-        .filter(event => event.userSub === user.sub)
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .slice(0, limit)
-        .map(event => ({
+      AuthEvents: page.map(event => ({
           EventId: event.eventId,
           EventType: event.eventType,
           CreationDate: timestamp(event.createdAt),
@@ -7473,6 +8006,16 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
             ? { EventFeedback: { FeedbackValue: event.feedbackValue, Provider: "User", FeedbackDate: timestamp(event.createdAt) } }
             : {}),
         })),
+      ...(next < events.length
+        ? {
+            NextToken: this.tokens.encode("AdminListUserAuthEvents", {
+              poolId: pool.id,
+              userSub: user.sub,
+              revision: this.state.revision,
+              index: next,
+            }),
+          }
+        : {}),
     };
   }
 
@@ -7631,9 +8174,14 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     });
   }
 
-  private async refreshAuthentication(input: Record<string, any>): Promise<Record<string, unknown>> {
+  private async refreshAuthentication(
+    input: Record<string, any>,
+    oauthScopes?: string[],
+  ): Promise<Record<string, unknown>> {
     const context = this.refreshProof.get(input);
     if (!context) throw new AwsError("NotAuthorizedException", "Invalid Refresh Token.");
+    const clientMetadata = stringRecord(input.ClientMetadata, "ClientMetadata");
+    const requestedDeviceKey = input.DeviceKey ?? input.AuthParameters?.DEVICE_KEY;
     return this.exclusive(async () => {
       const pool = this.pool(context.pool.id);
       const client = this.appClient(pool, context.client.id);
@@ -7660,7 +8208,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         }
         this.state.revision += 1;
         await this.store.save();
-        throw new AwsError("NotAuthorizedException", "Invalid Refresh Token.");
+        throw new AwsError("RefreshTokenReuseException", "Refresh token has already been used.");
       }
       const activeOrRotationGrace = Boolean(
         session
@@ -7693,11 +8241,21 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         && Object.prototype.hasOwnProperty.call(input, "RefreshToken")
       ) {
         const created = this.newRefreshSession(pool, client, user, session);
+        if (oauthScopes) created.session.oauthScopes = [...oauthScopes];
         if (created.session.expiresAt <= this.clock.now()) {
           throw new AwsError("NotAuthorizedException", "Invalid Refresh Token.");
         }
-        result = await this.authenticationResult(pool, client, user, created.session, created.token);
-        pool.refreshSessions[created.session.id] = created.session;
+        result = await this.authenticationResult(
+          pool,
+          client,
+          user,
+          created.session,
+          created.token,
+          clientMetadata,
+          "TokenGeneration_RefreshTokens",
+        );
+        this.attachRefreshDeviceMetadata(pool, client, user, created.session, result, requestedDeviceKey);
+        this.storeRefreshSession(pool, created.session);
         session.status = "REVOKED";
         session.revokedAt = this.clock.now();
         session.revocationReason = "ROTATED";
@@ -7705,7 +8263,19 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         session.rotationGraceUntil = this.clock.now()
           + client.refreshTokenRotation.retryGracePeriodSeconds * 1_000;
       } else {
-        result = await this.authenticationResult(pool, client, user, session);
+        const issuanceSession = oauthScopes
+          ? { ...session, oauthScopes: [...oauthScopes] }
+          : session;
+        result = await this.authenticationResult(
+          pool,
+          client,
+          user,
+          issuanceSession,
+          undefined,
+          clientMetadata,
+          "TokenGeneration_RefreshTokens",
+        );
+        this.attachRefreshDeviceMetadata(pool, client, user, session, result, requestedDeviceKey);
         session.lastUsedAt = this.clock.now();
       }
       this.state.revision += 1;
@@ -7715,10 +8285,14 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
   }
 
   async GetTokensFromRefreshToken(input: Record<string, any>): Promise<Record<string, unknown>> {
-    const unknown = Object.keys(input).find(key => !["RefreshToken", "ClientId", "ClientSecret"].includes(key));
+    const unknown = Object.keys(input).find(key => ![
+      "RefreshToken", "ClientId", "ClientSecret", "DeviceKey", "ClientMetadata",
+    ].includes(key));
     if (unknown || typeof input.RefreshToken !== "string") {
       throw new AwsError("InvalidParameterException", "GetTokensFromRefreshToken parameters are invalid.");
     }
+    if (input.DeviceKey !== undefined) assertDeviceKey(input.DeviceKey);
+    stringRecord(input.ClientMetadata, "ClientMetadata");
     return this.refreshAuthentication(input);
   }
 
@@ -7729,6 +8303,9 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
     const context = this.refreshProof.get(input);
     if (!context) throw new AwsError("NotAuthorizedException", "Invalid Refresh Token.");
+    if (!context.client.enableTokenRevocation) {
+      throw new AwsError("UnsupportedOperationException", "Token revocation is not enabled for this app client.");
+    }
     return this.exclusive(async () => {
       const pool = this.pool(context.pool.id);
       this.appClient(pool, context.client.id);
@@ -8331,7 +8908,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
             .filter(client => client.supportedIdentityProviders.includes(provider.name))
             .map(client => client.id),
           certificateFingerprint: provider.samlMetadata
-            ? createHash("sha256").update(provider.samlMetadata.certificate).digest("hex").match(/../g)?.join(":")
+            ? createHash("sha256").update(provider.samlMetadata.certificates[0] ?? "").digest("hex").match(/../g)?.join(":")
             : undefined,
           metadataEntityId: provider.samlMetadata?.entityId,
           metadataSsoUrl: provider.samlMetadata?.ssoUrl,
@@ -8376,9 +8953,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         entityId: provider.samlMetadata.entityId,
         ssoUrl: provider.samlMetadata.ssoUrl,
         certificateFingerprint: createHash("sha256")
-          .update(provider.samlMetadata.certificate)
+          .update(provider.samlMetadata.certificates[0] ?? "")
           .digest("hex")
           .match(/../g)?.join(":"),
+        signingCertificateCount: provider.samlMetadata.certificates.length,
       };
     } catch (error) {
       throw this.identityProviderConfigurationError(error);
@@ -8660,6 +9238,24 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     if (fragment) target.hash = output.toString();
     else for (const [key, value] of output) target.searchParams.append(key, value);
     return target.href;
+  }
+
+  private trustedAuthorizationCallback(
+    pool: CognitoUserPoolState,
+    parameters: URLSearchParams,
+  ): { redirectUri: string; state?: string } | undefined {
+    if (parameters.getAll("client_id").length !== 1 || parameters.getAll("redirect_uri").length > 1) {
+      return undefined;
+    }
+    const client = pool.clients[parameters.get("client_id") ?? ""];
+    if (!client?.allowedOAuthFlowsUserPoolClient) return undefined;
+    const redirectUri = parameters.get("redirect_uri") ?? client.defaultRedirectUri;
+    if (!redirectUri || !client.callbackUrls.includes(redirectUri)) return undefined;
+    const states = parameters.getAll("state");
+    return {
+      redirectUri,
+      ...(states.length === 1 ? { state: states[0] } : {}),
+    };
   }
 
   private browserSession(
@@ -9331,8 +9927,11 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         now: this.clock.now(),
       });
       if (configuration.userInfoEndpoint && typeof tokenResponse.access_token === "string") {
+        const userInfoMethod = provider.providerDetails.attributes_request_method === "POST" ? "POST" : "GET";
         const userInfo = await this.providerHttp.json(configuration.userInfoEndpoint, {
+          method: userInfoMethod,
           headers: { authorization: `Bearer ${tokenResponse.access_token}` },
+          ...(userInfoMethod === "POST" ? { body: Buffer.alloc(0) } : {}),
         });
         if (userInfo.sub !== claims.sub) {
           throw new FederationError("access_denied", "OIDC userInfo subject does not match the ID token.");
@@ -9549,7 +10148,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       });
       created.session.authTime = browserSession.createdAt;
       result = await this.authenticationResult(currentPool, currentClient, currentUser, created.session);
-      currentPool.refreshSessions[created.session.id] = created.session;
+      this.storeRefreshSession(currentPool, created.session);
       this.state.revision += 1;
       await this.store.save();
     });
@@ -9904,6 +10503,12 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       throw new OAuthEndpointError("invalid_request", "The token endpoint accepts POST without query parameters.", 405);
     }
     const form = await readOAuthForm(req);
+    if (Object.prototype.hasOwnProperty.call(form, "aws_client_metadata")) {
+      throw new OAuthEndpointError(
+        "invalid_request",
+        cog07BoundaryMessage("advanced-token-customization"),
+      );
+    }
     const allowed = new Set([
       "grant_type", "client_id", "client_secret", "code", "redirect_uri",
       "code_verifier", "refresh_token", "scope",
@@ -9967,7 +10572,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           created.session,
           created.token,
         );
-        currentPool.refreshSessions[created.session.id] = created.session;
+        this.storeRefreshSession(currentPool, created.session);
         currentCode.status = "CONSUMED";
         currentCode.consumedAt = this.clock.now();
         this.state.revision += 1;
@@ -9986,9 +10591,22 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       };
       try {
         this.validateRefreshProof(refreshInput, "GetTokensFromRefreshToken");
-        const output = await this.refreshAuthentication(refreshInput);
-        const context = this.refreshProof.get(refreshInput);
-        const scopes = context?.session.oauthScopes ?? [COGNITO_USER_ADMIN_SCOPE];
+      } catch {
+        throw new OAuthEndpointError("invalid_grant", "The refresh token is invalid or expired.");
+      }
+      const context = this.refreshProof.get(refreshInput);
+      const originalScopes = context?.session.oauthScopes ?? [COGNITO_USER_ADMIN_SCOPE];
+      let scopes = [...originalScopes];
+      if (form.scope !== undefined) {
+        const rawRequested = [...new Set(form.scope.split(" "))];
+        const requested = this.oauthScopes(pool, client, form.scope);
+        if (rawRequested.some(scope => !originalScopes.includes(scope) || !client.allowedOAuthScopes.includes(scope))) {
+          throw new OAuthEndpointError("invalid_scope", "A refresh grant cannot widen its original scope grant.");
+        }
+        scopes = requested;
+      }
+      try {
+        const output = await this.refreshAuthentication(refreshInput, scopes);
         return sendOAuthJson(
           res,
           this.oauthTokenResponse(output.AuthenticationResult as Record<string, unknown>, scopes),
@@ -10042,19 +10660,29 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       sub: context.user.sub,
       username: context.user.username,
     };
-    if (scopes.includes("email") && context.client.readAttributes.includes("email") && context.user.attributes.email) {
+    const openidOnly = scopes.length === 1 && scopes[0] === "openid";
+    if (openidOnly) {
+      for (const name of context.client.readAttributes) {
+        const attribute = context.user.attributes[name];
+        if (!attribute) continue;
+        attributes[name] = attribute.value;
+        if (name === "email" || name === "phone_number") {
+          attributes[`${name}_verified`] = attribute.verified;
+        }
+      }
+    } else if (scopes.includes("email") && context.client.readAttributes.includes("email") && context.user.attributes.email) {
       attributes.email = context.user.attributes.email.value;
       attributes.email_verified = context.user.attributes.email.verified;
     }
-    if (
+    if (!openidOnly && (
       scopes.includes("phone")
       && context.client.readAttributes.includes("phone_number")
       && context.user.attributes.phone_number
-    ) {
+    )) {
       attributes.phone_number = context.user.attributes.phone_number.value;
       attributes.phone_number_verified = context.user.attributes.phone_number.verified;
     }
-    if (scopes.includes("profile")) {
+    if (!openidOnly && scopes.includes("profile")) {
       const profileClaims = new Set([
         "name", "family_name", "given_name", "middle_name", "nickname",
         "preferred_username", "profile", "picture", "website", "gender",
@@ -10085,9 +10713,15 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     if (Object.keys(form).some(key => !["token", "client_id", "client_secret", "token_type_hint"].includes(key))) {
       throw new OAuthEndpointError("invalid_request", "The revocation request contains an unsupported parameter.");
     }
-    const { client, suppliedSecret } = this.oauthTokenClient(pool, req, form);
     if (typeof form.token !== "string") {
       throw new OAuthEndpointError("invalid_request", "token is required.");
+    }
+    const { client, suppliedSecret } = this.oauthTokenClient(pool, req, form);
+    if (!client.enableTokenRevocation) {
+      throw new OAuthEndpointError("invalid_request", "Token revocation is not enabled for this app client.");
+    }
+    if (this.cognitoJwtTokenUse(form.token)) {
+      throw new OAuthEndpointError("unsupported_token_type", "Only refresh tokens can be revoked.");
     }
     const input: Record<string, any> = {
       ClientId: client.id,
@@ -10148,6 +10782,8 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
   }
 
   async handleOAuth(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    let routedPool: CognitoUserPoolState | undefined;
+    let routedSuffix: string | undefined;
     try {
       const match = url.pathname.match(/^\/_stacksim\/cognito-domain\/([^/]+)(\/.*)?$/);
       if (!match) throw new OAuthEndpointError("invalid_request", "Unknown managed-login route.", 404);
@@ -10161,7 +10797,9 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         throw new OAuthEndpointError("invalid_request", "The managed-login domain is invalid.", 404);
       }
       const pool = this.oauthPoolByDomain(domain);
+      routedPool = pool;
       const suffix = match[2] || "/";
+      routedSuffix = suffix;
       if (suffix === "/" || suffix === "/login") {
         if (req.method !== "GET") throw new OAuthEndpointError("invalid_request", "Method not allowed.", 405);
         const configuredClients = Object.values(pool.clients)
@@ -10180,6 +10818,16 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       const oauth = error instanceof OAuthEndpointError
         ? error
         : new OAuthEndpointError("server_error", "The managed-login request failed.", 500);
+      if (req.method === "GET" && routedPool && routedSuffix === "/oauth2/authorize") {
+        const trusted = this.trustedAuthorizationCallback(routedPool, url.searchParams);
+        if (trusted) {
+          return sendOAuthRedirect(res, this.oauthRedirect(trusted.redirectUri, {
+            error: oauth.error,
+            error_description: oauth.message,
+            state: trusted.state,
+          }));
+        }
+      }
       return sendOAuthError(res, oauth);
     }
   }

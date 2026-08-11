@@ -179,3 +179,171 @@ test("COG-06 providers register the exact user-pool set and share authoritative 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("COGGAP-24 updates pool names and append-only schema without replacement", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-cognito-gap24-"));
+  let simulator: StackSim | undefined;
+  try {
+    simulator = new StackSim({
+      port: 0,
+      invokePort: 0,
+      dataDir: join(root, "data"),
+      region,
+      accountId,
+      authMode: "off",
+    });
+    await simulator.start();
+    let poolProvider = createCognitoCloudFormationProviders(simulator.cognito)
+      .find(provider => provider.typeName === "AWS::Cognito::UserPool")!;
+    assert.equal(poolProvider.schema.properties.UserPoolName.updateBehavior, "MUTABLE");
+    assert.equal(poolProvider.schema.properties.Schema.updateBehavior, "MUTABLE");
+    const initial = poolProvider.canonicalize({
+      UserPoolName: "gap24-before",
+      Schema: [{
+        Name: "tenant",
+        AttributeDataType: "String",
+        DeveloperOnlyAttribute: false,
+        Mutable: true,
+        Required: false,
+      }],
+    }, context("Gap24Pool"));
+    const created = await poolProvider.create(initial, context("Gap24Pool"));
+    assert.equal(created.status, "SUCCESS", JSON.stringify(created));
+    if (created.status !== "SUCCESS") return;
+    const poolId = created.physicalId;
+    await simulator.cognito.executeCloudFormationControl("CreateUserPoolClient", {
+      UserPoolId: poolId,
+      ClientName: "preserved-client",
+      ExplicitAuthFlows: ["ALLOW_USER_PASSWORD_AUTH"],
+    });
+    const desired = poolProvider.canonicalize({
+      UserPoolName: "gap24-after",
+      Schema: [
+        {
+          Name: "tenant",
+          AttributeDataType: "String",
+          DeveloperOnlyAttribute: false,
+          Mutable: true,
+          Required: false,
+        },
+        {
+          Name: "department",
+          AttributeDataType: "String",
+          DeveloperOnlyAttribute: false,
+          Mutable: true,
+          Required: false,
+        },
+      ],
+    }, context("Gap24Pool"));
+    const updated = await poolProvider.update(poolId, initial, desired, context("Gap24Pool"));
+    assert.equal(updated.status, "SUCCESS", JSON.stringify(updated));
+    assert.equal(updated.physicalId, poolId);
+    const described = await simulator.cognito.executeCloudFormationControl("DescribeUserPool", { UserPoolId: poolId }) as any;
+    assert.equal(described.UserPool.Name, "gap24-after");
+    assert(described.UserPool.SchemaAttributes.some((attribute: any) => attribute.Name === "department"));
+    assert.equal((await simulator.cognito.executeCloudFormationControl("ListUserPoolClients", {
+      UserPoolId: poolId,
+      MaxResults: 10,
+    }) as any).UserPoolClients.length, 1);
+
+    const removal = poolProvider.canonicalize({
+      UserPoolName: "gap24-after",
+      Schema: [{
+        Name: "department",
+        AttributeDataType: "String",
+        DeveloperOnlyAttribute: false,
+        Mutable: true,
+        Required: false,
+      }],
+    }, context("Gap24Pool"));
+    const rejected = await poolProvider.update(poolId, desired, removal, context("Gap24Pool"));
+    assert.equal(rejected.status, "FAILED");
+    assert.equal((await simulator.cognito.executeCloudFormationControl("DescribeUserPool", {
+      UserPoolId: poolId,
+    }) as any).UserPool.Name, "gap24-after");
+
+    await simulator.stop();
+    simulator = new StackSim({
+      port: 0,
+      invokePort: 0,
+      dataDir: join(root, "data"),
+      region,
+      accountId,
+      authMode: "off",
+    });
+    await simulator.start();
+    poolProvider = createCognitoCloudFormationProviders(simulator.cognito)
+      .find(provider => provider.typeName === "AWS::Cognito::UserPool")!;
+    const restarted = await poolProvider.read(poolId, context("Gap24Pool"));
+    assert.equal(restarted.status, "SUCCESS");
+    if (restarted.status === "SUCCESS") {
+      assert.equal(restarted.model.properties.UserPoolName, "gap24-after");
+      assert(restarted.model.properties.Schema.some((attribute: any) => attribute.Name === "department"));
+    }
+  } finally {
+    await simulator?.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("COGGAP-25 reads confidential clients as GenerateSecret true without modeling the secret", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-cognito-gap25-"));
+  let simulator: StackSim | undefined;
+  try {
+    simulator = new StackSim({
+      port: 0,
+      invokePort: 0,
+      dataDir: join(root, "data"),
+      region,
+      accountId,
+      authMode: "off",
+    });
+    await simulator.start();
+    let providers = createCognitoCloudFormationProviders(simulator.cognito);
+    const poolProvider = providers.find(provider => provider.typeName === "AWS::Cognito::UserPool")!;
+    let clientProvider = providers.find(provider => provider.typeName === "AWS::Cognito::UserPoolClient")!;
+    const poolDesired = poolProvider.canonicalize({ UserPoolName: "gap25-pool" }, context("Gap25Pool"));
+    const poolCreated = await poolProvider.create(poolDesired, context("Gap25Pool"));
+    assert.equal(poolCreated.status, "SUCCESS", JSON.stringify(poolCreated));
+    if (poolCreated.status !== "SUCCESS") return;
+    const desired = clientProvider.canonicalize({
+      UserPoolId: poolCreated.physicalId,
+      ClientName: "confidential-client",
+      GenerateSecret: true,
+      ExplicitAuthFlows: ["ALLOW_USER_PASSWORD_AUTH"],
+    }, context("Gap25Client"));
+    const created = await clientProvider.create(desired, context("Gap25Client"));
+    assert.equal(created.status, "SUCCESS", JSON.stringify(created));
+    if (created.status !== "SUCCESS") return;
+    const firstRead = await clientProvider.read(created.physicalId, context("Gap25Client"));
+    assert.equal(firstRead.status, "SUCCESS");
+    if (firstRead.status === "SUCCESS") {
+      assert.equal(firstRead.model.properties.GenerateSecret, true);
+      assert.equal("ClientSecret" in firstRead.model.properties, false);
+    }
+    const noOp = await clientProvider.update(created.physicalId, desired, desired, context("Gap25Client"));
+    assert.equal(noOp.status, "SUCCESS", JSON.stringify(noOp));
+
+    await simulator.stop();
+    simulator = new StackSim({
+      port: 0,
+      invokePort: 0,
+      dataDir: join(root, "data"),
+      region,
+      accountId,
+      authMode: "off",
+    });
+    await simulator.start();
+    providers = createCognitoCloudFormationProviders(simulator.cognito);
+    clientProvider = providers.find(provider => provider.typeName === "AWS::Cognito::UserPoolClient")!;
+    const restarted = await clientProvider.read(created.physicalId, context("Gap25Client"));
+    assert.equal(restarted.status, "SUCCESS");
+    if (restarted.status === "SUCCESS") {
+      assert.equal(restarted.model.properties.GenerateSecret, true);
+      assert.equal("ClientSecret" in restarted.model.properties, false);
+    }
+  } finally {
+    await simulator?.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -67,7 +67,7 @@ function userAttributes(value: unknown): { email?: { value: string; canonical: s
 export interface ParsedSignUp {
   submittedUsername: string;
   usernameIndexKey: string;
-  email: { value: string; canonical: string };
+  email?: { value: string; canonical: string };
   password: string;
 }
 
@@ -101,16 +101,18 @@ export function parseSignUp(
   } else {
     usernameIndexKey = canonicalUsername(pool, submittedUsername);
   }
-  if (!email) {
-    throw new AwsError("InvalidParameterException", "The email attribute is required in COG-01.");
+  const emailRequired = pool.configuration.usernameAttributes.includes("email")
+    || pool.configuration.schemaAttributes.some(attribute => attribute.name === "email" && attribute.required);
+  if (!email && emailRequired) {
+    throw new AwsError("InvalidParameterException", "The email attribute is required by the user-pool schema.");
   }
-  if (!client.writeAttributes.includes("email")) {
+  if (email && !client.writeAttributes.includes("email")) {
     throw new AwsError("NotAuthorizedException", "App client cannot write the email attribute.");
   }
   return {
     submittedUsername,
     usernameIndexKey,
-    email,
+    ...(email ? { email } : {}),
     password: input.Password,
   };
 }

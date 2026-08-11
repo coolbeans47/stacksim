@@ -136,6 +136,41 @@ test("self-sign-up validation, aliases, code limits, expiry, and resend limits a
       0,
     );
 
+    const optionalPool = await client.send(new CreateUserPoolCommand({
+      PoolName: "optional-email-signup",
+      Schema: [{ Name: "email", Required: false, Mutable: true }],
+    }));
+    const optionalPoolId = optionalPool.UserPool!.Id!;
+    const optionalClient = await createClient(client, optionalPoolId, "optional-email-client");
+    const usernameOnly = await client.send(new SignUpCommand({
+      ClientId: optionalClient,
+      Username: "username-only",
+      Password: password,
+    }));
+    assert(usernameOnly.UserSub);
+    assert.equal(usernameOnly.UserConfirmed, false);
+    assert.equal(usernameOnly.CodeDeliveryDetails, undefined);
+    const storedUsernameOnly = Object.values(
+      simulator.store.regionState(region).cognito.pools[optionalPoolId].usersBySub,
+    )[0];
+    assert.equal(storedUsernameOnly.attributes.email, undefined);
+    const readOnlyClient = (await client.send(new CreateUserPoolClientCommand({
+      UserPoolId: optionalPoolId,
+      ClientName: "read-only-attributes",
+      ExplicitAuthFlows: ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
+      ReadAttributes: ["email"],
+      WriteAttributes: [],
+    }))).UserPoolClient!.ClientId!;
+    await assert.rejects(
+      client.send(new SignUpCommand({
+        ClientId: readOnlyClient,
+        Username: "email-write-denied",
+        Password: password,
+        UserAttributes: [{ Name: "email", Value: "write-denied@example.test" }],
+      })),
+      (error: any) => error?.name === "NotAuthorizedException",
+    );
+
     const pool = await client.send(new CreateUserPoolCommand({
       PoolName: "signup-boundaries",
       AliasAttributes: ["email"],
@@ -403,10 +438,15 @@ test("authentication rejects disabled, wrong-client, wrong-Region, and expired r
       ClientId: passwordOnly,
       AuthParameters: { USERNAME: email, PASSWORD: password },
     }))).AuthenticationResult!;
+    assert((await client.send(new GetTokensFromRefreshTokenCommand({
+      ClientId: passwordOnly,
+      RefreshToken: passwordOnlySession.RefreshToken!,
+    }))).AuthenticationResult?.AccessToken);
     await assert.rejects(
-      client.send(new GetTokensFromRefreshTokenCommand({
+      client.send(new InitiateAuthCommand({
         ClientId: passwordOnly,
-        RefreshToken: passwordOnlySession.RefreshToken!,
+        AuthFlow: "REFRESH_TOKEN_AUTH",
+        AuthParameters: { REFRESH_TOKEN: passwordOnlySession.RefreshToken! },
       })),
       (error: any) => error?.name === "InvalidParameterException",
     );

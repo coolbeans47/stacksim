@@ -78,6 +78,7 @@ export class IamService {
   }
   async GetRole(input: any): Promise<any> { return { Role: roleView(this.role(input.RoleName)) }; }
   async ListRoles(input: any): Promise<any> { let roles = Object.values(this.iam.roles).filter(role => role.path.startsWith(input.PathPrefix ?? "/")).sort((a, b) => a.roleName.localeCompare(b.roleName)); const page = this.page("ListRoles", input, roles); return { Roles: page.values.map(roleView), IsTruncated: page.truncated, Marker: page.marker }; }
+  async ListInstanceProfilesForRole(input: any): Promise<any> { this.role(input.RoleName); return { InstanceProfiles: [], IsTruncated: false }; }
   async UpdateRole(input: any): Promise<any> { const role = this.role(input.RoleName); if (input.Description !== undefined) role.description = input.Description; if (input.MaxSessionDuration !== undefined) { const duration = Number(input.MaxSessionDuration); if (duration < 3600 || duration > 43_200) throw new AwsError("ValidationError", "Invalid MaxSessionDuration", 400); role.maxSessionDuration = duration; } await this.store.save(); return {}; }
   async UpdateAssumeRolePolicy(input: any): Promise<any> { const role = this.role(input.RoleName); role.assumeRolePolicyDocument = validatePolicyDocument(input.PolicyDocument, "trust"); role.assumeRolePolicyCanonical = canonicalPolicyDocument(role.assumeRolePolicyDocument); await this.store.save(); return {}; }
   async DeleteRole(input: any): Promise<any> {

@@ -316,6 +316,12 @@ test("COG-03 administrator creation, invitation, lifecycle, tags, and groups use
       Precedence: 2,
       RoleArn: "arn:aws:iam::000000000000:role/auditors",
     }));
+    await client.send(new CreateGroupCommand({
+      UserPoolId: poolId,
+      GroupName: "admins-copy",
+      Precedence: 1,
+      RoleArn: "arn:aws:iam::000000000000:role/admins",
+    }));
     await client.send(new AdminAddUserToGroupCommand({
       UserPoolId: poolId,
       Username: email,
@@ -325,6 +331,11 @@ test("COG-03 administrator creation, invitation, lifecycle, tags, and groups use
       UserPoolId: poolId,
       Username: email,
       GroupName: "auditors",
+    }));
+    await client.send(new AdminAddUserToGroupCommand({
+      UserPoolId: poolId,
+      Username: email,
+      GroupName: "admins-copy",
     }));
     const firstGroupPage = await client.send(new ListGroupsCommand({ UserPoolId: poolId, Limit: 1 }));
     assert.equal(firstGroupPage.Groups?.length, 1);
@@ -368,9 +379,48 @@ test("COG-03 administrator creation, invitation, lifecycle, tags, and groups use
         "base64url",
       ).toString("utf8"),
     );
-    assert.deepEqual(groupedIdClaims["cognito:groups"], ["admins", "auditors"]);
-    assert.deepEqual(groupedAccessClaims["cognito:groups"], ["admins", "auditors"]);
+    assert.deepEqual(groupedIdClaims["cognito:groups"], ["admins", "admins-copy", "auditors"]);
+    assert.deepEqual(groupedAccessClaims["cognito:groups"], ["admins", "admins-copy", "auditors"]);
     assert.equal(groupedIdClaims["cognito:preferred_role"], "arn:aws:iam::000000000000:role/admins");
+    assert.equal(groupedAccessClaims["cognito:roles"], undefined);
+    assert.equal(groupedAccessClaims["cognito:preferred_role"], undefined);
+
+    await client.send(new CreateGroupCommand({
+      UserPoolId: poolId,
+      GroupName: "operators",
+      Precedence: 1,
+      RoleArn: "arn:aws:iam::000000000000:role/operators",
+    }));
+    await client.send(new AdminAddUserToGroupCommand({
+      UserPoolId: poolId,
+      Username: email,
+      GroupName: "operators",
+    }));
+    const tiedChallenge = await client.send(new InitiateAuthCommand({
+      ClientId: clientId,
+      AuthFlow: "USER_PASSWORD_AUTH",
+      AuthParameters: { USERNAME: email, PASSWORD: "Permanent-password-2!" },
+    }));
+    const tiedAuthentication = await client.send(new RespondToAuthChallengeCommand({
+      ClientId: clientId,
+      ChallengeName: "SOFTWARE_TOKEN_MFA",
+      Session: tiedChallenge.Session,
+      ChallengeResponses: {
+        USERNAME: email,
+        SOFTWARE_TOKEN_MFA_CODE: totp(associated.SecretCode!),
+      },
+    }));
+    const tiedIdClaims = JSON.parse(Buffer.from(
+      tiedAuthentication.AuthenticationResult!.IdToken!.split(".")[1],
+      "base64url",
+    ).toString("utf8"));
+    const tiedAccessClaims = JSON.parse(Buffer.from(
+      tiedAuthentication.AuthenticationResult!.AccessToken!.split(".")[1],
+      "base64url",
+    ).toString("utf8"));
+    assert.equal(tiedIdClaims["cognito:preferred_role"], undefined);
+    assert.equal(tiedAccessClaims["cognito:roles"], undefined);
+    assert.equal(tiedAccessClaims["cognito:preferred_role"], undefined);
 
     await client.send(new AdminResetUserPasswordCommand({ UserPoolId: poolId, Username: email }));
     assert.equal(

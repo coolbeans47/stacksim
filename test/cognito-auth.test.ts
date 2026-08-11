@@ -618,7 +618,7 @@ test("refresh-token rotation enforces grace, detects replay, and revokes the tok
         ClientId: clientId,
         RefreshToken: original,
       })),
-      (error: any) => error?.name === "NotAuthorizedException",
+      (error: any) => error?.name === "RefreshTokenReuseException",
     );
     await assert.rejects(
       active.client.send(new GetTokensFromRefreshTokenCommand({

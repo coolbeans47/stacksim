@@ -148,7 +148,6 @@ function routeView(route: HttpApiRouteState): any {
     requestParameters: {},
     routeId: route.routeId,
     routeKey: route.routeKey,
-    routeResponseSelectionExpression: "${default}",
     target: route.target,
   });
 }
@@ -554,7 +553,8 @@ export class ApiGatewayV2Service {
     if (input.protocolType !== "HTTP") throw new AwsError("BadRequestException", "APIG-11 supports ProtocolType HTTP; WebSocket APIs are implemented in APIG-12");
     const name = String(input.name ?? "").trim();
     if (!name || name.length > 128) throw new AwsError("BadRequestException", "Name is required and must not exceed 128 characters");
-    if (input.routeSelectionExpression !== undefined && input.routeSelectionExpression !== "${request.method} ${request.path}") throw new AwsError("BadRequestException", "HTTP APIs use the standard route selection expression");
+    const routeSelectionExpression = input.routeSelectionExpression ?? "${request.method} ${request.path}";
+    if (!["${request.method} ${request.path}", "$request.method $request.path"].includes(routeSelectionExpression)) throw new AwsError("BadRequestException", "HTTP APIs use the standard route selection expression");
     const apiId = cloudFormationResourceId(operationToken, "api") ?? id(10);
     const replay = this.apis[apiId];
     if (replay) {
@@ -563,7 +563,7 @@ export class ApiGatewayV2Service {
     }
     const api: HttpApiState = {
       apiId, name, description: input.description, version: input.version, protocolType: "HTTP",
-      ipAddressType: input.ipAddressType ?? "ipv4", routeSelectionExpression: "${request.method} ${request.path}",
+      ipAddressType: input.ipAddressType ?? "ipv4", routeSelectionExpression,
       apiEndpoint: `${this.invokeProtocol}://localhost:${this.currentInvokePort()}/${apiId}`, apiGatewayManaged: false,
       createdDate: this.clock.now(), tags: this.tags(input.tags), corsConfiguration: this.validateCors(input.corsConfiguration),
       disableExecuteApiEndpoint: Boolean(input.disableExecuteApiEndpoint), integrations: {}, routes: {}, authorizers: {}, deployments: {}, stages: {}, models: {},
@@ -925,7 +925,7 @@ export class ApiGatewayV2Service {
         || !Number.isSafeInteger(claims.exp)
         || Number(claims.exp) <= now
         || claims.nbf !== undefined && (!Number.isSafeInteger(claims.nbf) || Number(claims.nbf) > now)
-        || claims.iat !== undefined && (!Number.isSafeInteger(claims.iat) || Number(claims.iat) > now + 60)
+        || claims.iat !== undefined && (!Number.isSafeInteger(claims.iat) || Number(claims.iat) > now)
       ) {
         throw new JwtValidationError();
       }
