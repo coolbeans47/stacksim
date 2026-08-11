@@ -89,6 +89,7 @@ import { CognitoPasswordHasher } from "./cognito/passwords.js";
 import { IamCredentialStore } from "./iam/credentials.js";
 import { initializeDefaultAdministrator } from "./iam/default-admin.js";
 import { AppSyncService } from "./appsync.js";
+import { policyValidationReport } from "./iam/policy-validation.js";
 
 function booleanEnvironment(name: string): boolean | undefined {
   const value = process.env[name];
@@ -1158,6 +1159,7 @@ export class StackSim {
     let action = "stacksim:MutateConsoleResource";
     let resource = "*";
     let operation = "ConsoleMutation";
+    if (pathname === "/_stacksim/api/iam/policy-validation" && method === "POST") return { action: "iam:GetPolicy", resource: "*", operation: "ValidatePolicyDocument", input: {}, context: { "aws:PrincipalArn": principal.principalArn, "aws:PrincipalAccount": principal.accountId, "aws:RequestedRegion": region, "aws:CurrentTime": new Date(this.clock.now()).toISOString() } };
     const iamPath = pathname.match(/^\/_stacksim\/api\/iam\/(roles|policies|users|groups)(?:\/([^/]+))?(?:\/(attach|detach|access-keys|members))?/);
     if (iamPath) {
       const kind = iamPath[1]; const name = iamPath[2] ? decodeURIComponent(iamPath[2]) : "*"; const suffix = iamPath[3];
@@ -1357,6 +1359,8 @@ export class StackSim {
           "aws:PrincipalAccount": principal.accountId,
           "aws:RequestedRegion": region,
           "aws:CurrentTime": new Date(this.clock.now()).toISOString(),
+          "aws:TokenIssueTime": principal.issuedAt === undefined ? undefined : new Date(principal.issuedAt).toISOString(),
+          "aws:SourceIdentity": principal.sourceIdentity,
           "secretsmanager:VersionStage": versionStage,
         };
         for (const [key, value] of Object.entries(secret.tags)) {
@@ -1376,10 +1380,10 @@ export class StackSim {
   }
 
   private async authorizeFunctionUrl(req: import("node:http").IncomingMessage, lambda: LambdaService, target: NonNullable<ReturnType<LambdaService["findFunctionUrl"]>>, principal: PrincipalContext | undefined, currentRequestId: string, region: string): Promise<void> {
-    const principalArn = principal?.principalArn ?? "*"; const sameAccount = !principal || principal.accountId === this.store.accountId; const context: Record<string, unknown> = { "aws:PrincipalArn": principalArn, "aws:PrincipalAccount": principal?.accountId, "aws:RequestedRegion": region, "aws:CurrentTime": new Date(this.clock.now()).toISOString(), "aws:SourceIp": req.socket.remoteAddress?.replace(/^::ffff:/, ""), "aws:UserAgent": req.headers["user-agent"] ?? "", "aws:SecureTransport": Boolean((req.socket as any).encrypted), "lambda:FunctionUrlAuthType": target.config.authType, "lambda:InvokedViaFunctionUrl": true };
+    const principalArn = principal?.principalArn ?? "*"; const sameAccount = !principal || principal.accountId === this.store.accountId; const context: Record<string, unknown> = { "aws:PrincipalArn": principalArn, "aws:PrincipalAccount": principal?.accountId, "aws:RequestedRegion": region, "aws:CurrentTime": new Date(this.clock.now()).toISOString(), "aws:TokenIssueTime": principal?.issuedAt === undefined ? undefined : new Date(principal.issuedAt).toISOString(), "aws:SourceIdentity": principal?.sourceIdentity, "aws:SourceIp": req.socket.remoteAddress?.replace(/^::ffff:/, ""), "aws:UserAgent": req.headers["user-agent"] ?? "", "aws:SecureTransport": Boolean((req.socket as any).encrypted), "lambda:FunctionUrlAuthType": target.config.authType, "lambda:InvokedViaFunctionUrl": true };
     for (const action of ["lambda:InvokeFunctionUrl", "lambda:InvokeFunction"] as const) {
-      const root = principal?.principalType === "root"; const identity: AuthorizationResult = !principal ? { decision: "implicitDeny", reason: "Anonymous function URL requests have no identity policy", matchedStatements: [] } : root && this.rootRecovery ? { decision: "allowed", reason: "Configured recovery root", matchedStatements: [] } : evaluateAuthorization(this.store.ensureAccount().iam, principal, action, target.functionArn, context); const resource = lambda.functionUrlResourcePolicy(principalArn, target, action, context); let result: AuthorizationResult;
-      if (identity.decision === "explicitDeny") result = identity; else if (resource.decision === "explicitDeny") result = resource; else if (sameAccount && (identity.decision === "allowed" || resource.decision === "allowed")) result = { decision: "allowed", reason: identity.decision === "allowed" ? identity.reason : resource.reason, matchedStatements: [...identity.matchedStatements, ...resource.matchedStatements] }; else if (!sameAccount && identity.decision === "allowed" && resource.decision === "allowed") result = { decision: "allowed", reason: "Both identity and cross-account function policies allow the action", matchedStatements: [...identity.matchedStatements, ...resource.matchedStatements] }; else result = { decision: "implicitDeny", reason: principal ? "No identity or applicable function resource policy allows the action" : "The public function URL policy does not allow anonymous invocation", matchedStatements: resource.matchedStatements };
+      const root = principal?.principalType === "root"; const identity: AuthorizationResult = !principal ? { decision: "implicitDeny", reason: "Anonymous function URL requests have no identity policy", matchedStatements: [] } : root && this.rootRecovery ? { decision: "allowed", reason: "Configured recovery root", matchedStatements: [] } : evaluateAuthorization(this.store.ensureAccount().iam, principal, action, target.functionArn, context); const resource = lambda.functionUrlResourcePolicy(principal ?? principalArn, target, action, context);
+      const result = combineIdentityAndResourceAuthorization(identity, resource, !principal ? "service" : sameAccount ? "sameAccount" : "crossAccount");
       const decisions = this.store.ensureAccount().iam.authorizationDecisions; decisions.push({ time: this.clock.now(), requestId: currentRequestId, principalArn, action, resource: target.functionArn, decision: result.decision, reason: result.reason }); if (decisions.length > 1_000) decisions.splice(0, decisions.length - 1_000); if (result.decision !== "allowed") { await this.store.save(); throw new AwsError("AccessDeniedException", `User ${principalArn} is not authorized to perform ${action} on ${target.functionArn}. ${result.reason}`, 403); }
     }
     await this.store.save();
@@ -1400,18 +1404,17 @@ export class StackSim {
           && new Set(["s3:GetBucketPolicy", "s3:GetBucketPolicyStatus", "s3:PutBucketPolicy", "s3:DeleteBucketPolicy"]).has(target.action);
         if (rootRecovery) identity = { decision: "allowed", reason: "S3 bucket-owner root recovery", matchedStatements: [] };
         result = combineIdentityAndResourceAuthorization(identity, s3.result, principal.principalArn === "*" ? "service" : principal.accountId === s3.ownerAccountId ? "sameAccount" : "crossAccount");
-        if (identity.decision !== "allowed" && /^(Session policy|Permissions boundary):/.test(identity.reason) && s3.result.decision !== "explicitDeny") result = identity;
         if (rootRecovery && s3.result.decision === "explicitDeny") result = identity;
       }
     }
     const dynamoPolicy = this.dynamoResourcePolicy(target);
     if (dynamoPolicy && !(bootstrap && target.action === "dynamodb:DeleteResourcePolicy")) {
-      const resource = evaluateResourcePolicy(dynamoPolicy.document, principal.principalArn, target.action, target.resource, target.context);
+      const resource = evaluateResourcePolicy(dynamoPolicy.document, principal, target.action, target.resource, target.context);
       result = combineIdentityAndResourceAuthorization(identity, resource, principal.accountId === dynamoPolicy.accountId ? "sameAccount" : "crossAccount");
     }
     const sqsPolicy = this.sqsResourcePolicy(target);
     if (sqsPolicy) {
-      const resource = evaluateSqsQueuePolicy(sqsPolicy.document, { type: "AWS", arn: principal.principalArn, accountId: principal.accountId }, target.action, target.resource, target.context);
+      const resource = evaluateSqsQueuePolicy(sqsPolicy.document, { type: "AWS", arn: principal.principalArn, accountId: principal.accountId, roleArn: principal.roleArn }, target.action, target.resource, target.context);
       result = combineIdentityAndResourceAuthorization(identity, resource, principal.accountId === sqsPolicy.accountId ? "sameAccount" : "crossAccount");
       const nondelegable = new Set([
         "sqs:AddPermission", "sqs:CancelMessageMoveTask", "sqs:CreateQueue", "sqs:DeleteQueue", "sqs:ListMessageMoveTasks",
@@ -1427,7 +1430,7 @@ export class StackSim {
     const snsPolicy = this.snsResourcePolicy(target);
     if (snsPolicy) {
       const resource: AuthorizationResult = snsPolicy.document
-        ? evaluateResourcePolicy(snsPolicy.document, principal.principalArn, target.action, target.resource, target.context)
+        ? evaluateResourcePolicy(snsPolicy.document, principal, target.action, target.resource, target.context)
         : { decision: "implicitDeny", reason: "The topic has no applicable resource policy", matchedStatements: [] };
       result = combineIdentityAndResourceAuthorization(identity, resource, principal.accountId === snsPolicy.accountId ? "sameAccount" : "crossAccount");
       const nondelegable = new Set([
@@ -1444,18 +1447,18 @@ export class StackSim {
       const region = String(target.context["aws:RequestedRegion"]);
       const attached = this.services(region).secretsmanager.resourcePolicy(target.resource);
       if (attached) {
-        const resource = evaluateResourcePolicy(attached.normalized, principal.principalArn, target.action, target.resource, target.context);
+        const resource = evaluateResourcePolicy(attached.normalized, principal, target.action, target.resource, target.context);
         result = combineIdentityAndResourceAuthorization(identity, resource, principal.accountId === this.store.accountId ? "sameAccount" : "crossAccount");
       }
     }
     if (target.action.startsWith("ses:") && target.resource.startsWith("arn:aws:ses:")) {
       const documents = this.services(String(target.context["aws:RequestedRegion"])).ses.resourcePolicies(target.resource);
       if (documents.length) {
-        const evaluations = documents.map(document => evaluateResourcePolicy(document, principal.principalArn, target.action, target.resource, target.context));
+        const evaluations = documents.map(document => evaluateResourcePolicy(document, principal, target.action, target.resource, target.context));
         const resource: AuthorizationResult = evaluations.some(item => item.decision === "explicitDeny")
           ? { decision: "explicitDeny", reason: "An SES identity policy explicitly denies the action", matchedStatements: evaluations.flatMap(item => item.matchedStatements) }
           : evaluations.some(item => item.decision === "allowed")
-            ? { decision: "allowed", reason: "An SES identity policy allows the action", matchedStatements: evaluations.flatMap(item => item.matchedStatements) }
+            ? { decision: "allowed", reason: "An SES identity policy allows the action", matchedStatements: evaluations.flatMap(item => item.matchedStatements), grantBasis: evaluations.filter(item => item.decision === "allowed").sort((a, b) => ({ wildcard: 0, account: 1, role: 2, directUser: 3, directSession: 3 }[b.grantBasis ?? "wildcard"] - { wildcard: 0, account: 1, role: 2, directUser: 3, directSession: 3 }[a.grantBasis ?? "wildcard"]))[0]?.grantBasis }
             : { decision: "implicitDeny", reason: "No SES identity policy allows the action", matchedStatements: evaluations.flatMap(item => item.matchedStatements) };
         result = combineIdentityAndResourceAuthorization(identity, resource, principal.accountId === this.store.accountId ? "sameAccount" : "crossAccount");
       }
@@ -1614,6 +1617,11 @@ export class StackSim {
   private async localIamApi(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse, url: URL): Promise<void> {
     try {
       const path = url.pathname.slice("/_stacksim/api/iam/".length); const iam = this.store.ensureAccount().iam;
+      if (path === "policy-validation" && req.method === "POST") {
+        const input = await readJson(req); const kind = input.Kind ?? input.kind ?? "identity";
+        if (!new Set(["identity", "session", "trust"]).has(kind)) throw new AwsError("InvalidInput", "Policy kind must be identity, session, or trust", 400);
+        return json(res, policyValidationReport(input.PolicyDocument ?? input.document, kind));
+      }
       if (path === "role-preflight" && req.method === "POST") {
         const input = await readJson(req) as any;
         const servicePrincipal = typeof input.ServicePrincipal === "string" ? input.ServicePrincipal : undefined;

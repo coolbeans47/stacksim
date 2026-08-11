@@ -13,7 +13,7 @@ import type { DynamoDbService } from "./dynamodb.js";
 import type { SqsService } from "./sqs.js";
 import type { CloudWatchLogsService } from "./cloudwatch-logs.js";
 import { ServiceRegistry } from "./core/service-registry.js";
-import { evaluateAuthorization, evaluateResourcePolicy, evaluateRoleAuthorization, evaluateTrust, roleSessionAuthorizationContext, type AuthorizationResult } from "./iam/evaluator.js";
+import { combineIdentityAndResourceAuthorization, evaluateAuthorization, evaluateIdentityPolicy, evaluateResourcePolicy, evaluateRoleAuthorization, evaluateTrust, roleSessionAuthorizationContext, type AuthorizationResult } from "./iam/evaluator.js";
 import type { StateStore } from "./state.js";
 import type { ApiAuthorizerState, ApiDeploymentSnapshot, ApiDocumentationPartLocationState, ApiDocumentationPartState, ApiDocumentationVersionState, ApiGatewayApiKeyState, ApiGatewayBasePathMappingState, ApiGatewayCachedResponseState, ApiGatewayClientCertificateState, ApiGatewayDomainNameAccessAssociationState, ApiGatewayDomainNameState, ApiGatewayResponseCacheEntryState, ApiGatewayResponseState, ApiGatewayStageCacheState, ApiGatewayThrottleSettingsState, ApiGatewayUsagePlanStageState, ApiGatewayUsagePlanState, ApiGatewayVpcLinkState, ApiIntegrationResponseState, ApiIntegrationState, ApiMethodResponseState, ApiMethodSettingState, ApiMethodState, ApiModelState, ApiRequestValidatorState, ApiResource, ApiStageState, PolicyDocument, RestApiState } from "./types.js";
 import type { PrincipalContext } from "./auth/sigv4.js";
@@ -1083,9 +1083,9 @@ export class ApiGatewayService {
     if (validator?.validateRequestParameters) this.validateRequestParameters(method, input);
     if (validator?.validateRequestBody) this.validateRequestBody(method, input, configuration.models);
     const methodArn = `arn:aws:execute-api:${this.region}:${this.store.accountId}:${api.id}/${input.stageName}/${input.method}/${input.path.replace(/^\//, "")}`;
-    const resourceAuthorization = resourcePolicy ? evaluateResourcePolicy(this.expandApiPolicy(resourcePolicy, api.id), input.principal ?? "anonymous", "execute-api:Invoke", methodArn, { "aws:SourceIp": input.sourceIp, "aws:PrincipalArn": input.principal, "aws:SourceArn": input.sourceArn, "aws:SourceAccount": input.sourceAccount }) : undefined;
+    const resourceAuthorization = resourcePolicy ? evaluateResourcePolicy(this.expandApiPolicy(resourcePolicy, api.id), input.principalContext ?? input.principal ?? "anonymous", "execute-api:Invoke", methodArn, { "aws:SourceIp": input.sourceIp, "aws:PrincipalArn": input.principal, "aws:SourceArn": input.sourceArn, "aws:SourceAccount": input.sourceAccount, "aws:TokenIssueTime": input.principalContext?.issuedAt === undefined ? undefined : new Date(input.principalContext.issuedAt).toISOString(), "aws:SourceIdentity": input.principalContext?.sourceIdentity }) : undefined;
     let authorizerContext: Record<string, unknown> = {}; let principalId: string | undefined; let usageIdentifierKey: string | undefined; let bearerDigest: string | undefined;
-    if (method.authorizationType === "AWS_IAM") { const identityAuthorization = this.authMode !== "enforce" || input.stageName === "test-invoke-stage" ? { decision: "allowed", reason: "IAM policy enforcement is disabled", matchedStatements: [] } as AuthorizationResult : input.identityAuthorization ?? { decision: "implicitDeny", reason: "No authenticated IAM authorization decision is available", matchedStatements: [] }; this.requireCombinedAuthorization(identityAuthorization, resourceAuthorization); }
+    if (method.authorizationType === "AWS_IAM") { const identityAuthorization = this.authMode !== "enforce" || input.stageName === "test-invoke-stage" ? { decision: "allowed", reason: "IAM policy enforcement is disabled", matchedStatements: [] } as AuthorizationResult : input.identityAuthorization ?? { decision: "implicitDeny", reason: "No authenticated IAM authorization decision is available", matchedStatements: [] }; const combined = resourceAuthorization ? combineIdentityAndResourceAuthorization(identityAuthorization, resourceAuthorization, input.principalContext?.accountId === this.store.accountId ? "sameAccount" : "crossAccount") : identityAuthorization; if (combined.decision !== "allowed") throw new AwsError("AccessDeniedException", "User is not authorized to access this resource", 403); }
     else if (method.authorizationType === "CUSTOM" || method.authorizationType === "COGNITO_USER_POOLS") { const authorizer = authorizers[method.authorizerId ?? ""]; if (!authorizer) throw new AwsError(method.authorizationType === "COGNITO_USER_POOLS" ? "AuthorizerConfigurationException" : "UnauthorizedException", method.authorizationType === "COGNITO_USER_POOLS" ? "Cognito authorizer configuration is unavailable" : "Unauthorized", method.authorizationType === "COGNITO_USER_POOLS" ? 500 : 401); const result = await this.runAuthorizer(api, authorizer, input, methodArn, method); this.requireCombinedAuthorization(result.authorization, resourceAuthorization); authorizerContext = result.context; principalId = result.principalId; usageIdentifierKey = result.usageIdentifierKey; bearerDigest = result.bearerDigest; }
     else if (resourceAuthorization && resourceAuthorization.decision !== "allowed") throw new AwsError("AccessDeniedException", "User is not authorized to access this resource", 403);
     const apiKey = await this.enforceApiKey(api, resource, method, configuredMethod, input, configuration.apiKeySource, usageIdentifierKey);
@@ -1249,7 +1249,7 @@ export class ApiGatewayService {
     const cacheKey = `${api.id}\0${input.stageName}\0${authorizer.id}\0${identities.join("\0")}`;
     const cached = this.authorizerCache.get(cacheKey);
     if (cached?.kind === "LAMBDA" && cached.expiresAt > this.clock.now()) {
-      const authorization = evaluateResourcePolicy(cached.value.policy, "*", "execute-api:Invoke", methodArn);
+    const authorization = evaluateIdentityPolicy(cached.value.policy, "execute-api:Invoke", methodArn);
       return { ...cached.value, authorization, allowed: authorization.decision === "allowed" };
     }
     const arn = authorizer.authorizerUri?.match(/functions\/(arn:[^/]+)\/invocations/)?.[1];
@@ -1278,7 +1278,7 @@ export class ApiGatewayService {
     if (Object.values(context).some(value => value !== null && !["string", "number", "boolean"].includes(typeof value))) throw new AwsError("AuthorizerConfigurationException", "Authorizer context values must be scalar", 500);
     if (output.usageIdentifierKey !== undefined && typeof output.usageIdentifierKey !== "string") throw new AwsError("AuthorizerConfigurationException", "usageIdentifierKey must be a string", 500);
     const policy = output.policyDocument as PolicyDocument;
-    const authorization = evaluateResourcePolicy(policy, "*", "execute-api:Invoke", methodArn);
+    const authorization = evaluateIdentityPolicy(policy, "execute-api:Invoke", methodArn);
     const result: RestAuthorizerResult = { principalId: String(output.principalId), context, policy, usageIdentifierKey: output.usageIdentifierKey as string | undefined, authorization, allowed: authorization.decision === "allowed" };
     if (authorizer.authorizerResultTtlInSeconds > 0) {
       this.authorizerCache.set(cacheKey, {

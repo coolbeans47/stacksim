@@ -221,6 +221,8 @@ test("S3-05 enforce mode combines identity, bucket policy, conditions, session p
     };
     accountIam.roles["s3-reader"].permissionsBoundaryArn = boundaryArn; await simulator.store.save();
     await assert.rejects(reader.send(new GetObjectCommand({ Bucket: bucket, Key: "allowed/item.txt" })), (error: any) => error.name === "AccessDeniedException" && /Permissions boundary/.test(error.message));
+    await root.send(new PutBucketPolicyCommand({ Bucket: bucket, Policy: JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { AWS: assumed.AssumedRoleUser!.Arn! }, Action: "s3:GetObject", Resource: `arn:aws:s3:::${bucket}/allowed/*` }] }) }));
+    assert.equal(Buffer.from(await (await reader.send(new GetObjectCommand({ Bucket: bucket, Key: "allowed/item.txt" }))).Body!.transformToByteArray()).toString(), "allowed", "an exact same-account session grant bypasses an implicit boundary denial");
     accountIam.policies[boundaryArn].versions.v1.document = { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["s3:GetObject", "s3:ListBucket", "s3:GetBucketAcl"], Resource: "*" }] }; await simulator.store.save();
     assert.equal(Buffer.from(await (await reader.send(new GetObjectCommand({ Bucket: bucket, Key: "allowed/item.txt" }))).Body!.transformToByteArray()).toString(), "allowed");
 

@@ -5,7 +5,7 @@ import { PaginationTokens } from "./core/pagination.js";
 import type { Scheduler } from "./core/scheduler.js";
 import type { TelemetryBus } from "./core/telemetry.js";
 import { AwsError } from "./errors.js";
-import { evaluateRoleAuthorization, evaluateTrust, roleSessionAuthorizationContext } from "./iam/evaluator.js";
+import { evaluateRoleAuthorization, evaluateTrust, roleSessionAuthorizationContext, type AuthorizationResult } from "./iam/evaluator.js";
 import type { LambdaService } from "./lambda.js";
 import type { DynamoDbService } from "./dynamodb.js";
 import type { SqsService } from "./sqs.js";
@@ -703,10 +703,10 @@ export class StepFunctionsService {
     if (timeout !== undefined && task.timeoutDeadline === undefined) task.timeoutDeadline = task.createdAt + timeout * 1000;
   }
 
-  private authorizeIntegration(execution: StepFunctionsExecutionState, action: string, resource: string, extra: Record<string, unknown> = {}): boolean {
-    this.validateRole(execution.roleArn); if (this.authMode !== "enforce") return true;
+  private authorizeIntegration(execution: StepFunctionsExecutionState, action: string, resource: string, extra: Record<string, unknown> = {}): AuthorizationResult {
+    this.validateRole(execution.roleArn); if (this.authMode !== "enforce") return { decision: "allowed", reason: "Authorization enforcement is disabled", matchedStatements: [] };
     const result = evaluateRoleAuthorization(this.store.ensureAccount().iam, execution.roleArn, action, resource, roleSessionAuthorizationContext(execution.roleArn, this.region, this.clock.now(), { "aws:SourceArn": execution.stateMachineArn, "aws:SourceAccount": this.store.accountId, ...extra }));
-    if (result.decision !== "allowed") throw new AwsError("AccessDeniedException", `Execution role ${execution.roleArn} cannot perform ${action} on ${resource}.`, 403); return true;
+    if (result.decision !== "allowed") throw new AwsError("AccessDeniedException", `Execution role ${execution.roleArn} cannot perform ${action} on ${resource}.`, 403); return result;
   }
 
   private integrationFailure(prefix: string, error: unknown): WorkflowError {
@@ -746,8 +746,8 @@ export class StepFunctionsService {
         ? this.integrations!.sqs.sendAuthorizedMessageToArn(targetArn, { ...parameters, QueueUrl: undefined } as any, { kind: "role", roleArn: execution.roleArn, sourceArn: execution.stateMachineArn, sourceAccount: this.store.accountId, deliveryLineage: [...(execution.lineage ?? []), execution.executionArn] }, attempt)
         : this.integrations!.sqs.SendMessageToArn(targetArn, { ...parameters, QueueUrl: undefined } as any, attempt);
     } else if (resource.startsWith("arn:aws:states:::sns:publish")) {
-      service = "SNS"; operation = "publish"; targetArn = String(parameters.TopicArn ?? parameters.TargetArn ?? ""); if (!new RegExp(`^arn:aws:sns:${this.region}:${this.store.accountId}:`).test(targetArn)) throw new WorkflowError("SNS.NotFound", "SNS integrations require a same-account, same-Region topic ARN."); prefix = "SNS"; let allowed: boolean; try { allowed = this.authorizeIntegration(execution, "sns:Publish", targetArn); } catch (error) { throw this.integrationFailure(prefix, error); }
-      call = attempt => this.integrations!.sns.publishAuthorized({ ...parameters, TopicArn: targetArn }, { principal: execution.roleArn, sourceArn: execution.stateMachineArn, sourceAccount: this.store.accountId, identityAuthorized: allowed, lineage: [...(execution.lineage ?? []), execution.executionArn] }, attempt);
+      service = "SNS"; operation = "publish"; targetArn = String(parameters.TopicArn ?? parameters.TargetArn ?? ""); if (!new RegExp(`^arn:aws:sns:${this.region}:${this.store.accountId}:`).test(targetArn)) throw new WorkflowError("SNS.NotFound", "SNS integrations require a same-account, same-Region topic ARN."); prefix = "SNS"; let identityAuthorization: AuthorizationResult; try { identityAuthorization = this.authorizeIntegration(execution, "sns:Publish", targetArn); } catch (error) { throw this.integrationFailure(prefix, error); }
+      call = attempt => this.integrations!.sns.publishAuthorized({ ...parameters, TopicArn: targetArn }, { principal: execution.roleArn, sourceArn: execution.stateMachineArn, sourceAccount: this.store.accountId, identityAuthorization, lineage: [...(execution.lineage ?? []), execution.executionArn] }, attempt);
     } else if (resource === "arn:aws:states:::events:putEvents") {
       service = "EVENTBRIDGE"; operation = "putEvents"; prefix = "EventBridge"; const entries = Array.isArray(parameters.Entries) ? parameters.Entries : []; const augmented = { ...parameters, Entries: entries.map((entry: any) => ({ ...entry, Resources: [...(Array.isArray(entry.Resources) ? entry.Resources : []), execution.executionArn, execution.stateMachineArn] })) }; for (const [index, entry] of augmented.Entries.entries()) { const accepted = prior?.status === "DISPATCHED" ? this.integrations.eventbridge.reconcileIntegrationEntryAttempt(attemptFor(prior), index, entry) : undefined; if (accepted !== undefined) continue; const bus = String(entry.EventBusName ?? "default"); const arn = bus.startsWith("arn:") ? bus : `arn:aws:events:${this.region}:${this.store.accountId}:event-bus/${bus}`; try { this.authorizeIntegration(execution, "events:PutEvents", arn, { "events:source": entry.Source, "events:detail-type": entry.DetailType }); } catch (error) { throw this.integrationFailure(prefix, error); } } targetArn = `arn:aws:events:${this.region}:${this.store.accountId}:event-bus/*`;
       call = attempt => this.integrations!.eventbridge.PutEvents(augmented, undefined, { deliveryLineage: [...(execution.lineage ?? []), execution.executionArn], integrationAttempt: attempt });
@@ -790,7 +790,7 @@ export class StepFunctionsService {
     if (prior?.status === "FAILED") throw new WorkflowError(prior.error ?? "States.TaskFailed", prior.cause ?? "The Lambda task failed");
     if (prior?.status === "AMBIGUOUS" || prior?.status === "ACCEPTED" && prior.schemaVersion !== 2) { prior.status = "AMBIGUOUS"; prior.error = "States.TaskFailed"; prior.cause = "The Lambda invocation may have run, but no owning-service completion receipt exists; the non-idempotent call was not repeated."; await this.persistExecution(execution); throw new WorkflowError(prior.error, prior.cause); }
     const callback = Boolean(context.Task?.Token);
-    const completeOutput = async (journal: StepFunctionsTaskJournalState, output: unknown): Promise<unknown> => { journal.status = "SUCCEEDED"; journal.completedAt = this.clock.now(); if (!callback) journal.output = structuredClone(output); this.appendScoped(execution, child, "LambdaFunctionSucceeded", { lambdaFunctionSucceededEventDetails: { output: callback ? "{}" : JSON.stringify(output), outputDetails: { truncated: false } } }); await this.persistExecution(execution); await this.releaseIntegrationReceipt(journal).catch(() => undefined); return output; };
+    const completeOutput = async (journal: StepFunctionsTaskJournalState, output: unknown): Promise<unknown> => { journal.status = "SUCCEEDED"; journal.completedAt = this.clock.now(); if (!callback) journal.output = structuredClone(output); if (execution.status === "RUNNING") this.appendScoped(execution, child, "LambdaFunctionSucceeded", { lambdaFunctionSucceededEventDetails: { output: callback ? "{}" : JSON.stringify(output), outputDetails: { truncated: false } } }); await this.persistExecution(execution); await this.releaseIntegrationReceipt(journal).catch(() => undefined); return output; };
     if (prior?.status === "ACCEPTED") return completeOutput(prior, structuredClone(prior.output));
     const inputText = JSON.stringify(payload); const safeInputText = JSON.stringify(optimized ? (safeParameters.Payload === undefined ? {} : safeParameters.Payload) : safeParameters); const recordedInput = context.Task?.Token ? safeInputText.split(context.Task.Token).join("<redacted task token>") : safeInputText; this.checkPayload(payload);
     const journal: StepFunctionsTaskJournalState = prior ?? { taskId: randomUUID(), schemaVersion: 2, stateName: context.State.Name, targetArn, input: recordedInput, inputDigest: integrationInputDigest(payload), service: "LAMBDA", operation: "invoke", status: "UNDISPATCHED" };

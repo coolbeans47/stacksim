@@ -89,6 +89,7 @@ test("CloudFormation execution-role permissions and same-stack PassRole ownershi
       const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
       statement.Action = actions.filter((action: unknown) => action !== "dynamodb:CreateTable" && action !== "s3:GetObject" && action !== "s3:GetObjectVersion");
     }
+    current.Statement = (current.Statement ?? []).filter((statement: any) => Array.isArray(statement.Action) ? statement.Action.length > 0 : Boolean(statement.Action));
     await iam.send(new PutRolePolicyCommand({ RoleName: executionRoleName, PolicyName: CDK_BOOTSTRAP_POLICY_NAME, PolicyDocument: JSON.stringify(current) }));
 
     const deniedAssetTemplate = JSON.stringify({

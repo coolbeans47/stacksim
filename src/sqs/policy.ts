@@ -1,6 +1,8 @@
-import { BlockList, isIP } from "node:net";
-import type { AuthorizationContext, AuthorizationResult } from "../iam/evaluator.js";
+import { classifyResourceGrant, type AuthorizationContext, type AuthorizationResult, type ResourceGrantBasis } from "../iam/evaluator.js";
 import type { PolicyDocument, PolicyStatement } from "../types.js";
+import { cidrMatches, validIpOrCidr } from "../core/ip.js";
+import { decodeBase64Strict } from "../core/base64.js";
+import { parseConditionOperator } from "../iam/condition-operators.js";
 
 export const SQS_POLICY_LIMITS = Object.freeze({
   bytes: 8_192,
@@ -54,17 +56,6 @@ const BATCH_PARENT_ACTIONS = new Map([
   ["changemessagevisibilitybatch", "ChangeMessageVisibility"],
 ]);
 
-const CONDITION_OPERATORS = new Set([
-  "ArnEquals", "ArnLike", "ArnNotEquals", "ArnNotLike",
-  "BinaryEquals",
-  "Bool",
-  "DateEquals", "DateNotEquals", "DateLessThan", "DateLessThanEquals", "DateGreaterThan", "DateGreaterThanEquals",
-  "IpAddress", "NotIpAddress",
-  "Null",
-  "NumericEquals", "NumericNotEquals", "NumericLessThan", "NumericLessThanEquals", "NumericGreaterThan", "NumericGreaterThanEquals",
-  "StringEquals", "StringNotEquals", "StringEqualsIgnoreCase", "StringNotEqualsIgnoreCase", "StringLike", "StringNotLike",
-]);
-
 const GLOBAL_CONDITION_KEYS = new Set([
   "aws:calledvia", "aws:calledviafirst", "aws:calledvialast", "aws:chatbotsourcearn", "aws:currenttime",
   "aws:ec2instancesourceprivateipv4", "aws:ec2instancesourcevpc", "aws:federatedprovider", "aws:multifactorauthage",
@@ -95,6 +86,7 @@ export interface SqsAwsPolicyPrincipal {
   type: "AWS";
   arn: string;
   accountId?: string;
+  roleArn?: string;
 }
 
 export interface SqsServicePolicyPrincipal {
@@ -197,40 +189,12 @@ function validConditionKey(value: string): boolean {
   return /^(?:aws:(?:principal|request|resource)tag|sqs:resourcetag)\/[\x21-\x7e]{1,128}$/i.test(value);
 }
 
-interface ParsedConditionOperator {
-  base: string;
-  qualifier?: "ForAllValues" | "ForAnyValue";
-  ifExists: boolean;
-}
-
-function parseConditionOperator(raw: string): ParsedConditionOperator {
-  let operator = raw;
-  let qualifier: ParsedConditionOperator["qualifier"];
-  if (operator.startsWith("ForAllValues:")) { qualifier = "ForAllValues"; operator = operator.slice("ForAllValues:".length); }
-  else if (operator.startsWith("ForAnyValue:")) { qualifier = "ForAnyValue"; operator = operator.slice("ForAnyValue:".length); }
-  let ifExists = false;
-  if (operator.endsWith("IfExists")) { ifExists = true; operator = operator.slice(0, -"IfExists".length); }
-  if (!CONDITION_OPERATORS.has(operator)) fail(`Unsupported condition operator: ${raw}`);
-  if (operator === "Null" && (qualifier || ifExists)) fail(`Condition operator ${raw} cannot use a set qualifier or IfExists`);
-  return { base: operator, qualifier, ifExists };
-}
-
 function conditionValues(value: unknown, label: string): Array<string | number | boolean> {
   const values = Array.isArray(value) ? value : [value];
   if (!values.length || values.some(item => !["string", "number", "boolean"].includes(typeof item) || typeof item === "number" && !Number.isFinite(item))) {
     fail(`${label} must contain one or more string, number, or boolean values`);
   }
   return values as Array<string | number | boolean>;
-}
-
-function validateCidr(value: string): boolean {
-  const [address, prefixText, extra] = value.split("/");
-  const family = isIP(address);
-  if (!family || extra !== undefined) return false;
-  if (prefixText === undefined) return true;
-  if (!/^\d+$/.test(prefixText)) return false;
-  const prefix = Number(prefixText);
-  return prefix >= 0 && prefix <= (family === 4 ? 32 : 128);
 }
 
 function validateConditionValue(operator: string, values: Array<string | number | boolean>, label: string): void {
@@ -241,7 +205,9 @@ function validateConditionValue(operator: string, values: Array<string | number 
   } else if (operator.startsWith("Date")) {
     if (values.some(value => typeof value === "boolean" || !Number.isFinite(Date.parse(String(value))))) fail(`${label} must contain valid date values`);
   } else if (operator.includes("IpAddress")) {
-    if (values.some(value => typeof value !== "string" || !validateCidr(value))) fail(`${label} must contain valid IP addresses or CIDR ranges`);
+    if (values.some(value => typeof value !== "string" || !validIpOrCidr(value))) fail(`${label} must contain valid IP addresses or CIDR ranges`);
+  } else if (operator === "BinaryEquals") {
+    if (values.some(value => typeof value !== "string" || decodeBase64Strict(value) === undefined)) fail(`${label} must contain valid Base64 values`);
   } else if (operator.startsWith("Arn")) {
     if (values.some(value => typeof value !== "string" || !value.startsWith("arn:"))) fail(`${label} must contain ARN values`);
   }
@@ -251,7 +217,7 @@ function validateCondition(value: unknown): number {
   if (!isObject(value) || !Object.keys(value).length) fail("Condition must be a non-empty object");
   let count = 0;
   for (const [operatorName, rawEntries] of Object.entries(value)) {
-    const operator = parseConditionOperator(operatorName);
+    const operator = parseConditionOperator(operatorName); if (!operator) fail(`Unsupported condition operator: ${operatorName}`);
     if (!isObject(rawEntries) || !Object.keys(rawEntries).length) fail(`${operatorName} must contain a non-empty condition-key map`);
     for (const [key, rawExpected] of Object.entries(rawEntries)) {
       if (!validConditionKey(key)) fail(`Unsupported SQS queue-policy condition key: ${key}`);
@@ -435,6 +401,7 @@ function awsPrincipalMatches(expected: string, actual: SqsAwsPolicyPrincipal): b
   const rootAccount = expected.match(/^arn:[a-z0-9-]+:iam::(\d{12}):root$/i)?.[1];
   if (rootAccount) return rootAccount === actualAccount;
   if (wildcardMatches(expected, actual.arn)) return true;
+  if (actual.roleArn && wildcardMatches(expected, actual.roleArn)) return true;
   const role = expected.match(/^arn:([a-z0-9-]+):iam::(\d{12}):role\/(.+)$/i);
   const session = actual.arn.match(/^arn:([a-z0-9-]+):sts::(\d{12}):assumed-role\/(.+)\/[^/]+$/i);
   if (!role || !session || role[1] !== session[1] || role[2] !== session[2]) return false;
@@ -447,25 +414,13 @@ function principalMatches(expected: ReturnType<typeof principalValues>[number], 
   return actual.type === "AWS" && awsPrincipalMatches(expected.value, actual);
 }
 
-function cidrMatches(actual: string, expected: string): boolean {
-  const [network, prefixText] = expected.split("/");
-  if (prefixText === undefined) return actual === network;
-  const family = isIP(network);
-  if (!family || isIP(actual) !== family) return false;
-  try {
-    const block = new BlockList();
-    block.addSubnet(network, Number(prefixText), family === 4 ? "ipv4" : "ipv6");
-    return block.check(actual, family === 4 ? "ipv4" : "ipv6");
-  } catch { return false; }
-}
-
 function compareCondition(base: string, actualValue: unknown, expectedValues: Array<string | number | boolean>, context: AuthorizationContext): boolean {
   const actual = String(actualValue);
   const expected = expectedValues.map(value => typeof value === "string" ? policyVariable(value, context) : value);
   switch (base) {
     case "Null": return (actualValue === undefined || actualValue === null) === (String(expected[0]).toLowerCase() === "true");
     case "Bool": return actual.toLowerCase() === String(expected[0]).toLowerCase();
-    case "BinaryEquals": return expected.some(value => Buffer.from(actual, "base64").equals(Buffer.from(String(value), "base64")));
+    case "BinaryEquals": { const bytes = Buffer.isBuffer(actualValue) || actualValue instanceof Uint8Array ? Buffer.from(actualValue) : decodeBase64Strict(actual); return bytes !== undefined && expected.some(value => { const candidate = decodeBase64Strict(String(value)); return candidate !== undefined && bytes.equals(candidate); }); }
     case "IpAddress": return expected.some(value => cidrMatches(actual, String(value)));
     case "NotIpAddress": return expected.every(value => !cidrMatches(actual, String(value)));
   }
@@ -506,16 +461,17 @@ function conditionMatches(condition: PolicyStatement["Condition"], context: Auth
   if (!condition) return true;
   for (const [rawOperator, entries] of Object.entries(condition)) {
     const operator = parseConditionOperator(rawOperator);
+    if (!operator) return false;
     for (const [key, rawExpected] of Object.entries(entries)) {
       const actual = contextValue(context, key);
       if (actual === undefined && operator.base !== "Null") {
-        if (operator.ifExists) continue;
+        if (operator.ifExists || operator.forAll || operator.negated) continue;
         return false;
       }
       const actualValues = Array.isArray(actual) ? actual : [actual];
       const expected = conditionValues(rawExpected, `${rawOperator}.${key}`);
       const checks = actualValues.map(value => compareCondition(operator.base, value, expected, context));
-      const matches = operator.qualifier === "ForAllValues" ? checks.every(Boolean) : checks.some(Boolean);
+      const matches = operator.forAll ? checks.every(Boolean) : checks.some(Boolean);
       if (!matches) return false;
     }
   }
@@ -562,14 +518,23 @@ export function evaluateSqsQueuePolicy(
   if (!document) return { decision: "implicitDeny", reason: "The queue has no resource policy", matchedStatements: [] };
   const evaluatedContext = evaluationContext(principal, context);
   let allowed = false;
+  let grantBasis: ResourceGrantBasis | undefined;
   const matchedStatements: string[] = [];
   for (const [index, statement] of (Array.isArray(document.Statement) ? document.Statement : [document.Statement]).entries()) {
     if (!statementMatches(statement, principal, action, resource, evaluatedContext)) continue;
     matchedStatements.push(statement.Sid ?? `${statement.Effect}:${index + 1}`);
     if (statement.Effect === "Deny") return { decision: "explicitDeny", reason: "An applicable SQS queue-policy statement explicitly denies the action", matchedStatements };
     allowed = true;
+    if (principal.type === "AWS") {
+      const matches = principalValues(statement.Principal).filter(item => (item.kind === "AWS" || item.kind === "Any") && principalMatches(item, principal));
+      for (const match of matches) {
+        const candidate = classifyResourceGrant(match.value, { principalArn: principal.arn, roleArn: principal.roleArn });
+        const rank = { wildcard: 0, account: 1, role: 2, directUser: 3, directSession: 3 } as const;
+        if (!grantBasis || rank[candidate] > rank[grantBasis]) grantBasis = candidate;
+      }
+    }
   }
   return allowed
-    ? { decision: "allowed", reason: "An applicable SQS queue-policy statement allows the action", matchedStatements }
+    ? { decision: "allowed", reason: "An applicable SQS queue-policy statement allows the action", matchedStatements, ...(principal.type === "AWS" ? { grantBasis: grantBasis ?? "wildcard" } : {}) }
     : { decision: "implicitDeny", reason: "No applicable SQS queue-policy Allow statement was found", matchedStatements };
 }

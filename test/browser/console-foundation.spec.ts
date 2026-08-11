@@ -472,14 +472,34 @@ test.describe("FND-02 console foundation", () => {
     await visualTab.focus();
     await visualTab.press("Enter");
     await dialog.getByLabel("Actions").fill("dynamodb:GetItem");
+    await dialog.getByRole("button", { name: "Validate" }).click();
+    await expect(dialog.getByRole("status")).toHaveText("Valid policy");
+    await expect(dialog.getByRole("region", { name: "Permission summary" })).toContainText("dynamodb:GetItem");
+    await dialog.getByLabel("Actions").fill("dynamodb:GetItem\ndynamodb:Query");
+    await expect(dialog.getByRole("status")).toHaveText("Not validated");
     const jsonTab = dialog.getByRole("tab", { name: "JSON" });
     await visualTab.focus();
     await visualTab.press("ArrowRight");
     await expect(jsonTab).toBeFocused();
     await jsonTab.press("Enter");
     await expect(dialog.getByLabel("Policy document")).toHaveValue(/dynamodb:GetItem/);
+    await dialog.getByLabel("Policy document").fill(JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "dynamodb:GetItem", Resource: "*", Condition: { MadeUpOperator: { key: "value" } } }] }, null, 2));
+    await dialog.getByRole("button", { name: "Validate" }).click();
+    await expect(dialog.getByRole("status")).toHaveText("Validation failed");
+    await expect(dialog.getByRole("alert")).toContainText("Unsupported condition operator MadeUpOperator");
     await dialog.getByRole("button", { name: "Cancel" }).focus();
     await page.keyboard.press("Enter");
+    expect(errors).toEqual([]);
+  });
+
+  test("IAM security credentials show an explicit never-used state", async ({ page }) => {
+    const errors = browserErrors(page);
+    await page.goto(`${consoleUrl}#/iam/users/admin`);
+    await expect(page.getByRole("columnheader", { name: "Last used" })).toBeVisible();
+    await page.getByRole("button", { name: "Create access key" }).click();
+    const dialog = page.getByRole("dialog"); await expect(dialog.getByText("Secret shown once", { exact: true })).toBeVisible(); await dialog.getByRole("button", { name: "I saved it" }).click();
+    await page.reload();
+    await expect(page.getByRole("cell", { name: "Never", exact: true }).first()).toBeVisible();
     expect(errors).toEqual([]);
   });
 

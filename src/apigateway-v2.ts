@@ -24,7 +24,7 @@ import type {
   HttpApiStageState,
   HttpApiState,
 } from "./types.js";
-import { evaluateResourcePolicy, evaluateRoleAuthorization, evaluateTrust, type AuthorizationResult } from "./iam/evaluator.js";
+import { evaluateIdentityPolicy, evaluateRoleAuthorization, evaluateTrust, type AuthorizationResult } from "./iam/evaluator.js";
 import type { PrincipalContext } from "./auth/sigv4.js";
 import { id, json, readBody, readJson } from "./util.js";
 import { ApiGatewayWebSocketService, webSocketApiView } from "./apigateway-websocket.js";
@@ -875,7 +875,7 @@ export class ApiGatewayV2Service {
       result = { allowed: output.isAuthorized, context: output.context && typeof output.context === "object" ? output.context : {} };
     } else {
       if (!output?.principalId || !output.policyDocument?.Statement) throw new AwsError("InternalServerErrorException", "Authorizer response requires principalId and policyDocument", 500);
-      result = { allowed: evaluateResourcePolicy(output.policyDocument, "*", "execute-api:Invoke", routeArn).decision === "allowed", principalId: String(output.principalId), context: output.context && typeof output.context === "object" ? output.context : {} };
+      result = { allowed: evaluateIdentityPolicy(output.policyDocument, "execute-api:Invoke", routeArn).decision === "allowed", principalId: String(output.principalId), context: output.context && typeof output.context === "object" ? output.context : {} };
     }
     if (authorizer.authorizerResultTtlInSeconds > 0) this.authorizerCache.set(cacheKey, { expiresAt: this.clock.now() + authorizer.authorizerResultTtlInSeconds * 1000, value: result }); return result;
   }

@@ -20,7 +20,7 @@ import { EventBridgeDeliveryStore, type EventBridgeDelivery, type EventBridgeDel
 import { EventBridgeArchiveStore, type EventBridgeArchiveMetadata, type EventBridgeReplayMetadata } from "./eventbridge/archive-store.js";
 import { nextScheduleOccurrence, parseScheduleExpression } from "./eventbridge/schedule-expression.js";
 import { EVENTBRIDGE_EVB01_ACTIONS, EVENTBRIDGE_EVB04_ACTIONS } from "./eventbridge/action-inventory.js";
-import { evaluateRoleAuthorization, evaluateTrust, roleSessionAuthorizationContext } from "./iam/evaluator.js";
+import { evaluateRoleAuthorization, evaluateTrust, roleSessionAuthorizationContext, type AuthorizationResult } from "./iam/evaluator.js";
 import type { SqsService } from "./sqs.js";
 import type { CloudWatchLogsService } from "./cloudwatch-logs.js";
 import type { ApiGatewayService } from "./apigateway.js";
@@ -1109,15 +1109,15 @@ export class EventBridgeService {
     }
     if (targetType === "sns") {
       if (!this.sns) throw new AwsError("InternalFailure", "The policy-aware SNS target adapter is unavailable.", 500);
-      const identityAuthorized = job.roleArn
-        ? evaluateRoleAuthorization(this.store.ensureAccount().iam, job.roleArn, "sns:Publish", job.targetArn, roleSessionAuthorizationContext(job.roleArn, this.region, this.clock.now(), { "aws:SourceArn": job.ruleArn, "aws:SourceAccount": this.store.accountId })).decision === "allowed"
-        : false;
-      if (job.roleArn && !identityAuthorized) throw new AwsError("AccessDeniedException", `EventBridge execution role ${job.roleArn} cannot publish to ${job.targetArn}.`, 403);
+      const identityAuthorization: AuthorizationResult | undefined = job.roleArn
+        ? evaluateRoleAuthorization(this.store.ensureAccount().iam, job.roleArn, "sns:Publish", job.targetArn, roleSessionAuthorizationContext(job.roleArn, this.region, this.clock.now(), { "aws:SourceArn": job.ruleArn, "aws:SourceAccount": this.store.accountId }))
+        : undefined;
+      if (identityAuthorization && identityAuthorization.decision !== "allowed") throw new AwsError("AccessDeniedException", `EventBridge execution role ${job.roleArn} cannot publish to ${job.targetArn}.`, 403);
       await this.sns.publishAuthorized({ TopicArn: job.targetArn, Message: payload }, {
         principal: job.roleArn ?? "events.amazonaws.com",
         sourceArn: job.ruleArn,
         sourceAccount: this.store.accountId,
-        identityAuthorized,
+        identityAuthorization,
         lineage: job.deliveryLineage,
       });
       return;

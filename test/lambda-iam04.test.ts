@@ -59,3 +59,84 @@ test("IAM-04 preserves referenced roles, revalidates trust, and records denied L
     await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   }
 });
+
+test("IAMGAP-05 ZIP workers do not inherit host secrets and rotate invocation credentials", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-iamgap05-"));
+  const hostEnvironment = {
+    AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
+    AWS_SESSION_TOKEN: process.env.AWS_SESSION_TOKEN,
+    STACKSIM_HOST_SECRET: process.env.STACKSIM_HOST_SECRET,
+    HTTPS_PROXY: process.env.HTTPS_PROXY,
+    NODE_OPTIONS: process.env.NODE_OPTIONS,
+  };
+  Object.assign(process.env, {
+    AWS_ACCESS_KEY_ID: "bootstrap-access-key",
+    AWS_SECRET_ACCESS_KEY: "bootstrap-secret-key",
+    AWS_SESSION_TOKEN: "bootstrap-session-token",
+    STACKSIM_HOST_SECRET: "host-only-secret",
+    HTTPS_PROXY: "http://host-proxy.invalid:8443",
+    NODE_OPTIONS: "--no-warnings",
+  });
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region: "eu-west-1", authMode: "off" });
+  const clients: Array<{ destroy(): void }> = [];
+  try {
+    await simulator.start();
+    const options = { endpoint: `http://127.0.0.1:${simulator.port}`, region: "eu-west-1", credentials };
+    const iam = new IAMClient(options);
+    const lambda = new LambdaClient(options);
+    clients.push(iam, lambda);
+    const role = await iam.send(new CreateRoleCommand({
+      RoleName: "iamgap05-runtime",
+      AssumeRolePolicyDocument: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{ Effect: "Allow", Principal: { Service: "lambda.amazonaws.com" }, Action: "sts:AssumeRole" }],
+      }),
+    }));
+    const snapshot = `({
+      hostSecret: process.env.STACKSIM_HOST_SECRET,
+      proxy: process.env.HTTPS_PROXY,
+      nodeOptions: process.env.NODE_OPTIONS,
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+      sessionToken: process.env.AWS_SESSION_TOKEN,
+      safeValue: process.env.SAFE_VALUE,
+    })`;
+    await lambda.send(new CreateFunctionCommand({
+      FunctionName: "iamgap05-function",
+      Runtime: "nodejs22.x",
+      Role: role.Role!.Arn!,
+      Handler: "index.handler",
+      Code: { ZipFile: createZip([{ name: "index.js", content: `const initialized = ${snapshot}; exports.handler = async () => ({ initialized, invoked: ${snapshot} });` }]) },
+      Environment: { Variables: { SAFE_VALUE: "configured-value", NODE_OPTIONS: "--trace-warnings", AWS_ACCESS_KEY_ID: "configured-access-key" } },
+    }));
+
+    const invoke = async () => {
+      const response = await lambda.send(new InvokeCommand({ FunctionName: "iamgap05-function", Payload: Buffer.from("{}") }));
+      assert.equal(response.FunctionError, undefined);
+      return JSON.parse(Buffer.from(response.Payload ?? []).toString("utf8"));
+    };
+    const first = await invoke();
+    const second = await invoke();
+    for (const view of [first.initialized, first.invoked, second.invoked]) {
+      assert.equal("hostSecret" in view, false);
+      assert.equal("proxy" in view, false);
+      assert.equal("nodeOptions" in view, false);
+      assert.equal(view.safeValue, "configured-value");
+      assert.match(view.accessKeyId, /^ASIA[A-Z0-9]+$/);
+      assert.notEqual(view.secretAccessKey, "bootstrap-secret-key");
+      assert.notEqual(view.sessionToken, "bootstrap-session-token");
+    }
+    assert.equal(first.initialized.accessKeyId, first.invoked.accessKeyId);
+    assert.equal(second.initialized.accessKeyId, first.initialized.accessKeyId);
+    assert.notEqual(second.invoked.accessKeyId, first.invoked.accessKeyId);
+  } finally {
+    for (const [name, value] of Object.entries(hostEnvironment)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    for (const client of clients) client.destroy();
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+  }
+});

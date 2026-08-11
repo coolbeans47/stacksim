@@ -467,7 +467,25 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
     resource = resolved.resource;
     Object.assign(operationContext, resolved.context);
   }
-  else if (service === "sts") { operation = String(input.Action); action = `sts:${operation}`; resource = input.RoleArn ?? "*"; }
+  else if (service === "sts") {
+    operation = String(input.Action); action = `sts:${operation}`; resource = input.RoleArn ?? "*";
+    if (operation === "AssumeRole") {
+      const suppliedTags = Array.isArray(input.Tags) ? input.Tags : input.Tags === undefined ? [] : [input.Tags];
+      const requestTags = Object.fromEntries(suppliedTags.filter((tag: any) => tag?.Key !== undefined).map((tag: any) => [String(tag.Key), String(tag.Value ?? "")]));
+      const tagKeys = Object.keys(requestTags);
+      const transitiveTagKeys = Array.isArray(input.TransitiveTagKeys) ? input.TransitiveTagKeys.map(String) : input.TransitiveTagKeys === undefined ? [] : [String(input.TransitiveTagKeys)];
+      if (tagKeys.length) operationContext["aws:TagKeys"] = tagKeys;
+      if (transitiveTagKeys.length) operationContext["sts:TransitiveTagKeys"] = transitiveTagKeys;
+      for (const [key, value] of Object.entries(requestTags)) operationContext[`aws:RequestTag/${key}`] = value;
+      const inherited = (principal.transitiveTagKeys ?? []).some(key => Object.keys(principal.sessionTags ?? {}).some(tag => tag.toLowerCase() === key.toLowerCase()));
+      if (tagKeys.length || transitiveTagKeys.length || inherited) additionalTargets.push({ action: "sts:TagSession", resource, operation: "TagSession", context: { ...operationContext } });
+      const sourceIdentity = input.SourceIdentity === undefined ? principal.sourceIdentity : String(input.SourceIdentity);
+      if (sourceIdentity !== undefined) {
+        operationContext["sts:SourceIdentity"] = sourceIdentity;
+        additionalTargets.push({ action: "sts:SetSourceIdentity", resource, operation: "SetSourceIdentity", context: { ...operationContext } });
+      }
+    }
+  }
   else if (service === "sns") {
     operation = String(input.Action);
     action = `sns:${operation === "PublishBatch" ? "Publish" : operation}`;
@@ -573,7 +591,7 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
       });
     }
   }
-  const context: Record<string, unknown> = { "aws:PrincipalArn": principal.principalArn, "aws:PrincipalAccount": principal.accountId, "aws:RequestedRegion": region, "aws:CurrentTime": new Date(now).toISOString(), "aws:SourceIp": req.socket.remoteAddress?.replace(/^::ffff:/, ""), "aws:UserAgent": req.headers["user-agent"] ?? "", "aws:SecureTransport": Boolean((req.socket as any).encrypted), "aws:TokenIssueTime": principal.roleArn ? new Date(now).toISOString() : undefined, "aws:SourceArn": req.headers["x-aws-source-arn"], "aws:SourceAccount": req.headers["x-aws-source-account"], "aws:CalledVia": req.headers["x-aws-called-via"], ...operationContext };
+  const context: Record<string, unknown> = { "aws:PrincipalArn": principal.principalArn, "aws:PrincipalAccount": principal.accountId, "aws:RequestedRegion": region, "aws:CurrentTime": new Date(now).toISOString(), "aws:SourceIp": req.socket.remoteAddress?.replace(/^::ffff:/, ""), "aws:UserAgent": req.headers["user-agent"] ?? "", "aws:SecureTransport": Boolean((req.socket as any).encrypted), "aws:TokenIssueTime": principal.issuedAt === undefined ? undefined : new Date(principal.issuedAt).toISOString(), "aws:SourceIdentity": principal.sourceIdentity, "aws:SourceArn": req.headers["x-aws-source-arn"], "aws:SourceAccount": req.headers["x-aws-source-account"], "aws:CalledVia": req.headers["x-aws-called-via"], ...operationContext };
   if (service === "s3") {
     context["s3:authType"] = url.searchParams.has("X-Amz-Signature") ? "REST-QUERY-STRING" : req.headers.authorization ? "REST-HEADER" : "ANONYMOUS";
     context["s3:signatureversion"] = req.headers.authorization || url.searchParams.has("X-Amz-Signature") ? "AWS4-HMAC-SHA256" : undefined;
@@ -631,7 +649,7 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
       context[`aws:RequestTag/${key}`] = String(value);
     }
   }
-  for (const [key, value] of Object.entries(principal.sessionTags ?? {})) context[`aws:PrincipalTag/${key}`] = value;
+  for (const [key, value] of Object.entries(principal.principalTags ?? principal.sessionTags ?? {})) context[`aws:PrincipalTag/${key}`] = value;
   const tableResource = (value: string) => value.match(/^(arn:[^:]+:dynamodb:[^:]+:\d{12}:table\/[^/]+)/)?.[1]; const primaryTable = tableResource(resource);
   return {
     action, resource, operation, input, context,
@@ -648,5 +666,5 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
 }
 
 export function executeApiTarget(req: IncomingMessage, pathname: string, region: string, accountId: string, principal: PrincipalContext, now: number): AuthorizationTarget {
-  const [, apiId = "*", stage = "*", ...path] = pathname.split("/"); const method = req.method ?? "GET"; return { action: "execute-api:Invoke", resource: `arn:aws:execute-api:${region}:${accountId}:${apiId}/${stage}/${method}/${path.join("/")}`, operation: "Invoke", input: {}, context: { "aws:PrincipalArn": principal.principalArn, "aws:PrincipalAccount": accountId, "aws:RequestedRegion": region, "aws:CurrentTime": new Date(now).toISOString(), "aws:SourceIp": req.socket.remoteAddress?.replace(/^::ffff:/, ""), "aws:UserAgent": req.headers["user-agent"] ?? "", "aws:SecureTransport": Boolean((req.socket as any).encrypted) } };
+  const [, apiId = "*", stage = "*", ...path] = pathname.split("/"); const method = req.method ?? "GET"; return { action: "execute-api:Invoke", resource: `arn:aws:execute-api:${region}:${accountId}:${apiId}/${stage}/${method}/${path.join("/")}`, operation: "Invoke", input: {}, context: { "aws:PrincipalArn": principal.principalArn, "aws:PrincipalAccount": accountId, "aws:RequestedRegion": region, "aws:CurrentTime": new Date(now).toISOString(), "aws:TokenIssueTime": principal.issuedAt === undefined ? undefined : new Date(principal.issuedAt).toISOString(), "aws:SourceIdentity": principal.sourceIdentity, "aws:SourceIp": req.socket.remoteAddress?.replace(/^::ffff:/, ""), "aws:UserAgent": req.headers["user-agent"] ?? "", "aws:SecureTransport": Boolean((req.socket as any).encrypted) } };
 }

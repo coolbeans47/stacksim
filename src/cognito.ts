@@ -752,7 +752,6 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           sourceAccount: this.store.accountId,
           enforceResourcePolicy: true,
           timeoutOverrideMs: 5_000,
-          sanitizeEnvironment: true,
           sensitiveLogValues: Object.values(attributes).filter(value => value.length >= 6),
         },
       );
