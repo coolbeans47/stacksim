@@ -821,6 +821,7 @@ export class StackSim {
       });
       const s3 = new S3Service(this.store, region, this.clock, { ...this.s3Options, websiteBaseUrl: () => `http://${this.host}:${this.port}`, scheduler: this.scheduler, telemetry, lambda, sqs, eventbridge });
       lambda.setS3Service(s3);
+      dynamodb.setS3TransferPort(s3.createTransferPort());
       const ssm = new SsmService(this.store, region, this.clock, this.scheduler, input => eventbridge.publishServiceEvent(input));
       const secretsmanager = new SecretsManagerService(this.store, region, this.clock, this.scheduler, this.authMode === "enforce" ? async (principal, action, resource, requestTags, resourceTags) => {
         const context: Record<string, unknown> = { "aws:PrincipalArn": principal.principalArn, "aws:PrincipalAccount": principal.accountId, "aws:RequestedRegion": region, "aws:CurrentTime": new Date(this.clock.now()).toISOString(), "aws:TagKeys": Object.keys(requestTags) };

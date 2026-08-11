@@ -13,11 +13,12 @@ import type { PrincipalContext } from "./auth/sigv4.js";
 import { restXml, sendS3Error, xmlDecode, xmlEscape, xmlValue } from "./protocols/rest-xml.js";
 import type { StateStore } from "./state.js";
 import type { PolicyDocument, S3BucketState } from "./types.js";
-import { evaluateResourcePolicy, type AuthorizationContext, type AuthorizationResult } from "./iam/evaluator.js";
+import { combineIdentityAndResourceAuthorization, evaluateResourcePolicy, type AuthorizationContext, type AuthorizationResult } from "./iam/evaluator.js";
 import { readBody } from "./util.js";
 import { checksumHeaderName, providedChecksumAlgorithms, requestedChecksumAlgorithm, S3_CHECKSUM_ALGORITHMS, S3Checksums, type S3ChecksumAlgorithm, type S3ChecksumValues, validateProvidedChecksums } from "./s3/checksums.js";
 import { S3Storage, type S3BucketIndex, type S3MultipartUploadState, type S3ObjectPartState, type S3ObjectVersionState, type StagedS3Object } from "./s3/storage.js";
 import { aclAllows, aclFromRequest, aclIsPublic, aclXml, canonicalOwnerId, effectivePublicAccessBlock, LOCAL_OWNER_DISPLAY_NAME, objectAcl, policyIsPublic, privateAcl, type S3PublicAccessBlockState } from "./s3/access.js";
+import { DYNAMODB_S3_SERVICE_PRINCIPAL, type S3AdmittedBucket, type S3PinnedObject, type S3TransferCaller, type S3TransferPort, type S3TransferWriteOptions } from "./s3/transfer-port.js";
 
 const S3_NAMESPACE = "http://s3.amazonaws.com/doc/2006-03-01/";
 const MIN_MULTIPART_PART_SIZE = 5 * 1024 * 1024;
@@ -79,6 +80,10 @@ export interface S3InternalPutObjectOptions {
   expires?: string;
   metadata?: Record<string, string>;
   tags?: Record<string, string>;
+  /** When true, refuse to overwrite an existing current object. */
+  failIfExists?: boolean;
+  /** When true, enforce object-lock retention/legal-hold as if deleting the current version. */
+  enforceObjectLock?: boolean;
 }
 
 /**
@@ -875,6 +880,12 @@ export class S3Service {
     return this.locked(located, async () => {
       const index = await this.bucketIndex(located);
       const current = currentObject(index, key);
+      if (options.failIfExists && current && !current.deleteMarker) {
+        throw new AwsError("PreconditionFailed", `Destination object s3://${bucketName}/${key} already exists`, 412);
+      }
+      if (options.enforceObjectLock && current && !current.deleteMarker) {
+        this.enforceDeletionLock({ headers: {} } as IncomingMessage, current);
+      }
       if (current && !current.deleteMarker && current.blobId === sha256
         && current.contentType === normalized.contentType
         && current.contentEncoding === normalized.contentEncoding
@@ -930,6 +941,171 @@ export class S3Service {
       await this.saveBucket(located, index);
       return { deleted: true, versionId: result.versionId };
     });
+  }
+
+  /**
+   * Narrow S3-owned transfer port for DynamoDB import/export.
+   * Authorization, region/ownership, archive/SSE-C protections, and version pins live here.
+   */
+  createTransferPort(): S3TransferPort {
+    const service = this;
+    return {
+      async admitBucket(bucket, caller) { return service.admitTransferBucket(bucket, caller); },
+      async authorize(caller, action, resource) { return service.authorizeTransfer(caller, action, resource); },
+      async requireAuthorized(caller, action, resource) {
+        const decision = await service.authorizeTransfer(caller, action, resource);
+        if (decision.decision !== "allowed") throw new AwsError("AccessDenied", `${caller.servicePrincipal} is not authorized to perform ${action} on ${resource}`, 403);
+      },
+      async pinCurrentObject(bucket, key, caller) { return service.pinTransferObject(bucket, key, caller); },
+      async listAndPinPrefix(bucket, prefix, caller) { return service.listAndPinTransferPrefix(bucket, prefix, caller); },
+      async readPinned(pin, caller, maximumBytes) { return service.readPinnedTransferObject(pin, caller, maximumBytes); },
+      async writeObject(bucket, key, body, caller, options) { return service.writeTransferObject(bucket, key, body, caller, options); },
+      async currentObjectExists(bucket, key) { return service.transferObjectExists(bucket, key); },
+    };
+  }
+
+  private transferCallerContext(caller: S3TransferCaller): AuthorizationContext {
+    return {
+      "aws:PrincipalArn": caller.servicePrincipal,
+      "aws:PrincipalAccount": caller.sourceAccount,
+      "aws:PrincipalServiceName": caller.servicePrincipal,
+      "aws:SourceAccount": caller.sourceAccount,
+      "aws:SourceArn": caller.sourceArn,
+      "aws:RequestedRegion": this.region,
+      "aws:CurrentTime": new Date(this.clock.now()).toISOString(),
+    };
+  }
+
+  private async locateTransferBucket(bucketName: string, caller: S3TransferCaller): Promise<LocatedBucket> {
+    await this.start();
+    validateBucketName(bucketName);
+    const located = this.findBucket(bucketName);
+    if (!located) throw new AwsError("NoSuchBucket", "The specified bucket does not exist", 404);
+    if (located.region !== this.region) {
+      throw new AwsError("PermanentRedirect", "The bucket you are attempting to access must be addressed using the specified endpoint.", 301, { region: located.region });
+    }
+    const expectedOwner = caller.expectedBucketOwner;
+    if (expectedOwner !== undefined && expectedOwner !== located.accountId) {
+      throw new AwsError("AccessDenied", "The bucket is owned by a different account than S3BucketOwner", 403);
+    }
+    if (expectedOwner === undefined && located.accountId !== caller.sourceAccount) {
+      throw new AwsError("AccessDenied", "Cross-account DynamoDB S3 transfers require S3BucketOwner to match the bucket owner", 403);
+    }
+    if (located.bucket.managedBy) throw new AwsError("AccessDenied", "Simulator-managed bootstrap buckets cannot be used for DynamoDB import/export", 403);
+    return located;
+  }
+
+  private async admitTransferBucket(bucketName: string, caller: S3TransferCaller): Promise<S3AdmittedBucket> {
+    if (caller.servicePrincipal !== DYNAMODB_S3_SERVICE_PRINCIPAL) {
+      throw new AwsError("AccessDenied", "Only the DynamoDB service principal may use this transfer port", 403);
+    }
+    const located = await this.locateTransferBucket(bucketName, caller);
+    return { name: located.bucket.name, ownerAccountId: located.accountId, region: located.region };
+  }
+
+  private async authorizeTransfer(caller: S3TransferCaller, action: string, resource: string): Promise<AuthorizationResult> {
+    const match = resource.match(/^arn:aws:s3:::([^/]+)(?:\/(.*))?$/);
+    if (!match) return { decision: "implicitDeny", reason: "Transfer resources must be S3 ARNs", matchedStatements: [] };
+    const located = await this.locateTransferBucket(match[1], caller);
+    const context = this.transferCallerContext(caller);
+    const policy = located.bucket.policyDocument
+      ? evaluateResourcePolicy(located.bucket.policyDocument, caller.servicePrincipal, action, resource, context)
+      : { decision: "implicitDeny" as const, reason: "The bucket has no resource policy authorizing DynamoDB", matchedStatements: [] };
+    return combineIdentityAndResourceAuthorization(undefined, policy, "service");
+  }
+
+  private pinFromVersion(bucket: string, key: string, object: S3ObjectVersionState): S3PinnedObject {
+    if (!object.blobId || object.deleteMarker) throw new AwsError("NoSuchKey", "The specified key does not exist.", 404);
+    if (object.sseCustomerKeyMd5) throw new AwsError("InvalidRequest", "SSE-C objects cannot be used for DynamoDB import/export", 400);
+    this.refreshRestore(object);
+    this.ensureArchiveReadable(object);
+    return {
+      bucket,
+      key,
+      versionId: object.versionId,
+      etag: object.etag,
+      size: object.size,
+      storageClass: object.storageClass,
+    };
+  }
+
+  private async pinTransferObject(bucketName: string, key: string, caller: S3TransferCaller): Promise<S3PinnedObject> {
+    const located = await this.locateTransferBucket(bucketName, caller);
+    await this.requireAuthorizedTransfer(caller, "s3:GetObject", objectArn(bucketName, key));
+    const index = await this.bucketIndex(located);
+    const object = selectObject(index, key, undefined).version;
+    return this.pinFromVersion(bucketName, key, object);
+  }
+
+  private async listAndPinTransferPrefix(bucketName: string, prefix: string, caller: S3TransferCaller): Promise<S3PinnedObject[]> {
+    const located = await this.locateTransferBucket(bucketName, caller);
+    await this.requireAuthorizedTransfer(caller, "s3:ListBucket", bucketArn(bucketName));
+    const index = await this.bucketIndex(located);
+    const pins: S3PinnedObject[] = [];
+    for (const entry of this.visibleObjects(index).filter(item => item.key.startsWith(prefix))) {
+      await this.requireAuthorizedTransfer(caller, "s3:GetObject", objectArn(bucketName, entry.key));
+      pins.push(this.pinFromVersion(bucketName, entry.key, entry.object));
+    }
+    return pins;
+  }
+
+  private async requireAuthorizedTransfer(caller: S3TransferCaller, action: string, resource: string): Promise<void> {
+    const decision = await this.authorizeTransfer(caller, action, resource);
+    if (decision.decision !== "allowed") throw new AwsError("AccessDenied", `${caller.servicePrincipal} is not authorized to perform ${action} on ${resource}`, 403);
+  }
+
+  private async readPinnedTransferObject(pin: S3PinnedObject, caller: S3TransferCaller, maximumBytes = this.maximumObjectBytes): Promise<Buffer> {
+    const located = await this.locateTransferBucket(pin.bucket, caller);
+    await this.requireAuthorizedTransfer(caller, "s3:GetObject", objectArn(pin.bucket, pin.key));
+    const index = await this.bucketIndex(located);
+    const selected = selectObject(index, pin.key, pin.versionId);
+    const object = selected.version;
+    if (object.etag !== pin.etag || object.size !== pin.size) {
+      throw new AwsError("InvalidObjectState", "The pinned object generation no longer matches the admitted DynamoDB transfer pin", 409);
+    }
+    this.refreshRestore(object);
+    this.ensureArchiveReadable(object);
+    if (object.sseCustomerKeyMd5) throw new AwsError("InvalidRequest", "SSE-C objects cannot be used for DynamoDB import/export", 400);
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) throw new RangeError("maximumBytes must be a non-negative safe integer");
+    if (object.size > maximumBytes) throw new AwsError("EntityTooLarge", `Object ${pin.bucket}/${pin.key} exceeds the ${maximumBytes} byte transfer read limit`, 400);
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of this.storage.readBlob(object.blobId!)) {
+      size += chunk.length;
+      if (size > maximumBytes || size > object.size) throw new AwsError("InvalidObjectState", `Object ${pin.bucket}/${pin.key} has invalid stored size metadata`, 500);
+      chunks.push(Buffer.from(chunk));
+    }
+    if (size !== object.size) throw new AwsError("InvalidObjectState", `Object ${pin.bucket}/${pin.key} is incomplete in local storage`, 500);
+    return Buffer.concat(chunks, size);
+  }
+
+  private async writeTransferObject(bucketName: string, key: string, body: Uint8Array, caller: S3TransferCaller, options: S3TransferWriteOptions = {}): Promise<S3PinnedObject> {
+    await this.locateTransferBucket(bucketName, caller);
+    await this.requireAuthorizedTransfer(caller, "s3:PutObject", objectArn(bucketName, key));
+    const written = await this.putObjectBytesInternal(bucketName, key, body, {
+      contentType: options.contentType,
+      contentEncoding: options.contentEncoding,
+      metadata: options.metadata,
+      failIfExists: options.failIfExists,
+      enforceObjectLock: true,
+    });
+    return {
+      bucket: bucketName,
+      key,
+      versionId: written.object.versionId,
+      etag: written.object.etag,
+      size: written.object.size,
+      storageClass: written.object.storageClass,
+    };
+  }
+
+  private async transferObjectExists(bucketName: string, key: string): Promise<boolean> {
+    await this.start();
+    const located = this.findBucket(bucketName);
+    if (!located || located.region !== this.region) return false;
+    const index = await this.bucketIndex(located);
+    const current = currentObject(index, key);
+    return Boolean(current && !current.deleteMarker);
   }
 
   async listObjectVersionsInternal(bucketName: string): Promise<S3InternalObjectVersion[]> {
