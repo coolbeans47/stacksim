@@ -1151,7 +1151,7 @@ export class SqsService {
     const identity = callerAccountId
       ? evaluateRoleAuthorization(this.store.ensureAccount(callerAccountId).iam, roleArn, action, queue.queueArn, context)
       : { decision: "implicitDeny" as const, reason: "The caller role ARN is invalid", matchedStatements: [] };
-    const resource = evaluateSqsQueuePolicy(queue.state.attributes.Policy, { type: "AWS", arn: roleArn, ...(callerAccountId ? { accountId: callerAccountId } : {}) }, action, queue.queueArn, context);
+    const resource = evaluateSqsQueuePolicy(queue.state.attributes.Policy, { type: "AWS", arn: roleArn, roleArn, ...(callerAccountId ? { accountId: callerAccountId } : {}) }, action, queue.queueArn, context);
     return combineIdentityAndResourceAuthorization(identity, resource, callerAccountId === queue.ownerAccountId ? "sameAccount" : "crossAccount");
   }
 

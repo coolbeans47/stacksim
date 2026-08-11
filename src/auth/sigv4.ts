@@ -24,8 +24,19 @@ export interface PrincipalContext {
   /** Legacy construction compatibility; authenticated principals returned to handlers omit it. */
   sessionToken?: string;
   sourceIdentity?: string;
+  issuedAt?: number;
   sessionTags?: Record<string, string>;
+  transitiveTagKeys?: string[];
   lambdaLineage?: string[];
+}
+
+export async function recordAccessKeyLastUsed(store: StateStore, accountId: string, accessKeyId: string, update: { date: number; serviceName: string; region: string }): Promise<void> {
+  await store.withAccountMutation(accountId, async () => {
+    const key = store.state.accounts[accountId]?.iam.accessKeys[accessKeyId];
+    if (!key || key.lastUsed && key.lastUsed.date > update.date) return;
+    key.lastUsed = { ...update };
+    await store.save();
+  });
 }
 
 interface ParsedSignature { accessKeyId: string; date: string; region: string; service: string; signedHeaders: string[]; signature: string; amzDate: string; presigned: boolean }
@@ -61,6 +72,18 @@ function timestamp(value: string): number {
   return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6]));
 }
 
+export function effectiveRoleTags(roleTags: Record<string, string>, sessionTags: Record<string, string>): Record<string, string> {
+  const effective: Record<string, string> = { ...roleTags };
+  const names = new Map(Object.keys(effective).map(name => [name.toLowerCase(), name]));
+  for (const [name, value] of Object.entries(sessionTags)) {
+    const replaced = names.get(name.toLowerCase());
+    if (replaced !== undefined) delete effective[replaced];
+    effective[name] = value;
+    names.set(name.toLowerCase(), name);
+  }
+  return effective;
+}
+
 function secretFor(store: StateStore, accessKeyId: string, clock: Clock): { secret: string; principal: PrincipalContext; token?: string } {
   const configured = store.configuredCredentials;
   if (configured?.rootRecovery && accessKeyId === configured.accessKeyId) return { secret: configured.secretAccessKey, principal: { principalType: "root", accessKeyId, principalArn: `arn:aws:iam::${store.accountId}:root`, principalId: store.accountId, accountId: store.accountId } };
@@ -81,9 +104,10 @@ function secretFor(store: StateStore, accessKeyId: string, clock: Clock): { secr
   });
   if (matches.length !== 1) throw new AwsError("InvalidClientTokenId", "The security token included in the request is invalid", 403);
   const { accountId, session } = matches[0];
+  const role = store.state.accounts[accountId]?.iam.roles[session.roleName];
   const material = session.credentialId ? store.credentialStore?.get(session.credentialId, { type: "sts-session", accountId, ownerId: session.principalId, accessKeyId }) : undefined;
   if (!material?.sessionToken) throw new AwsError("InvalidClientTokenId", "The security token included in the request is invalid", 403);
-  return { secret: material.secretAccessKey, token: material.sessionToken, principal: { principalType: "roleSession", accessKeyId, principalArn: session.principalArn, principalId: session.principalId, accountId, roleArn: session.roleArn, sessionArn: session.principalArn, sourceIdentity: session.sourceIdentity, sessionTags: session.sessionTags, lambdaLineage: session.lambdaLineage } };
+  return { secret: material.secretAccessKey, token: material.sessionToken, principal: { principalType: "roleSession", accessKeyId, principalArn: session.principalArn, principalId: session.principalId, accountId, roleArn: session.roleArn, sessionArn: session.principalArn, sourceIdentity: session.sourceIdentity, issuedAt: session.issuedAt, principalTags: effectiveRoleTags(role?.tags ?? {}, session.sessionTags), sessionTags: session.sessionTags, transitiveTagKeys: session.transitiveTagKeys, lambdaLineage: session.lambdaLineage } };
 }
 
 export async function authenticateSigV4(req: IncomingMessage, url: URL, store: StateStore, clock: Clock, expectedRegion?: string, expectedService?: string): Promise<PrincipalContext> {
@@ -113,11 +137,7 @@ export async function authenticateSigV4(req: IncomingMessage, url: URL, store: S
   if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) { if (spooledFile) { try { await unlink(spooledFile); } catch {} delete (req as any)[REQUEST_BODY_FILE]; } throw new AwsError("SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided", 403); }
   if (payloadHash.startsWith("STREAMING-AWS4-HMAC-SHA256-PAYLOAD")) (req as any)[STREAMING_SIGNATURE] = { amzDate: signature.amzDate, scope, previous: signature.signature, signingKey: signingKey.toString("base64"), trailer: payloadHash === "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER" };
   if (credential.principal.principalType === "user") {
-    const key = store.state.accounts[credential.principal.accountId]?.iam.accessKeys[credential.principal.accessKeyId];
-    if (key) {
-      key.lastUsed = { date: now, serviceName: signature.service, region: signature.region };
-      void store.save();
-    }
+    await recordAccessKeyLastUsed(store, credential.principal.accountId, credential.principal.accessKeyId, { date: now, serviceName: signature.service, region: signature.region });
   }
   return credential.principal;
 }

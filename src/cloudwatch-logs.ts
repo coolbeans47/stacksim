@@ -24,7 +24,7 @@ import { discoverLogFields, logFieldType } from "./cloudwatch-log-discovery.js";
 import { LogFilterSyntaxError, matchLogFilterPattern, regexCount, resolveExtractedValue, validateLogFilterPattern } from "./cloudwatch-log-filter.js";
 import type { CloudWatchMetricsService } from "./cloudwatch-metrics.js";
 import type { LambdaService } from "./lambda.js";
-import { evaluateResourcePolicy } from "./iam/evaluator.js";
+import { combineIdentityAndResourceAuthorization, evaluateResourcePolicy, type AuthorizationResult } from "./iam/evaluator.js";
 import { eventStreamMessage, writeWithBackpressure } from "./protocols/event-stream.js";
 
 const RETENTION_DAYS = new Set([1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]);
@@ -220,16 +220,24 @@ export class CloudWatchLogsService {
     const context = { "aws:SourceArn": input.ruleArn, "aws:SourceAccount": this.store.accountId };
     const authorize = (action: "logs:CreateLogGroup" | "logs:CreateLogStream" | "logs:PutLogEvents", resource: string): boolean => {
       if (action === "logs:CreateLogGroup") return false;
-      let allowed = false;
+      const evaluations: AuthorizationResult[] = [];
       for (const policy of Object.values(this.resourcePolicies)) {
         if (policy.policyScope === "RESOURCE" && policy.resourceArn !== group.arn && policy.resourceArn !== `${group.arn}:*`) continue;
         let document;
         try { document = JSON.parse(policy.policyDocument); } catch { continue; }
         const result = evaluateResourcePolicy(document, "events.amazonaws.com", action, resource, context);
-        if (result.decision === "explicitDeny") return false;
-        if (result.decision === "allowed") allowed = true;
+        evaluations.push(result);
       }
-      return allowed;
+      const resourceAuthorization: AuthorizationResult = evaluations.some(result => result.decision === "explicitDeny")
+        ? { decision: "explicitDeny", reason: "A Logs resource policy explicitly denies the action", matchedStatements: evaluations.flatMap(result => result.matchedStatements) }
+        : evaluations.some(result => result.decision === "allowed")
+          ? { decision: "allowed", reason: "A Logs resource policy allows the action", matchedStatements: evaluations.flatMap(result => result.matchedStatements), grantBasis: evaluations.find(result => result.decision === "allowed")?.grantBasis }
+          : { decision: "implicitDeny", reason: "No Logs resource policy allows the action", matchedStatements: evaluations.flatMap(result => result.matchedStatements) };
+      return combineIdentityAndResourceAuthorization(
+        { decision: "implicitDeny", reason: "Service principals use the Logs resource policy", matchedStatements: [] },
+        resourceAuthorization,
+        "service",
+      ).decision === "allowed";
     };
     if (!authorize("logs:CreateLogStream", streamArn) || !authorize("logs:PutLogEvents", streamArn)) throw new AwsError("AccessDeniedException", `EventBridge is not authorized to write to ${targetArn}.`, 403);
     const delivered = await this.deliverServiceEvents(

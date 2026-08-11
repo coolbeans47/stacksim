@@ -1,4 +1,5 @@
 import type { IamPolicyState, IamState, PolicyDocument } from "../types.js";
+import { canonicalPolicyDocument } from "./policy-storage.js";
 
 const managed: Array<{ name: string; path: string; id: string; document: PolicyDocument }> = [
   { name: "AWSLambdaBasicExecutionRole", path: "/service-role/", id: "ANPAILAMBDAEXEC0001", document: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"], Resource: "*" }] } },
@@ -9,26 +10,48 @@ const managed: Array<{ name: string; path: string; id: string; document: PolicyD
   { name: "AmazonDynamoDBFullAccess", path: "/", id: "ANPAIDDBFULLACCESS01", document: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "dynamodb:*", Resource: "*" }] } },
   { name: "AdministratorAccess", path: "/", id: "ANPAIADMINACCESS001", document: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "*", Resource: "*" }] } },
 ];
+const MANAGED_POLICY_V1_DATE = Date.UTC(2026, 6, 14);
 
 export function createIamState(now = Date.now(), accountId = "000000000000"): IamState {
   const policies: Record<string, IamPolicyState> = {};
   for (const item of managed) {
     const arn = `arn:aws:iam::aws:policy${item.path === "/" ? "" : item.path.slice(0, -1)}${item.path === "/" ? "/" : "/"}${item.name}`.replace("policy//", "policy/");
-    policies[arn] = { policyName: item.name, policyId: item.id, arn, path: item.path, createDate: now, updateDate: now, tags: {}, versions: { v1: { versionId: "v1", document: item.document, createDate: now, isDefaultVersion: true } }, defaultVersionId: "v1", awsManaged: true };
+    const document = structuredClone(item.document);
+    policies[arn] = { policyName: item.name, policyId: item.id, arn, path: item.path, createDate: now, updateDate: now, tags: {}, versions: { v1: { versionId: "v1", document, canonicalDocument: canonicalPolicyDocument(document), createDate: MANAGED_POLICY_V1_DATE, isDefaultVersion: true } }, defaultVersionId: "v1", awsManaged: true };
   }
   const administratorArn = "arn:aws:iam::aws:policy/AdministratorAccess";
-  return { users: {}, groups: {}, accessKeys: {}, roles: { test: { roleName: "test", roleId: "AROALOCALTESTROLE001", arn: `arn:aws:iam::${accountId}:role/test`, path: "/", createDate: now, description: "Pre-created compatibility role for local Lambda examples", maxSessionDuration: 3600, assumeRolePolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { Service: "lambda.amazonaws.com" }, Action: "sts:AssumeRole" }] }, tags: { "stacksim:managed": "true" }, attachedPolicyArns: [administratorArn], inlinePolicies: {} } }, policies, sessions: {}, authorizationDecisions: [] };
+  const testTrust: PolicyDocument = { Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { Service: "lambda.amazonaws.com" }, Action: "sts:AssumeRole" }] };
+  return { users: {}, groups: {}, accessKeys: {}, roles: { test: { roleName: "test", roleId: "AROALOCALTESTROLE001", arn: `arn:aws:iam::${accountId}:role/test`, path: "/", createDate: now, description: "Pre-created compatibility role for local Lambda examples", maxSessionDuration: 3600, assumeRolePolicyDocument: testTrust, assumeRolePolicyCanonical: canonicalPolicyDocument(testTrust), tags: { "stacksim:managed": "true" }, attachedPolicyArns: [administratorArn], inlinePolicies: {}, inlinePolicyCanonicalDocuments: {} } }, policies, sessions: {}, authorizationDecisions: [] };
 }
 
 export function normalizeIamState(value: any, now = Date.now(), accountId = "000000000000"): IamState {
   const seeded = createIamState(now, accountId);
+  const validDate = (candidate: unknown, fallback: number) => typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0 ? candidate : fallback;
+  const policies = { ...(value?.policies ?? {}) };
+  for (const [arn, seed] of Object.entries(seeded.policies)) {
+    const persisted = value?.policies?.[arn];
+    const versions = structuredClone(seed.versions);
+    for (const [versionId, version] of Object.entries(versions)) { version.createDate = validDate(persisted?.versions?.[versionId]?.createDate, version.createDate); version.canonicalDocument = canonicalPolicyDocument(version.document); }
+    policies[arn] = {
+      ...structuredClone(seed),
+      createDate: validDate(persisted?.createDate, seed.createDate),
+      updateDate: validDate(persisted?.updateDate, seed.updateDate),
+      versions,
+    };
+  }
+  const sessions = Object.fromEntries(Object.entries(value?.sessions ?? {}).map(([accessKeyId, raw]) => {
+    const session = raw as any;
+    return [accessKeyId, { ...session, ...(session.sessionPolicy ? { sessionPolicyCanonical: canonicalPolicyDocument(session.sessionPolicy) } : {}), sessionTags: session.sessionTags ?? {}, transitiveTagKeys: Array.isArray(session.transitiveTagKeys) ? session.transitiveTagKeys.map(String) : [] }];
+  }));
+  const normalizeEntity = (entity: any, trust = false) => ({ ...entity, ...(trust ? { assumeRolePolicyCanonical: canonicalPolicyDocument(entity.assumeRolePolicyDocument) } : {}), inlinePolicyCanonicalDocuments: Object.fromEntries(Object.entries(entity.inlinePolicies ?? {}).map(([name, document]) => [name, canonicalPolicyDocument(document as PolicyDocument)])) });
+  const customerPolicies = Object.fromEntries(Object.entries(policies).map(([arn, rawPolicy]) => { const policy = rawPolicy as IamPolicyState; return [arn, { ...policy, versions: Object.fromEntries(Object.entries(policy.versions).map(([versionId, rawVersion]) => { const version = rawVersion as IamPolicyState["versions"][string]; return [versionId, { ...version, canonicalDocument: canonicalPolicyDocument(version.document) }]; })) }]; }));
   return {
-    users: value?.users ?? {},
-    groups: value?.groups ?? {},
+    users: Object.fromEntries(Object.entries(value?.users ?? {}).map(([name, entity]) => [name, normalizeEntity(entity)])),
+    groups: Object.fromEntries(Object.entries(value?.groups ?? {}).map(([name, entity]) => [name, normalizeEntity(entity)])),
     accessKeys: value?.accessKeys ?? {},
-    roles: { ...seeded.roles, ...(value?.roles ?? {}) },
-    policies: { ...seeded.policies, ...(value?.policies ?? {}) },
-    sessions: value?.sessions ?? {},
+    roles: Object.fromEntries(Object.entries({ ...seeded.roles, ...(value?.roles ?? {}) }).map(([name, entity]) => [name, normalizeEntity(entity, true)])),
+    policies: customerPolicies,
+    sessions,
     authorizationDecisions: value?.authorizationDecisions ?? [],
   };
 }

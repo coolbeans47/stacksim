@@ -37,7 +37,7 @@ import { executeCdkBucketDeploymentHotswap } from "./cloudformation/providers/cd
 type Executable = Pick<LambdaState, "runtime" | "role" | "handler" | "timeout" | "memorySize" | "description" | "environment" | "codeSha256" | "codeSize" | "codeUnzippedSize" | "codeDir" | "layers" | "lastModified"> & LambdaExecutableConfigurationState;
 interface ResolvedFunction { fn: LambdaState; executable: Executable; requestedQualifier?: string; executedVersion: string; qualifiedArn: string }
 export interface InvokeResult { payload: Buffer; functionError?: string; statusCode: number; logResult?: string; requestId: string; durationMs: number; billedDurationMs: number; executedVersion: string; durableExecutionArn?: string; /** Internal: the simulator stopped while this invocation was active. */ interrupted?: boolean }
-interface InvokeOptions { clientContext?: unknown; qualifier?: string; principal?: string; sourceArn?: string; sourceAccount?: string; enforceResourcePolicy?: boolean; lineage?: string[]; durableExecutionName?: string; traceHeader?: string; durableReplay?: boolean; durableExecutionArn?: string; resolvedOverride?: ResolvedFunction; environmentOverrides?: Readonly<Record<string, string>>; timeoutOverrideMs?: number; terminateOnCompletion?: Promise<void>; sanitizeEnvironment?: boolean; trustedCaCertificatePath?: string; sensitiveLogValues?: readonly string[]; integrationAttemptAcceptance?: (result: InvokeResult) => Promise<void>; serviceLogContext?: { apiGatewayRequestId: string; apiGatewayExtendedRequestId: string; apiId: string; stage: string } }
+interface InvokeOptions { clientContext?: unknown; qualifier?: string; principal?: string; sourceArn?: string; sourceAccount?: string; enforceResourcePolicy?: boolean; lineage?: string[]; durableExecutionName?: string; traceHeader?: string; durableReplay?: boolean; durableExecutionArn?: string; resolvedOverride?: ResolvedFunction; environmentOverrides?: Readonly<Record<string, string>>; timeoutOverrideMs?: number; terminateOnCompletion?: Promise<void>; trustedCaCertificatePath?: string; sensitiveLogValues?: readonly string[]; integrationAttemptAcceptance?: (result: InvokeResult) => Promise<void>; serviceLogContext?: { apiGatewayRequestId: string; apiGatewayExtendedRequestId: string; apiId: string; stage: string } }
 
 function cloudFormationCallbackSensitiveLogValues(event: unknown): string[] {
   if (!event || typeof event !== "object" || Array.isArray(event)) return [];
@@ -71,12 +71,16 @@ function sanitizedRuntimeHostEnvironment(): NodeJS.ProcessEnv {
   return sanitized;
 }
 function sanitizedFunctionEnvironment(environment: Readonly<Record<string, string>>): Record<string, string> {
-  const launchControls = new Set([
+  const reserved = new Set([
     "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS", "NODE_CHANNEL_FD",
     "LD_PRELOAD", "LD_AUDIT", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_CREDENTIAL_EXPIRATION",
+    "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_LAMBDA",
+    "AWS_LAMBDA_FUNCTION_NAME", "AWS_LAMBDA_FUNCTION_VERSION", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE", "AWS_LAMBDA_INITIALIZATION_TYPE",
+    "LAMBDA_TASK_ROOT", "LAMBDA_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP", "STACKSIM_ENDPOINT", "STACKSIM_LAMBDA_EPHEMERAL_STORAGE_SIZE", "STACKSIM_LAMBDA_OPT_DIR",
     "STACKSIM_CLOUDFORMATION_CALLBACK_PORT", "STACKSIM_CLOUDFORMATION_NETWORK_PORTS",
   ]);
-  return Object.fromEntries(Object.entries(environment).filter(([name]) => !launchControls.has(name.toUpperCase())));
+  return Object.fromEntries(Object.entries(environment).filter(([name]) => !reserved.has(name.toUpperCase())));
 }
 function tags(input: unknown): Record<string, string> {
   if (input === undefined) return {}; if (!input || Array.isArray(input) || typeof input !== "object") throw new AwsError("InvalidParameterValueException", "Tags must be a string map");
@@ -376,7 +380,7 @@ export class LambdaService {
       loggingConfig: executable.loggingConfig, tracingMode: executable.tracingMode,
       fileSystemConfigs: executable.fileSystemConfigs, vpcConfig: executable.vpcConfig,
       runtimeManagementConfig: executable.runtimeManagementConfig, capacityProviderConfig: executable.capacityProviderConfig,
-      invocationProfile: { sanitizeEnvironment: Boolean(options.sanitizeEnvironment), trustedCaCertificatePath: options.trustedCaCertificatePath, environmentOverrides: sorted(options.environmentOverrides) },
+      invocationProfile: { trustedCaCertificatePath: options.trustedCaCertificatePath, environmentOverrides: sorted(options.environmentOverrides) },
     })));
   }
   private workerSpec(resolved: ResolvedFunction, options: InvokeOptions, credentials: Record<string, string>, initializationType: "on-demand" | "provisioned-concurrency", provisionedFor?: string): LambdaWorkerSpec {
@@ -391,12 +395,12 @@ export class LambdaService {
         return runtime;
       },
       launchEnvironment: (runtime: LambdaWorkerRuntime) => ({
-        ...(options.sanitizeEnvironment ? sanitizedRuntimeHostEnvironment() : process.env), NODE_PATH: runtime.nodePath,
-        ...(options.sanitizeEnvironment ? sanitizedFunctionEnvironment(executable.environment) : executable.environment),
+        ...sanitizedRuntimeHostEnvironment(), NODE_PATH: runtime.nodePath,
+        ...sanitizedFunctionEnvironment(executable.environment),
         AWS_REGION: this.region, AWS_DEFAULT_REGION: this.region, AWS_ENDPOINT_URL: this.controlEndpoint(), AWS_ENDPOINT_URL_LAMBDA: this.controlEndpoint(), STACKSIM_ENDPOINT: this.controlEndpoint(),
         AWS_LAMBDA_FUNCTION_NAME: fn.functionName, AWS_LAMBDA_FUNCTION_VERSION: resolved.executedVersion, AWS_LAMBDA_FUNCTION_MEMORY_SIZE: String(executable.memorySize), AWS_LAMBDA_INITIALIZATION_TYPE: initializationType,
         LAMBDA_TASK_ROOT: runtime.codeDir, TMPDIR: runtime.tmpDir, TMP: runtime.tmpDir, TEMP: runtime.tmpDir, STACKSIM_LAMBDA_EPHEMERAL_STORAGE_SIZE: String(executable.ephemeralStorageSize),
-        ...(runtime.optDir ? { STACKSIM_LAMBDA_OPT_DIR: runtime.optDir } : {}), ...credentials, ...options.environmentOverrides,
+        ...(runtime.optDir ? { STACKSIM_LAMBDA_OPT_DIR: runtime.optDir } : {}), ...options.environmentOverrides, ...credentials,
         ...(options.trustedCaCertificatePath ? { NODE_EXTRA_CA_CERTS: resolve(runtime.tmpDir, "cloudformation-callback-ca.pem") } : {}),
       }),
     };
@@ -434,7 +438,8 @@ export class LambdaService {
       const credentialId = id(32);
       if (!this.store.credentialStore) throw new AwsError("InternalFailure", "The IAM credential store is unavailable", 500);
       await this.store.credentialStore.put({ credentialId, type: "sts-session", accountId: this.store.accountId, ownerId: principalId, accessKeyId }, { secretAccessKey, sessionToken });
-      this.store.ensureAccount().iam.sessions[accessKeyId] = { accessKeyId, credentialId, principalArn: arn, principalId, roleArn: role.arn, roleName: role.roleName, sessionName, expiration: this.clock.now() + 3_600_000, sessionTags: {}, lambdaLineage: lineage };
+      const issuedAt = this.clock.now();
+      this.store.ensureAccount().iam.sessions[accessKeyId] = { accessKeyId, credentialId, principalArn: arn, principalId, roleArn: role.arn, roleName: role.roleName, sessionName, issuedAt, expiration: issuedAt + 3_600_000, sessionTags: {}, transitiveTagKeys: [], lambdaLineage: lineage };
       try {
         await this.store.save();
       } catch (error) {
@@ -500,9 +505,9 @@ export class LambdaService {
   isFunctionUrlPreflight(req: IncomingMessage): boolean { return this.functionUrls.isPreflight(req); }
   handleFunctionUrlPreflight(req: IncomingMessage, res: ServerResponse, target: FunctionUrlTarget): void { this.functionUrls.preflight(req, res, target); }
   async invokeFunctionUrl(req: IncomingMessage, res: ServerResponse, url: URL, target: FunctionUrlTarget, rawPath: string, requestId: string, principal?: PrincipalContext): Promise<void> { await this.functionUrls.invoke(req, res, url, target, rawPath, requestId, principal); }
-  functionUrlResourcePolicy(principalArn: string, target: FunctionUrlTarget, action: "lambda:InvokeFunction" | "lambda:InvokeFunctionUrl", context: Record<string, unknown>): AuthorizationResult {
+  functionUrlResourcePolicy(principal: string | Pick<PrincipalContext, "principalArn" | "roleArn">, target: FunctionUrlTarget, action: "lambda:InvokeFunction" | "lambda:InvokeFunctionUrl", context: Record<string, unknown>): AuthorizationResult {
     const fn = this.require(target.functionName); const statements = [...(fn.policies?.[target.config.qualifier ?? ""]?.statements ?? []), ...(target.config.qualifier ? fn.policies?.[""]?.statements ?? [] : [])];
-    return evaluateResourcePolicy({ Version: "2012-10-17", Statement: statements }, principalArn, action, target.functionArn, context);
+    return evaluateResourcePolicy({ Version: "2012-10-17", Statement: statements }, principal, action, target.functionArn, context);
   }
   private async publishFunctionUrlMetric(functionName: string, metricName: string, value = 1): Promise<void> { if (!this.telemetry) return; await this.telemetry.publish({ namespace: "AWS/Lambda", metricName, dimensions: { FunctionName: functionName }, value, unit: "Count", timestamp: this.clock.now() }); }
   private get asyncQueue(): Record<string, LambdaAsyncInvocationState> { return this.store.regionState(this.region).lambdaAsyncInvocations ??= {}; }
@@ -599,13 +604,15 @@ export class LambdaService {
         if (!this.snsService) throw new AwsError("ResourceNotFoundException", "The SNS destination service is unavailable.", 404);
         const functionArn = source ? `${source.functionArn}:${event.qualifier ?? "$LATEST"}` : `arn:aws:lambda:${this.region}:${this.store.accountId}:function:${event.functionName}:${event.qualifier ?? "$LATEST"}`;
         if (!role) throw new AwsError("AccessDeniedException", `No execution role is available to publish to ${destination}`, 403);
-        const authorized = this.authMode !== "enforce" || evaluateRoleAuthorization(this.store.ensureAccount().iam, role, "sns:Publish", destination).decision === "allowed";
-        if (!authorized) throw new AwsError("AccessDeniedException", `Execution role ${role} cannot publish to ${destination}`, 403);
+        const identityAuthorization = this.authMode !== "enforce"
+          ? { decision: "allowed", reason: "Authorization enforcement is disabled", matchedStatements: [] } as AuthorizationResult
+          : evaluateRoleAuthorization(this.store.ensureAccount().iam, role, "sns:Publish", destination);
+        if (identityAuthorization.decision !== "allowed") throw new AwsError("AccessDeniedException", `Execution role ${role} cannot publish to ${destination}`, 403);
         await this.snsService.publishAuthorized({ TopicArn: destination, Message: JSON.stringify(record) }, {
           principal: role,
           sourceArn: functionArn,
           sourceAccount: this.store.accountId,
-          identityAuthorized: true,
+          identityAuthorization,
           lineage: [...(event.lineage ?? []), functionArn].slice(-32),
         });
       } else if (destination.includes(":events:")) {
@@ -632,13 +639,15 @@ export class LambdaService {
       const functionArn = resolved?.qualifiedArn ?? this.store.regionState(this.region).functions[event.functionName]?.functionArn;
       if (destination.includes(":sns:")) {
         if (!this.snsService || !role || !functionArn) throw new AwsError("ResourceNotFoundException", "The SNS dead-letter destination is unavailable", 404);
-        const authorized = this.authMode !== "enforce" || evaluateRoleAuthorization(this.store.ensureAccount().iam, role, "sns:Publish", destination).decision === "allowed";
-        if (!authorized) throw new AwsError("AccessDeniedException", `Execution role ${role} cannot publish to ${destination}`, 403);
+        const identityAuthorization = this.authMode !== "enforce"
+          ? { decision: "allowed", reason: "Authorization enforcement is disabled", matchedStatements: [] } as AuthorizationResult
+          : evaluateRoleAuthorization(this.store.ensureAccount().iam, role, "sns:Publish", destination);
+        if (identityAuthorization.decision !== "allowed") throw new AwsError("AccessDeniedException", `Execution role ${role} cannot publish to ${destination}`, 403);
         await this.snsService.publishAuthorized({
           TopicArn: destination,
           Message: Buffer.from(event.payloadBase64, "base64").toString("utf8"),
           MessageAttributes: messageAttributes,
-        }, { principal: role, sourceArn: functionArn, sourceAccount: this.store.accountId, identityAuthorized: true, lineage: [...(event.lineage ?? []), functionArn] });
+        }, { principal: role, sourceArn: functionArn, sourceAccount: this.store.accountId, identityAuthorization, lineage: [...(event.lineage ?? []), functionArn] });
       } else if (destination.includes(":sqs:")) {
         await this.sendSqsUsingRole(destination, { MessageBody: Buffer.from(event.payloadBase64, "base64").toString("utf8"), MessageAttributes: messageAttributes }, role, functionArn, [...(event.lineage ?? []), ...(functionArn ? [functionArn] : []), destination]);
       } else throw new AwsError("InvalidParameterValueException", "Dead-letter destinations must be SQS or SNS");
@@ -655,9 +664,11 @@ export class LambdaService {
     try {
       if (destination.includes(":sns:")) {
         if (!this.snsService) throw new AwsError("ResourceNotFoundException", "The SNS durable dead-letter destination is unavailable", 404);
-        const authorized = this.authMode !== "enforce" || evaluateRoleAuthorization(this.store.ensureAccount().iam, execution.executable.role, "sns:Publish", destination).decision === "allowed";
-        if (!authorized) throw new AwsError("AccessDeniedException", `Execution role ${execution.executable.role} cannot publish to ${destination}`, 403);
-        await this.snsService.publishAuthorized({ TopicArn: destination, Message: execution.inputPayload, MessageAttributes: messageAttributes }, { principal: execution.executable.role, sourceArn: execution.functionArn, sourceAccount: this.store.accountId, identityAuthorized: true, lineage: [...(execution.lineage ?? []), execution.functionArn] });
+        const identityAuthorization = this.authMode !== "enforce"
+          ? { decision: "allowed", reason: "Authorization enforcement is disabled", matchedStatements: [] } as AuthorizationResult
+          : evaluateRoleAuthorization(this.store.ensureAccount().iam, execution.executable.role, "sns:Publish", destination);
+        if (identityAuthorization.decision !== "allowed") throw new AwsError("AccessDeniedException", `Execution role ${execution.executable.role} cannot publish to ${destination}`, 403);
+        await this.snsService.publishAuthorized({ TopicArn: destination, Message: execution.inputPayload, MessageAttributes: messageAttributes }, { principal: execution.executable.role, sourceArn: execution.functionArn, sourceAccount: this.store.accountId, identityAuthorization, lineage: [...(execution.lineage ?? []), execution.functionArn] });
       } else if (destination.includes(":sqs:")) {
         await this.sendSqsUsingRole(destination, { MessageBody: execution.inputPayload, MessageAttributes: messageAttributes }, execution.executable.role, execution.functionArn, [...(execution.lineage ?? []), execution.functionArn, destination]);
       } else throw new AwsError("InvalidParameterValueException", "Dead-letter destinations must be SQS or SNS");
@@ -726,7 +737,7 @@ export class LambdaService {
       // An IP-literal endpoint makes the unmodified S3 SDK select path-style
       // addressing, keeping every helper call on the pinned loopback origin.
       const secureServiceEndpoint = `https://127.0.0.1:${callbackPort}`;
-      const result = await this.invokeRuntime(nameOrArn, payload, requestId, { resolvedOverride: resolved, timeoutOverrideMs: timeoutMs, terminateOnCompletion: callbackCompleted, sanitizeEnvironment: true, trustedCaCertificatePath: caCertificatePath, sensitiveLogValues, environmentOverrides: { AWS_ENDPOINT_URL: secureServiceEndpoint, AWS_ENDPOINT_URL_LAMBDA: secureServiceEndpoint, STACKSIM_ENDPOINT: secureServiceEndpoint, STACKSIM_CLOUDFORMATION_CALLBACK_PORT: String(callbackPort), STACKSIM_CLOUDFORMATION_NETWORK_PORTS: `${endpoint.port},${callbackPort}` } });
+      const result = await this.invokeRuntime(nameOrArn, payload, requestId, { resolvedOverride: resolved, timeoutOverrideMs: timeoutMs, terminateOnCompletion: callbackCompleted, trustedCaCertificatePath: caCertificatePath, sensitiveLogValues, environmentOverrides: { AWS_ENDPOINT_URL: secureServiceEndpoint, AWS_ENDPOINT_URL_LAMBDA: secureServiceEndpoint, STACKSIM_ENDPOINT: secureServiceEndpoint, STACKSIM_CLOUDFORMATION_CALLBACK_PORT: String(callbackPort), STACKSIM_CLOUDFORMATION_NETWORK_PORTS: `${endpoint.port},${callbackPort}` } });
       if (!this.stopped) return result;
       const { functionError: _functionError, ...replayable } = result;
       return { ...replayable, payload: Buffer.from("null"), interrupted: true };
@@ -862,7 +873,6 @@ export class LambdaService {
     return this.invokeRuntime(nameOrArn, payload, requestId, {
       ...options,
       resolvedOverride: resolved,
-      sanitizeEnvironment: true,
       trustedCaCertificatePath: caCertificatePath,
       sensitiveLogValues: [...(options.sensitiveLogValues ?? []), ...sensitiveLogValues],
       environmentOverrides: { ...(options.environmentOverrides ?? {}), AWS_ENDPOINT_URL: secureServiceEndpoint, AWS_ENDPOINT_URL_LAMBDA: secureServiceEndpoint, STACKSIM_ENDPOINT: secureServiceEndpoint, STACKSIM_CLOUDFORMATION_CALLBACK_PORT: String(callbackPort), STACKSIM_CLOUDFORMATION_NETWORK_PORTS: `${endpoint.port},${callbackPort}` },

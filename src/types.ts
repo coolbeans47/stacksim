@@ -1423,9 +1423,11 @@ export interface IamRoleState {
   description?: string;
   maxSessionDuration: number;
   assumeRolePolicyDocument: PolicyDocument;
+  assumeRolePolicyCanonical?: string;
   tags: Record<string, string>;
   attachedPolicyArns: string[];
   inlinePolicies: Record<string, PolicyDocument>;
+  inlinePolicyCanonicalDocuments?: Record<string, string>;
   permissionsBoundaryArn?: string;
 }
 
@@ -1438,6 +1440,7 @@ export interface IamUserState {
   tags: Record<string, string>;
   attachedPolicyArns: string[];
   inlinePolicies: Record<string, PolicyDocument>;
+  inlinePolicyCanonicalDocuments?: Record<string, string>;
   permissionsBoundaryArn?: string;
 }
 
@@ -1450,6 +1453,7 @@ export interface IamGroupState {
   userNames: string[];
   attachedPolicyArns: string[];
   inlinePolicies: Record<string, PolicyDocument>;
+  inlinePolicyCanonicalDocuments?: Record<string, string>;
 }
 
 export interface IamAccessKeyState {
@@ -1462,7 +1466,7 @@ export interface IamAccessKeyState {
   lastUsed?: { date: number; serviceName: string; region: string };
 }
 
-export interface IamPolicyVersionState { versionId: string; document: PolicyDocument; createDate: number; isDefaultVersion: boolean }
+export interface IamPolicyVersionState { versionId: string; document: PolicyDocument; canonicalDocument?: string; createDate: number; isDefaultVersion: boolean }
 export interface IamPolicyState {
   policyName: string;
   policyId: string;
@@ -1502,10 +1506,14 @@ export interface LocalCredentialState {
   roleArn: string;
   roleName: string;
   sessionName: string;
+  issuedAt?: number;
   expiration: number;
   sourceIdentity?: string;
   sessionPolicy?: PolicyDocument;
+  sessionPolicyCanonical?: string;
   sessionTags: Record<string, string>;
+  /** Present on normalized/new sessions; optional only for legacy in-memory fixtures. */
+  transitiveTagKeys?: string[];
   lambdaLineage?: string[];
 }
 

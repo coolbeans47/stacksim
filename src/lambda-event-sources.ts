@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { AwsError } from "./errors.js";
 import type { Clock } from "./core/clock.js";
 import type { Scheduler } from "./core/scheduler.js";
+import type { AuthorizationResult } from "./iam/evaluator.js";
 import type { TelemetryBus } from "./core/telemetry.js";
 import { PaginationTokens } from "./core/pagination.js";
 import { evaluateRoleAuthorization } from "./iam/evaluator.js";
@@ -37,7 +38,7 @@ export interface LambdaSnsServicePort {
     principal: string;
     sourceArn: string;
     sourceAccount: string;
-    identityAuthorized?: boolean;
+    identityAuthorization?: AuthorizationResult;
     lineage?: string[];
   }): Promise<{ MessageId: string }>;
 }
@@ -536,13 +537,15 @@ export class LambdaEventSourceMappings {
     const target = this.callbacks.resolveFunction(mapping.functionArn);
     if (destination.includes(":sns:")) {
       if (!this.snsService) throw new AwsError("ResourceNotFoundException", "The SNS discarded-record destination service is unavailable", 404);
-      const authorized = this.authMode !== "enforce" || evaluateRoleAuthorization(this.store.ensureAccount().iam, target.role, "sns:Publish", destination).decision === "allowed";
-      if (!authorized) throw new AwsError("AccessDeniedException", `Execution role ${target.role} cannot publish discarded records to ${destination}`, 403);
+      const identityAuthorization = this.authMode !== "enforce"
+        ? { decision: "allowed", reason: "Authorization enforcement is disabled", matchedStatements: [] } as AuthorizationResult
+        : evaluateRoleAuthorization(this.store.ensureAccount().iam, target.role, "sns:Publish", destination);
+      if (identityAuthorization.decision !== "allowed") throw new AwsError("AccessDeniedException", `Execution role ${target.role} cannot publish discarded records to ${destination}`, 403);
       await this.snsService.publishAuthorized({ TopicArn: destination, Message: JSON.stringify(envelope) }, {
         principal: target.role,
         sourceArn: mapping.eventSourceArn,
         sourceAccount: this.store.accountId,
-        identityAuthorized: true,
+        identityAuthorization,
         lineage: [mapping.eventSourceArn],
       });
       return;

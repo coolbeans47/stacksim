@@ -3,7 +3,7 @@ import type { PrincipalContext } from "../auth/sigv4.js";
 import type { Clock } from "../core/clock.js";
 import type { DynamoDbService } from "../dynamodb.js";
 import { AwsError } from "../errors.js";
-import { evaluateAuthorization, evaluateResourcePolicy } from "../iam/evaluator.js";
+import { combineIdentityAndResourceAuthorization, evaluateAuthorization, evaluateResourcePolicy } from "../iam/evaluator.js";
 import type { StateStore } from "../state.js";
 import type {
   AppSyncDataSourceState,
@@ -370,11 +370,10 @@ export async function executeDynamoResolver(
     "aws:RequestedRegion": dependencies.region,
     "aws:CurrentTime": new Date(now).toISOString(),
   });
-  if (authorization.decision !== "allowed") {
+  if (authorization.decision === "explicitDeny") {
     return evaluateFailureResponse(resolver, context, requestEvaluation,
       new AppSyncVtlError("The AppSync data source role is not authorized for this DynamoDB request.", "Unauthorized"), now);
   }
-
   let table: { name: string; arn: string; id: string };
   try {
     const description = (await dependencies.dynamodb.DescribeTable({
@@ -387,14 +386,20 @@ export async function executeDynamoResolver(
   }
 
   const resource = indexName ? `${table.arn}/index/${indexName}` : table.arn;
+  let combinedAuthorization = authorization;
   try {
     const attached = await dependencies.dynamodb.GetResourcePolicy({ ResourceArn: table.arn });
-    const decision = evaluateResourcePolicy(JSON.parse(attached.Policy), principal.principalArn, action, resource, {
+    const resourceAuthorization = evaluateResourcePolicy(JSON.parse(attached.Policy), principal, action, resource, {
       "aws:PrincipalArn": principal.principalArn,
       "aws:PrincipalAccount": principal.accountId,
       "aws:RequestedRegion": dependencies.region,
     });
-    if (decision.decision === "explicitDeny") {
+    combinedAuthorization = combineIdentityAndResourceAuthorization(
+      authorization,
+      resourceAuthorization,
+      principal.accountId === api.owner ? "sameAccount" : "crossAccount",
+    );
+    if (resourceAuthorization.decision === "explicitDeny") {
       return evaluateFailureResponse(resolver, context, requestEvaluation,
         new AppSyncVtlError("The DynamoDB resource policy denies the AppSync data source role.", "Unauthorized"), now);
     }
@@ -402,6 +407,10 @@ export async function executeDynamoResolver(
     if (!(error instanceof AwsError && error.code === "PolicyNotFoundException")) {
       return evaluateFailureResponse(resolver, context, requestEvaluation, error, now);
     }
+  }
+  if (combinedAuthorization.decision !== "allowed") {
+    return evaluateFailureResponse(resolver, context, requestEvaluation,
+      new AppSyncVtlError("The AppSync data source role is not authorized for this DynamoDB request.", "Unauthorized"), now);
   }
 
   if (suppliedCursor) {

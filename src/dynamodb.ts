@@ -21,7 +21,7 @@ import { classifyPartiqlAccess, parsePartiql, projectPartiqlItem, type PartiqlPl
 import { DynamoBackupPersistence, type DynamoPitrChange } from "./dynamodb/backups.js";
 import { DynamoStreamPersistence } from "./dynamodb/streams.js";
 import { DynamoGlobalTablePersistence } from "./dynamodb/global-tables.js";
-import { evaluateResourcePolicy } from "./iam/evaluator.js";
+import { combineIdentityAndResourceAuthorization, evaluateResourcePolicy } from "./iam/evaluator.js";
 import type { PrincipalContext } from "./auth/sigv4.js";
 import type { DynamoGlobalTableChangeState, DynamoGlobalTableItemVersionState, DynamoResourcePolicyState, PolicyDocument, PolicyStatement } from "./types.js";
 
@@ -554,7 +554,7 @@ export class DynamoDbService {
         if (region === this.region || !replica.globalTable || this.compareGlobalVersions(version, replica.globalTable.itemVersions[change.key]) <= 0) continue;
         try {
           const regional = this.store.regionState(region); const attached = regional.dynamodbResourcePolicies[replica.arn];
-          if (attached) { const action = change.item ? "dynamodb:PutItem" : "dynamodb:DeleteItem"; const serviceRole = `arn:aws:iam::${this.store.accountId}:role/aws-service-role/replication.dynamodb.amazonaws.com/AWSServiceRoleForDynamoDBReplication`; const decision = evaluateResourcePolicy(JSON.parse(attached.policy), serviceRole, action, replica.arn, { "aws:PrincipalArn": serviceRole, "aws:PrincipalAccount": this.store.accountId, "aws:RequestedRegion": region }); if (decision.decision === "explicitDeny") { replica.globalTable.lastReplicationError = "Replication is not authorized by the target table resource policy"; continue; } }
+          if (attached) { const action = change.item ? "dynamodb:PutItem" : "dynamodb:DeleteItem"; const serviceRole = `arn:aws:iam::${this.store.accountId}:role/aws-service-role/replication.dynamodb.amazonaws.com/AWSServiceRoleForDynamoDBReplication`; const resourceAuthorization = evaluateResourcePolicy(JSON.parse(attached.policy), { principalArn: serviceRole, roleArn: serviceRole }, action, replica.arn, { "aws:PrincipalArn": serviceRole, "aws:PrincipalAccount": this.store.accountId, "aws:RequestedRegion": region }); const decision = combineIdentityAndResourceAuthorization({ decision: "allowed", reason: "The DynamoDB replication service-linked role authorizes replication", matchedStatements: [] }, resourceAuthorization, "sameAccount"); if (decision.decision !== "allowed") { replica.globalTable.lastReplicationError = "Replication is not authorized by the target table resource policy"; continue; } }
           const previous = replica.items[change.key]; if (change.item) replica.items[change.key] = clone(change.item); else delete replica.items[change.key]; replica.globalTable.itemVersions[change.key] = clone(version); delete replica.globalTable.lastReplicationError;
           const persistence = new DynamoBackupPersistence(this.store.root, this.store.accountId, region); await persistence.appendPitr(replica, this.pitrTime(), [{ key: change.key, ...(change.item ? { item: change.item } : {}) }]); await persistence.prunePitr(replica, this.pitrTime());
           if (change.item || previous) await this.emitStreamRecordForRegion(region, replica, { oldImage: previous, ...(change.item ? { newImage: change.item } : {}), ...(change.ttl ? { ttl: true } : {}) });

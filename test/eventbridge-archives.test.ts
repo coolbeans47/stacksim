@@ -56,6 +56,7 @@ test("EVB-04 SDK lifecycle proves independent capture, selected replay identity,
   broken = false;
   const replay = await h.client.send(new StartReplayCommand({ ReplayName: "fixed-consumer", Description: "Replay after target fix", EventSourceArn: created.ArchiveArn!, EventStartTime: new Date(eventTime.getTime() - 1_000), EventEndTime: new Date(eventTime.getTime() + 1_000), Destination: { Arn: busArn, FilterArns: [selectedArn] } })); assert.equal(replay.State, "STARTING");
   await drive(h.clock, () => (h.simulator.eventbridge as any).archiveStore.replay("fixed-consumer")?.state === "COMPLETED");
+  await drive(h.clock, () => received.length >= 1);
   const described = await h.client.send(new DescribeReplayCommand({ ReplayName: "fixed-consumer" })); assert.equal(described.State, "COMPLETED"); assert(described.EventLastReplayedTime instanceof Date); assert.deepEqual(described.Destination?.FilterArns, [selectedArn]);
   assert.equal(received.length, 1); assert.equal(received[0].sourceArn, selectedArn); assert.equal(received[0].payload["replay-name"], "fixed-consumer"); assert.notEqual(received[0].sourceArn, otherArn);
   assert.equal((await h.client.send(new DescribeArchiveCommand({ ArchiveName: "orders" }))).EventCount, 1, "replayed events are not archived again");

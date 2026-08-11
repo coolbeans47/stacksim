@@ -6,7 +6,7 @@ import { PaginationTokens } from "./core/pagination.js";
 import type { Scheduler } from "./core/scheduler.js";
 import type { TelemetryBus } from "./core/telemetry.js";
 import { AwsError } from "./errors.js";
-import { evaluateResourcePolicy, evaluateRoleAuthorization, evaluateTrust } from "./iam/evaluator.js";
+import { combineIdentityAndResourceAuthorization, evaluateResourcePolicy, evaluateRoleAuthorization, evaluateTrust, type AuthorizationResult } from "./iam/evaluator.js";
 import { awsQueryErrorXml, awsQueryList, awsQueryMap, parseAwsQuery, sendAwsQueryXml } from "./protocols/query-xml.js";
 import type { StateStore } from "./state.js";
 import type { SnsMessageAttributeState, SnsSubscriptionState, SnsTopicState } from "./types.js";
@@ -740,7 +740,7 @@ export class SnsService {
     principal: string;
     sourceArn: string;
     sourceAccount: string;
-    identityAuthorized?: boolean;
+    identityAuthorization?: AuthorizationResult;
     lineage?: string[];
   }, attempt?: ServiceIntegrationAttempt): Promise<{ MessageId: string }> {
     if (attempt) { const prior = await this.reconcileIntegrationAttempt(attempt); if (prior !== undefined) return prior; }
@@ -756,9 +756,23 @@ export class SnsService {
       "aws:RequestedRegion": this.region,
       ...Object.fromEntries(Object.entries(topic.tags).map(([key, value]) => [`aws:ResourceTag/${key}`, value])),
     };
-    const resource = evaluateResourcePolicy(JSON.parse(topic.policy), caller.principal, "sns:Publish", topic.arn, context);
-    if (resource.decision === "explicitDeny" || (!caller.identityAuthorized && resource.decision !== "allowed")) {
-      throw new AwsError("AuthorizationError", `The principal ${caller.principal} is not authorized to publish to ${topic.arn}. ${resource.reason}`, 403);
+    const servicePrincipal = caller.principal.endsWith(".amazonaws.com");
+    const resource = evaluateResourcePolicy(JSON.parse(topic.policy), {
+      principalArn: caller.principal,
+      ...(!servicePrincipal && caller.principal.includes(":role/") ? { roleArn: caller.principal } : {}),
+    }, "sns:Publish", topic.arn, context);
+    const identity = caller.identityAuthorization ?? {
+      decision: "implicitDeny",
+      reason: servicePrincipal ? "Service principals use the topic resource policy" : "No identity authorization was supplied",
+      matchedStatements: [],
+    };
+    const authorization = combineIdentityAndResourceAuthorization(
+      identity,
+      resource,
+      servicePrincipal ? "service" : caller.sourceAccount === this.store.accountId ? "sameAccount" : "crossAccount",
+    );
+    if (authorization.decision !== "allowed") {
+      throw new AwsError("AuthorizationError", `The principal ${caller.principal} is not authorized to publish to ${topic.arn}. ${authorization.reason}`, 403);
     }
     const accepted = await this.accept(input, {
       principalType: "service",

@@ -136,7 +136,7 @@ Attach `AmazonDynamoDBFullAccess` (service-managed) for a migration script user 
 
 #### What it is
 
-The **Security credentials** panel lists access keys (ID, status, created date) with **Deactivate/Activate** and **Delete** actions. **Create access key** generates a new key pair.
+The **Security credentials** panel lists access keys (ID, status, created date, and last-used time/service/Region) with **Deactivate/Activate** and **Delete** actions. Keys without a valid signed request show **Never**. **Create access key** generates a new key pair.
 
 After creation, a modal displays **Access key ID** and **Secret access key** once with a warning to save before closing.
 
@@ -146,7 +146,7 @@ Access keys sign SDK, CLI, CDK, and application requests. Rotate keys periodical
 
 #### How it works in StackSim
 
-Two-key quota, one-time secret display, active/inactive state, deletion, SigV4 validation, last-owner binding, restart persistence, and encrypted private credential storage are active.
+Two-key quota, one-time secret display, active/inactive state, deletion, SigV4 validation, durable monotonic last-used tracking, last-owner binding, restart persistence, and encrypted private credential storage are active. Invalid signatures never update usage.
 
 Secrets cannot be retrieved again. These keys do not create an AWS console password.
 
@@ -440,13 +440,15 @@ Fields: **Policy name**, **Description**, and a tabbed editor:
 
 Additional statements in JSON are preserved when editing the first statement visually. `NotAction` and `NotResource` require the JSON tab.
 
+**Validate** runs the same read-only policy compiler used by IAM mutation APIs. The status and deterministic permission summary cover effect, service/actions, resources, and conditions; wildcard warnings are called out before creation. Editing either mode invalidates the previous result.
+
 #### Why use it
 
 Visual mode lowers the barrier for simple allow lists; JSON mode supports complex conditions and multiple statements.
 
 #### How it works in StackSim
 
-Version `2012-10-17` documents with statement validation, wildcards, explicit-deny precedence, and supported condition operators.
+Version `2012-10-17` documents with shared statement/operator validation, wildcard warnings, explicit-deny precedence, and supported condition operators. Validation describes the submitted document and does not simulate a user or role's effective permissions.
 
 #### Example
 

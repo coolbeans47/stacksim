@@ -1055,7 +1055,7 @@ export class S3Service {
     const match = resource.match(/^arn:aws:s3:::([^/]+)(?:\/(.*))?$/); if (!match) return undefined;
     const located = this.findBucket(match[1]); if (!located) return undefined;
     let policy: AuthorizationResult = located.bucket.policyDocument
-      ? evaluateResourcePolicy(located.bucket.policyDocument, principal.principalArn, action, resource, context)
+      ? evaluateResourcePolicy(located.bucket.policyDocument, principal, action, resource, context)
       : { decision: "implicitDeny", reason: "The bucket has no resource policy", matchedStatements: [] };
     const block = this.effectiveBlock(located);
     if (block.restrictPublicBuckets && policyIsPublic(located.bucket.policyDocument) && principal.accountId !== located.accountId && policy.decision === "allowed") policy = { decision: "implicitDeny", reason: "RestrictPublicBuckets blocks public cross-account access", matchedStatements: policy.matchedStatements };
