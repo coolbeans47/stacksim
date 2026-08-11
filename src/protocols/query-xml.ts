@@ -1,9 +1,11 @@
 import type { ServerResponse } from "node:http";
 
-function scalar(value: string): string | boolean | Date {
+export interface AwsQueryParseOptions { readonly coerceTimestamps?: boolean }
+
+function scalar(value: string, options: AwsQueryParseOptions): string | boolean | Date {
   if (value === "true") return true;
   if (value === "false") return false;
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value)) return new Date(value);
+  if (options.coerceTimestamps !== false && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value)) return new Date(value);
   return value;
 }
 
@@ -37,10 +39,10 @@ function setPath(root: any, rawPath: string, value: unknown): void {
   } else target[final] = value;
 }
 
-export function parseAwsQuery(body: string | URLSearchParams): Record<string, unknown> {
+export function parseAwsQuery(body: string | URLSearchParams, options: AwsQueryParseOptions = {}): Record<string, unknown> {
   const params = typeof body === "string" ? new URLSearchParams(body) : body;
   const result: Record<string, unknown> = {};
-  for (const [key, value] of params) setPath(result, key, scalar(value));
+  for (const [key, value] of params) setPath(result, key, scalar(value, options));
   return result;
 }
 

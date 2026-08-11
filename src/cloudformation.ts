@@ -1069,7 +1069,7 @@ export class CloudFormationService {
   async handle(req: IncomingMessage, res: ServerResponse, url: URL, requestId: string, principal: PrincipalContext): Promise<void> {
     try {
       await this.start();
-      const input = parseAwsQuery(req.method === "GET" ? url.searchParams : (await readBody(req)).toString("utf8")) as any;
+      const input = parseAwsQuery(req.method === "GET" ? url.searchParams : (await readBody(req)).toString("utf8"), { coerceTimestamps: false }) as any;
       const action = String(input.Action ?? "");
       if (!SUPPORTED_ACTIONS.has(action) || typeof (this as any)[action] !== "function") throw new AwsError("InvalidAction", `Action ${action || "(missing)"} is not valid for this web service`, 400);
       if (input.Version !== undefined && input.Version !== "2010-05-15") throw new AwsError("InvalidAction", `Unsupported CloudFormation API version ${input.Version}`, 400);
@@ -1093,19 +1093,19 @@ export class CloudFormationService {
     }
   }
 
-  async ValidateTemplate(input: any): Promise<any> {
-    const parsed = await this.template(input);
+  async ValidateTemplate(input: any, principal: PrincipalContext): Promise<any> {
+    const parsed = await this.template(input, principal);
     const declared = parsed.value.Parameters && typeof parsed.value.Parameters === "object" ? Object.entries(parsed.value.Parameters).map(([ParameterKey, definition]: [string, any]) => ({ ParameterKey, DefaultValue: definition?.Default !== undefined ? String(definition.Default) : undefined, NoEcho: Boolean(definition?.NoEcho), Description: definition?.Description })) : [];
     const capabilities = this.requiredCapabilities(parsed.value);
     return { Parameters: declared, Description: parsed.value.Description, Capabilities: capabilities, CapabilitiesReason: capabilities.length ? "The template contains IAM resources" : undefined, DeclaredTransforms: [] };
   }
 
-  async GetTemplateSummary(input: any): Promise<any> {
+  async GetTemplateSummary(input: any, principal: PrincipalContext): Promise<any> {
     let parsed: ParsedTemplate;
     if (input.StackName !== undefined) {
       if (input.TemplateBody !== undefined || input.TemplateURL !== undefined) throw new AwsError("ValidationError", "StackName cannot be combined with TemplateBody or TemplateURL", 400);
       parsed = await this.templateFromBody(await this.localTemplate(String(input.StackName)));
-    } else parsed = await this.template(input);
+    } else parsed = await this.template(input, principal);
     const capabilities = this.requiredCapabilities(parsed.value);
     return {
       Parameters: Object.entries(parsed.value.Parameters ?? {}).sort(([left], [right]) => left.localeCompare(right)).map(([ParameterKey, definition]) => ({ ParameterKey, DefaultValue: definition.Default === undefined ? undefined : String(definition.Default), ParameterType: definition.Type, NoEcho: Boolean(definition.NoEcho), Description: definition.Description, ParameterConstraints: definition.AllowedValues ? { AllowedValues: definition.AllowedValues.map(String) } : undefined })),
@@ -1123,7 +1123,9 @@ export class CloudFormationService {
   async CreateStack(input: any, principal: PrincipalContext, reviewStack?: CloudFormationStackState, prepared?: PreparedTemplateArtifact, hierarchy?: NestedStackHierarchyInput): Promise<any> {
     const stackName = String(input.StackName ?? "");
     if (!STACK_NAME.test(stackName)) throw new AwsError("ValidationError", "StackName must start with a letter and contain only letters, numbers, and hyphens", 400);
-    const parsed = await this.template(input, prepared?.templateBodyMaximumBytes);
+    const operationId = randomUUID();
+    const executionPrincipal = await this.operationPrincipal(input.RoleARN, operationId, principal);
+    const parsed = await this.template(input, executionPrincipal, prepared?.templateBodyMaximumBytes);
     if (prepared?.templateSource) await this.validatePinnedTemplateSource(prepared.templateSource, prepared.originalBody);
     const clientRequestToken = input.ClientRequestToken === undefined ? undefined : String(input.ClientRequestToken);
     if (clientRequestToken && (clientRequestToken.length < 1 || clientRequestToken.length > 128)) throw new AwsError("ValidationError", "ClientRequestToken must contain 1-128 characters", 400);
@@ -1144,11 +1146,10 @@ export class CloudFormationService {
     }
     const existingId = this.state.stackNames[stackName];
     if (existingId && this.state.stacks[existingId]?.stackStatus !== "DELETE_COMPLETE" && (!reviewStack || reviewStack.stackId !== existingId || reviewStack.stackStatus !== "REVIEW_IN_PROGRESS")) throw new AwsError("AlreadyExistsException", `Stack [${stackName}] already exists`, 400);
-    const now = this.clock.now(); const stackId = reviewStack?.stackId ?? hierarchy?.stackId ?? `arn:aws:cloudformation:${this.region}:${this.store.accountId}:stack/${stackName}/${randomUUID()}`; const operationId = randomUUID(); const templateArtifactId = this.artifactId(stackId);
+    const now = this.clock.now(); const stackId = reviewStack?.stackId ?? hierarchy?.stackId ?? `arn:aws:cloudformation:${this.region}:${this.store.accountId}:stack/${stackName}/${randomUUID()}`; const templateArtifactId = this.artifactId(stackId);
     const notificationArns = this.normalizedNotificationArns(input.NotificationARNs);
     const suppliedCapabilities = list<string>(input.Capabilities).map(String);
     const desiredTags = tags(input.Tags);
-    const executionPrincipal = await this.operationPrincipal(input.RoleARN, operationId, principal);
     let resolvedParameters: ResolvedParameters; let conditions: Record<string, boolean>; let processed: CloudFormationTemplate; let graph: ReturnType<typeof buildResourceDependencyGraph>; let importNames: string[];
     try {
       const suppliedParameters = parameters(input.Parameters);
@@ -1186,7 +1187,9 @@ export class CloudFormationService {
   async UpdateStack(input: any, principal: PrincipalContext, prepared?: PreparedTemplateArtifact, nestedSource?: NestedStackModel, owningParentOperationId?: string): Promise<any> {
     const stack = this.stack(String(input.StackName ?? "")); if (!owningParentOperationId) this.assertNoActiveAncestor(stack); if (!new Set(["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"]).has(stack.stackStatus)) throw new AwsError("ValidationError", `Stack ${stack.stackName} is in ${stack.stackStatus} and cannot be updated`, 400); if (stack.activeOperation?.status === "PENDING" || stack.activeOperation?.status === "RUNNING") throw new AwsError("ValidationError", `Stack ${stack.stackName} is currently being modified`, 400);
     if (input.UsePreviousTemplate === true && (input.TemplateBody !== undefined || input.TemplateURL !== undefined)) throw new AwsError("ValidationError", "UsePreviousTemplate cannot be combined with TemplateBody or TemplateURL", 400);
-    const parsed = input.UsePreviousTemplate === true ? await this.templateFromBody(await this.localTemplate(stack.stackId)) : await this.template(input, prepared?.templateBodyMaximumBytes);
+    const operationId = randomUUID();
+    const desiredRoleArn = input.RoleARN ?? stack.roleArn; const executionPrincipal = await this.operationPrincipal(desiredRoleArn, operationId, principal);
+    const parsed = input.UsePreviousTemplate === true ? await this.templateFromBody(await this.localTemplate(stack.stackId)) : await this.template(input, executionPrincipal, prepared?.templateBodyMaximumBytes);
     if (prepared?.templateSource) await this.validatePinnedTemplateSource(prepared.templateSource, prepared.originalBody);
     const clientRequestToken = input.ClientRequestToken === undefined ? undefined : String(input.ClientRequestToken); if (clientRequestToken && (clientRequestToken.length < 1 || clientRequestToken.length > 128)) throw new AwsError("ValidationError", "ClientRequestToken must contain 1-128 characters", 400);
     const disableRollback = input.DisableRollback === true;
@@ -1194,9 +1197,8 @@ export class CloudFormationService {
     const rollbackConfiguration = this.normalizedRollbackConfiguration(input.RollbackConfiguration, stack.rollbackConfiguration);
     const requestTemplateDigest = prepared?.originalDigest ?? parsed.digest;
     const inputDigest = createHash("sha256").update(canonical({ action: "UpdateStack", stackId: stack.stackId, template: requestTemplateDigest, parameters: input.Parameters, tags: input.Tags, capabilities: input.Capabilities, roleArn: input.RoleARN, notificationArns: input.NotificationARNs, disableRollback, retainExceptOnCreate, rollbackConfiguration })).digest("hex"); if (clientRequestToken) { const prior = this.state.clientTokens[clientRequestToken]; if (prior) { if (prior.operation !== "UpdateStack" || prior.inputDigest !== inputDigest) throw new AwsError("TokenAlreadyExistsException", `A different request already uses client token ${clientRequestToken}`, 400); return { StackId: stack.stackId, OperationId: prior.operationId }; } }
-    const operationId = randomUUID(); const desiredTemplateArtifactId = `${this.artifactId(stack.stackId)}-${operationId}`; const previousValues = Object.fromEntries(stack.parameters.filter(parameter => parameter.parameterValue !== undefined).map(parameter => [parameter.parameterKey, parameter.parameterValue!])); const suppliedParameterInputs = parameters(input.Parameters); const suppliedNames = new Set(suppliedParameterInputs.map(parameter => parameter.parameterKey)); for (const name of Object.keys(parsed.value.Parameters ?? {})) if (!suppliedNames.has(name) && previousValues[name] !== undefined) suppliedParameterInputs.push({ parameterKey: name, usePreviousValue: true });
+    const desiredTemplateArtifactId = `${this.artifactId(stack.stackId)}-${operationId}`; const previousValues = Object.fromEntries(stack.parameters.filter(parameter => parameter.parameterValue !== undefined).map(parameter => [parameter.parameterKey, parameter.parameterValue!])); const suppliedParameterInputs = parameters(input.Parameters); const suppliedNames = new Set(suppliedParameterInputs.map(parameter => parameter.parameterKey)); for (const name of Object.keys(parsed.value.Parameters ?? {})) if (!suppliedNames.has(name) && previousValues[name] !== undefined) suppliedParameterInputs.push({ parameterKey: name, usePreviousValue: true });
     const notificationArns = input.NotificationARNs === undefined ? [...stack.notificationArns] : this.normalizedNotificationArns(input.NotificationARNs); const suppliedCapabilities = input.Capabilities === undefined ? [...stack.capabilities] : list<string>(input.Capabilities).map(String); const desiredTags = input.Tags === undefined ? structuredClone(stack.tags) : tags(input.Tags);
-    const desiredRoleArn = input.RoleARN ?? stack.roleArn; const executionPrincipal = await this.operationPrincipal(desiredRoleArn, operationId, principal);
     let resolvedParameters: ResolvedParameters; let conditions: Record<string, boolean>; let processed: CloudFormationTemplate; let graph: ReturnType<typeof buildResourceDependencyGraph>; let importNames: string[];
     try { await this.authorizeTypedSsmParameters(parsed.value, suppliedParameterInputs, executionPrincipal, previousValues); resolvedParameters = resolveTemplateParameters(parsed.value.Parameters, suppliedParameterInputs, { previous: previousValues, resolveSsmParameter: (name, type) => this.resolveBootstrapSsmParameter(name, type) }); const pseudos = { ...cloudFormationPseudoParameters(this.store.accountId, this.region, stack.stackId, stack.stackName), "AWS::NotificationARNs": notificationArns }; const availableExports = this.exportValues(); conditions = evaluateTemplateConditions(parsed.value, resolvedParameters.values, pseudos, availableExports); validateTemplateRules(parsed.value, resolvedParameters.values, pseudos, conditions, availableExports); processed = conditionallyProcessedTemplate(parsed.value, conditions); const openingEvaluation = { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, resourceRefs: {}, resourceAttributes: {}, imports: availableExports }; processed = await this.pinStaticFileAssets(processed, openingEvaluation, desiredTemplateArtifactId, executionPrincipal, false, stack.resources, prepared?.assetManifest); await this.pinNestedTemplateAssets(processed, openingEvaluation, desiredTemplateArtifactId, executionPrincipal, prepared?.nestedTemplateManifest, { stackId: stack.stackId, stackName: stack.stackName, logicalPath: stack.parentLogicalId, capabilities: suppliedCapabilities, tags: desiredTags, previousResources: stack.resources }); this.assertCapabilities(processed, suppliedCapabilities); importNames = this.plannedImportNames(processed, resolvedParameters.values, pseudos, conditions, stack.stackId); graph = buildResourceDependencyGraph(processed); this.validateOpeningResources(processed, stack.stackId, operationId, executionPrincipal); this.validateProviderReferences(processed); this.preflightProviderModels(processed, { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: availableExports }, stack.stackId, operationId, executionPrincipal, desiredTags, stack.resources); } catch (error) { throw this.validationError(error); }
     const processedBody = JSON.stringify(processed); const processedDigest = createHash("sha256").update(processedBody).digest("hex"); const sameParameters = canonical(resolvedParameters.entries.map(entry => [entry.parameterKey, entry.parameterValue, entry.resolvedValue])) === canonical(stack.parameters.map(entry => [entry.parameterKey, entry.parameterValue, entry.resolvedValue])); if (processedDigest === stack.processedTemplateDigest && sameParameters && canonical(desiredTags) === canonical(stack.tags) && canonical(suppliedCapabilities) === canonical(stack.capabilities) && canonical(notificationArns) === canonical(stack.notificationArns) && canonical(rollbackConfiguration) === canonical(stack.rollbackConfiguration ?? { rollbackTriggers: [] }) && (input.RoleARN ?? stack.roleArn) === stack.roleArn) throw new AwsError("ValidationError", "No updates are to be performed.", 400);
@@ -1551,7 +1553,7 @@ export class CloudFormationService {
     const now = this.clock.now(); stack.stackStatus = "DELETE_IN_PROGRESS"; stack.activeOperation = { operationId, kind: "DELETE", status: "PENDING", acceptedAt: now, clientRequestToken: token, orderedLogicalIds, completedLogicalIds: alreadyDeleted, rollbackLogicalIds: [], retainLogicalIds, forceDelete: deletionMode === "FORCE_DELETE_STACK", ...(owningParentOperationId ? { owningParentOperationId } : {}) }; if (token) this.state.clientTokens[token] = { operation: "DeleteStack", stackId: stack.stackId, operationId, inputDigest, createdAt: now }; this.event(stack, stack.stackName, "AWS::CloudFormation::Stack", "DELETE_IN_PROGRESS", undefined, stack.stackId, token); await this.checkpoint(stack, "accepted"); await this.store.save(); this.schedule(stack.stackId); return {};
   }
 
-  private async template(input: any, admittedTemplateBodyMaximumBytes?: number): Promise<ParsedTemplate> {
+  private async template(input: any, principal: PrincipalContext, admittedTemplateBodyMaximumBytes?: number): Promise<ParsedTemplate> {
     if (input.TemplateBody !== undefined && input.TemplateURL !== undefined) throw new AwsError("ValidationError", "Specify exactly one of TemplateBody or TemplateURL", 400);
     if (input.TemplateBody === undefined && input.TemplateURL === undefined) throw new AwsError("ValidationError", "TemplateBody or TemplateURL is required", 400);
     let body: string;
@@ -1561,6 +1563,7 @@ export class CloudFormationService {
       let owner: string | undefined;
       try { owner = this.s3.bucketOwnerAccountIdInternal(requested.bucket); } catch { /* readLocalS3Template returns the public validation error below. */ }
       if (owner && owner !== this.store.accountId) throw new AwsError("ValidationError", `TemplateURL bucket ${requested.bucket} is owned by account ${owner}, not stack account ${this.store.accountId}`, 400);
+      if (this.authorizeProviderTargets) await this.authorizeProviderTargets(principal, [{ action: requested.versionId ? "s3:GetObjectVersion" : "s3:GetObject", resource: `arn:aws:s3:::${requested.bucket}/${requested.key}` }]);
       const loaded = await readLocalS3Template(this.s3, input.TemplateURL, this.region);
       if (loaded.object.ownerAccountId !== this.store.accountId) throw new AwsError("ValidationError", `TemplateURL bucket ${loaded.location.bucket} is owned by account ${loaded.object.ownerAccountId}, not stack account ${this.store.accountId}`, 400);
       body = loaded.body;
@@ -1721,7 +1724,11 @@ export class CloudFormationService {
     const nodes: Array<RecursiveAdmissionNode | undefined> = [];
     const uniqueTemplates = new Map<string, number>();
     const activeTemplates = new Set<string>();
-    let totalResources = Object.keys(template.Resources).length;
+    const rootResources = Object.keys(template.Resources).length;
+    if (rootResources > 500) throw new AwsError("LimitExceededException", `Root template declares ${rootResources} resources; a template may declare at most 500`, 400);
+    const rootOutputs = Object.keys(template.Outputs ?? {}).length;
+    if (rootOutputs > 200) throw new AwsError("LimitExceededException", `Root template declares ${rootOutputs} outputs; a template may declare at most 200`, 400);
+    let totalResources = rootResources;
     let totalTemplates = 1;
 
     const addTemplateLimits = (candidate: CloudFormationTemplate, digest: string, size: number, logicalPath: string): void => {
@@ -1858,7 +1865,7 @@ export class CloudFormationService {
           logicalPath,
           childStackId,
           childStackName: childName,
-          outputs: Object.keys(parsed.value.Outputs ?? {}).sort(),
+          outputs: Object.keys(childProcessed.Outputs ?? {}).sort(),
           nestedTemplateManifest: childManifest,
         };
         assets.push(asset);
@@ -2051,6 +2058,15 @@ export class CloudFormationService {
         if (body && typeof body === "object" && !Array.isArray(body)) addReference(body.Bucket, body.Key, body.Version);
       }
     };
+    const addNestedTemplateReferences = (manifest: NestedTemplateManifest): boolean => {
+      if (![1, 2].includes(manifest.schemaVersion) || !Array.isArray(manifest.assets)) return false;
+      for (const asset of manifest.assets) {
+        if (!asset || typeof asset !== "object") return false;
+        addReference(asset.bucket, asset.key, asset.versionId);
+        if (asset.nestedTemplateManifest && !addNestedTemplateReferences(asset.nestedTemplateManifest)) return false;
+      }
+      return true;
+    };
 
     for (const stack of Object.values(this.state.stacks)) {
       const operationIsRecoverable = stack.activeOperation && (
@@ -2085,6 +2101,13 @@ export class CloudFormationService {
       const manifest = await this.journal.readJsonArtifact<CloudFormationAssetManifest>("assets", `${artifactId}.json`);
       if (manifest !== undefined && (manifest.schemaVersion !== 1 || !Array.isArray(manifest.references))) return;
       for (const reference of manifest?.references ?? []) addReference(reference.bucket, reference.key, reference.versionId);
+      const templateSource = await this.journal.readJsonArtifact<TemplateSourceArtifact>("plans", `${artifactId}.template-source.json`);
+      if (templateSource !== undefined) {
+        if (!templateSource || typeof templateSource !== "object") return;
+        addReference(templateSource.bucket, templateSource.key, templateSource.versionId);
+      }
+      const nestedTemplates = await this.journal.readJsonArtifact<NestedTemplateManifest>("plans", `${artifactId}.nested-templates.json`);
+      if (nestedTemplates !== undefined && !addNestedTemplateReferences(nestedTemplates)) return;
     }
     for (const artifactName of await this.journal.listArtifacts("assets")) {
       if (![...activeOperationIds].some(operationId => artifactName.startsWith(`${operationId}.`))) continue;
@@ -2359,7 +2382,9 @@ export class CloudFormationService {
       if (this.changeSetBaselineDigest(stack) !== planning.baselineDigest) throw new Error(`Stack ${value.stackName} changed before change set planning could be recovered`);
       if (input.UsePreviousTemplate === true && (input.TemplateBody !== undefined || input.TemplateURL !== undefined)) throw new AwsError("ValidationError", "UsePreviousTemplate cannot be combined with TemplateBody or TemplateURL", 400);
       if (value.changeSetType === "CREATE" && input.UsePreviousTemplate === true) throw new AwsError("ValidationError", "CREATE change sets cannot use a previous template", 400);
-      const parsed = input.UsePreviousTemplate === true ? await this.templateFromBody(await this.localTemplate(stack.stackId)) : await this.template(input);
+      const desiredRoleArn = input.RoleARN ?? stack.roleArn;
+      const executionPrincipal = await this.operationPrincipal(desiredRoleArn, planning.planningOperationId, planning.principal);
+      const parsed = input.UsePreviousTemplate === true ? await this.templateFromBody(await this.localTemplate(stack.stackId)) : await this.template(input, executionPrincipal);
       const suppliedParameterInputs = parameters(input.Parameters);
       const previousValues = Object.fromEntries(stack.parameters.filter(parameter => parameter.parameterValue !== undefined).map(parameter => [parameter.parameterKey, parameter.parameterValue!]));
       if (value.changeSetType === "UPDATE") {
@@ -2370,8 +2395,6 @@ export class CloudFormationService {
       const rollbackConfiguration = this.normalizedRollbackConfiguration(input.RollbackConfiguration, value.changeSetType === "UPDATE" ? stack.rollbackConfiguration : undefined);
       const capabilities = input.Capabilities === undefined ? [...stack.capabilities] : list<string>(input.Capabilities).map(String);
       const desiredTags = input.Tags === undefined ? structuredClone(stack.tags) : tags(input.Tags);
-      const desiredRoleArn = input.RoleARN ?? stack.roleArn;
-      const executionPrincipal = await this.operationPrincipal(desiredRoleArn, planning.planningOperationId, planning.principal);
       await this.authorizeTypedSsmParameters(parsed.value, suppliedParameterInputs, executionPrincipal, value.changeSetType === "UPDATE" ? previousValues : {});
       const resolvedParameters = resolveTemplateParameters(parsed.value.Parameters, suppliedParameterInputs, { previous: value.changeSetType === "UPDATE" ? previousValues : undefined, resolveSsmParameter: (name, type) => this.resolveBootstrapSsmParameter(name, type) });
       const pseudos = { ...cloudFormationPseudoParameters(this.store.accountId, this.region, stack.stackId, stack.stackName), "AWS::NotificationARNs": notificationArns };

@@ -385,6 +385,7 @@ export function createLambdaVersionProvider(lambda: LambdaService): ProductionRe
         const provisioned = await readProvisioned(invoke, context, parsed.functionName, parsed.version);
         return success({
           FunctionName: parsed.functionName,
+          ...(output.CodeSha256 !== undefined ? { CodeSha256: String(output.CodeSha256) } : {}),
           Description: output.Description,
           ...(provisioned ? { ProvisionedConcurrencyConfig: { ProvisionedConcurrentExecutions: Number(provisioned.RequestedProvisionedConcurrentExecutions) } } : {}),
         }, physicalId, parsed.version);

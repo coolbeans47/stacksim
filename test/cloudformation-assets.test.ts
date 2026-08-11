@@ -243,6 +243,37 @@ test("bootstrap asset reclamation keeps available change-set assets and removes 
   }
 });
 
+test("bootstrap asset reclamation retains live top-level and nested TemplateURL versions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-template-source-reclamation-")); const priorRetention = process.env.STACKSIM_CDK_ASSET_RETENTION_MS; process.env.STACKSIM_CDK_ASSET_RETENTION_MS = "1000"; const clock = new TestClock(30_000); const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, cdkBootstrap: true, clock, authMode: "off" });
+  const clients: Array<{ destroy(): void }> = [];
+  try {
+    await simulator.start(); const endpoint = `http://127.0.0.1:${simulator.port}`; const options = { endpoint, region: "eu-west-1", credentials, maxAttempts: 1 };
+    const s3 = new S3Client({ ...options, forcePathStyle: true }); const cloudformation = new CloudFormationClient(options); clients.push(s3, cloudformation);
+    const bucket = cdkBootstrapNames("000000000000", "eu-west-1").bucketName;
+    const staleRoot = await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "templates/root.json", Body: JSON.stringify({ Resources: {} }) }));
+    clock.advance(1);
+    const child = await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "templates/child.json", Body: JSON.stringify({ Resources: { Metadata: { Type: "AWS::CDK::Metadata" } } }) }));
+    const liveRoot = await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "templates/root.json", Body: JSON.stringify({ Resources: { Child: { Type: "AWS::CloudFormation::Stack", Properties: { TemplateURL: `https://${bucket}.s3.eu-west-1.amazonaws.com/templates/child.json` } } } }) }));
+    assert.ok(staleRoot.VersionId); assert.ok(child.VersionId); assert.ok(liveRoot.VersionId);
+
+    await cloudformation.send(new CreateStackCommand({ StackName: "template-source-assets", TemplateURL: `https://${bucket}.s3.eu-west-1.amazonaws.com/templates/root.json` }));
+    await waitForStatusWithClock(cloudformation, "template-source-assets", "CREATE_COMPLETE", clock);
+    clock.advance(2_000); await (simulator.cloudformation as any).reclaimUnreferencedBootstrapAssets();
+    await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: "templates/root.json", VersionId: liveRoot.VersionId }));
+    await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: "templates/child.json", VersionId: child.VersionId }));
+    await assert.rejects(s3.send(new HeadObjectCommand({ Bucket: bucket, Key: "templates/root.json", VersionId: staleRoot.VersionId })), (error: any) => error.name === "NoSuchKey" || error.name === "NotFound");
+
+    await cloudformation.send(new UpdateStackCommand({ StackName: "template-source-assets", TemplateBody: JSON.stringify({ Resources: { Metadata: { Type: "AWS::CDK::Metadata" } } }) }));
+    await waitForStatusWithClock(cloudformation, "template-source-assets", "UPDATE_COMPLETE", clock);
+    clock.advance(2_000); await (simulator.cloudformation as any).reclaimUnreferencedBootstrapAssets();
+    await assert.rejects(s3.send(new HeadObjectCommand({ Bucket: bucket, Key: "templates/root.json", VersionId: liveRoot.VersionId })), (error: any) => error.name === "NoSuchKey" || error.name === "NotFound");
+    await assert.rejects(s3.send(new HeadObjectCommand({ Bucket: bucket, Key: "templates/child.json", VersionId: child.VersionId })), (error: any) => error.name === "NoSuchKey" || error.name === "NotFound");
+  } finally {
+    if (priorRetention === undefined) delete process.env.STACKSIM_CDK_ASSET_RETENTION_MS; else process.env.STACKSIM_CDK_ASSET_RETENTION_MS = priorRetention;
+    clients.forEach(client => client.destroy()); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("asset reclamation follows successful updates and preserves versions shared by another stack", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-asset-shared-reachability-")); const priorRetention = process.env.STACKSIM_CDK_ASSET_RETENTION_MS; process.env.STACKSIM_CDK_ASSET_RETENTION_MS = "1000"; const clock = new TestClock(10_000); const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, cdkBootstrap: true, clock, authMode: "off"});
   const clients: Array<{ destroy(): void }> = [];

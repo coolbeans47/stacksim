@@ -3,7 +3,6 @@ import type { PrincipalContext } from "./sigv4.js";
 import { partiqlAuthorizationTarget } from "./partiql.js";
 import { parseAwsQuery } from "../protocols/query-xml.js";
 import { readBody } from "../util.js";
-import { parseLocalS3ObjectUrl } from "../cloudformation/assets.js";
 import { ssmParameterArn } from "../ssm.js";
 import { secretsManagerArn } from "../secrets-manager.js";
 import { resolveSesV2Operation } from "../ses/protocol-v2.js";
@@ -61,7 +60,7 @@ function putEventContext(entry: any): Record<string, unknown> {
 export async function authorizationTarget(req: IncomingMessage, url: URL, service: string, region: string, accountId: string, principal: PrincipalContext, now: number, iam?: IamState): Promise<AuthorizationTarget> {
   let input: any = {};
   const additionalTargets: Array<{ action: string; resource: string; operation: string; context?: Record<string, unknown> }> = [];
-  if (service !== "s3") { const body = await readBody(req); if (body.length) { if (String(req.headers["content-type"] ?? "").includes("application/x-www-form-urlencoded")) input = parseAwsQuery(body.toString("utf8")); else { try { input = JSON.parse(body.toString("utf8")); } catch {} } } }
+  if (service !== "s3") { const body = await readBody(req); if (body.length) { if (String(req.headers["content-type"] ?? "").includes("application/x-www-form-urlencoded")) input = parseAwsQuery(body.toString("utf8"), { coerceTimestamps: service !== "cloudformation" }); else { try { input = JSON.parse(body.toString("utf8")); } catch {} } } }
   const target = String(req.headers["x-amz-target"] ?? "").split(".").pop(); let operation = target ?? String(input.Action ?? req.method ?? "Unknown"); let action = `${service}:${operation}`; let resource = "*"; let operationContext: Record<string, unknown> = {};
   if (service === "states") {
     action = `states:${operation}`;
@@ -397,17 +396,13 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
     operationContext["ses:ApiVersion"] = v2Operation ? "2019-09-27" : "2010-12-01";
   } else if (service === "apigateway") { action = `apigateway:${req.method}`; resource = `arn:aws:apigateway:${region}::${url.pathname}`; operation = `${req.method} ${url.pathname}`; }
   else if (service === "cloudformation") {
-    if (url.searchParams.size) input = { ...parseAwsQuery(url.searchParams), ...input };
+    if (url.searchParams.size) input = { ...parseAwsQuery(url.searchParams, { coerceTimestamps: false }), ...input };
     operation = String(input.Action ?? operation); action = `cloudformation:${operation}`;
     const stackName = input.StackName ?? input.StackId;
     if (typeof stackName === "string" && stackName.startsWith("arn:aws:cloudformation:")) resource = stackName;
     else if (stackName) resource = `arn:aws:cloudformation:${region}:${accountId}:stack/${stackName}/*`;
     const roleArn = input.RoleARN ?? input.RoleArn;
     if (typeof roleArn === "string" && roleArn) additionalTargets.push({ action: "iam:PassRole", resource: roleArn, operation: "PassRole", context: { "iam:PassedToService": "cloudformation.amazonaws.com" } });
-    if (typeof input.TemplateURL === "string") {
-      const location = parseLocalS3ObjectUrl(input.TemplateURL, region);
-      additionalTargets.push({ action: `s3:${location.versionId ? "GetObjectVersion" : "GetObject"}`, resource: `arn:aws:s3:::${location.bucket}/${location.key}`, operation: location.versionId ? "GetObjectVersion" : "GetObject" });
-    }
     const requestTags = Array.isArray(input.Tags) ? input.Tags : [];
     if (requestTags.length) operationContext["aws:TagKeys"] = requestTags.map((tag: any) => tag?.Key).filter(Boolean);
     for (const tag of requestTags) if (tag?.Key) operationContext[`aws:RequestTag/${tag.Key}`] = tag.Value;

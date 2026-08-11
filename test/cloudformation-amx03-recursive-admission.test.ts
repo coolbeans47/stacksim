@@ -333,6 +333,33 @@ test("AMX-03 reports new nested properties, helpers, transforms, dynamic referen
     const outputFailure = await status(cloudformation, outputCreated.StackId!, "ROLLBACK_COMPLETE");
     assert.match(outputFailure.StackStatusReason ?? "", /Child: \$\.Outputs\.Broken\.Value references missing authoritative child output Missing.*CFN-16/);
     assert.deepEqual(simulator.store.regionState(region).cloudformation.stacks[outputCreated.StackId!].resources, {});
+
+    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "conditional-output-false.json", Body: JSON.stringify({
+      Conditions: { ExposeOutput: { "Fn::Equals": ["no", "yes"] } },
+      Resources: { Metadata: { Type: "AWS::CDK::Metadata" } },
+      Outputs: { Conditional: { Condition: "ExposeOutput", Value: "hidden" } },
+    }) }));
+    const falseOutputParent = JSON.stringify({
+      Resources: { Child: { Type: "AWS::CloudFormation::Stack", Properties: { TemplateURL: `https://${bucket}.s3.${region}.amazonaws.com/conditional-output-false.json` } } },
+      Outputs: { Result: { Value: { "Fn::GetAtt": ["Child", "Outputs.Conditional"] } } },
+    });
+    const falseOutputCreated = await cloudformation.send(new CreateStackCommand({ StackName: "amx03-conditional-output-false", TemplateBody: falseOutputParent }));
+    const falseOutputFailure = await status(cloudformation, falseOutputCreated.StackId!, "ROLLBACK_COMPLETE");
+    assert.match(falseOutputFailure.StackStatusReason ?? "", /Child: \$\.Outputs\.Result\.Value references missing authoritative child output Conditional.*CFN-16/);
+    assert.deepEqual(simulator.store.regionState(region).cloudformation.stacks[falseOutputCreated.StackId!].resources, {});
+
+    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "conditional-output-true.json", Body: JSON.stringify({
+      Conditions: { ExposeOutput: { "Fn::Equals": ["yes", "yes"] } },
+      Resources: { Metadata: { Type: "AWS::CDK::Metadata" } },
+      Outputs: { Conditional: { Condition: "ExposeOutput", Value: "visible" } },
+    }) }));
+    const trueOutputParent = JSON.stringify({
+      Resources: { Child: { Type: "AWS::CloudFormation::Stack", Properties: { TemplateURL: `https://${bucket}.s3.${region}.amazonaws.com/conditional-output-true.json` } } },
+      Outputs: { Result: { Value: { "Fn::GetAtt": ["Child", "Outputs.Conditional"] } } },
+    });
+    const trueOutputCreated = await cloudformation.send(new CreateStackCommand({ StackName: "amx03-conditional-output-true", TemplateBody: trueOutputParent }));
+    const trueOutput = await status(cloudformation, trueOutputCreated.StackId!, "CREATE_COMPLETE");
+    assert.equal(trueOutput.Outputs?.find((output: { OutputKey?: string; OutputValue?: string }) => output.OutputKey === "Result")?.OutputValue, "visible");
   } finally {
     clients.forEach(client => client.destroy());
     await simulator.stop().catch(() => undefined);
