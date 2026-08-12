@@ -511,6 +511,21 @@ ORDER BY b.bill_number;`);
       await expect(grid.getByRole("cell", { name: "MV Meridian", exact: true })).toBeVisible();
       await expect(grid.getByRole("cell", { name: "REVIEW", exact: true })).toBeVisible();
       await expect(grid.getByRole("row")).toHaveCount(3);
+      await expect(grid.getByRole("columnheader", { name: /tanker_name varchar/i })).toBeVisible();
+      await expect(grid.getByRole("columnheader", { name: /quantity_barrels int/i })).toBeVisible();
+      expect(await results.evaluate(element => {
+        const workspace = element.closest(".rds-query-workspace");
+        if (!workspace) return false;
+        return Math.abs(element.getBoundingClientRect().width - workspace.getBoundingClientRect().width) < 1;
+      })).toBe(true);
+      const columnWidths = await grid.locator("col").evaluateAll(columns => columns.map(column => Number.parseFloat((column as HTMLElement).style.width)));
+      expect(columnWidths[0]).toBeGreaterThan(columnWidths[3]);
+      const rowColors = async () => grid.locator("tbody tr").evaluateAll(rows => rows.map(row => getComputedStyle(row).backgroundColor));
+      expect(new Set(await rowColors()).size).toBe(2);
+
+      await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
+      expect(new Set(await rowColors()).size).toBe(2);
+      expect(await editor.evaluate(element => getComputedStyle(element).backgroundColor)).toBe("rgb(17, 25, 35)");
 
       await page.setViewportSize({ width: 390, height: 844 });
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
