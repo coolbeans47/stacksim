@@ -340,6 +340,54 @@ test.describe("Step Functions SFN-01 through SFN-03 console", () => {
     } finally { sfn.destroy(); }
   });
 
+  test("reconstructs an existing JSON workflow for lossless visual editing", async ({ page }) => {
+    test.setTimeout(60_000);
+    const errors = browserErrors(page);
+    const fixture = await rolesAndFunction();
+    const sfn = new SFNClient(sdkOptions());
+    try {
+      const original = {
+        Comment: "Created through the SDK",
+        TimeoutSeconds: 300,
+        StartAt: "Prepare",
+        States: {
+          Prepare: { Type: "Pass", Result: { source: "sdk" }, ResultPath: "$.prepared", Next: "Delay" },
+          Delay: { Type: "Wait", SecondsPath: "$.delaySeconds", Next: "Finish" },
+          Finish: { Type: "Succeed", Comment: "Keep this state" },
+        },
+      };
+      const machine = await sfn.send(new CreateStateMachineCommand({ name: "imported-workflow", roleArn: fixture.workflowRoleArn, definition: JSON.stringify(original) }));
+
+      await page.goto(`${consoleUrl}#/step-functions/state-machines/${encodeURIComponent(machine.stateMachineArn!)}/edit`);
+      await expect(page.getByRole("tab", { name: "Visual" })).toHaveAttribute("aria-selected", "true");
+      await expect(page.getByRole("button", { name: "Edit Prepare state" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Edit Delay state" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Edit Finish state" })).toBeVisible();
+
+      await page.getByRole("button", { name: "Edit Prepare state" }).click();
+      await page.getByLabel("State name", { exact: true }).fill("PrepareInput");
+      await page.getByLabel("State name", { exact: true }).blur();
+      await page.getByRole("button", { name: "Edit Delay state" }).click();
+      await expect(page.getByLabel("Wait timing")).toHaveValue("SecondsPath · $.delaySeconds");
+      await page.getByLabel("Comment", { exact: true }).fill("Delay supplied by input");
+      await page.getByLabel("Comment", { exact: true }).blur();
+      await page.getByRole("button", { name: "Save changes" }).click();
+      await expect(page.getByText(/existing execution snapshots are unchanged/i)).toBeVisible();
+
+      const described = await sfn.send(new DescribeStateMachineCommand({ stateMachineArn: machine.stateMachineArn! }));
+      expect(JSON.parse(described.definition!)).toEqual({
+        ...original,
+        StartAt: "PrepareInput",
+        States: {
+          PrepareInput: original.States.Prepare,
+          Delay: { ...original.States.Delay, Comment: "Delay supplied by input" },
+          Finish: original.States.Finish,
+        },
+      });
+      expect(errors).toEqual([]);
+    } finally { sfn.destroy(); }
+  });
+
   test("lists and creates Activities without exposing task tokens at 390 pixels", async ({ page }) => {
     const errors = browserErrors(page); const sfn = new SFNClient(sdkOptions());
     try {
