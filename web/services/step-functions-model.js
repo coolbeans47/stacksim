@@ -75,6 +75,41 @@ export function eventDetails(event) {
   return entry ? { key: entry[0], value: entry[1] } : { key: null, value: {} };
 }
 
+const sensitiveKey = /(?:authorization|credential|password|private.?key|response.?url|secret|session.?key|token|access.?key)/i;
+const executionArn = /^arn:[^:]+:states:[^:]+:\d{12}:execution:[^:]+:.+$/;
+
+function redactSensitiveText(value) {
+  return String(value)
+    .replace(/\bBearer\s+[^\s,;"']+/gi, "Bearer <redacted>")
+    .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "<redacted access key>")
+    .replace(/__stacksim_task_token_ref_[A-Za-z0-9_-]+__/g, "<redacted task token>");
+}
+
+export function redactSensitiveValue(value, key = "") {
+  if (sensitiveKey.test(key)) return "<redacted>";
+  if (Array.isArray(value)) return value.map(item => redactSensitiveValue(item));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redactSensitiveValue(item, name)]));
+  if (typeof value !== "string") return value;
+  const text = redactSensitiveText(value);
+  if (!/^[\[{]/.test(text.trim())) return text;
+  try { return JSON.stringify(redactSensitiveValue(JSON.parse(text))); } catch { return text; }
+}
+
+function childExecutionReferences(history) {
+  const references = [];
+  const inspect = (value, item, key = "") => {
+    if (typeof value === "string") {
+      if ((key === "ExecutionArn" || key === "executionArn") && executionArn.test(value)) references.push({ executionArn: value, eventId: item.event.id, stateName: item.stateName });
+      else if (/^[\[{]/.test(value.trim())) { try { inspect(JSON.parse(value), item); } catch { /* Non-JSON output is valid. */ } }
+      return;
+    }
+    if (Array.isArray(value)) { for (const child of value) inspect(child, item); return; }
+    if (value && typeof value === "object") for (const [name, child] of Object.entries(value)) inspect(child, item, name);
+  };
+  for (const item of history.events) inspect(item.details.output, item, "output");
+  return references.filter((item, index) => references.findIndex(candidate => candidate.executionArn === item.executionArn) === index);
+}
+
 function linkedStateName(event, byId) {
   let candidate = event;
   const visited = new Set();
@@ -113,8 +148,13 @@ export function historyPresentation(events, status) {
 export function executionPresentation(definition, events, status) {
   const scopes = definitionScopes(definition);
   const history = historyPresentation(events, status);
-  const retries = history.events.filter(item => item.event.type === "TaskFailed").map((item, index) => ({ ...item, retryNumber: index + 1, error: item.details.error, cause: item.details.cause }));
-  const failures = history.events.filter(item => item.details.error || /(?:Failed|TimedOut|Aborted)$/.test(item.event.type)).map(item => ({ ...item, error: item.details.error, cause: item.details.cause }));
+  if (history.active) {
+    const activeState = scopes.flatMap(scope => scope.states).find(item => item.name === history.active.stateName)?.state;
+    const callbackScheduled = history.events.some(item => item.stateName === history.active.stateName && /^(?:Task|LambdaFunction)Scheduled$/.test(item.event.type) && typeof item.details.resource === "string" && item.details.resource.endsWith(".waitForTaskToken"));
+    history.active.waitingForCallback = activeState?.Type === "Task" && typeof activeState.Resource === "string" && activeState.Resource.endsWith(".waitForTaskToken") && callbackScheduled;
+  }
+  const retries = history.events.filter(item => /^(?:Task|LambdaFunction|Activity)Failed$/.test(item.event.type)).map((item, index) => ({ ...item, retryNumber: index + 1, error: item.details.error, cause: redactSensitiveValue(item.details.cause) }));
+  const failures = history.events.filter(item => item.details.error || /(?:Failed|TimedOut|Aborted)$/.test(item.event.type)).map(item => ({ ...item, error: item.details.error, cause: redactSensitiveValue(item.details.cause) }));
   const iterations = new Map();
   for (const item of history.events) {
     const match = item.event.type.match(/^MapIteration(Started|Succeeded|Failed|Aborted)$/);
@@ -125,7 +165,7 @@ export function executionPresentation(definition, events, status) {
     prior.eventIds.push(item.event.id);
     iterations.set(index, prior);
   }
-  return { scopes, history, retries, failures, iterations: [...iterations.values()].sort((left, right) => left.index - right.index) };
+  return { scopes, history, retries, failures, childExecutions: childExecutionReferences(history), iterations: [...iterations.values()].sort((left, right) => left.index - right.index) };
 }
 
 export function payloadField(details, name) {
