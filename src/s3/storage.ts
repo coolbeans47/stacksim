@@ -99,6 +99,11 @@ export interface S3BucketIndex {
   schemaVersion: 1;
   objects: Record<string, S3ObjectVersionState[]>;
   multipartUploads: Record<string, S3MultipartUploadState>;
+  /**
+   * Immutable generations retained for admitted cross-service reads. The
+   * opaque key is owned by S3; consumers never receive blob identifiers.
+   */
+  transferPins?: Record<string, { key: string; sourceArn: string; object: S3ObjectVersionState }>;
   notificationDeliveries?: Record<string, {
     id: string;
     destinationType: "lambda" | "queue" | "eventbridge";
@@ -217,7 +222,7 @@ export class S3Storage {
     const reachable = new Set<string>();
     for (const file of await this.filesBelow(this.bucketsRoot)) {
       if (!file.endsWith(".json")) continue;
-      try { const index = JSON.parse(await readFile(file, "utf8")) as S3BucketIndex; for (const versions of Object.values(index.objects ?? {})) for (const version of versions) if (version.blobId) reachable.add(version.blobId); for (const upload of Object.values(index.multipartUploads ?? {})) for (const part of Object.values(upload.parts ?? {})) if (part.blobId) reachable.add(part.blobId); } catch { /* A corrupt index must fail when its bucket is accessed; GC stays conservative here. */ return; }
+      try { const index = JSON.parse(await readFile(file, "utf8")) as S3BucketIndex; for (const versions of Object.values(index.objects ?? {})) for (const version of versions) if (version.blobId) reachable.add(version.blobId); for (const upload of Object.values(index.multipartUploads ?? {})) for (const part of Object.values(upload.parts ?? {})) if (part.blobId) reachable.add(part.blobId); for (const pin of Object.values(index.transferPins ?? {})) if (pin.object.blobId) reachable.add(pin.object.blobId); } catch { /* A corrupt index must fail when its bucket is accessed; GC stays conservative here. */ return; }
     }
     for (const file of await this.filesBelow(this.blobsRoot)) {
       // Blob IDs are split across one directory level. Normalize both path

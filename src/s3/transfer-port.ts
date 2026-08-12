@@ -1,5 +1,3 @@
-import type { AuthorizationResult } from "../iam/evaluator.js";
-
 /** DynamoDB's fixed S3 service principal for import/export. */
 export const DYNAMODB_S3_SERVICE_PRINCIPAL = "dynamodb.amazonaws.com" as const;
 
@@ -19,6 +17,8 @@ export interface S3TransferCaller {
 export interface S3PinnedObject {
   bucket: string;
   key: string;
+  /** Opaque S3-owned generation handle. */
+  generation: string;
   versionId: string;
   etag: string;
   size: number;
@@ -45,11 +45,9 @@ export interface S3AdmittedBucket {
  */
 export interface S3TransferPort {
   admitBucket(bucket: string, caller: S3TransferCaller): Promise<S3AdmittedBucket>;
-  authorize(caller: S3TransferCaller, action: string, resource: string): Promise<AuthorizationResult>;
-  requireAuthorized(caller: S3TransferCaller, action: string, resource: string): Promise<void>;
   pinCurrentObject(bucket: string, key: string, caller: S3TransferCaller): Promise<S3PinnedObject>;
   listAndPinPrefix(bucket: string, prefix: string, caller: S3TransferCaller): Promise<S3PinnedObject[]>;
-  readPinned(pin: S3PinnedObject, caller: S3TransferCaller, maximumBytes?: number): Promise<Buffer>;
-  writeObject(bucket: string, key: string, body: Uint8Array, caller: S3TransferCaller, options?: S3TransferWriteOptions): Promise<S3PinnedObject>;
-  currentObjectExists(bucket: string, key: string): Promise<boolean>;
+  readPinned(pin: S3PinnedObject, caller: S3TransferCaller, maximumBytes?: number): AsyncIterable<Uint8Array>;
+  writeObject(bucket: string, key: string, body: AsyncIterable<Uint8Array>, caller: S3TransferCaller, options?: S3TransferWriteOptions): Promise<S3PinnedObject>;
+  releasePins(pins: S3PinnedObject[], caller: S3TransferCaller): Promise<void>;
 }

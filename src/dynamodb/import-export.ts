@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
+import { createWriteStream } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { createGunzip, gunzipSync } from "node:zlib";
+import { createInterface } from "node:readline";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { AwsError } from "../errors.js";
 import type { S3TransferPort, S3TransferCaller, S3PinnedObject } from "../s3/transfer-port.js";
 import { DYNAMODB_S3_SERVICE_PRINCIPAL } from "../s3/transfer-port.js";
@@ -64,20 +68,11 @@ export function exportKeyPrefix(prefix: string | undefined, exportId: string): s
   return [String(prefix ?? "").replace(/^\/+|\/+$/g, ""), "AWSDynamoDB", exportId].filter(Boolean).join("/");
 }
 
-export function encodeExportPayload(items: Record<string, Item>): { compressed: Buffer; itemCount: number; billedSizeBytes: number } {
-  const ordered = Object.entries(items).sort(([left], [right]) => left.localeCompare(right));
-  const lines = ordered.map(([, item]) => JSON.stringify({ Item: item })).join("\n") + (ordered.length ? "\n" : "");
-  return {
-    compressed: gzipSync(Buffer.from(lines)),
-    itemCount: ordered.length,
-    billedSizeBytes: Buffer.byteLength(JSON.stringify(items)),
-  };
-}
-
 export function pinState(pin: S3PinnedObject, completed = false): DynamoPinnedS3ObjectState {
   return {
     bucket: pin.bucket,
     key: pin.key,
+    generation: pin.generation,
     versionId: pin.versionId,
     etag: pin.etag,
     size: pin.size,
@@ -150,19 +145,20 @@ export async function writeLocalExportArtifacts(input: {
   startTime: number;
   s3Bucket: string;
   s3Prefix: string;
-  compressed: Buffer;
+  compressed: AsyncIterable<Uint8Array>;
+  md5Base64: string;
   itemCount: number;
   billedSizeBytes: number;
 }): Promise<void> {
   const directory = resolve(input.root, input.keyPrefix);
   const dataPath = resolve(input.root, input.dataKey);
   await mkdir(dirname(dataPath), { recursive: true, mode: 0o700 });
-  await writeFile(dataPath, input.compressed, { mode: 0o600 });
+  await pipeline(Readable.from(input.compressed), createWriteStream(dataPath, { mode: 0o600 }));
   const manifestFilesKey = `${input.keyPrefix}/manifest-files.json`;
   const manifestFiles = `${JSON.stringify({
     itemCount: input.itemCount,
-    md5Checksum: createHash("md5").update(input.compressed).digest("base64"),
-    etag: createHash("md5").update(input.compressed).digest("hex"),
+    md5Checksum: input.md5Base64,
+    etag: Buffer.from(input.md5Base64, "base64").toString("hex"),
     dataFileS3Key: input.dataKey,
   })}\n`;
   const summary = JSON.stringify({
@@ -192,12 +188,13 @@ export async function writeS3ExportDataObject(input: {
   port: S3TransferPort;
   caller: S3TransferCaller;
   job: DynamoExportState;
-  compressed: Buffer;
+  compressed: AsyncIterable<Uint8Array>;
 }): Promise<S3PinnedObject> {
   if (input.job.dataObject?.completed) {
     return {
       bucket: input.job.dataObject.bucket,
       key: input.job.dataObject.key,
+      generation: input.job.dataObject.generation,
       versionId: input.job.dataObject.versionId,
       etag: input.job.dataObject.etag,
       size: input.job.dataObject.size,
@@ -215,24 +212,23 @@ export async function writeS3ExportManifests(input: {
   port: S3TransferPort;
   caller: S3TransferCaller;
   job: DynamoExportState;
-  compressed: Buffer;
   data: S3PinnedObject;
 }): Promise<string> {
   const keyPrefix = input.job.keyPrefix!;
   const manifestFilesKey = `${keyPrefix}/manifest-files.json`;
   const manifestFiles = `${JSON.stringify({
     itemCount: input.job.itemCount,
-    md5Checksum: createHash("md5").update(input.compressed).digest("base64"),
+    md5Checksum: input.job.snapshotMd5,
     etag: input.data.etag,
     dataFileS3Key: input.job.dataKey!,
   })}\n`;
-  await input.port.writeObject(input.job.s3Bucket, manifestFilesKey, Buffer.from(manifestFiles), input.caller, {
+  await input.port.writeObject(input.job.s3Bucket, manifestFilesKey, oneChunk(manifestFiles), input.caller, {
     contentType: "application/json",
-    failIfExists: false,
+    failIfExists: true,
   });
-  await input.port.writeObject(input.job.s3Bucket, `${keyPrefix}/manifest-files.checksum`, Buffer.from(createHash("md5").update(manifestFiles).digest("hex")), input.caller, {
+  await input.port.writeObject(input.job.s3Bucket, `${keyPrefix}/manifest-files.checksum`, oneChunk(createHash("md5").update(manifestFiles).digest("hex")), input.caller, {
     contentType: "text/plain",
-    failIfExists: false,
+    failIfExists: true,
   });
   const summary = JSON.stringify({
     version: "2020-06-30",
@@ -251,27 +247,15 @@ export async function writeS3ExportManifests(input: {
     itemCount: input.job.itemCount,
     outputFormat: "DYNAMODB_JSON",
   }, null, 2);
-  await input.port.writeObject(input.job.s3Bucket, `${keyPrefix}/manifest-summary.json`, Buffer.from(summary), input.caller, {
+  await input.port.writeObject(input.job.s3Bucket, `${keyPrefix}/manifest-summary.json`, oneChunk(summary), input.caller, {
     contentType: "application/json",
-    failIfExists: false,
+    failIfExists: true,
   });
-  await input.port.writeObject(input.job.s3Bucket, `${keyPrefix}/manifest-summary.checksum`, Buffer.from(createHash("md5").update(summary).digest("hex")), input.caller, {
+  await input.port.writeObject(input.job.s3Bucket, `${keyPrefix}/manifest-summary.checksum`, oneChunk(createHash("md5").update(summary).digest("hex")), input.caller, {
     contentType: "text/plain",
-    failIfExists: false,
+    failIfExists: true,
   });
   return manifestFilesKey;
-}
-
-/** @deprecated Prefer writeS3ExportDataObject + writeS3ExportManifests for checkpoint boundaries. */
-export async function writeS3ExportArtifacts(input: {
-  port: S3TransferPort;
-  caller: S3TransferCaller;
-  job: DynamoExportState;
-  compressed: Buffer;
-}): Promise<{ data: S3PinnedObject; manifestFilesKey: string }> {
-  const data = await writeS3ExportDataObject(input);
-  const manifestFilesKey = await writeS3ExportManifests({ ...input, data });
-  return { data, manifestFilesKey };
 }
 
 export function validateImportedItems(table: TableState, imported: Item[], validateIndexes: (table: TableState, item: Item) => void): Record<string, Item> {
@@ -290,27 +274,70 @@ export function selectImportDataPins(pins: DynamoPinnedS3ObjectState[]): DynamoP
     .sort((left, right) => left.key.localeCompare(right.key));
 }
 
-export async function readPinnedImportItems(
-  port: S3TransferPort,
-  caller: S3TransferCaller,
-  pins: DynamoPinnedS3ObjectState[],
-  compression: "NONE" | "GZIP",
-): Promise<{ items: Item[]; processedSizeBytes: number }> {
-  const dataPins = selectImportDataPins(pins);
-  if (!dataPins.length) throw new AwsError("ValidationException", "No DynamoDB JSON data files were found under the import prefix");
-  const items: Item[] = [];
-  let processedSizeBytes = 0;
-  for (const pin of dataPins) {
-    const body = await port.readPinned({
-      bucket: pin.bucket,
-      key: pin.key,
-      versionId: pin.versionId,
-      etag: pin.etag,
-      size: pin.size,
-      storageClass: pin.storageClass,
-    }, caller);
-    processedSizeBytes += body.length;
-    items.push(...decodeImportLines(body, compression, `s3://${pin.bucket}/${pin.key}`));
+function oneChunk(value: string | Uint8Array): AsyncIterable<Uint8Array> {
+  const chunk = typeof value === "string" ? Buffer.from(value) : value;
+  return (async function* () { yield chunk; })();
+}
+
+function transferPin(pin: DynamoPinnedS3ObjectState): S3PinnedObject {
+  return { bucket: pin.bucket, key: pin.key, generation: pin.generation, versionId: pin.versionId, etag: pin.etag, size: pin.size, storageClass: pin.storageClass };
+}
+
+async function collectPinned(port: S3TransferPort, caller: S3TransferCaller, pin: DynamoPinnedS3ObjectState, maximumBytes = 1024 * 1024): Promise<Buffer> {
+  const chunks: Buffer[] = []; let size = 0;
+  for await (const chunk of port.readPinned(transferPin(pin), caller, maximumBytes)) { size += chunk.byteLength; chunks.push(Buffer.from(chunk)); }
+  return Buffer.concat(chunks, size);
+}
+
+/** Validate AWS export manifests when present and return only their admitted data objects. */
+export async function admitImportManifest(port: S3TransferPort, caller: S3TransferCaller, pins: DynamoPinnedS3ObjectState[]): Promise<DynamoPinnedS3ObjectState[]> {
+  const summary = pins.find(pin => pin.key.endsWith("/manifest-summary.json"));
+  const files = pins.find(pin => pin.key.endsWith("/manifest-files.json"));
+  if (!summary && !files) return selectImportDataPins(pins);
+  const summaryChecksum = pins.find(pin => pin.key === summary?.key.replace(/\.json$/, ".checksum"));
+  const filesChecksum = pins.find(pin => pin.key === files?.key.replace(/\.json$/, ".checksum"));
+  if (!summary || !files || !summaryChecksum || !filesChecksum) throw new AwsError("ValidationException", "The DynamoDB export manifest set is incomplete");
+  const [summaryBody, filesBody, summaryDigest, filesDigest] = await Promise.all([
+    collectPinned(port, caller, summary), collectPinned(port, caller, files), collectPinned(port, caller, summaryChecksum, 1024), collectPinned(port, caller, filesChecksum, 1024),
+  ]);
+  if (createHash("md5").update(summaryBody).digest("hex") !== summaryDigest.toString("utf8").trim().toLowerCase()) throw new AwsError("ValidationException", "The DynamoDB export summary checksum does not match");
+  if (createHash("md5").update(filesBody).digest("hex") !== filesDigest.toString("utf8").trim().toLowerCase()) throw new AwsError("ValidationException", "The DynamoDB export files checksum does not match");
+  let parsedSummary: any;
+  try { parsedSummary = JSON.parse(summaryBody.toString("utf8")); } catch { throw new AwsError("ValidationException", "The DynamoDB export summary manifest is invalid JSON"); }
+  if (parsedSummary.outputFormat !== "DYNAMODB_JSON" || parsedSummary.manifestFilesS3Key !== files.key) throw new AwsError("ValidationException", "The DynamoDB export summary manifest is inconsistent");
+  const admitted: DynamoPinnedS3ObjectState[] = [];
+  for (const [lineNumber, line] of filesBody.toString("utf8").split(/\r?\n/).entries()) {
+    if (!line.trim()) continue;
+    let entry: any;
+    try { entry = JSON.parse(line); } catch { throw new AwsError("ValidationException", `The DynamoDB files manifest is invalid at line ${lineNumber + 1}`); }
+    const pin = pins.find(candidate => candidate.key === entry.dataFileS3Key);
+    if (!pin || typeof entry.md5Checksum !== "string" || typeof entry.itemCount !== "number") throw new AwsError("ValidationException", `The DynamoDB files manifest entry ${lineNumber + 1} is incomplete`);
+    if (entry.etag !== pin.etag) throw new AwsError("ValidationException", `The DynamoDB data object ETag does not match its manifest: ${pin.key}`);
+    admitted.push({ ...pin, checksumMd5: entry.md5Checksum, manifestItemCount: entry.itemCount });
   }
-  return { items, processedSizeBytes };
+  if (!admitted.length) throw new AwsError("ValidationException", "The DynamoDB files manifest contains no data objects");
+  return admitted.sort((left, right) => left.key.localeCompare(right.key));
+}
+
+export async function* streamPinnedImportItems(port: S3TransferPort, caller: S3TransferCaller, pin: DynamoPinnedS3ObjectState, compression: "NONE" | "GZIP"): AsyncGenerator<Item> {
+  const digest = createHash("md5");
+  const source = (async function* () { for await (const chunk of port.readPinned(transferPin(pin), caller)) { digest.update(chunk); yield chunk; } })();
+  const input = Readable.from(source);
+  const decoded = compression === "GZIP" ? input.pipe(createGunzip()) : input;
+  const lines = createInterface({ input: decoded, crlfDelay: Infinity });
+  let lineNumber = 0;
+  try {
+    for await (const line of lines) {
+      lineNumber++;
+      if (!line.trim()) continue;
+      let value: any;
+      try { value = JSON.parse(line); } catch { throw new AwsError("ValidationException", `Invalid DynamoDB JSON at s3://${pin.bucket}/${pin.key}:${lineNumber}`); }
+      if (!value?.Item || typeof value.Item !== "object" || Array.isArray(value.Item)) throw new AwsError("ValidationException", `DynamoDB JSON lines must contain an Item object (s3://${pin.bucket}/${pin.key}:${lineNumber})`);
+      yield value.Item;
+    }
+  } catch (error) {
+    if (error instanceof AwsError) throw error;
+    throw new AwsError("ValidationException", `Unable to decompress import data file s3://${pin.bucket}/${pin.key}`);
+  }
+  if (pin.checksumMd5 && digest.digest("base64") !== pin.checksumMd5) throw new AwsError("ValidationException", `The DynamoDB data object checksum does not match its manifest: ${pin.key}`);
 }

@@ -36,7 +36,6 @@ export function migrateV85ToV86(input: SimState): SimState {
           job.endTime ??= Date.now();
           job.failureCode ??= "MigrationInterrupted";
           job.failureMessage ??= "An in-progress import from a previous schema could not be resumed safely";
-          job.retainedPartialTable = true;
         }
       }
     }

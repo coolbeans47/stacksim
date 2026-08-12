@@ -717,7 +717,7 @@ export class S3Service {
     if (located.bucket.managedBy) throw new AwsError("AccessDenied", "Simulator-managed bootstrap buckets cannot be deleted through the application bucket lifecycle", 403);
     await this.namespaceLocked(name, async () => this.locked(located, async () => {
       const index = await this.bucketIndex(located);
-      if (Object.keys(index.objects).length || Object.keys(index.multipartUploads).length) throw new AwsError("BucketNotEmpty", "The bucket you tried to delete is not empty", 409);
+      if (Object.keys(index.objects).length || Object.keys(index.multipartUploads).length || Object.keys(index.transferPins ?? {}).length) throw new AwsError("BucketNotEmpty", "The bucket you tried to delete is not empty", 409);
       delete this.store.regionState(located.region, located.accountId).s3Buckets[name];
       delete this.store.state.installation.s3BucketNames[name];
       this.indexes.delete(this.cacheKey(located));
@@ -850,9 +850,13 @@ export class S3Service {
   }
 
   async putObjectBytesInternal(bucketName: string, key: string, body: Uint8Array, options: S3InternalPutObjectOptions = {}): Promise<{ object: S3InternalCurrentObject; changed: boolean }> {
+    const bytes = Buffer.from(body);
+    return this.putObjectIterableInternal(bucketName, key, (async function* () { yield bytes; })(), options);
+  }
+
+  private async putObjectIterableInternal(bucketName: string, key: string, body: AsyncIterable<Uint8Array>, options: S3InternalPutObjectOptions = {}): Promise<{ object: S3InternalCurrentObject; changed: boolean }> {
     await this.start();
     if (Buffer.byteLength(key) > 1_024) throw new AwsError("KeyTooLongError", "Your key is too long", 400);
-    if (body.byteLength > this.maximumObjectBytes) throw new AwsError("EntityTooLarge", "Your proposed upload exceeds the maximum allowed object size.", 400);
     const metadata: Record<string, string> = {};
     for (const suppliedName of Object.keys(options.metadata ?? {}).sort(utf8Compare)) {
       const name = suppliedName.toLowerCase();
@@ -873,20 +877,14 @@ export class S3Service {
       metadata,
       tags,
     };
-    const bytes = Buffer.from(body);
-    const sha256 = createHash("sha256").update(bytes).digest("hex");
     const located = this.requireBucket(bucketName);
     if (located.bucket.managedBy) throw new AwsError("AccessDenied", "The deployment helper cannot write application objects into the simulator-managed bootstrap bucket", 403);
-    return this.locked(located, async () => {
+    const staged = await this.storage.stageIterable(body, this.maximumObjectBytes);
+    try {
+      return await this.locked(located, async () => {
       const index = await this.bucketIndex(located);
       const current = currentObject(index, key);
-      if (options.failIfExists && current && !current.deleteMarker) {
-        throw new AwsError("PreconditionFailed", `Destination object s3://${bucketName}/${key} already exists`, 412);
-      }
-      if (options.enforceObjectLock && current && !current.deleteMarker) {
-        this.enforceDeletionLock({ headers: {} } as IncomingMessage, current);
-      }
-      if (current && !current.deleteMarker && current.blobId === sha256
+      if (current && !current.deleteMarker && current.blobId === staged.digest.sha256Hex
         && current.contentType === normalized.contentType
         && current.contentEncoding === normalized.contentEncoding
         && current.contentDisposition === normalized.contentDisposition
@@ -894,9 +892,12 @@ export class S3Service {
         && current.cacheControl === normalized.cacheControl
         && current.expires === normalized.expires
         && JSON.stringify(current.metadata) === JSON.stringify(metadata)
-        && JSON.stringify(current.tags ?? {}) === JSON.stringify(tags)) return { object: internalObjectView(bucketName, key, current), changed: false };
-      const staged = await this.storage.stageIterable((async function* () { yield bytes; })(), this.maximumObjectBytes);
-      try {
+        && JSON.stringify(current.tags ?? {}) === JSON.stringify(tags)) {
+        await this.storage.discardStaged(staged);
+        return { object: internalObjectView(bucketName, key, current), changed: false };
+      }
+      if (options.failIfExists && current && !current.deleteMarker) throw new AwsError("PreconditionFailed", `Destination object s3://${bucketName}/${key} already exists`, 412);
+      if (options.enforceObjectLock && current && !current.deleteMarker) this.enforceDeletionLock({ headers: {} } as IncomingMessage, current);
         await this.ensureCapacity(located, index, key, staged.size);
         const blobId = await this.storage.publish(staged);
         const checksumAlgorithm: S3ChecksumAlgorithm = "CRC64NVME";
@@ -921,11 +922,11 @@ export class S3Service {
         publishVersion(located.bucket, index, key, object);
         await this.saveBucket(located, index);
         return { object: internalObjectView(bucketName, key, object), changed: true };
-      } catch (error) {
-        await this.storage.discardStaged(staged);
-        throw error;
-      }
-    });
+      });
+    } catch (error) {
+      await this.storage.discardStaged(staged);
+      throw error;
+    }
   }
 
   /** Idempotent current-key deletion used by prune; a replay never adds a second marker. */
@@ -951,16 +952,11 @@ export class S3Service {
     const service = this;
     return {
       async admitBucket(bucket, caller) { return service.admitTransferBucket(bucket, caller); },
-      async authorize(caller, action, resource) { return service.authorizeTransfer(caller, action, resource); },
-      async requireAuthorized(caller, action, resource) {
-        const decision = await service.authorizeTransfer(caller, action, resource);
-        if (decision.decision !== "allowed") throw new AwsError("AccessDenied", `${caller.servicePrincipal} is not authorized to perform ${action} on ${resource}`, 403);
-      },
       async pinCurrentObject(bucket, key, caller) { return service.pinTransferObject(bucket, key, caller); },
       async listAndPinPrefix(bucket, prefix, caller) { return service.listAndPinTransferPrefix(bucket, prefix, caller); },
-      async readPinned(pin, caller, maximumBytes) { return service.readPinnedTransferObject(pin, caller, maximumBytes); },
+      readPinned(pin, caller, maximumBytes) { return service.readPinnedTransferObject(pin, caller, maximumBytes); },
       async writeObject(bucket, key, body, caller, options) { return service.writeTransferObject(bucket, key, body, caller, options); },
-      async currentObjectExists(bucket, key) { return service.transferObjectExists(bucket, key); },
+      async releasePins(pins, caller) { return service.releaseTransferPins(pins, caller); },
     };
   }
 
@@ -1014,7 +1010,11 @@ export class S3Service {
     return combineIdentityAndResourceAuthorization(undefined, policy, "service");
   }
 
-  private pinFromVersion(bucket: string, key: string, object: S3ObjectVersionState): S3PinnedObject {
+  private transferGeneration(caller: S3TransferCaller, bucket: string, key: string, object: S3ObjectVersionState): string {
+    return createHash("sha256").update(`${caller.sourceArn}\0${bucket}\0${key}\0${object.versionId}\0${object.etag}\0${object.blobId ?? ""}`).digest("hex");
+  }
+
+  private pinFromVersion(bucket: string, key: string, generation: string, object: S3ObjectVersionState): S3PinnedObject {
     if (!object.blobId || object.deleteMarker) throw new AwsError("NoSuchKey", "The specified key does not exist.", 404);
     if (object.sseCustomerKeyMd5) throw new AwsError("InvalidRequest", "SSE-C objects cannot be used for DynamoDB import/export", 400);
     this.refreshRestore(object);
@@ -1022,6 +1022,7 @@ export class S3Service {
     return {
       bucket,
       key,
+      generation,
       versionId: object.versionId,
       etag: object.etag,
       size: object.size,
@@ -1032,21 +1033,37 @@ export class S3Service {
   private async pinTransferObject(bucketName: string, key: string, caller: S3TransferCaller): Promise<S3PinnedObject> {
     const located = await this.locateTransferBucket(bucketName, caller);
     await this.requireAuthorizedTransfer(caller, "s3:GetObject", objectArn(bucketName, key));
-    const index = await this.bucketIndex(located);
-    const object = selectObject(index, key, undefined).version;
-    return this.pinFromVersion(bucketName, key, object);
+    return this.locked(located, async () => {
+      const index = await this.bucketIndex(located);
+      const object = selectObject(index, key, undefined).version;
+      const generation = this.transferGeneration(caller, bucketName, key, object);
+      (index.transferPins ??= {})[generation] = { key, sourceArn: caller.sourceArn, object: structuredClone(object) };
+      await this.saveBucket(located, index);
+      return this.pinFromVersion(bucketName, key, generation, object);
+    });
   }
 
   private async listAndPinTransferPrefix(bucketName: string, prefix: string, caller: S3TransferCaller): Promise<S3PinnedObject[]> {
     const located = await this.locateTransferBucket(bucketName, caller);
     await this.requireAuthorizedTransfer(caller, "s3:ListBucket", bucketArn(bucketName));
-    const index = await this.bucketIndex(located);
-    const pins: S3PinnedObject[] = [];
-    for (const entry of this.visibleObjects(index).filter(item => item.key.startsWith(prefix))) {
-      await this.requireAuthorizedTransfer(caller, "s3:GetObject", objectArn(bucketName, entry.key));
-      pins.push(this.pinFromVersion(bucketName, entry.key, entry.object));
-    }
-    return pins;
+    return this.locked(located, async () => {
+      const index = await this.bucketIndex(located);
+      // An ADMITTED import may stop after S3 pinned its candidates but before
+      // DynamoDB persisted the selected generations. A retry owns this exact
+      // SourceArn, so replace those unreachable admission pins before repinning.
+      for (const [generation, retained] of Object.entries(index.transferPins ?? {})) {
+        if (retained.sourceArn === caller.sourceArn) delete index.transferPins![generation];
+      }
+      const entries = this.visibleObjects(index).filter(item => item.key.startsWith(prefix));
+      for (const entry of entries) await this.requireAuthorizedTransfer(caller, "s3:GetObject", objectArn(bucketName, entry.key));
+      const pins = entries.map(entry => {
+        const generation = this.transferGeneration(caller, bucketName, entry.key, entry.object);
+        return { pin: this.pinFromVersion(bucketName, entry.key, generation, entry.object), generation, entry };
+      });
+      for (const { generation, entry } of pins) (index.transferPins ??= {})[generation] = { key: entry.key, sourceArn: caller.sourceArn, object: structuredClone(entry.object) };
+      await this.saveBucket(located, index);
+      return pins.map(item => item.pin);
+    });
   }
 
   private async requireAuthorizedTransfer(caller: S3TransferCaller, action: string, resource: string): Promise<void> {
@@ -1054,13 +1071,14 @@ export class S3Service {
     if (decision.decision !== "allowed") throw new AwsError("AccessDenied", `${caller.servicePrincipal} is not authorized to perform ${action} on ${resource}`, 403);
   }
 
-  private async readPinnedTransferObject(pin: S3PinnedObject, caller: S3TransferCaller, maximumBytes = this.maximumObjectBytes): Promise<Buffer> {
+  private async *readPinnedTransferObject(pin: S3PinnedObject, caller: S3TransferCaller, maximumBytes = this.maximumObjectBytes): AsyncGenerator<Buffer> {
     const located = await this.locateTransferBucket(pin.bucket, caller);
     await this.requireAuthorizedTransfer(caller, "s3:GetObject", objectArn(pin.bucket, pin.key));
     const index = await this.bucketIndex(located);
-    const selected = selectObject(index, pin.key, pin.versionId);
-    const object = selected.version;
-    if (object.etag !== pin.etag || object.size !== pin.size) {
+    const retained = index.transferPins?.[pin.generation];
+    if (!retained || retained.key !== pin.key || retained.sourceArn !== caller.sourceArn) throw new AwsError("NoSuchKey", "The admitted DynamoDB transfer generation is no longer retained", 404);
+    const object = retained.object;
+    if (object.versionId !== pin.versionId || object.etag !== pin.etag || object.size !== pin.size) {
       throw new AwsError("InvalidObjectState", "The pinned object generation no longer matches the admitted DynamoDB transfer pin", 409);
     }
     this.refreshRestore(object);
@@ -1068,21 +1086,24 @@ export class S3Service {
     if (object.sseCustomerKeyMd5) throw new AwsError("InvalidRequest", "SSE-C objects cannot be used for DynamoDB import/export", 400);
     if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) throw new RangeError("maximumBytes must be a non-negative safe integer");
     if (object.size > maximumBytes) throw new AwsError("EntityTooLarge", `Object ${pin.bucket}/${pin.key} exceeds the ${maximumBytes} byte transfer read limit`, 400);
-    const chunks: Buffer[] = [];
     let size = 0;
-    for await (const chunk of this.storage.readBlob(object.blobId!)) {
-      size += chunk.length;
-      if (size > maximumBytes || size > object.size) throw new AwsError("InvalidObjectState", `Object ${pin.bucket}/${pin.key} has invalid stored size metadata`, 500);
-      chunks.push(Buffer.from(chunk));
+    try {
+      for await (const chunk of this.storage.readBlob(object.blobId!)) {
+        size += chunk.length;
+        if (size > maximumBytes || size > object.size) throw new AwsError("InvalidObjectState", `Object ${pin.bucket}/${pin.key} has invalid stored size metadata`, 500);
+        yield chunk;
+      }
+    } catch (error) {
+      if (error instanceof AwsError) throw error;
+      throw new AwsError("InvalidObjectState", `Object ${pin.bucket}/${pin.key} failed its local at-rest integrity check`, 500);
     }
     if (size !== object.size) throw new AwsError("InvalidObjectState", `Object ${pin.bucket}/${pin.key} is incomplete in local storage`, 500);
-    return Buffer.concat(chunks, size);
   }
 
-  private async writeTransferObject(bucketName: string, key: string, body: Uint8Array, caller: S3TransferCaller, options: S3TransferWriteOptions = {}): Promise<S3PinnedObject> {
+  private async writeTransferObject(bucketName: string, key: string, body: AsyncIterable<Uint8Array>, caller: S3TransferCaller, options: S3TransferWriteOptions = {}): Promise<S3PinnedObject> {
     await this.locateTransferBucket(bucketName, caller);
     await this.requireAuthorizedTransfer(caller, "s3:PutObject", objectArn(bucketName, key));
-    const written = await this.putObjectBytesInternal(bucketName, key, body, {
+    const written = await this.putObjectIterableInternal(bucketName, key, body, {
       contentType: options.contentType,
       contentEncoding: options.contentEncoding,
       metadata: options.metadata,
@@ -1092,6 +1113,7 @@ export class S3Service {
     return {
       bucket: bucketName,
       key,
+      generation: createHash("sha256").update(`${caller.sourceArn}\0${bucketName}\0${key}\0${written.object.versionId}\0${written.object.etag}`).digest("hex"),
       versionId: written.object.versionId,
       etag: written.object.etag,
       size: written.object.size,
@@ -1099,13 +1121,21 @@ export class S3Service {
     };
   }
 
-  private async transferObjectExists(bucketName: string, key: string): Promise<boolean> {
-    await this.start();
-    const located = this.findBucket(bucketName);
-    if (!located || located.region !== this.region) return false;
-    const index = await this.bucketIndex(located);
-    const current = currentObject(index, key);
-    return Boolean(current && !current.deleteMarker);
+  private async releaseTransferPins(pins: S3PinnedObject[], caller: S3TransferCaller): Promise<void> {
+    for (const bucketName of [...new Set(pins.map(pin => pin.bucket))]) {
+      const located = await this.locateTransferBucket(bucketName, caller);
+      await this.locked(located, async () => {
+        const index = await this.bucketIndex(located);
+        let changed = false;
+        for (const pin of pins.filter(candidate => candidate.bucket === bucketName)) {
+          const retained = index.transferPins?.[pin.generation];
+          if (retained?.sourceArn !== caller.sourceArn) continue;
+          delete index.transferPins![pin.generation];
+          changed = true;
+        }
+        if (changed) await this.saveBucket(located, index);
+      });
+    }
   }
 
   async listObjectVersionsInternal(bucketName: string): Promise<S3InternalObjectVersion[]> {

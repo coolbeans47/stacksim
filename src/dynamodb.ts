@@ -1,9 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { readFile } from "node:fs/promises";
 import { AwsError, sendAwsError } from "./errors.js";
 import type { StateStore } from "./state.js";
 import type { Clock } from "./core/clock.js";
@@ -23,7 +20,7 @@ import { DynamoStreamPersistence } from "./dynamodb/streams.js";
 import { DynamoGlobalTablePersistence } from "./dynamodb/global-tables.js";
 import {
   decodeImportLines,
-  encodeExportPayload,
+  admitImportManifest,
   exportKeyPrefix,
   isFileBucket,
   listLocalImportFiles,
@@ -31,13 +28,14 @@ import {
   localObjectPath,
   mapTransferFailure,
   pinState,
-  readPinnedImportItems,
+  streamPinnedImportItems,
   transferCaller,
   validateImportedItems,
   writeLocalExportArtifacts,
   writeS3ExportDataObject,
   writeS3ExportManifests,
 } from "./dynamodb/import-export.js";
+import { DynamoTransferStore } from "./dynamodb/transfer-store.js";
 import type { S3TransferPort } from "./s3/transfer-port.js";
 import { combineIdentityAndResourceAuthorization, evaluateResourcePolicy } from "./iam/evaluator.js";
 import type { PrincipalContext } from "./auth/sigv4.js";
@@ -447,6 +445,7 @@ export class DynamoDbService {
   private readonly streamPersistence: DynamoStreamPersistence;
   private readonly globalTablePersistence: DynamoGlobalTablePersistence;
   private readonly integrationAttemptStore: DynamoIntegrationAttemptStore;
+  private readonly transferStore: DynamoTransferStore;
   private readonly streamRetentionMs: number;
   private readonly resourcePolicyMutationCooldownMs: number;
   private streamReady: Promise<void> = Promise.resolve();
@@ -454,7 +453,7 @@ export class DynamoDbService {
   private readonly transitionSaves = new Set<Promise<void>>();
   private started = false;
   private s3TransferPort?: S3TransferPort;
-  constructor(private readonly store: StateStore, private readonly region: string, private readonly clock: Clock = new SystemClock(), private readonly telemetry?: TelemetryBus, private readonly scheduler?: Scheduler, ttlSchedule: Partial<DynamoTtlSchedule> = {}, private readonly enforceCapacity = false, streamRetentionMs = DEFAULT_STREAM_RETENTION_MS, resourcePolicyMutationCooldownMs = DEFAULT_RESOURCE_POLICY_MUTATION_COOLDOWN_MS, private readonly allowLocalFiles = false) { this.ttlSchedule = { ...DEFAULT_TTL_SCHEDULE, ...ttlSchedule }; if (Object.values(this.ttlSchedule).some(value => !Number.isFinite(value) || value <= 0)) throw new Error("Invalid DynamoDB TTL schedule"); if (!Number.isFinite(streamRetentionMs) || streamRetentionMs <= 0) throw new Error("Invalid DynamoDB stream retention"); if (!Number.isFinite(resourcePolicyMutationCooldownMs) || resourcePolicyMutationCooldownMs < 0) throw new Error("Invalid DynamoDB resource-policy mutation cooldown"); this.streamRetentionMs = streamRetentionMs; this.resourcePolicyMutationCooldownMs = resourcePolicyMutationCooldownMs; this.partiqlTokens = new PaginationTokens(this.store.state.installation.paginationSecret); this.backupPersistence = new DynamoBackupPersistence(this.store.root, this.store.accountId, this.region); this.streamPersistence = new DynamoStreamPersistence(this.store.root, this.store.accountId, this.region); this.globalTablePersistence = new DynamoGlobalTablePersistence(this.store.root, this.store.accountId); this.integrationAttemptStore = new DynamoIntegrationAttemptStore(this.store.root, this.store.accountId, this.region); }
+  constructor(private readonly store: StateStore, private readonly region: string, private readonly clock: Clock = new SystemClock(), private readonly telemetry?: TelemetryBus, private readonly scheduler?: Scheduler, ttlSchedule: Partial<DynamoTtlSchedule> = {}, private readonly enforceCapacity = false, streamRetentionMs = DEFAULT_STREAM_RETENTION_MS, resourcePolicyMutationCooldownMs = DEFAULT_RESOURCE_POLICY_MUTATION_COOLDOWN_MS, private readonly allowLocalFiles = false) { this.ttlSchedule = { ...DEFAULT_TTL_SCHEDULE, ...ttlSchedule }; if (Object.values(this.ttlSchedule).some(value => !Number.isFinite(value) || value <= 0)) throw new Error("Invalid DynamoDB TTL schedule"); if (!Number.isFinite(streamRetentionMs) || streamRetentionMs <= 0) throw new Error("Invalid DynamoDB stream retention"); if (!Number.isFinite(resourcePolicyMutationCooldownMs) || resourcePolicyMutationCooldownMs < 0) throw new Error("Invalid DynamoDB resource-policy mutation cooldown"); this.streamRetentionMs = streamRetentionMs; this.resourcePolicyMutationCooldownMs = resourcePolicyMutationCooldownMs; this.partiqlTokens = new PaginationTokens(this.store.state.installation.paginationSecret); this.backupPersistence = new DynamoBackupPersistence(this.store.root, this.store.accountId, this.region); this.streamPersistence = new DynamoStreamPersistence(this.store.root, this.store.accountId, this.region); this.globalTablePersistence = new DynamoGlobalTablePersistence(this.store.root, this.store.accountId); this.integrationAttemptStore = new DynamoIntegrationAttemptStore(this.store.root, this.store.accountId, this.region); this.transferStore = new DynamoTransferStore(this.store.root, this.store.accountId, this.region); }
 
   setS3TransferPort(port: S3TransferPort): void { this.s3TransferPort = port; }
 
@@ -496,6 +495,13 @@ export class DynamoDbService {
     this.partiqlTokens = new PaginationTokens(this.store.state.installation.paginationSecret);
     const ready = this.importLegacyStreamRecords(); this.streamReady = ready; this.transitionSaves.add(ready); void ready.finally(() => this.transitionSaves.delete(ready)).catch(() => undefined);
     for (const backup of Object.values(this.backups)) if (backup.backupStatus === "CREATING") this.scheduleTransition(() => { const current = this.backups[backup.backupArn]; if (current) current.backupStatus = "AVAILABLE"; });
+    let transferCleanupChanged = false;
+    for (const job of Object.values(this.exports)) if (job.exportStatus !== "IN_PROGRESS" && job.snapshotId) { await this.transferStore.deleteExportSnapshot(job.snapshotId); delete job.snapshotId; transferCleanupChanged = true; }
+    for (const job of Object.values(this.imports)) if (job.importStatus !== "IN_PROGRESS" && job.pinnedObjects?.length && this.s3TransferPort) {
+      await this.s3TransferPort.releasePins(job.pinnedObjects.map(pin => this.importPin(pin)), this.importTransferCaller(job)).catch(() => undefined);
+      delete job.pinnedObjects; transferCleanupChanged = true;
+    }
+    if (transferCleanupChanged) await this.store.save();
     for (const job of Object.values(this.exports)) if (job.exportStatus === "IN_PROGRESS") this.scheduleTransferWork(() => this.advanceExport(job.exportArn));
     for (const job of Object.values(this.imports)) if (job.importStatus === "IN_PROGRESS") this.scheduleTransferWork(() => this.advanceImport(job.importArn));
     for (const table of Object.values(this.tables)) for (const insight of Object.values(table.contributorInsights)) if (insight.status === "ENABLING" || insight.status === "DISABLING") this.scheduleTransition(() => { insight.status = insight.status === "ENABLING" ? "ENABLED" : "DISABLED"; insight.lastUpdatedAt = this.clock.now(); });
@@ -745,6 +751,10 @@ export class DynamoDbService {
   }
 
   async CreateTable(input: any): Promise<any> {
+    return this.createTableInternal(input, true);
+  }
+
+  private async createTableInternal(input: any, scheduleActivation: boolean): Promise<any> {
     if (!input.TableName || !Array.isArray(input.KeySchema) || !Array.isArray(input.AttributeDefinitions)) throw new AwsError("ValidationException", "TableName, KeySchema and AttributeDefinitions are required");
     if (!/^[A-Za-z0-9_.-]{3,255}$/.test(input.TableName)) throw new AwsError("ValidationException", "TableName must be between 3 and 255 characters and contain only letters, numbers, underscores, hyphens, and periods");
     const hashes = input.KeySchema.filter((key: any) => key.KeyType === "HASH"); const ranges = input.KeySchema.filter((key: any) => key.KeyType === "RANGE");
@@ -778,7 +788,7 @@ export class DynamoDbService {
     this.tables[table.name] = table;
     if (resourcePolicy) { this.resourcePolicies[table.arn] = { resourceArn: table.arn, policy: resourcePolicy.normalized, revisionId: id(32), updatedAt: now }; this.resourcePolicyMutationTimes[table.arn] = now; }
     await this.store.save();
-    this.scheduleTableActivation(table);
+    if (scheduleActivation) this.scheduleTableActivation(table);
     return { TableDescription: tableDescription(table, this.store) };
   }
 
@@ -1073,7 +1083,21 @@ export class DynamoDbService {
     job.endTime = this.clock.now();
     job.failureCode = mapped.code;
     job.failureMessage = mapped.message;
-    delete job.snapshotItems;
+  }
+
+  private async ensureExportSnapshot(job: DynamoExportState): Promise<void> {
+    if (job.snapshotId) return;
+    const tableName = job.tableArn.match(/:table\/([^/]+)$/)?.[1];
+    const table = tableName ? this.tables[tableName] : undefined;
+    if (!table || table.arn !== job.tableArn) throw new AwsError("TableNotFoundException", "The source table was deleted before its export snapshot was captured");
+    const items = await this.backupPersistence.itemsAt(table, job.exportTime);
+    const snapshot = await this.transferStore.writeExportSnapshot(job.exportArn, items);
+    job.snapshotId = snapshot.id;
+    job.snapshotMd5 = snapshot.md5Base64;
+    job.itemCount = snapshot.itemCount;
+    job.billedSizeBytes = snapshot.billedSizeBytes;
+    job.stage = "SNAPSHOT";
+    await this.store.save();
   }
 
   private async advanceExport(exportArn: string): Promise<void> {
@@ -1081,16 +1105,11 @@ export class DynamoDbService {
     if (!job || job.exportStatus !== "IN_PROGRESS") return;
     try {
       if (!job.stage || job.stage === "ADMITTED") {
-        if (!job.snapshotItems && !job.dataObject?.completed) throw new AwsError("InternalFailure", "Export snapshot is missing from the durable checkpoint", 500);
-        job.stage = "SNAPSHOT";
-        await this.store.save();
+        await this.ensureExportSnapshot(job);
       }
       if (job.stage === "SNAPSHOT" || job.stage === "DATA_OBJECTS" || job.stage === "MANIFEST") {
         if (!job.dataObject?.completed) {
-          if (!job.snapshotItems) throw new AwsError("InternalFailure", "Export snapshot is missing from the durable checkpoint", 500);
-          const payload = encodeExportPayload(job.snapshotItems);
-          job.itemCount = payload.itemCount;
-          job.billedSizeBytes = payload.billedSizeBytes;
+          if (!job.snapshotId || !job.snapshotMd5) throw new AwsError("InternalFailure", "Export snapshot is missing from the durable checkpoint", 500);
           if (job.destinationKind === "file") {
             const root = this.localBucketRoot(job.s3Bucket);
             await writeLocalExportArtifacts({
@@ -1104,10 +1123,12 @@ export class DynamoDbService {
               startTime: job.startTime,
               s3Bucket: job.s3Bucket,
               s3Prefix: job.s3Prefix ?? "",
-              compressed: payload.compressed,
-              itemCount: payload.itemCount,
-              billedSizeBytes: payload.billedSizeBytes,
+              compressed: this.transferStore.readExportSnapshot(job.snapshotId),
+              md5Base64: job.snapshotMd5,
+              itemCount: job.itemCount,
+              billedSizeBytes: job.billedSizeBytes,
             });
+            job.manifestFilesKey = `${job.keyPrefix}/manifest-files.json`;
             job.stage = "MANIFEST";
           } else {
             const port = this.requireTransferPort();
@@ -1116,22 +1137,20 @@ export class DynamoDbService {
               job.stage = "DATA_OBJECTS";
               await this.store.save();
             }
-            const data = await writeS3ExportDataObject({ port, caller, job, compressed: payload.compressed });
+            const data = await writeS3ExportDataObject({ port, caller, job, compressed: this.transferStore.readExportSnapshot(job.snapshotId) });
             job.dataObject = pinState(data, true);
             job.stage = "DATA_OBJECTS";
             await this.store.save();
-            const manifestFilesKey = await writeS3ExportManifests({ port, caller, job, compressed: payload.compressed, data });
+            const manifestFilesKey = await writeS3ExportManifests({ port, caller, job, data });
             job.manifestFilesKey = manifestFilesKey;
             job.stage = "MANIFEST";
           }
           await this.store.save();
         } else if (!job.manifestFilesKey) {
-          if (!job.snapshotItems) throw new AwsError("InternalFailure", "Export snapshot is missing from the durable checkpoint", 500);
-          const payload = encodeExportPayload(job.snapshotItems);
           const port = this.requireTransferPort();
           const caller = transferCaller(this.store.accountId, job.tableArn, job.s3BucketOwner);
-          const data = await writeS3ExportDataObject({ port, caller, job, compressed: payload.compressed });
-          job.manifestFilesKey = await writeS3ExportManifests({ port, caller, job, compressed: payload.compressed, data });
+          const data = await writeS3ExportDataObject({ port, caller, job, compressed: this.transferStore.readExportSnapshot(job.snapshotId!) });
+          job.manifestFilesKey = await writeS3ExportManifests({ port, caller, job, data });
           job.stage = "MANIFEST";
           await this.store.save();
         } else {
@@ -1141,9 +1160,14 @@ export class DynamoDbService {
       job.exportStatus = "COMPLETED";
       job.stage = "COMPLETED";
       job.endTime = this.clock.now();
-      delete job.snapshotItems;
+      await this.store.save();
+      await this.transferStore.deleteExportSnapshot(job.snapshotId);
+      delete job.snapshotId;
     } catch (error) {
       this.failExport(job, error);
+      await this.store.save();
+      await this.transferStore.deleteExportSnapshot(job.snapshotId);
+      delete job.snapshotId;
     }
   }
 
@@ -1165,7 +1189,6 @@ export class DynamoDbService {
     const latest = this.pitrTime(); const exportTime = input.ExportTime === undefined ? latest : Math.floor(Number(input.ExportTime) * 1000); const earliest = pitr.earliestRestorableAt ?? pitr.enabledAt;
     if (!Number.isFinite(exportTime) || exportTime < earliest || exportTime > latest) throw new AwsError("InvalidExportTimeException", "The specified ExportTime is outside of the point in time recovery window");
     await this.backupPersistence.prunePitr(table, latest);
-    const items = input.ExportTime === undefined ? clone(table.items) : await this.backupPersistence.itemsAt(table, exportTime);
     const now = this.clock.now(); const exportId = `${String(now).padStart(13, "0")}-${id(8)}`;
     const prefix = input.S3Prefix === undefined ? "" : String(input.S3Prefix);
     const keyPrefix = exportKeyPrefix(prefix, exportId);
@@ -1186,18 +1209,18 @@ export class DynamoDbService {
       ...(prefix ? { s3Prefix: prefix } : {}),
       s3SseAlgorithm: "AES256",
       exportFormat: "DYNAMODB_JSON",
-      billedSizeBytes: Buffer.byteLength(JSON.stringify(items)),
-      itemCount: Object.keys(items).length,
+      billedSizeBytes: 0,
+      itemCount: 0,
       exportType: "FULL_EXPORT",
       destinationKind: fileDestination ? "file" : "s3",
       stage: "ADMITTED",
       keyPrefix,
       dataKey,
-      snapshotItems: items,
     };
     this.exports[exportArn] = job;
     await this.store.save();
-    this.scheduleTransferWork(() => this.advanceExport(exportArn));
+    try { await this.ensureExportSnapshot(job); } catch (error) { this.failExport(job, error); await this.store.save(); }
+    if (job.exportStatus === "IN_PROGRESS") this.scheduleTransferWork(() => this.advanceExport(exportArn));
     return { ExportDescription: this.exportDescription(job) };
   }
 
@@ -1217,19 +1240,22 @@ export class DynamoDbService {
     const job = this.imports[String(value ?? "")]; if (!job) throw new AwsError("ImportNotFoundException", "The specified import was not found"); return job;
   }
 
-  private failImport(job: DynamoImportState, error: unknown, retainTable = false): void {
+  private failImport(job: DynamoImportState, error: unknown): void {
     const mapped = mapTransferFailure(error);
     job.importStatus = "FAILED";
-    job.stage = retainTable ? "CLEANING_UP" : "FAILED";
+    job.stage = "FAILED";
     job.endTime = this.clock.now();
     job.failureCode = mapped.code;
     job.failureMessage = mapped.message;
-    job.retainedPartialTable = retainTable;
-    if (!retainTable) {
-      const tableName = String(job.tableCreationParameters.TableName ?? "");
-      const table = this.tables[tableName];
-      if (table && table.arn === job.tableArn && table.status === "CREATING") delete this.tables[tableName];
-    }
+    const tableName = String(job.tableCreationParameters.TableName ?? "");
+    const table = this.tables[tableName];
+    if (table && table.arn === job.tableArn && table.status === "CREATING") delete this.tables[tableName];
+  }
+
+  private importTransferCaller(job: DynamoImportState) { return transferCaller(this.store.accountId, job.importArn, job.s3BucketSource.S3BucketOwner); }
+
+  private importPin(pin: NonNullable<DynamoImportState["pinnedObjects"]>[number]) {
+    return { bucket: pin.bucket, key: pin.key, generation: pin.generation, versionId: pin.versionId, etag: pin.etag, size: pin.size, storageClass: pin.storageClass };
   }
 
   private async advanceImport(importArn: string): Promise<void> {
@@ -1242,48 +1268,25 @@ export class DynamoDbService {
       if (!job.stage || job.stage === "ADMITTED") {
         if (job.destinationKind === "s3") {
           const port = this.requireTransferPort();
-          const caller = transferCaller(this.store.accountId, job.importArn, job.s3BucketSource.S3BucketOwner);
+          const caller = this.importTransferCaller(job);
           await port.admitBucket(job.s3BucketSource.S3Bucket, caller);
           const prefix = job.s3BucketSource.S3KeyPrefix ?? "";
           const pins = await port.listAndPinPrefix(job.s3BucketSource.S3Bucket, prefix, caller);
-          job.pinnedObjects = pins.map(pin => pinState(pin));
+          const allPins = pins.map(pin => pinState(pin));
+          job.pinnedObjects = await admitImportManifest(port, caller, allPins);
+          if (!job.pinnedObjects.length) throw new AwsError("ValidationException", "No DynamoDB JSON data files were found under the import prefix");
+          await this.store.save();
+          const retained = new Set(job.pinnedObjects.map(pin => pin.generation));
+          await port.releasePins(pins.filter(pin => !retained.has(pin.generation)), caller);
         }
         job.stage = "MANIFEST";
         await this.store.save();
       }
 
-      if (job.stage === "MANIFEST" || job.stage === "OBJECTS") {
-        let imported: Item[];
-        if (job.destinationKind === "file") {
-          const files = await listLocalImportFiles(this.localObjectPath(job.s3BucketSource.S3Bucket, job.s3BucketSource.S3KeyPrefix));
-          imported = [];
-          let processedSizeBytes = 0;
-          for (const file of files) {
-            const raw = await readFile(file);
-            processedSizeBytes += raw.length;
-            imported.push(...decodeImportLines(raw, job.inputCompressionType, file));
-          }
-          job.processedSizeBytes = processedSizeBytes;
-        } else {
-          const port = this.requireTransferPort();
-          const caller = transferCaller(this.store.accountId, job.importArn, job.s3BucketSource.S3BucketOwner);
-          const result = await readPinnedImportItems(port, caller, job.pinnedObjects ?? [], job.inputCompressionType);
-          imported = result.items;
-          job.processedSizeBytes = result.processedSizeBytes;
-          for (const pin of job.pinnedObjects ?? []) pin.completed = true;
-        }
-        job.processedItemCount = imported.length;
-        job.pendingItems = imported;
-        job.stage = "OBJECTS";
-        await this.store.save();
-        job.stage = "TABLE";
-        await this.store.save();
-      }
-
-      if (job.stage === "TABLE") {
+      if (job.stage === "MANIFEST" || job.stage === "TABLE") {
         let table = this.tables[tableName];
         if (!table) {
-          await this.CreateTable({ ...clone(createInput), BillingMode: createInput.BillingMode ?? "PAY_PER_REQUEST" });
+          await this.createTableInternal({ ...clone(createInput), BillingMode: createInput.BillingMode ?? "PAY_PER_REQUEST" }, false);
           table = this.tables[tableName];
           job.tableArn = table.arn;
           job.tableId = table.id;
@@ -1291,10 +1294,12 @@ export class DynamoDbService {
           for (const index of table.globalSecondaryIndexes ?? []) { index.indexStatus = "CREATING"; index.backfilling = true; }
           await this.store.save();
         } else if (table.arn === job.tableArn && table.status === "CREATING") {
-          // resume after CreateTable checkpoint
+          job.tableId = table.id;
         } else if (table.arn !== job.tableArn) {
           throw new AwsError("ResourceInUseException", `Table already exists: ${tableName}`);
         }
+        job.stage = "TABLE";
+        await this.store.save();
         job.stage = "POPULATE";
         await this.store.save();
       }
@@ -1302,10 +1307,38 @@ export class DynamoDbService {
       if (job.stage === "POPULATE") {
         const table = this.tables[tableName];
         if (!table || table.arn !== job.tableArn) throw new AwsError("InternalFailure", "Import target table is missing from the durable checkpoint", 500);
-        if (!job.pendingItems) throw new AwsError("InternalFailure", "Import pending items are missing from the durable checkpoint", 500);
-        const items = validateImportedItems(table, job.pendingItems, (candidate, item) => validateIndexAttributes(candidate, item));
-        table.items = items;
-        job.importedItemCount = Object.keys(items).length;
+        if (job.destinationKind === "file") {
+          const files = await listLocalImportFiles(this.localObjectPath(job.s3BucketSource.S3Bucket, job.s3BucketSource.S3KeyPrefix));
+          for (const file of files) {
+            const raw = await readFile(file);
+            const imported = decodeImportLines(raw, job.inputCompressionType, file);
+            const items = validateImportedItems(table, imported, (candidate, item) => validateIndexAttributes(candidate, item));
+            Object.assign(table.items, items);
+            job.processedSizeBytes += raw.length;
+            job.processedItemCount += imported.length;
+          }
+        } else {
+          const port = this.requireTransferPort();
+          const caller = this.importTransferCaller(job);
+          for (const pin of job.pinnedObjects ?? []) {
+            if (pin.completed) { await port.releasePins([this.importPin(pin)], caller).catch(() => undefined); continue; }
+            let objectItemCount = 0;
+            for await (const item of streamPinnedImportItems(port, caller, pin, job.inputCompressionType)) {
+              validateItem(table, item);
+              validateIndexAttributes(table, item);
+              table.items[stableItemKey(table, item)] = clone(item);
+              objectItemCount++;
+            }
+            if (pin.manifestItemCount !== undefined && objectItemCount !== pin.manifestItemCount) throw new AwsError("ValidationException", `The DynamoDB data object item count does not match its manifest: ${pin.key}`);
+            pin.completed = true;
+            job.processedSizeBytes = (job.pinnedObjects ?? []).filter(candidate => candidate.completed).reduce((sum, candidate) => sum + candidate.size, 0);
+            job.processedItemCount += objectItemCount;
+            job.importedItemCount = Object.keys(table.items).length;
+            await this.store.save();
+            await port.releasePins([this.importPin(pin)], caller).catch(() => undefined);
+          }
+        }
+        job.importedItemCount = Object.keys(table.items).length;
         job.errorCount = 0;
         job.stage = "VALIDATE";
         await this.store.save();
@@ -1327,19 +1360,13 @@ export class DynamoDbService {
         job.importStatus = "COMPLETED";
         job.stage = "COMPLETED";
         job.endTime = this.clock.now();
-        delete job.pendingItems;
+        delete job.pinnedObjects;
       }
     } catch (error) {
-      const retain = Boolean(this.tables[String(job.tableCreationParameters.TableName)] && job.stage && ["POPULATE", "VALIDATE", "PROMOTE"].includes(job.stage));
-      this.failImport(job, error, retain);
-      if (job.stage === "CLEANING_UP") {
-        const tableName = String(job.tableCreationParameters.TableName ?? "");
-        const table = this.tables[tableName];
-        if (table && table.arn === job.tableArn && table.status === "CREATING") {
-          delete this.tables[tableName];
-          job.retainedPartialTable = false;
-          job.stage = "FAILED";
-        }
+      this.failImport(job, error);
+      if (job.destinationKind === "s3" && job.pinnedObjects?.length) {
+        await this.requireTransferPort().releasePins(job.pinnedObjects.map(pin => this.importPin(pin)), this.importTransferCaller(job)).catch(() => undefined);
+        delete job.pinnedObjects;
       }
     }
   }

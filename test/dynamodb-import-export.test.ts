@@ -29,10 +29,10 @@ const credentials = { accessKeyId: "admin", secretAccessKey: "password" };
 function clientFor(simulator: StackSim): DynamoDBClient { return new DynamoDBClient({ endpoint: `http://127.0.0.1:${simulator.port}`, region: "eu-west-1", credentials }); }
 async function tick(clock: TestClock, milliseconds = 50): Promise<void> {
   clock.advance(milliseconds);
-  for (let index = 0; index < 8; index++) await new Promise<void>(resolve => setImmediate(resolve));
+  for (let index = 0; index < 8; index++) await new Promise<void>(resolve => setTimeout(resolve, 2));
 }
 async function waitForExport(client: DynamoDBClient, exportArn: string, clock: TestClock): Promise<any> {
-  for (let index = 0; index < 40; index++) {
+  for (let index = 0; index < 200; index++) {
     await tick(clock);
     const description = await client.send(new DescribeExportCommand({ ExportArn: exportArn }));
     if (description.ExportDescription?.ExportStatus !== "IN_PROGRESS") return description.ExportDescription;
@@ -40,7 +40,7 @@ async function waitForExport(client: DynamoDBClient, exportArn: string, clock: T
   throw new Error(`export ${exportArn} did not leave IN_PROGRESS`);
 }
 async function waitForImport(client: DynamoDBClient, importArn: string, clock: TestClock): Promise<any> {
-  for (let index = 0; index < 40; index++) {
+  for (let index = 0; index < 200; index++) {
     await tick(clock);
     const description = await client.send(new DescribeImportCommand({ ImportArn: importArn }));
     if (description.ImportTableDescription?.ImportStatus !== "IN_PROGRESS") return description.ImportTableDescription;
@@ -67,8 +67,8 @@ test("DynamoDB local file export/import round trips DynamoDB JSON with durable j
 
     const pending = await client.send(new ExportTableToPointInTimeCommand({ TableArn: source.TableDescription!.TableArn!, S3Bucket: bucketUrl, S3Prefix: "restart", ClientToken: "pending-restart" })); const pendingArn = pending.ExportDescription!.ExportArn!; assert.equal(pending.ExportDescription?.ExportStatus, "IN_PROGRESS");
     const pendingJob = simulator.store.regionState("eu-west-1").dynamodbExports[pendingArn];
-    assert.equal(pendingJob.stage, "ADMITTED");
-    assert.ok(pendingJob.snapshotItems);
+    assert.equal(pendingJob.stage, "SNAPSHOT");
+    assert.ok(pendingJob.snapshotId);
     client.destroy(); client = undefined; await simulator.stop(); simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region: "eu-west-1", clock, allowLocalFiles: true, authMode: "off"}); await simulator.start(); client = clientFor(simulator);
     const resumed = await waitForExport(client, pendingArn, clock);
     assert.equal(resumed.ExportStatus, "COMPLETED");

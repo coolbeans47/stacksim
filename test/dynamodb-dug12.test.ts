@@ -46,10 +46,11 @@ function s3(simulator: StackSim): S3Client {
 }
 async function flush(clock: TestClock, times = 8): Promise<void> {
   clock.advance(50);
-  for (let index = 0; index < times; index++) await new Promise<void>(resolve => setImmediate(resolve));
+  for (let index = 0; index < times; index++) await new Promise<void>(resolve => setTimeout(resolve, 2));
 }
+async function collect(body: AsyncIterable<Uint8Array>): Promise<Buffer> { const chunks: Buffer[] = []; for await (const chunk of body) chunks.push(Buffer.from(chunk)); return Buffer.concat(chunks); }
 async function waitExport(client: DynamoDBClient, arn: string, clock: TestClock) {
-  for (let index = 0; index < 50; index++) {
+  for (let index = 0; index < 200; index++) {
     await flush(clock);
     const description = (await client.send(new DescribeExportCommand({ ExportArn: arn }))).ExportDescription!;
     if (description.ExportStatus !== "IN_PROGRESS") return description;
@@ -57,7 +58,7 @@ async function waitExport(client: DynamoDBClient, arn: string, clock: TestClock)
   throw new Error("export timeout");
 }
 async function waitImport(client: DynamoDBClient, arn: string, clock: TestClock) {
-  for (let index = 0; index < 50; index++) {
+  for (let index = 0; index < 200; index++) {
     await flush(clock);
     const description = (await client.send(new DescribeImportCommand({ ImportArn: arn }))).ImportTableDescription!;
     if (description.ImportStatus !== "IN_PROGRESS") return description;
@@ -155,8 +156,8 @@ test("DUG-12 weakness reproduction: job descriptor is durable before S3 side eff
     const exportArn = exported.ExportDescription!.ExportArn!;
     const job = simulator.store.regionState(region).dynamodbExports[exportArn];
     assert.equal(job.exportStatus, "IN_PROGRESS");
-    assert.equal(job.stage, "ADMITTED");
-    assert.ok(job.snapshotItems);
+    assert.equal(job.stage, "SNAPSHOT");
+    assert.ok(job.snapshotId);
     const listed = await s3Client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: "admit/" }));
     assert.equal(listed.KeyCount ?? 0, 0);
   } finally {
@@ -180,7 +181,7 @@ test("DUG-12 weakness reproduction: startup resumes unfinished jobs instead of b
     await s3Client.send(new PutBucketPolicyCommand({ Bucket: bucket, Policy: transferPolicy(bucket) }));
     const exported = await ddb.send(new ExportTableToPointInTimeCommand({ TableArn: tableArn, S3Bucket: bucket, S3Prefix: "resume", ClientToken: "resume-job" }));
     const exportArn = exported.ExportDescription!.ExportArn!;
-    assert.equal(simulator.store.regionState(region).dynamodbExports[exportArn].stage, "ADMITTED");
+    assert.equal(simulator.store.regionState(region).dynamodbExports[exportArn].stage, "SNAPSHOT");
     ddb.destroy(); s3Client.destroy(); ddb = undefined; s3Client = undefined; await simulator.stop();
     simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off" });
     await simulator.start();
@@ -233,7 +234,7 @@ test("DUG-12 official DynamoDB and S3 clients round-trip through a local bucket"
     assert.equal(createHash("md5").update(body).digest("hex"), object.ETag?.replaceAll('"', ""));
 
     const imported = await ddb.send(new ImportTableCommand({
-      S3BucketSource: { S3Bucket: bucket, S3KeyPrefix: `snapshots/AWSDynamoDB/${exportId}/data` },
+      S3BucketSource: { S3Bucket: bucket, S3KeyPrefix: `snapshots/AWSDynamoDB/${exportId}` },
       InputFormat: "DYNAMODB_JSON",
       InputCompressionType: "GZIP",
       TableCreationParameters: {
@@ -341,6 +342,22 @@ test("DUG-12 service principal allow/deny, ownership, region, archive, overwrite
       ddb.send(new ExportTableToPointInTimeCommand({ TableArn: tableArn, S3Bucket: wrongRegionBucket, ClientToken: "wrong-region" })),
       (error: any) => error.name === "PermanentRedirect" || error.$metadata?.httpStatusCode === 301,
     );
+
+    const tamperExport = await ddb.send(new ExportTableToPointInTimeCommand({ TableArn: tableArn, S3Bucket: allowed, S3Prefix: "tamper", ClientToken: "tamper-export" }));
+    const tamperDone = await waitExport(ddb, tamperExport.ExportDescription!.ExportArn!, clock);
+    assert.equal(tamperDone.ExportStatus, "COMPLETED");
+    const tamperRoot = tamperDone.ExportManifest!.replace(/\/manifest-summary\.json$/, "");
+    await s3Client.send(new PutObjectCommand({ Bucket: allowed, Key: `${tamperRoot}/manifest-files.json`, Body: "{}\n", ContentType: "application/json" }));
+    const tamperImport = await ddb.send(new ImportTableCommand({
+      S3BucketSource: { S3Bucket: allowed, S3KeyPrefix: tamperRoot },
+      InputFormat: "DYNAMODB_JSON", InputCompressionType: "GZIP",
+      TableCreationParameters: { TableName: "TamperedManifest", AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }], KeySchema: [{ AttributeName: "id", KeyType: "HASH" }], BillingMode: "PAY_PER_REQUEST" },
+      ClientToken: "tamper-import",
+    }));
+    const tampered = await waitImport(ddb, tamperImport.ImportTableDescription!.ImportArn!, clock);
+    assert.equal(tampered.ImportStatus, "FAILED");
+    assert.match(String(tampered.FailureMessage), /checksum/i);
+    assert.equal(simulator.store.regionState(region).tables.TamperedManifest, undefined);
 
     await s3Client.send(new PutBucketVersioningCommand({ Bucket: allowed, VersioningConfiguration: { Status: "Enabled" } }));
     await s3Client.send(new PutObjectCommand({ Bucket: allowed, Key: "incoming/archive.json.gz", Body: gzipLines([{ Item: { id: { S: "archived" } } }]), ContentType: "application/x-gzip" }));
@@ -461,27 +478,21 @@ test("DUG-12 overwrite conflict, deletion during import, and TABLE-stage resume"
       ClientToken: "delete-during-import",
     }));
     const importArn = importing.ImportTableDescription!.ImportArn!;
-    for (let index = 0; index < 20; index++) {
-      await flush(clock, 1);
-      const job = simulator.store.regionState(region).dynamodbImports[importArn];
-      if ((job.pinnedObjects?.length ?? 0) > 0 || job.importStatus !== "IN_PROGRESS") break;
-    }
-    assert.ok((simulator.store.regionState(region).dynamodbImports[importArn].pinnedObjects?.length ?? 0) > 0);
-    await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: dataKey }));
     const pinnedJob = simulator.store.regionState(region).dynamodbImports[importArn];
-    pinnedJob.stage = "OBJECTS";
-    pinnedJob.pendingItems = undefined;
-    for (const pin of pinnedJob.pinnedObjects ?? []) pin.completed = false;
+    const caller = { servicePrincipal: "dynamodb.amazonaws.com" as const, sourceAccount: accountId, sourceArn: importArn };
+    const admittedPins = await simulator.s3.createTransferPort().listAndPinPrefix(bucket, `ok/AWSDynamoDB/${exportId}/data`, caller);
+    pinnedJob.pinnedObjects = admittedPins.map(pin => ({ ...pin }));
+    pinnedJob.stage = "MANIFEST";
     await simulator.store.save();
+    await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: dataKey }));
     ddb.destroy(); s3Client.destroy(); ddb = undefined; s3Client = undefined; await simulator.stop();
     simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off" });
     await simulator.start();
     ddb = dynamo(simulator);
     s3Client = s3(simulator);
     const deleted = await waitImport(ddb, importArn, clock);
-    assert.equal(deleted.ImportStatus, "FAILED");
-    assert.match(String(deleted.FailureCode), /S3NoSuchKey|S3InvalidObjectState|NoSuchKey/);
-    assert.equal(simulator.store.regionState(region).tables["DeletedDuringImport"], undefined);
+    assert.equal(deleted.ImportStatus, "COMPLETED");
+    assert.equal((await ddb.send(new GetItemCommand({ TableName: "DeletedDuringImport", Key: { id: { S: "one" } } }))).Item?.note?.S, "alpha");
 
     await s3Client.send(new PutObjectCommand({
       Bucket: bucket,
@@ -527,7 +538,7 @@ test("DUG-12 overwrite conflict, deletion during import, and TABLE-stage resume"
   }
 });
 
-test("DUG-12 transfer port pins object generations and rejects generation mismatch on read", async () => {
+test("DUG-12 transfer port retains admitted generations for unversioned object replacement", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-dug12-pin-"));
   const clock = new TestClock(Date.parse("2026-08-11T15:00:00Z"));
   const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off" });
@@ -537,7 +548,6 @@ test("DUG-12 transfer port pins object generations and rejects generation mismat
     s3Client = s3(simulator);
     const bucket = "dug12-pin-bucket";
     await s3Client.send(new CreateBucketCommand({ Bucket: bucket, CreateBucketConfiguration: { LocationConstraint: region } }));
-    await s3Client.send(new PutBucketVersioningCommand({ Bucket: bucket, VersioningConfiguration: { Status: "Enabled" } }));
     await s3Client.send(new PutBucketPolicyCommand({ Bucket: bucket, Policy: transferPolicy(bucket) }));
     await s3Client.send(new PutObjectCommand({ Bucket: bucket, Key: "data/data.json.gz", Body: gzipLines([{ Item: { id: { S: "pinned" }, v: { N: "1" } } }]) }));
     const port = simulator.s3.createTransferPort();
@@ -547,14 +557,15 @@ test("DUG-12 transfer port pins object generations and rejects generation mismat
       sourceArn: `arn:aws:dynamodb:${region}:${accountId}:table/PinnedImport/import/test`,
     };
     const pin = await port.pinCurrentObject(bucket, "data/data.json.gz", caller);
-    const first = await port.readPinned(pin, caller);
+    assert.equal(pin.versionId, "null");
+    const first = await collect(port.readPinned(pin, caller));
     assert.equal(JSON.parse(gunzipSync(first).toString("utf8").trim()).Item.v.N, "1");
     await s3Client.send(new PutObjectCommand({ Bucket: bucket, Key: "data/data.json.gz", Body: gzipLines([{ Item: { id: { S: "pinned" }, v: { N: "2" } } }]) }));
-    const stillPinned = await port.readPinned(pin, caller);
+    const stillPinned = await collect(port.readPinned(pin, caller));
     assert.equal(JSON.parse(gunzipSync(stillPinned).toString("utf8").trim()).Item.v.N, "1");
     const replaced = await port.pinCurrentObject(bucket, "data/data.json.gz", caller);
-    assert.notEqual(replaced.versionId, pin.versionId);
-    assert.equal(JSON.parse(gunzipSync(await port.readPinned(replaced, caller)).toString("utf8").trim()).Item.v.N, "2");
+    assert.notEqual(replaced.generation, pin.generation);
+    assert.equal(JSON.parse(gunzipSync(await collect(port.readPinned(replaced, caller))).toString("utf8").trim()).Item.v.N, "2");
   } finally {
     s3Client?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true });
   }

@@ -91,22 +91,23 @@ export type DynamoExportStage =
 export type DynamoImportStage =
   | "ADMITTED"
   | "MANIFEST"
-  | "OBJECTS"
   | "TABLE"
   | "POPULATE"
   | "VALIDATE"
   | "PROMOTE"
   | "COMPLETED"
-  | "FAILED"
-  | "CLEANING_UP";
+  | "FAILED";
 
 export interface DynamoPinnedS3ObjectState {
   bucket: string;
   key: string;
+  generation: string;
   versionId: string;
   etag: string;
   size: number;
   storageClass: string;
+  checksumMd5?: string;
+  manifestItemCount?: number;
   completed?: boolean;
 }
 
@@ -138,8 +139,9 @@ export interface DynamoExportState {
   dataKey?: string;
   manifestFilesKey?: string;
   dataObject?: DynamoPinnedS3ObjectState;
-  /** Snapshot of exported items retained until the data object is durably written. */
-  snapshotItems?: Record<string, Item>;
+  /** Opaque identifier for the private streaming export snapshot. */
+  snapshotId?: string;
+  snapshotMd5?: string;
 }
 
 export interface DynamoImportState {
@@ -165,9 +167,6 @@ export interface DynamoImportState {
   destinationKind?: DynamoTransferDestinationKind;
   stage?: DynamoImportStage;
   pinnedObjects?: DynamoPinnedS3ObjectState[];
-  /** Items decoded from pinned objects; retained until the import reaches COMPLETED. */
-  pendingItems?: Item[];
-  retainedPartialTable?: boolean;
 }
 
 export type DynamoContributorInsightsMode = "ACCESSED_AND_THROTTLED_KEYS" | "THROTTLED_KEYS";
