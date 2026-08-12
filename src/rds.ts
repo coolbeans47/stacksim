@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { copyFile, lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import mysql, { type Connection, type ResultSetHeader, type RowDataPacket } from "mysql2/promise";
+import mysql, { type Connection, type FieldPacket, type ResultSetHeader, type RowDataPacket } from "mysql2/promise";
 import type { Clock } from "./core/clock.js";
 import { AwsError } from "./errors.js";
 import { awsQueryList, awsQueryXml, parseAwsQuery, sendAwsQueryXml } from "./protocols/query-xml.js";
@@ -75,12 +75,38 @@ export interface RdsQueryEditorCatalog {
 export interface RdsQueryEditorResult {
   database: string | null;
   columns: string[];
+  columnMetadata: Array<{
+    name: string;
+    type: string;
+    length: number | null;
+    decimals: number | null;
+    numeric: boolean;
+  }>;
   rows: RdsQueryEditorCell[][];
   rowCount: number;
   truncated: boolean;
   affectedRows?: number;
   insertId?: number;
   elapsedMs: number;
+}
+
+const QUERY_EDITOR_NUMERIC_TYPES = new Set([
+  "decimal", "double", "float", "int24", "long", "longlong", "newdecimal", "short", "tiny", "year",
+]);
+
+function queryEditorFieldMetadata(field: FieldPacket): RdsQueryEditorResult["columnMetadata"][number] {
+  const typeCode = field.columnType ?? field.type;
+  const resolvedType = field.extendedTypeName
+    || field.typeName
+    || (typeof typeCode === "number" ? String((mysql.Types as unknown as Record<number, string>)[typeCode] ?? "unknown") : "unknown");
+  const type = resolvedType.toLowerCase();
+  return {
+    name: String(field.name ?? ""),
+    type,
+    length: Number.isFinite(Number(field.columnLength)) ? Number(field.columnLength) : null,
+    decimals: Number.isFinite(Number(field.decimals)) ? Number(field.decimals) : null,
+    numeric: QUERY_EDITOR_NUMERIC_TYPES.has(type),
+  };
 }
 
 function namedList(value: any, memberName: string): any[] {
@@ -732,9 +758,11 @@ export class RdsManager {
       const elapsedMs = Number(process.hrtime.bigint() - started) / 1_000_000;
       if (Array.isArray(result)) {
         const rows = result as unknown[][];
+        const columnMetadata: RdsQueryEditorResult["columnMetadata"] = (fields ?? []).map((field: FieldPacket) => queryEditorFieldMetadata(field));
         return {
           database: selectedDatabase,
-          columns: (fields ?? []).map((field: { name?: unknown }) => String(field.name ?? "")),
+          columns: columnMetadata.map(column => column.name),
+          columnMetadata,
           rows: rows.slice(0, QUERY_EDITOR_MAX_ROWS).map(row => row.map(value => this.queryEditorCell(value))),
           rowCount: rows.length,
           truncated: rows.length > QUERY_EDITOR_MAX_ROWS,
@@ -745,6 +773,7 @@ export class RdsManager {
       return {
         database: selectedDatabase,
         columns: [],
+        columnMetadata: [],
         rows: [],
         rowCount: 0,
         truncated: false,

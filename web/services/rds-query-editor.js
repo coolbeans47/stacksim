@@ -45,6 +45,55 @@ function formatCell(value) {
   return `<span class="rds-query-value">${escapeHtml(text)}</span>`;
 }
 
+function resultColumnMetadata(output, columns) {
+  const supplied = Array.isArray(output?.columnMetadata) ? output.columnMetadata : [];
+  return columns.map((name, index) => {
+    const value = supplied[index] ?? {};
+    return {
+      name,
+      type: String(value.type || "unknown").toLowerCase(),
+      length: Number.isFinite(Number(value.length)) ? Math.max(0, Number(value.length)) : null,
+      decimals: Number.isFinite(Number(value.decimals)) ? Math.max(0, Number(value.decimals)) : null,
+      numeric: Boolean(value.numeric),
+    };
+  });
+}
+
+function resultColumnTypeLabel(column) {
+  const names = {
+    int24: "mediumint",
+    long: "int",
+    longlong: "bigint",
+    newdecimal: "decimal",
+    var_string: "varchar",
+  };
+  const type = names[column.type] ?? column.type;
+  if (type === "unknown") return "";
+  if (type === "decimal" && column.decimals !== null) return `${type} · ${column.decimals} dp`;
+  return type;
+}
+
+function resultColumnLayout(columns, rows) {
+  const textType = /(?:char|string|text|blob|json|enum|set)/;
+  const temporalType = /(?:date|time|year)/;
+  const preferred = columns.map((column, index) => {
+    const headerWidth = Math.max(column.name.length, resultColumnTypeLabel(column).length);
+    const sampleWidth = Math.max(0, ...rows.slice(0, 40).map(row => String(Array.isArray(row) ? row[index] ?? "" : row?.[column.name] ?? "").length));
+    if (column.numeric) return Math.min(18, Math.max(9, headerWidth + 2, sampleWidth + 1));
+    if (temporalType.test(column.type)) return Math.min(25, Math.max(18, headerWidth + 2, sampleWidth + 1));
+    if (textType.test(column.type)) {
+      const metadataWidth = column.length === null ? 0 : Math.ceil(column.length / 4);
+      return Math.min(38, Math.max(10, headerWidth + 2, sampleWidth + 1, Math.min(metadataWidth, 34)));
+    }
+    return Math.min(30, Math.max(10, headerWidth + 2, sampleWidth + 1));
+  });
+  const total = preferred.reduce((sum, value) => sum + value, 0) || 1;
+  return {
+    minWidth: Math.max(720, total * 8 + columns.length * 24),
+    widths: preferred.map(value => `${((value / total) * 100).toFixed(2)}%`),
+  };
+}
+
 function objectTypeLabel(type) {
   const normalized = String(type || "object").toLowerCase();
   if (normalized === "table") return "Tables";
@@ -68,7 +117,7 @@ function objectMarkup(object) {
   const columns = Array.isArray(object.columns) ? object.columns : [];
   const search = [object.name, object.type, ...columns.flatMap(column => [column.name, column.type])].join(" ").toLowerCase();
   const kind = String(object.type || "object").slice(0, 1).toUpperCase();
-  return `<div class="rds-object-item" data-rds-object-entry data-object-search="${escapeHtml(search)}"><div class="rds-object-title"><details class="rds-object-details"><summary><span class="rds-object-kind">${escapeHtml(kind)}</span><span class="rds-object-name mono">${escapeHtml(object.name)}</span><span class="muted small">${plural(columns.length, "column")}</span></summary><div class="rds-column-list">${columns.length ? columns.map(columnMarkup).join("") : '<div class="muted small rds-column-empty">No columns reported</div>'}</div></details><button class="button link rds-object-preview" type="button" data-preview-rds-object="${escapeHtml(object.name)}" title="Build a preview query for this object">Preview</button></div></div>`;
+  return `<div class="rds-object-item" data-rds-object-entry data-object-search="${escapeHtml(search)}"><div class="rds-object-title"><details class="rds-object-details"><summary><span class="rds-object-kind">${escapeHtml(kind)}</span><span class="rds-object-name mono">${escapeHtml(object.name)}</span><span class="muted small">${plural(columns.length, "column")}</span></summary><div class="rds-column-list">${columns.length ? columns.map(columnMarkup).join("") : '<div class="muted small rds-column-empty">No columns reported</div>'}</div></details><button class="button link rds-object-preview" type="button" data-preview-rds-object="${escapeHtml(object.name)}" title="Open this object in the query editor">Open</button></div></div>`;
 }
 
 function objectsMarkup(objects, selectedDatabase) {
@@ -109,15 +158,18 @@ function errorResultsMarkup(error) {
 function completedResultsMarkup(output) {
   const columns = Array.isArray(output?.columns) ? output.columns.map(String) : [];
   const rows = Array.isArray(output?.rows) ? output.rows : [];
+  const columnMetadata = resultColumnMetadata(output, columns);
   const rowCount = Number.isFinite(Number(output?.rowCount)) ? Number(output.rowCount) : rows.length;
   const elapsed = Number.isFinite(Number(output?.elapsedMs)) ? `${Math.max(0, Number(output.elapsedMs)).toLocaleString()} ms` : "";
   const statusText = [plural(rowCount, "row"), elapsed].filter(Boolean).join(" · ");
   const truncated = Boolean(output?.truncated);
   let body;
   if (columns.length) {
-    body = `${truncated ? `<div class="alert warning rds-result-warning"><strong>Result limit reached</strong><br>Showing the first ${Number(rows.length).toLocaleString()} rows. Refine the query to inspect a smaller result set.</div>` : ""}<div class="table-wrap rds-results-wrap"><table class="rds-results-table" aria-label="Query results"><thead><tr>${columns.map(column => `<th scope="col" class="mono">${escapeHtml(column)}</th>`).join("")}</tr></thead><tbody>${rows.map(row => {
+    const layout = resultColumnLayout(columnMetadata, rows);
+    const colgroup = `<colgroup>${layout.widths.map(width => `<col style="width:${width}">`).join("")}</colgroup>`;
+    body = `${truncated ? `<div class="alert warning rds-result-warning"><strong>Result limit reached</strong><br>Showing the first ${Number(rows.length).toLocaleString()} rows. Refine the query to inspect a smaller result set.</div>` : ""}<div class="table-wrap rds-results-wrap"><table class="rds-results-table" style="min-width:${layout.minWidth}px" aria-label="Query results">${colgroup}<thead><tr>${columnMetadata.map(column => `<th scope="col" class="${column.numeric ? "rds-result-numeric" : ""}"><span class="rds-result-column-name mono">${escapeHtml(column.name)}</span>${resultColumnTypeLabel(column) ? `<span class="rds-result-column-type">${escapeHtml(resultColumnTypeLabel(column))}</span>` : ""}</th>`).join("")}</tr></thead><tbody>${rows.map(row => {
       const values = Array.isArray(row) ? row : columns.map(column => row?.[column]);
-      return `<tr>${columns.map((_, index) => `<td>${formatCell(values[index])}</td>`).join("")}</tr>`;
+      return `<tr>${columnMetadata.map((column, index) => `<td class="${column.numeric ? "rds-result-numeric" : ""}">${formatCell(values[index])}</td>`).join("")}</tr>`;
     }).join("")}</tbody></table></div>`;
   } else {
     const affectedRows = Number.isFinite(Number(output?.affectedRows)) ? Number(output.affectedRows) : 0;
@@ -153,11 +205,33 @@ export async function rdsQueryEditor(context, requestedIdentifier) {
     editorTouched: false,
     running: false,
     loadingObjects: false,
+    activeObject: null,
   };
 
   context.setChrome("rds", ["RDS", "Query editor", instance.identifier]);
   const availability = canQuery ? "" : `<div class="alert info"><strong>Query execution is unavailable</strong><br>The DB instance is ${escapeHtml(instance.status)}. Start it and wait for the available status before refreshing objects or running SQL.</div>`;
-  context.main.innerHTML = `<div class="page-width rds-query-page">${pageHeader("Query editor", `Explore database objects and run SQL against ${escapeHtml(instance.identifier)}.`, `<a class="button" href="#/rds/databases/${encodeURIComponent(instance.identifier)}/connectivity">View database</a>`)}<div class="rds-query-connection"><span>${statusMarkup(instance.status)}</span><span class="mono">${escapeHtml(instance.identifier)}</span><span>${escapeHtml(`${instance.engine} ${instance.engineVersion}`.trim())}</span></div>${availability}<div class="rds-query-workbench"><aside class="card rds-query-explorer"><div class="card-header"><div><h2>Database objects</h2><p class="muted small">Tables, views, and columns in the selected database.</p></div><button class="button refresh" type="button" data-action="refresh-rds-objects" aria-label="Refresh database objects" ${canQuery ? "" : "disabled"}>&#8635;</button></div><div class="toolbar"><label class="filter"><span>&#8981;</span><input type="search" data-rds-object-filter placeholder="Find objects or columns" ${canQuery ? "" : "disabled"}></label></div><div class="rds-object-tree" data-rds-object-tree>${canQuery ? '<div class="loading" role="status"><span></span>Loading database objects...</div>' : emptyState("DB", "Database unavailable", "Start the DB instance to browse its objects.")}</div></aside><div class="rds-query-main"><section class="card rds-query-editor-card"><div class="card-header"><div><h2>SQL query</h2><p class="muted small">Run selected text, or the full editor when nothing is selected.</p></div><div class="actions"><button class="button" type="button" data-action="clear-rds-query">Clear</button><button class="button primary" type="button" data-action="run-rds-query" ${canQuery ? "" : "disabled"}>Run</button></div></div><div class="card-body"><div class="rds-query-database"><div class="field"><label for="rds-query-database">Database</label><select id="rds-query-database" ${canQuery ? "" : "disabled"}>${databaseOptions(state.databases, state.selectedDatabase)}</select></div><div class="rds-query-engine"><span class="muted small">Connection</span><strong>${escapeHtml(instance.identifier)}</strong></div></div><label class="rds-sql-label" for="rds-sql-editor">SQL</label><textarea id="rds-sql-editor" class="code-editor rds-sql-editor" spellcheck="false" ${canQuery ? "" : "aria-disabled=\"true\""}>SELECT 1 AS ready;</textarea><div class="rds-editor-footer"><span class="muted small">Queries run through the signed local console connection. SQL credentials are never sent to the browser.</span><span class="muted small"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> to run</span></div></div></section><section class="card rds-query-results" data-rds-query-results>${readyResultsMarkup()}</section></div></div></div>`;
+  context.main.innerHTML = `<div class="page-width rds-query-page">
+    ${pageHeader("Query editor", `Explore database objects and run SQL against ${escapeHtml(instance.identifier)}.`, `<a class="button" href="#/rds/databases/${encodeURIComponent(instance.identifier)}/connectivity">View database</a>`)}
+    <div class="rds-query-connection"><span>${statusMarkup(instance.status)}</span><span class="mono">${escapeHtml(instance.identifier)}</span><span>${escapeHtml(`${instance.engine} ${instance.engineVersion}`.trim())}</span></div>
+    ${availability}
+    <div class="rds-query-workspace">
+      <div class="rds-query-workbench">
+        <aside class="card rds-query-explorer">
+          <div class="card-header"><div><h2>Database objects</h2><p class="muted small">Browse tables, views, and columns.</p></div><button class="button refresh" type="button" data-action="refresh-rds-objects" aria-label="Refresh database objects" ${canQuery ? "" : "disabled"}>&#8635;</button></div>
+          <div class="rds-explorer-database field"><label for="rds-query-database">Database</label><select id="rds-query-database" ${canQuery ? "" : "disabled"}>${databaseOptions(state.databases, state.selectedDatabase)}</select></div>
+          <div class="toolbar"><label class="filter"><span>&#8981;</span><input type="search" data-rds-object-filter placeholder="Filter tables or columns" ${canQuery ? "" : "disabled"}></label></div>
+          <div class="rds-object-tree" data-rds-object-tree>${canQuery ? '<div class="loading" role="status"><span></span>Loading database objects...</div>' : emptyState("DB", "Database unavailable", "Start the DB instance to browse its objects.")}</div>
+        </aside>
+        <section class="card rds-query-editor-card">
+          <div class="rds-editor-tabbar"><div class="rds-editor-tab" aria-current="page"><span class="rds-editor-tab-icon">SQL</span><span data-rds-editor-tab-label>Query 1</span></div><div class="actions"><button class="button" type="button" data-action="clear-rds-query">Clear</button><button class="button primary" type="button" data-action="run-rds-query" ${canQuery ? "" : "disabled"}>Run query</button></div></div>
+          <div class="card-header"><div><h2>SQL query</h2><p class="muted small">Run selected text, or the full editor when nothing is selected.</p></div><div class="rds-query-engine"><span class="muted small">Connection</span><strong>${escapeHtml(instance.identifier)}</strong></div></div>
+          <div class="rds-editor-surface"><label class="sr-only" for="rds-sql-editor">SQL</label><textarea id="rds-sql-editor" class="code-editor rds-sql-editor" spellcheck="false" ${canQuery ? "" : "aria-disabled=\"true\""}>SELECT 1 AS ready;</textarea></div>
+          <div class="rds-editor-footer"><span class="muted small">Credentials remain on the signed local connection.</span><span class="muted small"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> to run</span></div>
+        </section>
+      </div>
+      <section class="card rds-query-results" data-rds-query-results>${readyResultsMarkup()}</section>
+    </div>
+  </div>`;
 
   const root = context.main;
   const objectTree = root.querySelector("[data-rds-object-tree]");
@@ -167,10 +241,15 @@ export async function rdsQueryEditor(context, requestedIdentifier) {
   const results = root.querySelector("[data-rds-query-results]");
   const runButton = root.querySelector('[data-action="run-rds-query"]');
   const refreshButton = root.querySelector('[data-action="refresh-rds-objects"]');
+  const editorTabLabel = root.querySelector("[data-rds-editor-tab-label]");
 
   function bindObjectActions() {
     objectTree.querySelectorAll("[data-preview-rds-object]").forEach(button => button.addEventListener("click", () => {
-      editor.value = `SELECT * FROM ${quoteIdentifier(button.getAttribute("data-preview-rds-object"))} LIMIT 100;`;
+      const objectName = button.getAttribute("data-preview-rds-object");
+      editor.value = `SELECT * FROM ${quoteIdentifier(objectName)} LIMIT 100;`;
+      state.activeObject = objectName;
+      editorTabLabel.textContent = objectName;
+      objectTree.querySelectorAll("[data-rds-object-entry]").forEach(entry => entry.classList.toggle("is-selected", entry.contains(button)));
       state.editorTouched = true;
       setDirty(true, "page");
       editor.focus();
@@ -214,11 +293,21 @@ export async function rdsQueryEditor(context, requestedIdentifier) {
       state.databases = Array.isArray(output.databases) ? output.databases.map(String) : [];
       state.selectedDatabase = output.selectedDatabase === undefined || output.selectedDatabase === null ? null : String(output.selectedDatabase);
       state.objects = Array.isArray(output.objects) ? output.objects : [];
+      if (state.activeObject && !state.objects.some(object => object.name === state.activeObject)) {
+        state.activeObject = null;
+        editorTabLabel.textContent = "Query 1";
+      }
       renderDatabaseSelect();
       renderObjects();
       if (chooseDefaultQuery && !state.editorTouched) {
         const firstObject = state.objects.find(object => ["table", "view"].includes(String(object.type).toLowerCase()));
-        if (firstObject) editor.value = `SELECT * FROM ${quoteIdentifier(firstObject.name)} LIMIT 100;`;
+        if (firstObject) {
+          editor.value = `SELECT * FROM ${quoteIdentifier(firstObject.name)} LIMIT 100;`;
+          state.activeObject = firstObject.name;
+          editorTabLabel.textContent = firstObject.name;
+          const selectedButton = [...objectTree.querySelectorAll("[data-preview-rds-object]")].find(button => button.getAttribute("data-preview-rds-object") === firstObject.name);
+          selectedButton?.closest("[data-rds-object-entry]")?.classList.add("is-selected");
+        }
       }
     } catch (error) {
       objectTree.innerHTML = `<div class="card-body"><div class="alert error" role="alert"><strong>Unable to load database objects</strong><br>${escapeHtml(error instanceof Error ? error.message : String(error))}</div></div>`;
@@ -263,6 +352,9 @@ export async function rdsQueryEditor(context, requestedIdentifier) {
   runButton.addEventListener("click", () => void runQuery());
   root.querySelector('[data-action="clear-rds-query"]').addEventListener("click", () => {
     editor.value = "";
+    state.activeObject = null;
+    editorTabLabel.textContent = "Query 1";
+    objectTree.querySelectorAll("[data-rds-object-entry]").forEach(entry => entry.classList.remove("is-selected"));
     state.editorTouched = true;
     setDirty(true, "page");
     editor.focus();
