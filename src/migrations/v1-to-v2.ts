@@ -4,7 +4,7 @@ import { createIamState } from "../iam/model.js";
 import { emptySesRegionState } from "./v51-to-v52.js";
 import { emptyCognitoRegionState } from "./v52-to-v53.js";
 
-export const CURRENT_SCHEMA_VERSION = 85;
+export const CURRENT_SCHEMA_VERSION = 86;
 export const DEFAULT_ACCOUNT_ID = "000000000000";
 
 export function emptyRegion(): RegionState {

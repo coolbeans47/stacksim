@@ -78,6 +78,39 @@ export interface DynamoBackupState {
   snapshotHash: string;
 }
 
+export type DynamoTransferDestinationKind = "s3" | "file";
+
+export type DynamoExportStage =
+  | "ADMITTED"
+  | "SNAPSHOT"
+  | "DATA_OBJECTS"
+  | "MANIFEST"
+  | "COMPLETED"
+  | "FAILED";
+
+export type DynamoImportStage =
+  | "ADMITTED"
+  | "MANIFEST"
+  | "TABLE"
+  | "POPULATE"
+  | "VALIDATE"
+  | "PROMOTE"
+  | "COMPLETED"
+  | "FAILED";
+
+export interface DynamoPinnedS3ObjectState {
+  bucket: string;
+  key: string;
+  generation: string;
+  versionId: string;
+  etag: string;
+  size: number;
+  storageClass: string;
+  checksumMd5?: string;
+  manifestItemCount?: number;
+  completed?: boolean;
+}
+
 export interface DynamoExportState {
   exportArn: string;
   exportStatus: "IN_PROGRESS" | "COMPLETED" | "FAILED";
@@ -99,6 +132,16 @@ export interface DynamoExportState {
   exportType: "FULL_EXPORT";
   failureCode?: string;
   failureMessage?: string;
+  /** DUG-12 durable transfer metadata. Absent on pre-migration jobs. */
+  destinationKind?: DynamoTransferDestinationKind;
+  stage?: DynamoExportStage;
+  keyPrefix?: string;
+  dataKey?: string;
+  manifestFilesKey?: string;
+  dataObject?: DynamoPinnedS3ObjectState;
+  /** Opaque identifier for the private streaming export snapshot. */
+  snapshotId?: string;
+  snapshotMd5?: string;
 }
 
 export interface DynamoImportState {
@@ -120,6 +163,10 @@ export interface DynamoImportState {
   errorCount: number;
   failureCode?: string;
   failureMessage?: string;
+  /** DUG-12 durable transfer metadata. Absent on pre-migration jobs. */
+  destinationKind?: DynamoTransferDestinationKind;
+  stage?: DynamoImportStage;
+  pinnedObjects?: DynamoPinnedS3ObjectState[];
 }
 
 export type DynamoContributorInsightsMode = "ACCESSED_AND_THROTTLED_KEYS" | "THROTTLED_KEYS";

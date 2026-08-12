@@ -499,7 +499,7 @@ Batching, filters, retries, partial failures, bisecting, destinations, checkpoin
 
 ##### What it is
 
-Export a consistent table snapshot to local `file://` paths in DynamoDB JSON Lines format. Requires PITR enabled.
+Export a consistent table snapshot to a local S3 bucket (or an opted-in `file://` path) in DynamoDB JSON Lines format. Requires PITR enabled.
 
 ##### Why use it
 
@@ -507,7 +507,7 @@ In AWS, exports to S3 do not consume table read capacity — useful for analytic
 
 ##### How it works in StackSim
 
-Full exports to opted-in absolute `file://` locations are active when `STACKSIM_ALLOW_LOCAL_FILES=true`. No S3 request is made. Ion and incremental exports are unavailable.
+Full exports write DynamoDB JSON/GZIP objects and manifests into a same-Region local S3 bucket through DynamoDB's service principal and an S3-owned transfer port. Authorize the bucket with a policy that allows `dynamodb.amazonaws.com` for `s3:PutObject` (and usually `aws:SourceAccount` / `aws:SourceArn` conditions). Jobs are admitted before any object write, checkpointed per stage, and resumed on restart. Absolute `file://` destinations remain available only when `STACKSIM_ALLOW_LOCAL_FILES=true`. Ion, incremental export, and KMS SSE remain unavailable.
 
 ---
 
@@ -741,7 +741,7 @@ In AWS, import from S3 creates tables without consuming write capacity — fast 
 
 ##### How it works in StackSim
 
-Opted-in `file://` sources, DynamoDB JSON, job status, and asynchronous table creation are active when `STACKSIM_ALLOW_LOCAL_FILES=true`. CSV, Ion, and ZSTD are unavailable.
+Local S3 bucket sources (and opted-in `file://` paths), DynamoDB JSON, GZIP, job status, bounded progress, failure codes, and asynchronous table creation are active. Import pins current object generations at admission and resumes from checkpoints after restart. CSV, Ion, and ZSTD remain unavailable.
 
 ##### Common AWS use cases
 
@@ -750,7 +750,7 @@ Opted-in `file://` sources, DynamoDB JSON, job status, and asynchronous table cr
 
 ##### Example
 
-Import from `file:///tmp/exports/AWSDynamoDB/1234567890123-id/data` into new table `OrdersRestored` with keys matching the export.
+Import from `s3://stacksim-dynamodb-transfer/exports/AWSDynamoDB/1234567890123-id/data` into new table `OrdersRestored` with keys matching the export.
 
 ---
 
@@ -799,7 +799,7 @@ Table
 | KMS encryption | Configuration only; writes blocked |
 | Auto scaling | Stored descriptors; no automatic changes |
 | Kinesis destination | Configuration only; no delivery |
-| File import/export | Requires `STACKSIM_ALLOW_LOCAL_FILES=true` |
+| Local S3 import/export | DynamoDB JSON/GZIP via S3 transfer port; `file://` needs `STACKSIM_ALLOW_LOCAL_FILES=true` |
 | TTL deletion delay | Short deterministic sweep (not AWS 48-hour window) |
 | PITR latest point | Latest completed local second |
 

@@ -16,7 +16,7 @@ This reference describes the current repository implementation. StackSim is a bo
 
 - AWS CDK and CloudFormation support unmodified CDK v2 deployments through a reduced local bootstrap, file assets, direct and change-set deployments, outputs and exports, updates, rollback, deletion, retention policies, and 105 registered resource providers. Nested stacks use real child stack records, local S3 template assets, parent/root relationships, linked change sets, recursive rollback, restart recovery, and retained-subtree detachment. General `Custom::*` resources use the bounded local ZIP-Lambda callback protocol. Full bootstrap templates, transforms and macros, resource import, StackSets, registry extensions, arbitrary helper ecosystems, and image-asset publication are not implied.
 
-- DynamoDB everyday table/item CRUD, scan/query/batch behavior, exact AttributeValues, nested expressions, projections, conditions, updates, pagination, atomic transactions, deterministic Time to Live expiration, typed DynamoDB-subset PartiQL execution with official request-field pagination, exact-get/query/partition-IN/scan planning and statement-derived IAM context, a singleton/batch/transaction workbench, persistent table/capacity settings, immutable on-demand backups, second-resolution point-in-time recovery, durable Streams polling, table/index/stream resource policies, restart-safe multi-Region global tables, opted-in local DynamoDB JSON import/export, contributor-insights key-frequency metrics, and configuration-only Kinesis streaming destinations.
+- DynamoDB everyday table/item CRUD, scan/query/batch behavior, exact AttributeValues, nested expressions, projections, conditions, updates, pagination, atomic transactions, deterministic Time to Live expiration, typed DynamoDB-subset PartiQL execution with official request-field pagination, exact-get/query/partition-IN/scan planning and statement-derived IAM context, a singleton/batch/transaction workbench, persistent table/capacity settings, immutable on-demand backups, second-resolution point-in-time recovery, durable Streams polling, table/index/stream resource policies, restart-safe multi-Region global tables, DynamoDB JSON/GZIP import/export to local S3 buckets through an S3-owned transfer port (optional `file://` with `STACKSIM_ALLOW_LOCAL_FILES`), contributor-insights key-frequency metrics, and configuration-only Kinesis streaming destinations.
 - Lambda local Node.js ZIP and digest-pinned OCI-image functions with lifecycle state, context, limits, timeouts/errors, execution-role credentials, resource policies, tags, versions, weighted aliases, synchronous log tail, permission-gated CloudWatch Logs output, durable asynchronous invocation, DynamoDB Streams and SQS event source mappings, SQS async/dead-letter/discarded-record destinations, account/reserved/qualified provisioned concurrency, immutable ordered layers, durable public/IAM function URLs, advanced runtime/infrastructure configuration, managed-instance capacity-provider control state, recursive-lineage protection, and durable checkpoint/replay execution. Node ZIP functions use bounded fingerprinted warm-worker pools: module state, SDK clients, private `/tmp`, and an environment's log stream persist across sequential leases, while credentials, request/deadline/context, client context, trace/correlation metadata, and lineage refresh per invocation. Concurrent invokes use different workers; code/config changes, timeout, crash, idle expiry, shutdown, and restart cold-start replacements. Provisioned concurrency reaches `READY` only after its Node ZIP workers initialize; image-function provisioned concurrency fails closed until reusable/prewarmed Docker containers exist.
 - API Gateway v1 REST APIs with a mapped request/response pipeline, MOCK/Lambda/DynamoDB/SQS/HTTP and explicitly mapped private integrations, test invocation, immutable deployments, complete stage lifecycle, CORS/binary/compression/gateway responses, IAM/resource policies, Lambda and Cognito user-pool authorizers, Draft 4 request validation, OpenAPI import/export, logs/metrics/canaries/throttling, API-key usage plans, durable response caching, documentation, client certificates, JavaScript SDK generation, account settings, VPC links, and custom domains with longest-match base-path routing and opt-in local HTTPS; plus API Gateway v2 HTTP and WebSocket APIs with route-based Lambda proxy integrations, an SQS send-message service integration, authorization including automatic in-process Cognito issuer/JWKS resolution for HTTP JWT authorizers, stages, observability, domain mappings, persistent WebSocket connections, and signed management operations.
 - AWS AppSync uses the unmodified official client to manage regional API-key GraphQL APIs, tags, atomic SDL schema generations, encrypted API keys, `NONE` and DynamoDB data sources, VTL unit/pipeline resolvers, and mapping-template evaluation through the bounded signed REST-JSON action set. API-key and `AWS_IAM` request/field authorization are enforced. Six exact `AWS::AppSync::*` providers deploy this surface through CloudFormation. The frozen Amplify Gen 2 Todo graph adds authoritative CRUD/filter/pagination and create/update/delete subscriptions; Cognito/Lambda/OIDC authorization, JavaScript resolvers, enhanced filters/invalidation, and Events remain unavailable.
@@ -933,6 +933,11 @@ import {
   UpdateTimeToLiveCommand,
 } from "@aws-sdk/client-dynamodb";
 import {
+  CreateBucketCommand,
+  PutBucketPolicyCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
+import {
   DescribeStreamCommand,
   DynamoDBStreamsClient,
   GetRecordsCommand,
@@ -995,6 +1000,7 @@ const config = {
 };
 
 const dynamodb = new DynamoDBClient(config);
+const s3 = new S3Client({ ...config, forcePathStyle: true });
 await dynamodb.send(new TransactWriteItemsCommand({
   ClientRequestToken: "readme-transaction-1",
   TransactItems: [{
@@ -1054,9 +1060,23 @@ await dynamodb.send(new UpdateContinuousBackupsCommand({
   PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true, RecoveryPeriodInDays: 7 },
 }));
 console.log((await dynamodb.send(new DescribeContinuousBackupsCommand({ TableName: "LearningNotes" }))).ContinuousBackupsDescription);
+await s3.send(new CreateBucketCommand({ Bucket: "stacksim-dynamodb-transfer", CreateBucketConfiguration: { LocationConstraint: "eu-west-1" } }));
+await s3.send(new PutBucketPolicyCommand({
+  Bucket: "stacksim-dynamodb-transfer",
+  Policy: JSON.stringify({
+    Version: "2012-10-17",
+    Statement: [{
+      Effect: "Allow",
+      Principal: { Service: "dynamodb.amazonaws.com" },
+      Action: ["s3:PutObject", "s3:GetObject", "s3:ListBucket"],
+      Resource: ["arn:aws:s3:::stacksim-dynamodb-transfer", "arn:aws:s3:::stacksim-dynamodb-transfer/*"],
+      Condition: { StringEquals: { "aws:SourceAccount": "000000000000" } },
+    }],
+  }),
+}));
 const exported = await dynamodb.send(new ExportTableToPointInTimeCommand({
   TableArn: tableArn,
-  S3Bucket: "file:///tmp/stacksim-dynamodb-transfer",
+  S3Bucket: "stacksim-dynamodb-transfer",
   S3Prefix: "readme",
   ExportFormat: "DYNAMODB_JSON",
 }));
@@ -1064,7 +1084,7 @@ console.log(await dynamodb.send(new DescribeExportCommand({ ExportArn: exported.
 console.log((await dynamodb.send(new ListExportsCommand({ TableArn: tableArn }))).ExportSummaries);
 const exportId = exported.ExportDescription!.ExportArn!.split("/export/")[1];
 const imported = await dynamodb.send(new ImportTableCommand({
-  S3BucketSource: { S3Bucket: "file:///tmp/stacksim-dynamodb-transfer", S3KeyPrefix: `readme/AWSDynamoDB/${exportId}/data` },
+  S3BucketSource: { S3Bucket: "stacksim-dynamodb-transfer", S3KeyPrefix: `readme/AWSDynamoDB/${exportId}/data` },
   InputFormat: "DYNAMODB_JSON",
   InputCompressionType: "GZIP",
   TableCreationParameters: {
@@ -1572,7 +1592,7 @@ npm run test:browser     # run the isolated console browser suite
 | `STACKSIM_SFN_MAX_CONCURRENT_EXECUTIONS` | `1000` | Maximum running Step Functions executions per account/Region |
 | `STACKSIM_SFN_MAX_MAP_CONCURRENCY` | `40` | Maximum effective concurrency for an Inline Map state |
 | `STACKSIM_SFN_EXECUTION_RETENTION_MS` | `7776000000` | Retention for terminal Step Functions execution records in milliseconds |
-| `STACKSIM_ALLOW_LOCAL_FILES` | `false` | Enable explicit `file://` DynamoDB import/export and CloudWatch Logs export sources/destinations |
+| `STACKSIM_ALLOW_LOCAL_FILES` | `false` | Enable explicit `file://` DynamoDB import/export and CloudWatch Logs export sources/destinations. Local S3 buckets remain available for DynamoDB import/export without this flag. |
 | `STACKSIM_LAMBDA_CONCURRENT_EXECUTIONS` | `1000` | Regional Lambda account concurrency quota |
 | `STACKSIM_LAMBDA_UNRESERVED_CONCURRENCY_RESERVE` | `100` | Capacity that reserved/provisioned configuration must leave unclaimed |
 | `STACKSIM_LAMBDA_WORKER_IDLE_MS` | `300000` | Idle lifetime of an unprovisioned warm Node ZIP execution environment before retirement |
