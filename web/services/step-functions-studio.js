@@ -56,7 +56,7 @@ function inspectorHtml(definition, selectedName) {
   }
   const state = definition.States[selectedName];
   const options = nextOptions(definition, selectedName);
-  const optionHtml = (selected, includeEnd = false) => `${includeEnd ? `<option value="">End</option>` : ""}${options.map(name => `<option value="${escapeHtml(name)}" ${name === selected ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}`;
+  const optionHtml = (selected, emptyLabel) => `${emptyLabel ? `<option value="">${escapeHtml(emptyLabel)}</option>` : ""}${options.map(name => `<option value="${escapeHtml(name)}" ${name === selected ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}`;
   const common = `<div class="field"><label>State name</label><input data-studio-name value="${escapeHtml(selectedName)}" pattern="[A-Za-z0-9_]+" maxlength="80"></div><div class="field"><label>Type</label><input value="${escapeHtml(state.Type)}" readonly></div><div class="field"><label>Comment</label><input data-studio-comment value="${escapeHtml(state.Comment ?? "")}" maxlength="256"></div>`;
   let specific = "";
   if (state.Type === "Task") {
@@ -64,17 +64,20 @@ function inspectorHtml(definition, selectedName) {
   } else if (state.Type === "Pass") {
     specific = `<div class="field"><label>Result (JSON)</label><textarea data-studio-result class="code-editor sfn-studio-json" spellcheck="false">${escapeHtml(pretty(state.Result ?? {}))}</textarea></div>`;
   } else if (state.Type === "Wait") {
-    specific = `<div class="field"><label>Seconds</label><input data-studio-seconds type="number" min="0" step="1" value="${escapeHtml(state.Seconds ?? 0)}"></div>`;
+    const alternateTiming = [["SecondsPath", state.SecondsPath], ["Timestamp", state.Timestamp], ["TimestampPath", state.TimestampPath]].find(([, value]) => value !== undefined);
+    specific = alternateTiming
+      ? `<div class="field"><label>Wait timing</label><input class="mono" value="${escapeHtml(`${alternateTiming[0]} · ${alternateTiming[1]}`)}" readonly><span class="hint">This timing mode is preserved by visual edits. Switch to JSON to change it.</span></div>`
+      : `<div class="field"><label>Seconds</label><input data-studio-seconds type="number" min="0" step="1" value="${escapeHtml(state.Seconds ?? 0)}"></div>`;
   } else if (state.Type === "Fail") {
     specific = `<div class="field"><label>Error</label><input data-studio-error-name value="${escapeHtml(state.Error ?? "")}"></div><div class="field"><label>Cause</label><input data-studio-cause value="${escapeHtml(state.Cause ?? "")}"></div>`;
   } else if (state.Type === "Choice") {
-    specific = `<div class="field"><label>Choices (JSON)</label><textarea data-studio-choices class="code-editor sfn-studio-json" spellcheck="false">${escapeHtml(pretty(state.Choices ?? []))}</textarea></div><div class="field"><label>Default</label><select data-studio-default>${optionHtml(state.Default)}</select></div>`;
+    specific = `<div class="field"><label>Choices (JSON)</label><textarea data-studio-choices class="code-editor sfn-studio-json" spellcheck="false">${escapeHtml(pretty(state.Choices ?? []))}</textarea></div><div class="field"><label>Default</label><select data-studio-default>${optionHtml(state.Default, "No default")}</select></div>`;
   } else if (state.Type === "Parallel") {
     specific = `<div class="field"><label>Branches (JSON)</label><textarea data-studio-branches class="code-editor sfn-studio-json" spellcheck="false">${escapeHtml(pretty(state.Branches ?? []))}</textarea><span class="hint">Each branch needs StartAt and States.</span></div>`;
   } else if (state.Type === "Map") {
     specific = `<div class="field"><label>ItemsPath</label><input data-studio-items-path class="mono" value="${escapeHtml(state.ItemsPath ?? "$")}"></div><div class="field"><label>ItemProcessor (JSON)</label><textarea data-studio-item-processor class="code-editor sfn-studio-json" spellcheck="false">${escapeHtml(pretty(state.ItemProcessor ?? state.Iterator ?? {}))}</textarea></div>`;
   }
-  const transition = ["Succeed", "Fail", "Choice"].includes(state.Type) ? "" : `<div class="field"><label>Next state</label><select data-studio-next>${optionHtml(state.Next, true)}</select><span class="hint">Choose End to terminate after this state.</span></div>`;
+  const transition = ["Succeed", "Fail", "Choice"].includes(state.Type) ? "" : `<div class="field"><label>Next state</label><select data-studio-next>${optionHtml(state.Next, "End")}</select><span class="hint">Choose End to terminate after this state.</span></div>`;
   const advanced = !["Succeed", "Fail", "Choice"].includes(state.Type) ? `<div class="field"><label>Retry (JSON)</label><textarea data-studio-retry class="code-editor sfn-studio-json" spellcheck="false">${escapeHtml(pretty(state.Retry ?? []))}</textarea></div><div class="field"><label>Catch (JSON)</label><textarea data-studio-catch class="code-editor sfn-studio-json" spellcheck="false">${escapeHtml(pretty(state.Catch ?? []))}</textarea></div>` : "";
   return `<div class="sfn-studio-inspector-body"><h3>${escapeHtml(selectedName)}</h3><p class="muted">${escapeHtml(state.Type)} configuration</p>${common}${specific}${transition}${advanced}<div class="sfn-studio-inspector-actions"><button class="button" type="button" data-studio-set-start ${selectedName === definition.StartAt ? "disabled" : ""}>Set as StartAt</button><button class="button danger" type="button" data-studio-delete-state>Delete state</button></div></div>`;
 }
@@ -168,49 +171,67 @@ function applyInspector(root) {
   const definition = readDefinition(root);
   const selected = root.dataset.studioSelected;
   if (!selected || !definition.States?.[selected]) return definition;
+  const edited = selector => root.querySelector(selector)?.dataset.studioEdited === "true";
   const nameInput = root.querySelector("[data-studio-name]");
-  const nextName = nameInput?.value.trim() || selected;
+  const nextName = edited("[data-studio-name]") ? nameInput?.value.trim() || selected : selected;
   let next = definition;
   const patch = {};
-  const comment = root.querySelector("[data-studio-comment]")?.value.trim();
-  if (comment) patch.Comment = comment; else patch.Comment = undefined;
+  if (edited("[data-studio-comment]")) {
+    const comment = root.querySelector("[data-studio-comment]")?.value.trim();
+    patch.Comment = comment || undefined;
+  }
   const state = definition.States[selected];
   if (state.Type === "Task") {
-    patch.Resource = root.querySelector("[data-studio-resource]")?.value.trim() || state.Resource;
-    patch.Parameters = parseJsonField(root.querySelector("[data-studio-parameters]")?.value, "Parameters", state.Parameters ?? {});
+    if (edited("[data-studio-resource]")) patch.Resource = root.querySelector("[data-studio-resource]")?.value.trim() ?? "";
+    if (edited("[data-studio-parameters]")) patch.Parameters = parseJsonField(root.querySelector("[data-studio-parameters]")?.value, "Parameters", {});
   } else if (state.Type === "Pass") {
-    patch.Result = parseJsonField(root.querySelector("[data-studio-result]")?.value, "Result", state.Result ?? {});
+    if (edited("[data-studio-result]")) patch.Result = parseJsonField(root.querySelector("[data-studio-result]")?.value, "Result", {});
   } else if (state.Type === "Wait") {
-    patch.Seconds = Number(root.querySelector("[data-studio-seconds]")?.value ?? state.Seconds ?? 0);
+    if (edited("[data-studio-seconds]")) patch.Seconds = Number(root.querySelector("[data-studio-seconds]")?.value ?? 0);
   } else if (state.Type === "Fail") {
-    patch.Error = root.querySelector("[data-studio-error-name]")?.value.trim() || "States.TaskFailed";
-    patch.Cause = root.querySelector("[data-studio-cause]")?.value ?? "";
+    if (edited("[data-studio-error-name]")) patch.Error = root.querySelector("[data-studio-error-name]")?.value.trim() || undefined;
+    if (edited("[data-studio-cause]")) patch.Cause = root.querySelector("[data-studio-cause]")?.value || undefined;
   } else if (state.Type === "Choice") {
-    patch.Choices = parseJsonField(root.querySelector("[data-studio-choices]")?.value, "Choices", state.Choices ?? []);
-    patch.Default = root.querySelector("[data-studio-default]")?.value || undefined;
+    if (edited("[data-studio-choices]")) patch.Choices = parseJsonField(root.querySelector("[data-studio-choices]")?.value, "Choices", []);
+    if (edited("[data-studio-default]")) patch.Default = root.querySelector("[data-studio-default]")?.value || undefined;
   } else if (state.Type === "Parallel") {
-    patch.Branches = parseJsonField(root.querySelector("[data-studio-branches]")?.value, "Branches", state.Branches ?? []);
+    if (edited("[data-studio-branches]")) patch.Branches = parseJsonField(root.querySelector("[data-studio-branches]")?.value, "Branches", []);
   } else if (state.Type === "Map") {
-    patch.ItemsPath = root.querySelector("[data-studio-items-path]")?.value.trim() || "$";
-    patch.ItemProcessor = parseJsonField(root.querySelector("[data-studio-item-processor]")?.value, "ItemProcessor", state.ItemProcessor ?? {});
+    if (edited("[data-studio-items-path]")) patch.ItemsPath = root.querySelector("[data-studio-items-path]")?.value.trim() || "$";
+    if (edited("[data-studio-item-processor]")) patch.ItemProcessor = parseJsonField(root.querySelector("[data-studio-item-processor]")?.value, "ItemProcessor", {});
   }
   if (!["Succeed", "Fail", "Choice"].includes(state.Type)) {
-    const nextValue = root.querySelector("[data-studio-next]")?.value ?? "";
-    if (nextValue) { patch.Next = nextValue; patch.End = undefined; }
-    else { patch.End = true; patch.Next = undefined; }
-    const retry = parseJsonField(root.querySelector("[data-studio-retry]")?.value, "Retry", []);
-    const catchers = parseJsonField(root.querySelector("[data-studio-catch]")?.value, "Catch", []);
-    patch.Retry = Array.isArray(retry) && retry.length ? retry : undefined;
-    patch.Catch = Array.isArray(catchers) && catchers.length ? catchers : undefined;
+    if (edited("[data-studio-next]")) {
+      const nextValue = root.querySelector("[data-studio-next]")?.value ?? "";
+      if (nextValue) { patch.Next = nextValue; patch.End = undefined; }
+      else { patch.End = true; patch.Next = undefined; }
+    }
+    if (edited("[data-studio-retry]")) {
+      const retry = parseJsonField(root.querySelector("[data-studio-retry]")?.value, "Retry", []);
+      patch.Retry = Array.isArray(retry) && retry.length ? retry : undefined;
+    }
+    if (edited("[data-studio-catch]")) {
+      const catchers = parseJsonField(root.querySelector("[data-studio-catch]")?.value, "Catch", []);
+      patch.Catch = Array.isArray(catchers) && catchers.length ? catchers : undefined;
+    }
   }
   next = updateStudioState(next, selected, patch);
   const cleaned = next.States[selected];
-  if (patch.Comment === undefined) delete cleaned.Comment;
-  if (patch.Retry === undefined) delete cleaned.Retry;
-  if (patch.Catch === undefined) delete cleaned.Catch;
-  if (patch.Next === undefined) delete cleaned.Next;
-  if (patch.Default === undefined) delete cleaned.Default;
-  if (cleaned.Type === "Map") delete cleaned.Iterator;
+  if (edited("[data-studio-comment]") && patch.Comment === undefined) delete cleaned.Comment;
+  if (edited("[data-studio-retry]") && patch.Retry === undefined) delete cleaned.Retry;
+  if (edited("[data-studio-catch]") && patch.Catch === undefined) delete cleaned.Catch;
+  if (edited("[data-studio-next]") && patch.Next === undefined) delete cleaned.Next;
+  if (edited("[data-studio-default]") && patch.Default === undefined) delete cleaned.Default;
+  if (cleaned.Type === "Wait" && edited("[data-studio-seconds]")) {
+    delete cleaned.SecondsPath;
+    delete cleaned.Timestamp;
+    delete cleaned.TimestampPath;
+  }
+  if (cleaned.Type === "Map" && edited("[data-studio-item-processor]")) delete cleaned.Iterator;
+  if (cleaned.Type === "Fail") {
+    if (edited("[data-studio-error-name]") && patch.Error === undefined) delete cleaned.Error;
+    if (edited("[data-studio-cause]") && patch.Cause === undefined) delete cleaned.Cause;
+  }
   if (nextName !== selected) {
     next = renameStudioState(next, selected, nextName);
     root.dataset.studioSelected = nextName;
@@ -281,6 +302,7 @@ function bindInspectorHandlers(root) {
   const inspector = root.querySelector("[data-studio-inspector]");
   inspector.querySelectorAll("input, select, textarea").forEach(control => {
     control.addEventListener("change", () => {
+      control.dataset.studioEdited = "true";
       if (control.hasAttribute("data-studio-name") || control.hasAttribute("data-studio-next") || control.hasAttribute("data-studio-default")) commitStudio(root);
       else syncInspectorQuietly(root);
     });
