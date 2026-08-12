@@ -3,7 +3,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
-const { addStudioState, definitionScopes, executionPresentation, historyPresentation, integrationReferences, lambdaReferences, payloadField, removeStudioState, renameStudioState, setStudioStartAt, studioFlow, updateStudioState } = await import(pathToFileURL(join(process.cwd(), "web/services/step-functions-model.js")).href);
+const { addStudioState, definitionScopes, executionPresentation, historyPresentation, integrationReferences, lambdaReferences, payloadField, redactSensitiveValue, removeStudioState, renameStudioState, setStudioStartAt, studioFlow, updateStudioState } = await import(pathToFileURL(join(process.cwd(), "web/services/step-functions-model.js")).href);
 
 const definition = JSON.stringify({
   StartAt: "Invoke",
@@ -49,6 +49,22 @@ test("typed history links unnamed failures and models iteration outcomes and omi
   assert.deepEqual(model.iterations, [{ index: 0, name: "Items", status: "SUCCEEDED", eventIds: [3, 4] }]);
   assert.deepEqual(payloadField(events[0].stateEnteredEventDetails!, "input"), { state: "omitted", value: undefined });
   assert.deepEqual(payloadField({}, "output"), { state: "absent", value: undefined });
+});
+
+test("execution presentation labels callback waits, links child executions, and redacts sensitive causes", () => {
+  const childArn = "arn:aws:states:eu-west-1:000000000000:execution:child:run-1";
+  const definition = JSON.stringify({ StartAt: "Child", States: { Child: { Type: "Task", Resource: "arn:aws:states:::states:startExecution.waitForTaskToken", Parameters: { StateMachineArn: "arn:aws:states:eu-west-1:000000000000:stateMachine:child" }, End: true } } });
+  const events = [
+    { id: 1, previousEventId: 0, type: "TaskStateEntered", taskStateEnteredEventDetails: { name: "Child", input: "{}" } },
+    { id: 2, previousEventId: 1, type: "TaskScheduled", taskScheduledEventDetails: { resource: "arn:aws:states:::states:startExecution.waitForTaskToken" } },
+    { id: 3, previousEventId: 2, type: "TaskSucceeded", taskSucceededEventDetails: { output: JSON.stringify({ ExecutionArn: childArn }) } },
+    { id: 4, previousEventId: 3, type: "TaskFailed", taskFailedEventDetails: { error: "Downstream", cause: JSON.stringify({ message: "safe", Authorization: "Bearer private", password: "secret" }) } },
+  ];
+  const model = executionPresentation(definition, events, "RUNNING");
+  assert.equal(model.history.active.waitingForCallback, true);
+  assert.deepEqual(model.childExecutions, [{ executionArn: childArn, eventId: 3, stateName: "Child" }]);
+  assert.equal(model.failures.at(-1).cause, JSON.stringify({ message: "safe", Authorization: "<redacted>", password: "<redacted>" }));
+  assert.deepEqual(redactSensitiveValue({ token: "private", nested: { ResponseURL: "https://secret", message: "Bearer abc" } }), { token: "<redacted>", nested: { ResponseURL: "<redacted>", message: "Bearer <redacted>" } });
 });
 
 test("studio model adds, rewires, renames, and removes states with JSON-round-tripable ASL", () => {

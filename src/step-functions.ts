@@ -238,7 +238,7 @@ export class StepFunctionsService {
       const existingArn = this.state.stateMachineNames[name];
       if (existingArn) {
         const existing = this.state.stateMachines[existingArn];
-        if (existing.definition === definition && existing.roleArn === roleArn && JSON.stringify(existing.tags) === JSON.stringify(suppliedTags)) return { stateMachineArn: arn, creationDate: timestamp(existing.creationDate), stateMachineVersionArn: undefined };
+        if (existing.definition === definition) return { stateMachineArn: arn, creationDate: timestamp(existing.creationDate), stateMachineVersionArn: undefined };
         throw new AwsError("StateMachineAlreadyExists", `State Machine Already Exists: '${arn}'`);
       }
       const now = this.clock.now(); const machine: StepFunctionsStateMachineState = { stateMachineArn: arn, name, generation: randomUUID(), type: "STANDARD", status: "ACTIVE", definition, roleArn, revisionId: randomUUID(), creationDate: now, updateDate: now, tags: suppliedTags, ...config };
@@ -431,7 +431,7 @@ export class StepFunctionsService {
     return taskExpired ? "States.Timeout" : undefined;
   }
   private callbackChild(execution: StepFunctionsExecutionState, entryId: string): StepFunctionsChildState | undefined {
-    const visit = (nested: NonNullable<StepFunctionsExecutionState["nested"]>): StepFunctionsChildState | undefined => { for (const child of nested.children) { if (child.activeState?.entryId === entryId) return child; if (child.nested) { const found = visit(child.nested); if (found) return found; } } return undefined; };
+    const visit = (nested: NonNullable<StepFunctionsExecutionState["nested"]>): StepFunctionsChildState | undefined => { for (const child of nested.children) { if (child.activeState && this.belongsToStateVisit(child.activeState.entryId, entryId)) return child; if (child.nested) { const found = visit(child.nested); if (found) return found; } } return undefined; };
     return execution.nested ? visit(execution.nested) : undefined;
   }
   private wakeCallbackChild(execution: StepFunctionsExecutionState, entryId: string): void { const child = this.callbackChild(execution, entryId); if (child?.status === "WAITING") child.waitingUntil = this.clock.now(); }
@@ -476,6 +476,8 @@ export class StepFunctionsService {
   private context(execution: StepFunctionsExecutionState, stateName: string, retryCount = 0, map?: AslContext["Map"]): AslContext {
     return { Execution: { Id: execution.executionArn, Input: JSON.parse(execution.input), Name: execution.name, RoleArn: execution.roleArn, StartTime: new Date(execution.startDate).toISOString() }, State: { EnteredTime: new Date(this.clock.now()).toISOString(), Name: stateName, RetryCount: retryCount }, StateMachine: { Id: execution.stateMachineArn, Name: execution.stateMachineArn.split(":").at(-1)! }, ...(map ? { Map: map } : {}) };
   }
+  private taskAttemptEntryId(entryId: string, retryCount: number): string { return retryCount === 0 ? entryId : `${entryId}:retry:${retryCount}`; }
+  private belongsToStateVisit(entryId: string, attemptEntryId: string): boolean { return attemptEntryId === entryId || attemptEntryId.startsWith(`${entryId}:retry:`); }
   private schedule(arn: string, deadline: number): void {
     this.timers.get(arn)?.(); this.timers.set(arn, this.scheduler.schedule(() => { this.timers.delete(arn); return this.run(arn); }, Math.max(0, deadline - this.clock.now())));
   }
@@ -504,8 +506,9 @@ export class StepFunctionsService {
             this.appendEntered(execution, stateName, state.Type, rawInput); await this.persistExecution(execution);
           }
           const rawInput = structuredClone(execution.activeState.input); const context = this.context(execution, stateName, retryCount);
+          const attemptHistoryLength = execution.history.length;
           try {
-            const transition = await this.executeState(execution, stateName, state, rawInput, context, execution.activeState.entryId);
+            const transition = await this.executeState(execution, stateName, state, rawInput, context, this.taskAttemptEntryId(execution.activeState.entryId, retryCount));
             if (execution.status !== "RUNNING") return;
             if (transition.suspendUntil !== undefined) { await this.persistExecution(execution); this.schedule(arn, Math.min(transition.suspendUntil, definition.TimeoutSeconds ? execution.startDate + definition.TimeoutSeconds * 1000 : transition.suspendUntil)); return; }
             if (transition.waitUntil !== undefined) { execution.currentInput = transition.output; execution.waitingUntil = transition.waitUntil; execution.waitingKind = "WAIT"; await this.persistExecution(execution); this.schedule(arn, Math.min(transition.waitUntil, definition.TimeoutSeconds ? execution.startDate + definition.TimeoutSeconds * 1000 : transition.waitUntil)); return; }
@@ -523,7 +526,8 @@ export class StepFunctionsService {
               const base = Number(retry.IntervalSeconds ?? 1) * Math.pow(Number(retry.BackoffRate ?? 2), attempts);
               const capped = Math.min(base, Number(retry.MaxDelaySeconds ?? base)); const delay = retry.JitterStrategy === "FULL" ? this.random() * capped : capped;
               execution.waitingUntil = this.clock.now() + delay * 1000; execution.waitingKind = "RETRY";
-              delete execution.activeState; this.append(execution, "TaskFailed", { taskFailedEventDetails: { error: failure.error, cause: failure.cause } }); await this.persistExecution(execution); this.schedule(arn, Math.min(execution.waitingUntil, definition.TimeoutSeconds ? execution.startDate + definition.TimeoutSeconds * 1000 : execution.waitingUntil)); return;
+              if (state.Type === "Task" && !execution.history.slice(attemptHistoryLength).some(event => /(?:Failed|TimedOut)$/.test(event.type))) this.append(execution, "TaskFailed", { taskFailedEventDetails: { error: failure.error, cause: failure.cause } });
+              await this.persistExecution(execution); this.schedule(arn, Math.min(execution.waitingUntil, definition.TimeoutSeconds ? execution.startDate + definition.TimeoutSeconds * 1000 : execution.waitingUntil)); return;
             }
             const catcher = (state.Catch ?? []).find((item: any) => matchesError(item.ErrorEquals, failure.error));
             if (catcher) {
@@ -553,7 +557,7 @@ export class StepFunctionsService {
       case "Choice": { const selected = state.Choices.find((rule: any) => matchesChoice(rule, effective, context)); const next = selected?.Next ?? state.Default; if (!next) throw new WorkflowError("States.NoChoiceMatched", `No choice rule matched in state '${name}'`); const output = state.OutputPath === undefined ? effective : getPath(effective, state.OutputPath, context); return { output, next }; }
       case "Wait": { let deadline: number; if (state.Seconds !== undefined) deadline = this.clock.now() + state.Seconds * 1000; else if (state.SecondsPath !== undefined) deadline = this.clock.now() + Number(getPath(effective, state.SecondsPath, context)) * 1000; else if (state.Timestamp !== undefined) deadline = Date.parse(state.Timestamp); else deadline = Date.parse(String(getPath(effective, state.TimestampPath, context))); if (!Number.isFinite(deadline)) throw new WorkflowError("States.Runtime", "Wait value is invalid"); const output = state.OutputPath === undefined ? effective : getPath(effective, state.OutputPath, context); return deadline <= this.clock.now() ? { output, next: state.Next, ...(state.End ? { terminal: "SUCCEEDED" as const } : {}) } : { output, waitUntil: deadline }; }
       case "Succeed": { const output = state.OutputPath === undefined ? effective : getPath(effective, state.OutputPath, context); return { output, terminal: "SUCCEEDED" }; }
-      case "Fail": { const error = state.ErrorPath ? String(getPath(effective, state.ErrorPath, context)) : String(state.Error ?? "States.TaskFailed"); const cause = state.CausePath ? String(getPath(effective, state.CausePath, context)) : String(state.Cause ?? ""); return { terminal: "FAILED", error, cause }; }
+      case "Fail": { const error = state.ErrorPath ? String(getPath(effective, state.ErrorPath, context)) : state.Error === undefined ? undefined : String(state.Error); const cause = state.CausePath ? String(getPath(effective, state.CausePath, context)) : state.Cause === undefined ? undefined : String(state.Cause); return { terminal: "FAILED", error, cause }; }
       case "Task": {
         let result: unknown;
         if (ACTIVITY_ARN.test(state.Resource)) { this.requireActivity(state.Resource); result = undefined; }
@@ -645,8 +649,9 @@ export class StepFunctionsService {
         this.appendChild(child, state.Type === "Task" ? "TaskStateEntered" : `${state.Type}StateEntered`, { stateEnteredEventDetails: { name: stateName, input: JSON.stringify(child.currentInput), inputDetails: { truncated: false } } }); await this.persistExecution(execution);
       }
       const rawInput = structuredClone(child.activeState.input); const context = this.context(execution, stateName, retryCount, child.kind === "MAP" ? { Item: { Index: child.slot, Value: structuredClone(child.mapItemValue) } } : undefined);
+      const attemptHistoryLength = child.history.length;
       try {
-        const transition = await this.executeState(execution, stateName, state, rawInput, context, child.activeState.entryId, child);
+        const transition = await this.executeState(execution, stateName, state, rawInput, context, this.taskAttemptEntryId(child.activeState.entryId, retryCount), child);
         if (execution.status !== "RUNNING") return;
         if (transition.suspendUntil !== undefined) { child.status = "WAITING"; child.waitingUntil = transition.suspendUntil; child.waitingKind = "NESTED"; await this.persistExecution(execution); return; }
         if (transition.waitUntil !== undefined) { child.currentInput = transition.output; child.status = "WAITING"; child.waitingUntil = transition.waitUntil; child.waitingKind = "WAIT"; await this.persistExecution(execution); return; }
@@ -659,7 +664,8 @@ export class StepFunctionsService {
         const failure = caught instanceof WorkflowError ? caught : new WorkflowError(errorName(caught), safeCause(caught)); const retry = (state.Retry ?? []).find((item: any) => matchesError(item.ErrorEquals, failure.error)); const count = child.retryAttempts[stateName] ?? 0;
         if (retry && failure.retryable && count < Number(retry.MaxAttempts ?? 3)) {
           child.retryAttempts[stateName] = count + 1; const base = Number(retry.IntervalSeconds ?? 1) * Math.pow(Number(retry.BackoffRate ?? 2), count); const capped = Math.min(base, Number(retry.MaxDelaySeconds ?? base)); const delay = retry.JitterStrategy === "FULL" ? this.random() * capped : capped;
-          child.status = "WAITING"; child.waitingUntil = this.clock.now() + delay * 1000; child.waitingKind = "RETRY"; delete child.activeState; this.appendChild(child, "TaskFailed", { taskFailedEventDetails: { error: failure.error, cause: failure.cause } }); await this.persistExecution(execution); return;
+          if (state.Type === "Task" && !child.history.slice(attemptHistoryLength).some(event => /(?:Failed|TimedOut)$/.test(event.type))) this.appendChild(child, "TaskFailed", { taskFailedEventDetails: { error: failure.error, cause: failure.cause } });
+          child.status = "WAITING"; child.waitingUntil = this.clock.now() + delay * 1000; child.waitingKind = "RETRY"; await this.persistExecution(execution); return;
         }
         const catcher = (state.Catch ?? []).find((item: any) => matchesError(item.ErrorEquals, failure.error));
         if (catcher) { const output = stateOutput({ ResultPath: catcher.ResultPath, OutputPath: state.OutputPath }, rawInput, { Error: failure.error, Cause: failure.cause }, context); this.appendChild(child, state.Type === "Task" ? "TaskStateExited" : `${state.Type}StateExited`, { stateExitedEventDetails: { name: stateName, output: JSON.stringify(output), outputDetails: { truncated: false } } }); child.currentState = catcher.Next; child.currentInput = output; delete child.retryAttempts[stateName]; delete child.activeState; await this.persistExecution(execution); continue; }
@@ -814,11 +820,11 @@ export class StepFunctionsService {
     const invocation = callbackContinuation
       ? this.lambda.invokeCloudFormationCallbackContinuation(functionName, Buffer.from(inputText), journal.taskId, this.cloudFormationCallbacks!.caCertificatePath, this.cloudFormationCallbacks!.port(), { lineage: [execution.stateMachineArn, execution.executionArn] }).then(async result => { if (!result.interrupted) await accept(result); return result; })
       : this.lambda.invoke(functionName, Buffer.from(inputText), journal.taskId, { lineage: [execution.stateMachineArn, execution.executionArn], ...(context.Task?.Token ? { sensitiveLogValues: [context.Task.Token] } : {}), integrationAttemptAcceptance: accept });
+    if (!journal.startedEventRecorded) { this.appendScoped(execution, child, "LambdaFunctionStarted"); journal.startedEventRecorded = true; await this.persistExecution(execution); }
     const stateTimeout = state.TimeoutSecondsPath ? Number(getPath(effective, state.TimeoutSecondsPath, context)) : state.TimeoutSeconds;
-    const heartbeatTimeout = state.HeartbeatSecondsPath ? Number(getPath(effective, state.HeartbeatSecondsPath, context)) : state.HeartbeatSeconds;
     const machineTimeout = (JSON.parse(execution.definition) as CompiledDefinition).TimeoutSeconds;
     const remainingExecutionSeconds = machineTimeout === undefined ? undefined : Math.max(0, (execution.startDate + machineTimeout * 1000 - this.clock.now()) / 1000);
-    const candidates = [stateTimeout, heartbeatTimeout, remainingExecutionSeconds].filter((value): value is number => value !== undefined);
+    const candidates = [stateTimeout, remainingExecutionSeconds].filter((value): value is number => value !== undefined);
     const timeoutSeconds = candidates.length ? Math.min(...candidates) : undefined;
     let result;
     try {
@@ -853,11 +859,12 @@ export class StepFunctionsService {
     else { execution.error = error; execution.cause = cause; const type = status === "ABORTED" ? "ExecutionAborted" : status === "TIMED_OUT" ? "ExecutionTimedOut" : "ExecutionFailed"; const key = `${type[0].toLowerCase()}${type.slice(1)}EventDetails`; this.append(execution, type, { [key]: { error, cause } }); }
     delete execution.currentState; delete execution.currentInput; delete execution.activeState; delete execution.waitingUntil; delete execution.waitingKind; await this.persistExecution(execution);
     const machine = this.state.stateMachines[execution.stateMachineArn] ?? { name: execution.stateMachineArn.split(":").at(-1), stateMachineArn: execution.stateMachineArn } as StepFunctionsStateMachineState;
+    this.metric("ExecutionTime", machine, execution.stopDate - execution.startDate, "Milliseconds");
     this.metric(status === "SUCCEEDED" ? "ExecutionsSucceeded" : status === "ABORTED" ? "ExecutionsAborted" : status === "TIMED_OUT" ? "ExecutionsTimedOut" : "ExecutionsFailed", machine, 1);
     this.statusEvent(execution);
   }
   private cancelNested(nested: NonNullable<StepFunctionsExecutionState["nested"]>): void { for (const child of nested.children) { if (child.nested) this.cancelNested(child.nested); if (!["SUCCEEDED", "FAILED", "CANCELLED"].includes(child.status)) child.status = "CANCELLED"; } }
-  private metric(metricName: string, machine: StepFunctionsStateMachineState, value: number): void { void this.telemetry?.publish({ namespace: "AWS/States", metricName, dimensions: { StateMachineArn: machine.stateMachineArn }, value, unit: "Count", timestamp: this.clock.now() }); }
+  private metric(metricName: string, machine: StepFunctionsStateMachineState, value: number, unit = "Count"): void { void this.telemetry?.publish({ namespace: "AWS/States", metricName, dimensions: { StateMachineArn: machine.stateMachineArn }, value, unit, timestamp: this.clock.now() }); }
   private statusEvent(execution: StepFunctionsExecutionState): void {
     void this.publishEvent?.({ source: "aws.states", detailType: "Step Functions Execution Status Change", detail: { executionArn: execution.executionArn, stateMachineArn: execution.stateMachineArn, name: execution.name, status: execution.status, startDate: execution.startDate, ...(execution.stopDate ? { stopDate: execution.stopDate } : {}), ...(execution.error ? { error: execution.error } : {}) }, resources: [execution.executionArn, execution.stateMachineArn], time: this.clock.now(), deliveryLineage: [execution.stateMachineArn, execution.executionArn] }).catch(() => undefined);
   }

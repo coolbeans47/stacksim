@@ -3539,6 +3539,7 @@ export interface StepFunctionsTaskJournalState {
   operation?: string;
   status: "UNDISPATCHED" | "DISPATCHED" | "ACCEPTED" | "SUCCEEDED" | "FAILED" | "AMBIGUOUS";
   dispatchedAt?: number;
+  startedEventRecorded?: boolean;
   acceptedAt?: number;
   completedAt?: number;
   output?: unknown;
