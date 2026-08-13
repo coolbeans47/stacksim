@@ -56,7 +56,8 @@ async function terminal(sfn: SFNClient, arn: string, clock: TestClock): Promise<
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 300; attempt++) { if (predicate()) return; await new Promise(resolve => setImmediate(resolve)); }
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 5)); }
   throw new Error("Condition was not observed");
 }
 
