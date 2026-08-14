@@ -46,11 +46,11 @@ afterEach(async () => {
   }
 });
 
-async function terminal(sfn: SFNClient, arn: string, clock: TestClock): Promise<any> {
-  for (let attempt = 0; attempt < 300; attempt++) {
+async function terminal(sfn: SFNClient, arn: string): Promise<any> {
+  for (let attempt = 0; attempt < 2_000; attempt++) {
     const execution = await sfn.send(new DescribeExecutionCommand({ executionArn: arn }));
     if (execution.status !== "RUNNING") return execution;
-    clock.advance(1_000); await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setTimeout(resolve, 5));
   }
   throw new Error("Execution did not finish");
 }
@@ -81,7 +81,8 @@ test("Lambda retries remain one state visit and use Lambda attempt history", asy
   const definition = JSON.stringify({ StartAt: "Invoke", States: { Invoke: { Type: "Task", Resource: fn.FunctionArn, HeartbeatSeconds: 1, TimeoutSeconds: 100, Retry: [{ ErrorEquals: ["States.ALL"], IntervalSeconds: 2, MaxAttempts: 1 }], End: true } } });
   const machine = await h.sfn.send(new CreateStateMachineCommand({ name: "retry-history", definition, roleArn: h.workflowRoleArn }));
   const started = await h.sfn.send(new StartExecutionCommand({ stateMachineArn: machine.stateMachineArn!, input: JSON.stringify({ ok: true }) }));
-  const completed = await terminal(h.sfn, started.executionArn!, h.clock); assert.equal(completed.status, "SUCCEEDED", JSON.stringify(completed)); assert.equal(calls, 2);
+  await waitFor(() => h.simulator.store.regionState(region).stepFunctions.executions[started.executionArn!]?.waitingKind === "RETRY"); h.clock.advance(2_000);
+  const completed = await terminal(h.sfn, started.executionArn!); assert.equal(completed.status, "SUCCEEDED", JSON.stringify(completed)); assert.equal(calls, 2);
   const history = (await h.sfn.send(new GetExecutionHistoryCommand({ executionArn: started.executionArn!, maxResults: 1000 }))).events ?? [];
   const count = (type: string) => history.filter(event => event.type === type).length;
   assert.equal(count("TaskStateEntered"), 1); assert.equal(count("TaskStateExited"), 1);
@@ -98,7 +99,7 @@ test("HeartbeatSeconds does not time out an in-flight synchronous Lambda invocat
   const machine = await h.sfn.send(new CreateStateMachineCommand({ name: "heartbeat-sync", definition, roleArn: h.workflowRoleArn }));
   const started = await h.sfn.send(new StartExecutionCommand({ stateMachineArn: machine.stateMachineArn! })); await invoked;
   h.clock.advance(5_000); await new Promise(resolve => setImmediate(resolve)); assert.equal((await h.sfn.send(new DescribeExecutionCommand({ executionArn: started.executionArn! }))).status, "RUNNING");
-  release(); assert.equal((await terminal(h.sfn, started.executionArn!, h.clock)).status, "SUCCEEDED");
+  release(); assert.equal((await terminal(h.sfn, started.executionArn!)).status, "SUCCEEDED");
 });
 
 test("retry backoff, max delay, full jitter, and restart deadline are deterministic", async () => {
@@ -120,7 +121,7 @@ test("retry backoff, max delay, full jitter, and restart deadline are determinis
   h.clock.advance(1); await waitFor(() => invokedAt.length === 2); assert.equal(invokedAt[1] - start, 2_000, "first full-jitter delay is 4s × 0.5");
   h.clock.advance(2_499); await new Promise(resolve => setImmediate(resolve)); assert.equal(invokedAt.length, 2);
   h.clock.advance(1); await waitFor(() => invokedAt.length === 3); assert.equal(invokedAt[2] - invokedAt[1], 2_500, "backoff is capped at 5s before full jitter");
-  h.clock.advance(2_500); const completed = await terminal(sfn, started.executionArn!, h.clock); assert.equal(completed.status, "SUCCEEDED", JSON.stringify(completed)); assert.equal(invokedAt[3] - invokedAt[2], 2_500);
+  h.clock.advance(2_500); const completed = await terminal(sfn, started.executionArn!); assert.equal(completed.status, "SUCCEEDED", JSON.stringify(completed)); assert.equal(invokedAt[3] - invokedAt[2], 2_500);
   const history = (await sfn.send(new GetExecutionHistoryCommand({ executionArn: started.executionArn!, maxResults: 1000 }))).events ?? [];
   assert.equal(history.filter(event => event.type === "TaskStateEntered").length, 1); assert.equal(history.filter(event => event.type === "LambdaFunctionFailed").length, 3);
 });
@@ -129,7 +130,7 @@ test("bare Fail omits invented terminal fields and terminal executions publish E
   const h = await harness();
   const machine = await h.sfn.send(new CreateStateMachineCommand({ name: "bare-fail", definition: JSON.stringify({ StartAt: "Stop", States: { Stop: { Type: "Fail" } } }), roleArn: h.workflowRoleArn }));
   const started = await h.sfn.send(new StartExecutionCommand({ stateMachineArn: machine.stateMachineArn! }));
-  const completed = await terminal(h.sfn, started.executionArn!, h.clock); assert.equal(completed.status, "FAILED"); assert.equal(completed.error, undefined); assert.equal(completed.cause, undefined);
+  const completed = await terminal(h.sfn, started.executionArn!); assert.equal(completed.status, "FAILED"); assert.equal(completed.error, undefined); assert.equal(completed.cause, undefined);
   const history = (await h.sfn.send(new GetExecutionHistoryCommand({ executionArn: started.executionArn! }))).events ?? [];
   const details = history.find(event => event.type === "ExecutionFailed")?.executionFailedEventDetails;
   assert.equal(details?.error, undefined); assert.equal(details?.cause, undefined);
@@ -168,7 +169,7 @@ test("an expired Activity lease is reclaimed after restart", async () => {
   const sfn = new SFNClient({ endpoint: `http://127.0.0.1:${restarted.port}`, region, credentials: { accessKeyId: "admin", secretAccessKey: "password" } }); h.record.clients.push(sfn);
   const reclaimed = await sfn.send(new GetActivityTaskCommand({ activityArn: activity.activityArn!, workerName: "worker-two" })); assert.equal(reclaimed.taskToken, first.taskToken);
   await sfn.send(new SendTaskSuccessCommand({ taskToken: reclaimed.taskToken!, output: JSON.stringify({ completed: true }) }));
-  assert.equal((await terminal(sfn, started.executionArn!, h.clock)).status, "SUCCEEDED");
+  assert.equal((await terminal(sfn, started.executionArn!)).status, "SUCCEEDED");
 });
 
 test("an admitted nested sync task observes a later execution-role deny", async () => {
@@ -183,7 +184,7 @@ test("an admitted nested sync task observes a later execution-role deny", async 
   const started = await h.sfn.send(new StartExecutionCommand({ stateMachineArn: parent.stateMachineArn!, input: "{}" }));
   await waitFor(() => Boolean(h.simulator.store.regionState(region).stepFunctions.executions[started.executionArn!]?.nestedExecutions && Object.keys(h.simulator.store.regionState(region).stepFunctions.executions[started.executionArn!].nestedExecutions!).length));
   await h.iam.send(new PutRolePolicyCommand({ RoleName: "midflight-parent-role", PolicyName: "nested", PolicyDocument: policy(true) })); h.clock.advance(1_000);
-  const completed = await terminal(h.sfn, started.executionArn!, h.clock); assert.equal(completed.status, "SUCCEEDED", JSON.stringify(completed)); assert.match(JSON.parse(completed.output).caught.Error, /AccessDenied/i);
+  const completed = await terminal(h.sfn, started.executionArn!); assert.equal(completed.status, "SUCCEEDED", JSON.stringify(completed)); assert.match(JSON.parse(completed.output).caught.Error, /AccessDenied/i);
 });
 
 test("an EventBridge Step Functions producer records retry exhaustion and sends its DLQ event", async () => {
