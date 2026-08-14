@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
-import { EventBridgeClient, PutRuleCommand } from "@aws-sdk/client-eventbridge";
+import assert from "node:assert/strict";
+import { DescribeRuleCommand, EventBridgeClient, PutRuleCommand } from "@aws-sdk/client-eventbridge";
 import { AttachRolePolicyCommand, CreateRoleCommand, IAMClient } from "@aws-sdk/client-iam";
 import { AddPermissionCommand, CreateFunctionCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -155,6 +156,38 @@ test.describe("EVB-01 console", () => {
     expect(errors).toEqual([]);
   });
 
+  test("creates and edits a schedule-only rule without injecting a match-all event pattern", async ({ page }) => {
+    const errors = browserErrors(page);
+    const events = new EventBridgeClient(sdkOptions(simulator));
+    try {
+      await page.goto(`${consoleUrl}#/eventbridge/rules`);
+      await expect(page.getByText("Event patterns and legacy schedules", { exact: true })).toBeVisible();
+      await expect(page.locator("main .alert.info").filter({ hasText: "EventBridge Scheduler is recommended for new time-driven work" })).toBeVisible();
+      await page.getByRole("button", { name: "Create rule" }).first().click();
+      let dialog = page.getByRole("dialog");
+      await dialog.getByLabel("Rule name").fill("schedule-only-console");
+      await dialog.getByLabel("Event pattern (JSON)").fill("");
+      await dialog.locator('[name="scheduleExpression"]').fill("rate(5 minutes)");
+      await dialog.getByRole("button", { name: "Create rule" }).click();
+      await expect(page).toHaveURL(/#\/eventbridge\/rules\/default\/schedule-only-console\/details$/);
+
+      let described = await events.send(new DescribeRuleCommand({ Name: "schedule-only-console" }));
+      assert.equal(described.EventPattern, undefined);
+      assert.equal(described.ScheduleExpression, "rate(5 minutes)");
+
+      await page.getByRole("button", { name: "Edit" }).click();
+      dialog = page.getByRole("dialog");
+      await expect(dialog.getByLabel("Event pattern (JSON)")).toHaveValue("");
+      await expect(dialog.locator('[name="scheduleExpression"]')).toHaveValue("rate(5 minutes)");
+      await dialog.getByRole("button", { name: "Save rule" }).click();
+      await expect(dialog).toBeHidden();
+      described = await events.send(new DescribeRuleCommand({ Name: "schedule-only-console" }));
+      assert.equal(described.EventPattern, undefined);
+      assert.equal(described.ScheduleExpression, "rate(5 minutes)");
+      expect(errors).toEqual([]);
+    } finally { events.destroy(); }
+  });
+
   test("completes the bus, rule, pattern, send, monitoring, and delete workflow at 390 pixels", async ({ page }) => {
     const errors = browserErrors(page);
     await page.setViewportSize({ width: 390, height: 844 });
@@ -256,7 +289,7 @@ test.describe("EVB-01 console", () => {
       await expectHelp("Related rules", "up to five independent targets");
 
       await page.goto(`${consoleUrl}#/eventbridge/rules`);
-      await expectHelp("Rules", "Scheduler surface");
+      await expectHelp("Rules", "default-bus legacy scheduled rules");
       await page.goto(`${consoleUrl}#/eventbridge/rules/default/browser-help-rule/details`);
       await expectHelp("Rule details", "Replacement-style edits");
       await expectHelp("Targets", "CloudWatch Logs");

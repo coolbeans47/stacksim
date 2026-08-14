@@ -234,7 +234,10 @@ export class EventBridgeSchedulerService {
   async UpdateSchedule(input: any, nameValue: unknown): Promise<any> {
     return this.store.withMutationLock(this.mutationScope, async () => {
       const existing = this.requireSchedule(nameValue, input.GroupName); const clientToken = token(input.ClientToken); const requestHash = hash({ ...input, ClientToken: undefined, Name: existing.name, GroupName: existing.groupName });
-      if (clientToken && existing.clientToken === clientToken && existing.clientTokenHash === requestHash) return { ScheduleArn: existing.arn };
+      if (clientToken && existing.clientToken === clientToken) {
+        if (existing.clientTokenHash === requestHash) return { ScheduleArn: existing.arn };
+        throw new AwsError("ConflictException", "ClientToken was reused with different schedule parameters.", 409);
+      }
       const updated = this.normalize(input, existing.name, existing.groupName, existing); updated.clientToken = clientToken; updated.clientTokenHash = requestHash; this.schedules[this.key(existing.groupName, existing.name)] = updated; await this.store.save(); this.scheduleNext(); return { ScheduleArn: updated.arn };
     });
   }

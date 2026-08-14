@@ -1984,7 +1984,7 @@ export class S3Service {
 
   private async addNotificationDelivery(located: LocatedBucket, index: S3BucketIndex, type: "lambda" | "queue" | "eventbridge", arn: string | undefined, configurationId: string, eventName: string, payload: string, lineage: string[]): Promise<void> {
     const deliveries = index.notificationDeliveries ??= {}; const make = () => {
-      const id = randomUUID(); deliveries[id] = { id, destinationType: type, ...(arn ? { destinationArn: arn } : {}), configurationId, payload, eventName, enqueuedAt: this.clock.now(), nextAttemptAt: this.clock.now(), attempts: 0, lineage: lineage.slice(-32) };
+      const id = randomUUID(); deliveries[id] = { id, destinationType: type, ...(arn ? { destinationArn: arn } : {}), configurationId, payload, eventName, enqueuedAt: this.clock.now(), nextAttemptAt: this.clock.now(), attempts: 0, lineage: [...lineage] };
     };
     make(); const count = Object.keys(deliveries).length; if (this.notificationDuplicateEvery > 0 && count % this.notificationDuplicateEvery === 0) make();
     await this.metric(located.bucket.name, "NotificationEventsQueued", 1, "Count");
