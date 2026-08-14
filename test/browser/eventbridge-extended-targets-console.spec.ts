@@ -250,12 +250,13 @@ test.describe("EVB-02 extended-target console", () => {
       return result.Entries?.[0].EventId!;
     };
     const metricSum = async (metricName: string): Promise<number> => {
+      const now = Date.now();
       const result = await cloudwatch.send(new GetMetricStatisticsCommand({
         Namespace: "AWS/Events",
         MetricName: metricName,
         Dimensions: [{ Name: "RuleName", Value: ruleName }],
-        StartTime: new Date(Date.now() - 60_000),
-        EndTime: new Date(Date.now() + 60_000),
+        StartTime: new Date(Math.floor(now / 60_000) * 60_000 - 60_000),
+        EndTime: new Date(now + 60_000),
         Period: 60,
         Statistics: ["Sum"],
       }));
