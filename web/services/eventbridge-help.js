@@ -13,13 +13,13 @@ const help = {
   },
   rules: {
     level: "Partial",
-    description: "A rule compares incoming events with a JSON event pattern and sends each match to as many as five targets. Create a rule when selected application or service events should automatically invoke code, enqueue work, write logs, or call an API.",
-    support: "Event-pattern rules, pattern testing, enabled and disabled state, descriptions, tags, up to five independent targets, metrics, and durable delivery are active. The console does not create scheduled rules; use the supported Scheduler surface for time-driven work.",
+    description: "A rule uses an event pattern, a default-bus legacy schedule expression, or both, and sends each trigger to as many as five targets. Create one when selected events or schedule occurrences should invoke code, enqueue work, write logs, or call an API.",
+    support: "Event-pattern rules, default-bus legacy scheduled rules, pattern testing, enabled and disabled state, descriptions, tags, up to five independent targets, metrics, and durable delivery are active. EventBridge Scheduler is recommended for new time-driven work.",
   },
   ruleDetails: {
     level: "Partial",
-    description: "Rule details control whether matching is active and which event bus supplies events. Edit the rule to change its description or JSON pattern; target delivery and authorization are configured separately so each destination can retry independently.",
-    support: "Replacement-style edits, state changes, pattern testing, tags, target associations, deletion safeguards, and local service metrics are active. Unsupported cross-account buses and target services remain explicit dependency boundaries.",
+    description: "Rule details control whether triggering is active and which event bus supplies events. Edit the rule to change its description, JSON pattern, or default-bus legacy schedule; target delivery and authorization are configured separately so each destination can retry independently.",
+    support: "Replacement-style edits, state changes, event patterns, default-bus legacy schedules, tags, target associations, deletion safeguards, and local service metrics are active. Unsupported cross-account buses and target services remain explicit dependency boundaries.",
   },
   eventPattern: {
     level: "Supported locally",

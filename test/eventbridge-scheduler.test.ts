@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -153,7 +153,7 @@ test("official Scheduler client covers all 12 operations and a one-time SQS deli
   })), (error: any) => error.name === "ValidationException" && /later KMS phase/.test(error.message));
   assert.equal((await h.scheduler.send(new GetScheduleCommand({ Name: "once", GroupName: "learning" }))).ScheduleExpression, createInput.ScheduleExpression, "dependency rejection must not mutate the schedule");
 
-  await h.scheduler.send(new UpdateScheduleCommand({
+  const updateInput = {
     Name: "once",
     GroupName: "learning",
     ClientToken: "schedule-update",
@@ -162,7 +162,11 @@ test("official Scheduler client covers all 12 operations and a one-time SQS deli
     ActionAfterCompletion: "DELETE",
     FlexibleTimeWindow: { Mode: "OFF" },
     Target: { Arn: queueArn, RoleArn: roleArn, Input: JSON.stringify({ delivered: 2 }) },
-  }));
+  } as const;
+  const updated = await h.scheduler.send(new UpdateScheduleCommand(updateInput));
+  assert.equal((await h.scheduler.send(new UpdateScheduleCommand(updateInput))).ScheduleArn, updated.ScheduleArn, "matching update client tokens are idempotent");
+  await assert.rejects(h.scheduler.send(new UpdateScheduleCommand({ ...updateInput, ScheduleExpression: "at(2026-07-27T09:03:00)" })), (error: any) => error.name === "ConflictException");
+  assert.equal((await h.scheduler.send(new GetScheduleCommand({ Name: "once", GroupName: "learning" }))).ScheduleExpression, updateInput.ScheduleExpression, "conflicting token reuse must not mutate the schedule");
   h.clock.advance(120_000);
   await drive(h.clock, () => !Object.values(h.simulator.store.regionState().eventSchedules).some(item => item.groupName === "learning" && item.name === "once"));
   const message = await h.sqs.send(new ReceiveMessageCommand({ QueueUrl: queueUrl, WaitTimeSeconds: 0 }));
@@ -201,6 +205,30 @@ test("legacy EventBridge rate rules emit the AWS scheduled-event envelope on the
   assert.equal(deliveries[0].payload["detail-type"], "Scheduled Event");
   assert.deepEqual(deliveries[0].payload.resources, [rule.RuleArn]);
   assert.deepEqual(deliveries[0].payload.detail, {});
+});
+
+test("legacy EventBridge rule admission does not duplicate a scheduled slot after a checkpoint fault and restart", async () => {
+  let h = await harness();
+  const ruleName = "restart-safe-legacy";
+  const targetArn = `arn:aws:lambda:${region}:${account}:function:restart-safe-legacy-target`;
+  const deliveries: any[] = [];
+  (h.simulator.lambda as any).enqueueEventBridgeInvocation = async (_arn: string, payload: Buffer) => { deliveries.push(JSON.parse(payload.toString("utf8"))); return "accepted"; };
+  await h.events.send(new PutRuleCommand({ Name: ruleName, ScheduleExpression: "rate(1 minute)", State: "ENABLED" }));
+  await h.events.send(new PutTargetsCommand({ Rule: ruleName, Targets: [{ Id: "lambda", Arn: targetArn }] }));
+
+  const originalSave = h.simulator.store.save.bind(h.simulator.store);
+  (h.simulator.store as any).save = async () => { throw new Error("injected legacy schedule checkpoint fault"); };
+  const scheduledAt = h.clock.now() + 60_000;
+  h.clock.advance(60_000);
+  await drive(h.clock, () => deliveries.length === 1 && !(h.simulator.eventbridge as any).legacyScheduleWorkerRunning);
+  const persisted = JSON.parse(await readFile(join(h.root, "state.json"), "utf8"));
+  assert.equal(persisted.accounts[account].regions[region].eventRules[`default\0${ruleName}`].scheduleLastCommittedAt, undefined, "the injected fault leaves the rule checkpoint uncommitted");
+
+  (h.simulator.store as any).save = originalSave;
+  h = await restartHarness(h);
+  (h.simulator.lambda as any).enqueueEventBridgeInvocation = async (_arn: string, payload: Buffer) => { deliveries.push(JSON.parse(payload.toString("utf8"))); return "accepted"; };
+  await drive(h.clock, () => h.simulator.store.regionState().eventRules[`default\0${ruleName}`].scheduleLastCommittedAt === scheduledAt);
+  assert.equal(deliveries.length, 1, "the durable admission receipt suppresses a second delivery for the same slot");
 });
 
 test("Scheduler create requires exact iam:PassRole with scheduler.amazonaws.com context", async () => {

@@ -805,6 +805,24 @@ test("CloudWatch composite alarm events include suppression and active mute-wind
   assert.deepEqual(configurationChanged.detail.muteDetail, stateChanged.detail.muteDetail);
 });
 
+test("EventBridge ingestion terminates repeated and over-depth target lineage", async () => {
+  const h = await harness();
+  const name = "lineage-termination";
+  const arn = ruleArn(name);
+  const targetArn = `arn:aws:lambda:${region}:${account}:function:lineage-target`;
+  let invoked = 0;
+  (h.simulator.lambda as any).enqueueEventBridgeInvocation = async () => { invoked++; return "accepted"; };
+  await h.events.send(new PutRuleCommand({ Name: name, EventPattern: JSON.stringify({ source: ["lineage.test"] }) }));
+  await h.events.send(new PutTargetsCommand({ Rule: name, Targets: [{ Id: "lambda", Arn: targetArn }] }));
+
+  const repeated = await h.simulator.eventbridge.publishServiceEvent({ source: "lineage.test", detailType: "Repeated", detail: {}, deliveryLineage: [arn] });
+  const overDepth = await h.simulator.eventbridge.publishServiceEvent({ source: "lineage.test", detailType: "Over depth", detail: {}, deliveryLineage: Array.from({ length: 32 }, (_, index) => `lineage-${index}`) });
+  assert(repeated.EventId); assert(overDepth.EventId);
+  h.clock.advance(0); await tick();
+  assert.equal(invoked, 0);
+  assert.equal(h.simulator.eventbridge.deliveryDiagnostics().queued, 0, "skipped loop targets are not admitted for delivery");
+});
+
 test("CloudWatch service-event lineage terminates repeated and maximum-depth publication chains", async () => {
   const h = await harness();
   const alarmName = "lineage-guard";

@@ -421,6 +421,7 @@ export class EventBridgeService {
   private replayWorkerRunning = false;
   private replayWorkerPromise?: Promise<void>;
   private legacyScheduleWorkerRunning = false;
+  private legacyScheduleWorkerPromise?: Promise<void>;
   private readonly pendingTelemetry = new Set<Promise<void>>();
   private sqs?: SqsService;
   private sns?: SnsService;
@@ -474,6 +475,7 @@ export class EventBridgeService {
     this.cancelReplayWorker?.(); this.cancelReplayWorker = undefined;
     await this.workerPromise?.catch(() => undefined);
     await this.replayWorkerPromise?.catch(() => undefined);
+    await this.legacyScheduleWorkerPromise?.catch(() => undefined);
     await Promise.allSettled([...this.pendingTelemetry]);
     await this.deliveries.stop();
     await this.archiveStore.stop();
@@ -958,7 +960,7 @@ export class EventBridgeService {
 
   private entryIntegrationAttempt(attempt: ServiceIntegrationAttempt, index: number, input: unknown): ServiceIntegrationAttempt { return { ...attempt, attemptId: `${attempt.attemptId}:entry:${index}`, inputDigest: integrationInputDigest(input), operation: `${attempt.operation}:entry:${index}` }; }
 
-  private async acceptEvent(raw: unknown, options: { trustedSource?: boolean; deliveryLineage?: string[]; directRuleKey?: string; allowedRuleKeys?: Set<string>; replayName?: string; skipArchives?: boolean; integrationAttempt?: ServiceIntegrationAttempt; integrationEntryIndex?: number } = {}): Promise<{ EventId: string }> {
+  private async acceptEvent(raw: unknown, options: { trustedSource?: boolean; deliveryLineage?: string[]; directRuleKey?: string; allowedRuleKeys?: Set<string>; replayName?: string; skipArchives?: boolean; integrationAttempt?: ServiceIntegrationAttempt; integrationEntryIndex?: number; preservedEnvelope?: JsonObject } = {}): Promise<{ EventId: string }> {
     const entryAttempt: ServiceIntegrationAttempt | undefined = options.integrationAttempt && options.integrationEntryIndex !== undefined ? this.entryIntegrationAttempt(options.integrationAttempt, options.integrationEntryIndex, raw) : undefined;
     if (entryAttempt) { const prior = this.deliveries.integrationAttempt(entryAttempt.attemptId); if (prior) { assertMatchingIntegrationAttempt(prior, entryAttempt); return structuredClone(prior.output) as { EventId: string }; } }
     const entry = object(raw, "PutEvents entry"); const source = text(entry.Source, "Source", 1, 256); if (!options.trustedSource && source.startsWith("aws.")) throw new AwsError("NotAuthorizedForSourceException", `Source ${source} is reserved for trusted AWS service publishers.`); const detailType = text(entry.DetailType, "DetailType", 1, 128); const detailText = text(entry.Detail, "Detail", 1, MAX_PUT_EVENTS_BYTES);
@@ -967,7 +969,11 @@ export class EventBridgeService {
     object(detail, "Detail"); depthAndNumbers(detail);
     const resources = entry.Resources === undefined ? [] : Array.isArray(entry.Resources) ? entry.Resources.map((item, index) => text(item, `Resources[${index}]`, 0, 2048)) : (() => { throw new AwsError("ValidationException", "Resources must be an array."); })();
     const traceHeader = entry.TraceHeader === undefined ? undefined : text(entry.TraceHeader, "TraceHeader", 1, 500);
-    const bus = this.resolveBusIdentifier(entry.EventBusName, false); const id = entryAttempt ? deterministicEventId(entryAttempt.attemptId) : randomUUID(); const envelope: JsonObject = { version: "0", id, "detail-type": detailType, source, account: this.store.accountId, time: eventTime(entry.Time, this.clock.now()), region: this.region, ...(options.replayName ? { "replay-name": options.replayName } : {}), resources, detail };
+    const bus = this.resolveBusIdentifier(entry.EventBusName, false); const generatedId = entryAttempt ? deterministicEventId(entryAttempt.attemptId) : randomUUID();
+    const envelope: JsonObject = options.preservedEnvelope
+      ? { ...structuredClone(options.preservedEnvelope), ...(options.replayName ? { "replay-name": options.replayName } : {}) }
+      : { version: "0", id: generatedId, "detail-type": detailType, source, account: this.store.accountId, time: eventTime(entry.Time, this.clock.now()), region: this.region, ...(options.replayName ? { "replay-name": options.replayName } : {}), resources, detail };
+    const id = typeof envelope.id === "string" && envelope.id ? envelope.id : generatedId; envelope.id = id;
     if (!Object.hasOwn(this.buses, bus)) { const output = { EventId: id }; if (entryAttempt) await this.deliveries.putMany([], [], acceptedIntegrationAttempt(entryAttempt, output, this.clock.now())); return output; }
     const acceptedAt = this.clock.now();
     if (!options.skipArchives && !options.replayName) {
@@ -980,7 +986,9 @@ export class EventBridgeService {
     for (const [key, rule] of matched) {
       this.ruleMetric("MatchedEvents", rule, 1, "Count"); this.ruleMetric("TriggeredRules", rule, 1, "Count");
       for (const target of Object.values(this.targets[key] ?? {})) {
-        const deliveryId = randomUUID(); const targetType = target.targetType ?? classifyTargetArn(target.arn, this.region, this.store.accountId); const transformed = target.input !== undefined || target.inputPath !== undefined || target.inputTransformer !== undefined; const deliveryLineage = [...(options.deliveryLineage ?? []), rule.arn].slice(-MAX_DELIVERY_LINEAGE);
+        const deliveryLineage = [...(options.deliveryLineage ?? []), rule.arn];
+        if (deliveryLineage.length > MAX_DELIVERY_LINEAGE || new Set(deliveryLineage).size !== deliveryLineage.length) { this.ruleMetric("DeadLetterInvocations", rule, 1, "Count"); continue; }
+        const deliveryId = randomUUID(); const targetType = target.targetType ?? classifyTargetArn(target.arn, this.region, this.store.accountId); const transformed = target.input !== undefined || target.inputPath !== undefined || target.inputTransformer !== undefined;
         let payload = "null"; let sqsMessageGroupId: string | undefined; let httpParameters: EventBridgeHttpParametersState | undefined; let preflightErrorCode: string | undefined; let preflightErrorMessage: string | undefined;
         try {
           payload = transformedPayload(target, envelope, rule, acceptedAt);
@@ -1021,7 +1029,7 @@ export class EventBridgeService {
     this.cancelLegacyScheduleWorker?.(); this.cancelLegacyScheduleWorker = undefined;
     const times = Object.values(this.rules).filter(rule => rule.state !== "DISABLED" && rule.scheduleExpression && rule.scheduleNextAt !== undefined).map(rule => rule.scheduleNextAt!);
     if (!times.length) return;
-    try { this.cancelLegacyScheduleWorker = this.scheduler.schedule(() => this.runLegacyScheduleWorker(), Math.max(0, Math.min(...times) - this.clock.now())); } catch { /* simulator shutdown */ }
+    try { this.cancelLegacyScheduleWorker = this.scheduler.schedule(() => { const running = this.runLegacyScheduleWorker(); this.legacyScheduleWorkerPromise = running; return running.finally(() => { if (this.legacyScheduleWorkerPromise === running) this.legacyScheduleWorkerPromise = undefined; }); }, Math.max(0, Math.min(...times) - this.clock.now())); } catch { /* simulator shutdown */ }
   }
 
   private async runLegacyScheduleWorker(): Promise<void> {
@@ -1032,10 +1040,23 @@ export class EventBridgeService {
       const entry = Object.entries(this.rules).filter(([, rule]) => rule.state !== "DISABLED" && rule.scheduleExpression && rule.scheduleNextAt !== undefined && rule.scheduleNextAt <= now).sort(([, left], [, right]) => left.scheduleNextAt! - right.scheduleNextAt! || left.name.localeCompare(right.name))[0];
       if (!entry) return;
       const [key, rule] = entry; const scheduledAt = rule.scheduleNextAt!;
-      await this.acceptEvent({ Source: "aws.events", DetailType: "Scheduled Event", Detail: "{}", Resources: [rule.arn], Time: new Date(scheduledAt).toISOString(), EventBusName: "default" }, { trustedSource: true, directRuleKey: key });
+      const event = { Source: "aws.events", DetailType: "Scheduled Event", Detail: "{}", Resources: [rule.arn], Time: new Date(scheduledAt).toISOString(), EventBusName: "default" };
+      const attempt: ServiceIntegrationAttempt = {
+        attemptId: `legacy-schedule:${createHash("sha256").update(`${rule.arn}\0${scheduledAt}`).digest("hex")}`,
+        inputDigest: integrationInputDigest(event),
+        operation: "events:LegacyScheduledRule",
+        targetArn: this.buses.default.arn,
+        executionArn: `${rule.arn}#${scheduledAt}`,
+        stateMachineArn: rule.arn,
+        roleArn: "",
+        sourceArn: rule.arn,
+        lineage: [rule.arn],
+      };
+      await this.acceptEvent(event, { trustedSource: true, directRuleKey: key, integrationAttempt: attempt, integrationEntryIndex: 0 });
       rule.scheduleLastCommittedAt = scheduledAt;
       rule.scheduleNextAt = nextScheduleOccurrence({ expression: rule.scheduleExpression!, timezone: "UTC", after: Math.max(scheduledAt, now), anchor: rule.scheduleCreatedAt ?? rule.createdAt })?.at;
       await this.store.save();
+      await this.releaseIntegrationAttempt(attempt.attemptId);
     } finally { this.legacyScheduleWorkerRunning = false; this.scheduleNextLegacyRule(); }
   }
 
@@ -1058,7 +1079,7 @@ export class EventBridgeService {
       if (!serialized) { await this.archiveStore.failReplay(replay.name, "An archived event segment required by this replay is unavailable.", this.clock.now()); return; }
       const archived = object(parseEventJson(serialized), "Archived event"); const bus = this.archiveStore.archive(replay.archiveName)?.eventBusName; if (!bus) { await this.archiveStore.failReplay(replay.name, "The replay source archive is unavailable.", this.clock.now()); return; }
       const selectedArns = replay.filterArns ? new Set(replay.filterArns) : undefined; const allowedRuleKeys = new Set(Object.entries(this.rules).filter(([, rule]) => rule.eventBusName === bus && (!selectedArns || selectedArns.has(rule.arn))).map(([key]) => key));
-      await this.acceptEvent({ EventBusName: bus, Source: archived.source, DetailType: archived["detail-type"], Detail: stringifyEventJson(archived.detail), Resources: archived.resources, Time: archived.time }, { trustedSource: true, allowedRuleKeys, replayName: replay.name, skipArchives: true });
+      await this.acceptEvent({ EventBusName: bus, Source: archived.source, DetailType: archived["detail-type"], Detail: stringifyEventJson(archived.detail), Resources: archived.resources, Time: archived.time }, { trustedSource: true, allowedRuleKeys, replayName: replay.name, skipArchives: true, preservedEnvelope: archived });
       try { await this.archiveStore.checkpointReplay(replay.name, replay.leaseId, Date.parse(String(archived.time)), this.clock.now()); }
       catch { return; /* lease expiry/restart repeats an ambiguous admitted event */ }
     } catch (error) {
