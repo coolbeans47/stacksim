@@ -285,10 +285,10 @@ test("standard CDK waiters survive the CFN-01 through CFN-08 interruption matrix
     assert.deepEqual(synthesizedTypes, [...cfn0108ResourceTypes].sort(), "the standard-CDK Scenario C fixture must retain the complete CFN-01 through CFN-08 provider set; the four public S3 website types are frozen in the React fixture");
     const digests = await semanticCdkAssemblyDigests(assembly, ["RestStack.template.json"], ["RestStack.assets.json", "manifest.json"]);
     assert.deepEqual({ template: digests["RestStack.template.json"], assets: digests["RestStack.assets.json"], manifest: digests["manifest.json"] }, {
-      template: "2f59fdd530e15246ebc21c98974d3b9962435f4be82759733dd179b37130341e",
-      assets: "8805a6afb716b503e1d99cd5b00d93f6473be36a4327bfa326d99d6d141e2cfc",
-      manifest: "c6a56813c3568a5b7fdf0d43246acd6124e2e678b9d4235473b54492eb16ca4c",
-    }, "the pinned CDK 2.1132.0/aws-cdk-lib 2.261.0 Scenario C semantic assembly drifted");
+      template: "597749fc341f6561eb4965c89b358826a9837f629a69f475543c20b37bf4420c",
+      assets: "b246245956adb6e59d986eb0883d5a2b5ed6fac9182c4ad4c15e5cdad675f3c4",
+      manifest: "0499a38d0d1b7ae9d97e7630f296a3b648da5076ee7d240c48c10937685b3e90",
+    }, "the pinned CDK 2.1132.0/aws-cdk-lib 2.265.0 Scenario C semantic assembly drifted");
     const changeSet = await cloudformation.send(new DescribeChangeSetCommand({ StackName: "RestStack", ChangeSetName: "recovery-create" }));
     assert.equal(changeSet.Status, "CREATE_COMPLETE");
     assert.equal(changeSet.ExecutionStatus, "AVAILABLE");

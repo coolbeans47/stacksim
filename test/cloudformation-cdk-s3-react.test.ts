@@ -189,7 +189,7 @@ test("pinned standard CDK synthesizes the exact public React S3 website assembly
     const lock = JSON.parse(await readFile(join(fixture, "expected-assembly.json"), "utf8"));
     const names = Object.keys(lock.files) as string[];
     const hashes = await semanticCdkAssemblyDigests(output, ["ReactBucketStack.template.json"], names.filter(name => name !== "ReactBucketStack.template.json"));
-    assert.deepEqual(hashes, lock.files, "the pinned CDK 2.1132.0/aws-cdk-lib 2.261.0 React semantic assembly drifted");
+    assert.deepEqual(hashes, lock.files, "the pinned CDK 2.1132.0/aws-cdk-lib 2.265.0 React semantic assembly drifted");
     const assemblyDigest = sha256(names.map(name => hashes[name]).join("\n"));
     assert.equal(assemblyDigest, lock.assemblySha256);
     const template = JSON.parse(await readFile(join(output, "ReactBucketStack.template.json"), "utf8"));

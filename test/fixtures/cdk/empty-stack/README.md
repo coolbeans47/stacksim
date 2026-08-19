@@ -8,7 +8,7 @@ the smallest possible templates.
 ## Pinned toolchain and context
 
 - `cdk` 2.1132.0
-- `aws-cdk-lib` 2.261.0
+- `aws-cdk-lib` 2.265.0
 - `constructs` 10.7.1
 - `tsx` 4.23.1
 - `esbuild` 0.28.1 (repository pin used by `tsx`; no workload bundling)

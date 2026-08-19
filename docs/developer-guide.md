@@ -94,7 +94,7 @@ This tutorial uses the CDK versions currently exercised by the stacksim test sui
 | Package       | Version    |
 | ------------- | ---------- |
 | `aws-cdk` CLI | `2.1132.0` |
-| `aws-cdk-lib` | `2.261.0`  |
+| `aws-cdk-lib` | `2.265.0`  |
 | `constructs`  | `10.7.1`   |
 
 The versions are pinned in the project for reproducible builds. Upgrade them deliberately and commit the resulting `package-lock.json` changes.
@@ -168,7 +168,7 @@ Install the tested CDK versions, Lambda bundler, Lambda types, and DynamoDB SDK 
 
 ```bash
 npm install --save-exact \
-  aws-cdk-lib@2.261.0 \
+  aws-cdk-lib@2.265.0 \
   constructs@10.7.1 \
   @aws-sdk/client-dynamodb@3.1095.0 \
   @aws-sdk/lib-dynamodb@3.1095.0

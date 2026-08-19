@@ -504,7 +504,7 @@ The relay is deliberate: the bounded `AWS::Events::Rule` provider accepts Lambda
 
 Custom-resource Lambda assets are trusted local code. The simulator sanitizes inherited host variables, copies only the public callback CA into the invocation directory, and blocks common process/network escape paths for the supported JavaScript helper corpus, but it is not an OS/container sandbox for hostile same-user code. Do not deploy untrusted provider ZIPs.
 
-The tested CDK packages remain `cdk@2.1132.0`, `aws-cdk-lib@2.261.0`, and `constructs@10.7.1`. The ordinary workflow is:
+The tested CDK packages remain `cdk@2.1132.0`, `aws-cdk-lib@2.265.0`, and `constructs@10.7.1`. The ordinary workflow is:
 
 ```bash
 npx cdk synth
@@ -613,7 +613,7 @@ The checked-in [`test/fixtures/cdk/rest-stack`](../test/fixtures/cdk/rest-stack)
 
 ## Example CDK project: public React S3 website
 
-The checked-in [`test/fixtures/cdk/react-bucket-deployment`](../test/fixtures/cdk/react-bucket-deployment) fixture is an ordinary TypeScript CDK application pinned to `cdk@2.1132.0`, `aws-cdk-lib@2.261.0`, and `constructs@10.7.1`. Its deterministic local build bundles real React HTML, JavaScript, and CSS into `frontend/dist`; the CDK source contains no stacksim-specific construct:
+The checked-in [`test/fixtures/cdk/react-bucket-deployment`](../test/fixtures/cdk/react-bucket-deployment) fixture is an ordinary TypeScript CDK application pinned to `cdk@2.1132.0`, `aws-cdk-lib@2.265.0`, and `constructs@10.7.1`. Its deterministic local build bundles real React HTML, JavaScript, and CSS into `frontend/dist`; the CDK source contains no stacksim-specific construct:
 
 ```ts
 import { App, CfnOutput, RemovalPolicy, Stack } from "aws-cdk-lib";

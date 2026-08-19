@@ -44,8 +44,8 @@ interface AssemblySnapshot {
 
 const EXPECTED_ASSEMBLIES: Record<"v1" | "v2" | "fail", AssemblySnapshot> = {
   v1: {
-    templateSha256: "e831a71fbfc8cd252e81c540e568f77e984e7cbee56ee74eb2a47ca905dfb4dd",
-    assetManifestSha256: "29c51bd1c5b80b4ca5c0bc185b8e0785f136e66bff472d4a99efe744096cbc74",
+    templateSha256: "ab2d9060dbfbe5bf283e5d398fa7c873b9325f9da005649e700909014db44a36",
+    assetManifestSha256: "83049fc7133aa6dadafba58f0e9e03c78f8383af7510ed9f75f6a8ba69078e05",
     logicalTypes: {
       BundledAlias861CB90F: "AWS::Lambda::Alias",
       BundledFunction779AF8D0: "AWS::Lambda::Function",
@@ -76,12 +76,12 @@ const EXPECTED_ASSEMBLIES: Record<"v1" | "v2" | "fail", AssemblySnapshot> = {
     },
     fileAssetIds: [
       "9b10c0f44fc69e3f7e81d8b9d9c9c096eb210e6aa44673c33133b301f6539f30",
-      "e831a71fbfc8cd252e81c540e568f77e984e7cbee56ee74eb2a47ca905dfb4dd",
+      "ab2d9060dbfbe5bf283e5d398fa7c873b9325f9da005649e700909014db44a36",
     ],
   },
   v2: {
-    templateSha256: "b5ae182bd3df690ec582067fd348c26b0b75fa106521bad32a3fd11c4c3d8c75",
-    assetManifestSha256: "dd2fb77a02784af028ace2a6d13301add01ca023c401ba0bf13a8f5af3f8ac57",
+    templateSha256: "cce220de637edfda4ba376a9fc642e6085558b6d1830aec7dd369275d8c942e1",
+    assetManifestSha256: "6debdf3905ebf9226da306b238fd39a47c14a2001cb53550230c27a18cddd065",
     logicalTypes: {
       BundledAlias861CB90F: "AWS::Lambda::Alias",
       BundledFunction779AF8D0: "AWS::Lambda::Function",
@@ -112,12 +112,12 @@ const EXPECTED_ASSEMBLIES: Record<"v1" | "v2" | "fail", AssemblySnapshot> = {
     },
     fileAssetIds: [
       "1ac5e9b5a25e405916726af422ab74525ea39dee08f535d710911699a8d13f9e",
-      "b5ae182bd3df690ec582067fd348c26b0b75fa106521bad32a3fd11c4c3d8c75",
+      "cce220de637edfda4ba376a9fc642e6085558b6d1830aec7dd369275d8c942e1",
     ],
   },
   fail: {
-    templateSha256: "b5168467aae943f4d7d1080e9dc363b46ef92e8fee558549f0ce426dd7ff41bc",
-    assetManifestSha256: "1112089ee700b0988766eab075228588ee3e7ff68713c1e88796a33b0f1919fc",
+    templateSha256: "14738ba9f03a9e52fa2e320236b9b49d1906ec1233fe2724687f975c1e67d245",
+    assetManifestSha256: "da564e654334bec257f807baaf9475d71193fdfc5d02785870291519ba7ebedd",
     logicalTypes: {
       BundledAlias861CB90F: "AWS::Lambda::Alias",
       BundledFunction779AF8D0: "AWS::Lambda::Function",
@@ -160,8 +160,8 @@ const EXPECTED_ASSEMBLIES: Record<"v1" | "v2" | "fail", AssemblySnapshot> = {
       ],
     },
     fileAssetIds: [
+      "14738ba9f03a9e52fa2e320236b9b49d1906ec1233fe2724687f975c1e67d245",
       "2461b7c6e32e0d8e9be9bec5d7908bc8081a9e9cbce48c98ae81c235f0ffce13",
-      "b5168467aae943f4d7d1080e9dc363b46ef92e8fee558549f0ce426dd7ff41bc",
     ],
   },
 };
@@ -285,7 +285,7 @@ test("pinned standard CDK exercises the complete CFN-06 provider set through dep
     let env = cdkEnvironment(endpoint, root, "v1");
 
     const cdkVersion = await runNpx(["cdk", "--version"], env, 30_000); commandSucceeded(cdkVersion, "cdk --version"); assert.match(cdkVersion.stdout, /^2\.1132\.0\b/);
-    for (const [packageName, expected] of [["aws-cdk-lib", "2.261.0"], ["constructs", "10.7.1"], ["esbuild", "0.28.1"], ["tsx", "4.23.1"]] as const) {
+    for (const [packageName, expected] of [["aws-cdk-lib", "2.265.0"], ["constructs", "10.7.1"], ["esbuild", "0.28.1"], ["tsx", "4.23.1"]] as const) {
       const packageJson = JSON.parse(await readFile(join(sourceRoot, "node_modules", packageName, "package.json"), "utf8"));
       assert.equal(packageJson.version, expected, `${packageName} version changed`);
     }

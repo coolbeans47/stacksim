@@ -28,9 +28,9 @@ import {
 
 export const CDK_BUCKET_DEPLOYMENT_TYPE = "Custom::CDKBucketDeployment";
 
-// These are the checked-in provider assets emitted by aws-cdk-lib 2.261.0.
+// These are the checked-in provider assets emitted by aws-cdk-lib 2.265.0.
 export const PINNED_BUCKET_DEPLOYMENT_HANDLER_ASSET = "97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f.zip";
-export const PINNED_BUCKET_DEPLOYMENT_AWSCLI_ASSET = "a72522445441e9b66c2f16956c54d4786af8c61c156b80c48a6e7c32fcc49023.zip";
+export const PINNED_BUCKET_DEPLOYMENT_AWSCLI_ASSET = "98f62bef9320f8c0a0a7be21d7c746f069131f196f51ffe3008a6bb730b368ec.zip";
 
 const MAX_SOURCE_ARCHIVE_BYTES = 128 * 1024 * 1024;
 const MAX_EXPANDED_ASSET_BYTES = 256 * 1024 * 1024;
@@ -243,12 +243,12 @@ async function validatePinnedHelper(s3: S3Service, store: StateStore, model: Cdk
   if (fn.packageType !== "Zip" || fn.runtime !== "python3.13" || fn.handler !== "index.handler" || fn.timeout !== 900
     || fn.environment?.AWS_CA_BUNDLE !== "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
     || Object.keys(fn.environment ?? {}).some(key => key !== "AWS_CA_BUNDLE") || fn.layers?.length !== 1) {
-    throw new DeploymentBoundaryError("ProviderConfiguration", "The BucketDeployment provider Lambda does not match the pinned aws-cdk-lib 2.261.0 helper shape");
+    throw new DeploymentBoundaryError("ProviderConfiguration", "The BucketDeployment provider Lambda does not match the pinned aws-cdk-lib 2.265.0 helper shape");
   }
   const declared = helperResource(store, model, context);
   const code = record(declared?.properties.Code) ? declared!.properties.Code as Record<string, unknown> : undefined;
   if (!declared || code?.S3Bucket !== model.SourceBucketNames[0] || code?.S3Key !== PINNED_BUCKET_DEPLOYMENT_HANDLER_ASSET) {
-    throw new DeploymentBoundaryError("ProviderConfiguration", "The BucketDeployment provider code asset does not match the pinned aws-cdk-lib 2.261.0 helper");
+    throw new DeploymentBoundaryError("ProviderConfiguration", "The BucketDeployment provider code asset does not match the pinned aws-cdk-lib 2.265.0 helper");
   }
   if (fn.tags?.["aws:cloudformation:stack-id"] !== context.stackId || fn.tags?.["aws:cloudformation:logical-id"] !== declared.logicalResourceId) {
     throw new DeploymentBoundaryError("ProviderConfiguration", "The BucketDeployment provider Lambda is not owned by its declared CloudFormation resource");
@@ -264,7 +264,7 @@ async function validatePinnedHelper(s3: S3Service, store: StateStore, model: Cdk
   const declaredLayer = Object.values(stack?.resources ?? {}).find(resource => resource.resourceType === "AWS::Lambda::LayerVersion" && (resource.physicalResourceId === layer.arn || resource.refValue === layer.arn));
   const layerContent = record(declaredLayer?.properties.Content) ? declaredLayer!.properties.Content as Record<string, unknown> : undefined;
   if (!declaredLayer || layerContent?.S3Bucket !== model.SourceBucketNames[0] || layerContent?.S3Key !== PINNED_BUCKET_DEPLOYMENT_AWSCLI_ASSET) {
-    throw new DeploymentBoundaryError("ProviderConfiguration", "The BucketDeployment AWS CLI layer asset does not match the pinned aws-cdk-lib 2.261.0 helper");
+    throw new DeploymentBoundaryError("ProviderConfiguration", "The BucketDeployment AWS CLI layer asset does not match the pinned aws-cdk-lib 2.265.0 helper");
   }
   if (layer.cloudFormationOwner !== `${context.stackId}\0${declaredLayer.logicalResourceId}`) throw new DeploymentBoundaryError("ProviderConfiguration", "The BucketDeployment AWS CLI layer is not owned by its declared CloudFormation resource");
   if (typeof layerContent.S3ObjectVersion !== "string" || !layerContent.S3ObjectVersion) throw new DeploymentBoundaryError("ProviderConfiguration", "The BucketDeployment AWS CLI layer asset is not version-pinned");

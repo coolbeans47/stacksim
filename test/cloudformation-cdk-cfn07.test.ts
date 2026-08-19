@@ -204,10 +204,10 @@ test("pinned standard CDK synthesizes the exact CFN-07 SpecRestApi resource set 
       manifest: digests["manifest.json"],
       assets: digests["Cfn07Stack.assets.json"],
     }, {
-      template: "2f9790d4e04af01eebbdd954122ea295474d067f3dddf4ce7cc83ade9db5dbeb",
-      manifest: "e536011d6dce51e9406f274d22a9c1efeded6130b89b323cc16b0f9ce95c4171",
-      assets: "19de40f8b135ba4ba0edfc67f3425be7a7b4a30861cfa8b1109272f0223a38d2",
-    }, "the pinned CDK 2.1132.0/aws-cdk-lib 2.261.0 CFN-07 assembly drifted");
+      template: "3bd4fa27df79e4a8dcddc348e63e3db7e7e52fdad3c1accdb0dd3309ce6506a3",
+      manifest: "353fbded86c760161a0aa44bb9b104c00f50a8d02cc63844b0fbefa423f4e131",
+      assets: "3693f45e112c1d68552c6c3af6c08125d2de3c33713985dbb056632ef02f2806",
+    }, "the pinned CDK 2.1132.0/aws-cdk-lib 2.265.0 CFN-07 assembly drifted");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
