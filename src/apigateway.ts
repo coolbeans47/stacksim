@@ -125,7 +125,7 @@ function sqsQueryRequest(body: Buffer, queueUrl?: string): { operation: string; 
   return { operation, request: parsed };
 }
 
-interface InvocationInput { method: string; path: string; headers: Record<string, string>; query: Record<string, string>; multiQuery: Record<string, string[]>; pathParameters: Record<string, string>; body: Buffer; stageName: string; stageVariables: Record<string, string>; requestId: string; deploymentId?: string; isCanaryRequest?: boolean; sourceIp?: string; userAgent?: string; domainName?: string; principal?: string; principalContext?: PrincipalContext; lambdaLineage?: string[]; identityAuthorization?: AuthorizationResult; sourceArn?: string; sourceAccount?: string; apiKeyId?: string; apiKeyValue?: string }
+interface InvocationInput { method: string; path: string; headers: Record<string, string>; query: Record<string, string>; multiQuery: Record<string, string[]>; pathParameters: Record<string, string>; body: Buffer; stageName: string; stageVariables: Record<string, string>; requestId: string; apiId?: string; deploymentId?: string; isCanaryRequest?: boolean; sourceIp?: string; userAgent?: string; domainName?: string; principal?: string; principalContext?: PrincipalContext; lambdaLineage?: string[]; identityAuthorization?: AuthorizationResult; sourceArn?: string; sourceAccount?: string; apiKeyId?: string; apiKeyValue?: string }
 interface ServiceLogCorrelation { lambdaRequestId: string; functionName: string }
 interface BackendResult { status: number; body: Buffer; headers: Record<string, string>; error?: string; latency: number; serviceLogCorrelation?: ServiceLogCorrelation }
 interface PipelineResult { status: number; body: Buffer; headers: Record<string, string>; latency: number; integrationLatency: number; log: string; cacheStatus?: "hit" | "miss"; serviceLogCorrelation?: ServiceLogCorrelation; accessLogValues?: Record<string, unknown> }
@@ -1077,6 +1077,7 @@ export class ApiGatewayService {
   }
 
   private async pipeline(api: RestApiState, resource: ApiResource, configuredMethod: string, input: InvocationInput, configuration: InvocationConfiguration, authorizers: Record<string, ApiAuthorizerState> = {}, resourcePolicy?: PolicyDocument, cache?: InvocationCacheConfiguration): Promise<PipelineResult> {
+    input.apiId = api.id;
     const started = performance.now(); const log: string[] = [`Starting execution for request: ${input.requestId}`, `HTTP Method: ${input.method}, Resource Path: ${resource.path}`]; const method = resource.methods[configuredMethod]; const integration = resource.integrations[configuredMethod]; if (!method || !integration) throw new AwsError("MissingAuthenticationTokenException", "Missing Authentication Token", 403);
     const validator = method.requestValidatorId ? configuration.requestValidators[method.requestValidatorId] : undefined;
     if (method.requestValidatorId && !validator) throw new GatewayFailure("API_CONFIGURATION_ERROR", "InternalServerErrorException", "Invalid request validator configuration", 500);
@@ -1203,7 +1204,8 @@ export class ApiGatewayService {
     if (!integration.credentials) throw new AwsError("AccessDeniedException", "API Gateway integration role is not authorized to send messages to the SQS queue", 500);
     try {
       const request = (({ QueueUrl: _queueUrl, ...message }) => message)(target.request);
-      const caller = { kind: "role" as const, roleArn: integration.credentials, sourceAccount: this.store.accountId, deliveryLineage: input.lambdaLineage?.slice(-32) };
+      const sourceArn = `arn:aws:execute-api:${this.region}:${this.store.accountId}:${input.apiId}/${input.stageName}/${input.method}/${input.path.replace(/^\//, "")}`;
+      const caller = { kind: "role" as const, roleArn: integration.credentials, sourceArn, sourceAccount: this.store.accountId, deliveryLineage: input.lambdaLineage?.slice(-32) };
       const response = target.operation === "SendMessage"
         ? await this.sqs!.sendAuthorizedMessageToArn(queueArn, request, caller)
         : await this.sqs!.sendAuthorizedMessageBatchToArn(queueArn, request, caller);

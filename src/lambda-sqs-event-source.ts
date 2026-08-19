@@ -345,7 +345,7 @@ export class LambdaSqsEventSource {
   }
 
   private active(uuid: string): number { return this.activeCounts.get(uuid) ?? 0; }
-  private maximumConcurrency(mapping: LambdaSqsMappingState): number { return mapping.scalingMaximumConcurrency ?? (this.resolveQueue(mapping.eventSourceArn).fifo ? 10 : 1); }
+  private maximumConcurrency(mapping: LambdaSqsMappingState): number | undefined { return mapping.scalingMaximumConcurrency; }
 
   private async metric(mapping: LambdaSqsMappingState, metricName: string, value = 1): Promise<void> {
     await this.telemetry?.publish({ namespace: "AWS/Lambda", metricName, dimensions: { FunctionName: mapping.functionName, EventSourceMapping: mapping.uuid }, value, unit: "Count", timestamp: this.clock.now() }).catch(() => undefined);
@@ -369,7 +369,8 @@ export class LambdaSqsEventSource {
       if (error instanceof AwsError && error.code === "ResourceNotFoundException") { mapping.enabled = false; mapping.state = "Disabled"; mapping.stateTransitionReason = "Event source queue no longer exists"; this.pending.delete(mapping.uuid); }
       mapping.lastProcessingResult = error instanceof Error ? error.message : String(error); mapping.lastModified = this.clock.now(); await this.store.save().catch(() => undefined); return;
     }
-    let available = this.maximumConcurrency(mapping) - this.active(mapping.uuid); if (available <= 0) return;
+    const maximumConcurrency = this.maximumConcurrency(mapping);
+    let available = maximumConcurrency === undefined ? Number.POSITIVE_INFINITY : maximumConcurrency - this.active(mapping.uuid); if (available <= 0) return;
     let pending = this.pending.get(mapping.uuid);
     if (pending) {
       const remaining = mapping.batchSize - pending.messages.length;

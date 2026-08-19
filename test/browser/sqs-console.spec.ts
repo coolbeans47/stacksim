@@ -267,6 +267,30 @@ test.describe("SQS-01 through SQS-04 console", () => {
     await expect(page.locator(".sqs-lambda-triggers")).toContainText("11 · 1s");
     await expect(page.locator(".sqs-lambda-triggers")).toContainText("Enabled");
     await expect(page.locator(".sqs-lambda-triggers")).toContainText("2");
+
+    await page.goto(`${consoleUrl}#/lambda/functions/browser-sqs-worker`);
+    const sourceRow = page.locator(".trigger-card tbody tr").filter({ has: page.getByRole("link", { name: "browser-source", exact: true }) });
+    await expect(sourceRow).toContainText("SQS queue");
+    await expect(sourceRow).toContainText("Maximum concurrency: 2");
+    await sourceRow.getByRole("button", { name: "Edit" }).click();
+    let functionDialog = page.getByRole("dialog");
+    await expect(functionDialog.getByLabel("Maximum concurrency (optional)")).toHaveValue("2");
+    await expect(functionDialog.getByLabel("Starting position")).toHaveCount(0);
+    await expect(functionDialog.getByLabel("Parallelization factor")).toHaveCount(0);
+    await functionDialog.getByLabel("Maximum concurrency (optional)").fill("");
+    await functionDialog.getByLabel("Report partial batch item failures").uncheck();
+    await functionDialog.getByRole("button", { name: "Save" }).click();
+    await expect(sourceRow).toContainText("Maximum concurrency: Unbounded");
+    await expect(sourceRow).toContainText("Partial failures: Full batch");
+
+    await createQueue(page, "browser-secondary");
+    await page.goto(`${consoleUrl}#/lambda/functions/browser-sqs-worker`);
+    await page.getByRole("button", { name: "Add trigger" }).first().click();
+    functionDialog = page.getByRole("dialog");
+    await expect(functionDialog.getByLabel("Trigger type")).toHaveValue("sqs");
+    await selectArnSuggestion(page, "SQS queue", "browser-secondary");
+    await functionDialog.getByRole("button", { name: "Add" }).click();
+    await expect(page.locator(".trigger-card").getByRole("link", { name: "browser-secondary", exact: true })).toBeVisible();
     expect(errors).toEqual([]);
   });
 
