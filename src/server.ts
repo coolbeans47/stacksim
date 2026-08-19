@@ -961,24 +961,24 @@ export class StackSim {
         sourceAccount: this.store.accountId,
         lineage: [stackId],
       }).then(() => undefined));
-      services.cloudformation.setBootstrapParameterResolver(name => services!.ssm.resolveCloudFormationPlain(name));
+      services.cloudformation.setBootstrapParameterResolver(name => services!.ssm.resolveCloudFormationParameter(name));
       services.cloudformation.setDynamicReferenceResolver(async reference => {
         if (reference.family === "ssm" || reference.family === "ssm-secure") {
           const selected = `${reference.parameterName}${reference.parameterVersion === undefined ? "" : `:${reference.parameterVersion}`}`;
           const response = await services!.ssm.getParameterForService(selected, reference.family === "ssm-secure");
           const parameter = response.Parameter;
           if (!parameter || reference.family === "ssm" && parameter.Type !== "String" || reference.family === "ssm-secure" && parameter.Type !== "SecureString") throw new AwsError("ValidationError", `${reference.family} dynamic reference selected an incompatible parameter type`, 400);
-          return String(parameter.Value);
+          return { value: String(parameter.Value), generationId: response.generationId, version: response.version };
         }
         const response = await services!.secretsmanager.getSecretForService({ SecretId: reference.secretId!, ...(reference.versionId ? { VersionId: reference.versionId } : {}), ...(reference.versionStage ? { VersionStage: reference.versionStage } : {}) });
         if (response.SecretBinary !== undefined || typeof response.SecretString !== "string") throw new AwsError("ValidationError", "Secrets Manager dynamic references support SecretString values only", 400);
-        if (!reference.jsonKey) return response.SecretString;
+        if (!reference.jsonKey) return { value: response.SecretString };
         let parsed: unknown;
         try { parsed = JSON.parse(response.SecretString); } catch { throw new AwsError("ValidationError", "The selected SecretString is not valid JSON", 400); }
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !Object.hasOwn(parsed, reference.jsonKey)) throw new AwsError("ValidationError", `The selected SecretString does not contain JSON key ${reference.jsonKey}`, 400);
         const value = (parsed as Record<string, unknown>)[reference.jsonKey];
         if (value === null || !["string", "number", "boolean"].includes(typeof value)) throw new AwsError("ValidationError", `Secret JSON key ${reference.jsonKey} must contain a scalar value`, 400);
-        return String(value);
+        return { value: String(value) };
       });
       this.regionalServices.set(region, services);
       if (this.started) void this.startRegionalServices(region, services).catch(() => undefined);

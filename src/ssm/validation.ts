@@ -27,6 +27,16 @@ export function canonicalParameterName(value: unknown, allowArn = true): string 
   return supplied.startsWith("/") ? supplied : supplied;
 }
 
+export function canonicalParameterPath(value: unknown): string {
+  if (typeof value !== "string" || !value) return validation("Path is required.");
+  const supplied = value.trim();
+  if (!supplied.startsWith("/")) return validation("Path must be a hierarchy beginning with a slash.");
+  if (supplied === "/") return supplied;
+  const normalized = supplied.endsWith("/") ? supplied.slice(0, -1) : supplied;
+  canonicalParameterName(normalized, false);
+  return normalized;
+}
+
 export function normalizeStringList(value: string): string {
   return value.split(",").map(item => item.trim()).join(",");
 }

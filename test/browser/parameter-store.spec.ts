@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { GetParameterCommand, PutParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
+import { DescribeParametersCommand, GetParameterCommand, PutParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -110,6 +110,33 @@ test.describe("PSS-01 Parameter Store console", () => {
     await expect(page.locator("main")).not.toContainText(marker);
   });
 
+  test("creates and edits an Advanced parameter policy with visible status and due time", async ({ page }) => {
+    const name = "/browser/advanced/policy";
+    const expiration = new Date(Date.now() + 3_600_000).toISOString();
+    const policies = JSON.stringify([{ Type: "Expiration", Version: "1.0", Attributes: { Timestamp: expiration } }], null, 2);
+    await page.goto(`${consoleUrl}#/systems-manager/parameter-store/create`);
+    await page.getByLabel("Name").fill(name);
+    await page.getByLabel("Tier").selectOption("Advanced");
+    await page.getByLabel("Value").fill("advanced-value");
+    await page.getByLabel("Policies (JSON array)").fill(policies);
+    await page.getByRole("button", { name: "Create parameter" }).click();
+    await expect(page.getByRole("heading", { name })).toBeVisible();
+    const policiesHeading = page.getByRole("heading", { name: "Policies", exact: true });
+    const policiesCard = page.locator(".card").filter({ has: policiesHeading });
+    await expect(policiesCard).toContainText("Expiration");
+    await expect(policiesCard).toContainText("PENDING");
+    await expect(policiesCard).not.toContainText("No parameter policies");
+
+    await page.getByRole("button", { name: "Edit value" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByLabel("Tier")).toHaveValue("Advanced");
+    await dialog.getByLabel("New value").fill("advanced-updated");
+    await dialog.getByRole("button", { name: "Save new version" }).click();
+    const described = await ssm.send(new DescribeParametersCommand({ ParameterFilters: [{ Key: "Name", Values: [name] }] }));
+    expect(described.Parameters?.[0]?.Tier).toBe("Advanced");
+    expect(described.Parameters?.[0]?.Policies?.[0]?.PolicyType).toBe("Expiration");
+  });
+
   test("explains Parameter Store input panels and their StackSim support", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const expectHelp = async (title: string, supportText: string) => {
@@ -134,6 +161,7 @@ test.describe("PSS-01 Parameter Store console", () => {
 
     await page.getByRole("link", { name: "Create parameter" }).first().click();
     await expectHelp("Parameter configuration", "installation-local AES-256-GCM protection");
+    await expectHelp("Parameter configuration", "Advanced policies");
 
     const name = "/browser/tooltip/token";
     await ssm.send(new PutParameterCommand({ Name: name, Type: "SecureString", Value: "tooltip-secret", Tags: [{ Key: "environment", Value: "browser" }] }));
