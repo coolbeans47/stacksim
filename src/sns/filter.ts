@@ -1,4 +1,4 @@
-import { isIP } from "node:net";
+import { cidrMatches, validIpOrCidr } from "../core/ip.js";
 import { AwsError } from "../errors.js";
 import type { SnsMessageAttributeState } from "../types.js";
 
@@ -115,7 +115,7 @@ function primitive(value: JsonValue): value is JsonPrimitive {
   return value === null || ["string", "number", "boolean"].includes(typeof value);
 }
 
-const OPERATORS = new Set(["anything-but", "prefix", "suffix", "wildcard", "equals-ignore-case", "numeric", "ip", "exists"]);
+const OPERATORS = new Set(["anything-but", "prefix", "suffix", "wildcard", "equals-ignore-case", "numeric", "cidr", "exists"]);
 
 function operatorObject(value: JsonValue): value is JsonObject {
   return object(value) && Object.keys(value).length === 1 && OPERATORS.has(Object.keys(value)[0]);
@@ -160,6 +160,7 @@ function validateOperator(value: JsonObject): number {
     if (primitive(operand)) return 0;
     if (Array.isArray(operand)) {
       if (!operand.length || operand.some(item => !primitive(item))) invalid("anything-but arrays may contain only scalar values.");
+      if (new Set(operand.map(item => item === null ? "null" : typeof item)).size !== 1) invalid("anything-but arrays must contain values of one JSON type.");
       return 0;
     }
     if (!object(operand) || Object.keys(operand).length !== 1 || !["prefix", "suffix", "wildcard", "equals-ignore-case"].includes(Object.keys(operand)[0])) {
@@ -169,7 +170,7 @@ function validateOperator(value: JsonObject): number {
   }
   if (typeof operand !== "string" || !operand) invalid(`${name} must contain a non-empty string.`);
   if (name === "wildcard") return wildcardPoints(operand);
-  if (name === "ip" && isIP(operand.split("/")[0]) === 0) invalid("ip must contain an IP address or CIDR.");
+  if (name === "cidr" && !validIpOrCidr(operand)) invalid("cidr must contain an IP address or CIDR.");
   return 0;
 }
 
@@ -251,23 +252,6 @@ function glob(pattern: string, value: string): boolean {
   return new RegExp(`^${escaped}$`, "u").test(value);
 }
 
-function ipv4(value: string): number | undefined {
-  if (isIP(value) !== 4) return undefined;
-  return value.split(".").reduce((total, octet) => (total * 256 + Number(octet)) >>> 0, 0);
-}
-
-function ipMatch(pattern: string, value: JsonPrimitive): boolean {
-  if (typeof value !== "string") return false;
-  const [address, bitsSource] = pattern.split("/");
-  if (isIP(address) === 4 && isIP(value) === 4) {
-    const bits = bitsSource === undefined ? 32 : Number(bitsSource);
-    if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false;
-    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-    return ((ipv4(address)! & mask) >>> 0) === ((ipv4(value)! & mask) >>> 0);
-  }
-  return bitsSource === undefined && address.toLowerCase() === value.toLowerCase();
-}
-
 function oneOperator(operator: JsonObject, candidate: JsonPrimitive, present: boolean): boolean {
   const [name, operand] = Object.entries(operator)[0];
   if (name === "exists") return operand === present;
@@ -276,7 +260,7 @@ function oneOperator(operator: JsonObject, candidate: JsonPrimitive, present: bo
   if (name === "suffix") return typeof candidate === "string" && candidate.endsWith(String(operand));
   if (name === "wildcard") return typeof candidate === "string" && glob(String(operand), candidate);
   if (name === "equals-ignore-case") return typeof candidate === "string" && candidate.toLocaleLowerCase("en-US") === String(operand).toLocaleLowerCase("en-US");
-  if (name === "ip") return ipMatch(String(operand), candidate);
+  if (name === "cidr") return typeof candidate === "string" && cidrMatches(candidate, String(operand));
   if (name === "numeric") {
     if (typeof candidate !== "number" || !Array.isArray(operand)) return false;
     for (let index = 0; index < operand.length; index += 2) {
@@ -294,7 +278,7 @@ function oneOperator(operator: JsonObject, candidate: JsonPrimitive, present: bo
     const denied = Array.isArray(operand) ? operand : [operand];
     return denied.every(item => object(item)
       ? !oneOperator(item, candidate, true)
-      : candidate !== item);
+      : typeof candidate === typeof item && candidate !== item);
   }
   return false;
 }

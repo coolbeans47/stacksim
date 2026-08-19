@@ -100,6 +100,14 @@ async function pump(clock: TestClock, accept: () => boolean, timeoutMs = 10_000)
   while (!accept()) { if (Date.now() >= deadline) throw new Error("Timed out waiting for Lambda/SQS work"); clock.advance(250); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
 
+async function eventually(accept: () => boolean | Promise<boolean>, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!await accept()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for Lambda/SQS work without advancing the test clock");
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
 test("SQS event-source mappings use queue leases, filtering, partial acknowledgement, concurrency, and restart-safe visibility", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-sqs-lambda-")); const clock = new TestClock(Date.parse("2026-07-19T10:00:00Z")); const sqs = new TestSqsPort(clock);
   const source = sqs.queue("worker-source", 5); const unboundedSource = sqs.queue("unbounded-source", 5); const restartSource = sqs.queue("restart-source", 5); let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off"}); let lambda: LambdaClient | undefined;
@@ -206,10 +214,15 @@ test("Lambda throttles retain SQS messages and publish EventSourceMappingThrottl
     const mapping = await lambda.send(new CreateEventSourceMappingCommand({ FunctionName: fn.FunctionArn, EventSourceArn: queueArn, BatchSize: 1 })); clock.advance(0);
     await pump(clock, () => simulator.store.regionState(region).lambdaEventSourceMappings[mapping.UUID!]?.state === "Enabled");
     await sqs.send(new SendMessageCommand({ QueueUrl, MessageBody: "retain after throttle" }));
-    await pump(clock, () => /Rate Exceeded/.test(simulator.store.regionState(region).lambdaEventSourceMappings[mapping.UUID!]?.lastProcessingResult ?? ""));
+    await eventually(() => /Rate Exceeded/.test(simulator.store.regionState(region).lambdaEventSourceMappings[mapping.UUID!]?.lastProcessingResult ?? ""));
 
-    const metric = await cloudwatch.send(new GetMetricStatisticsCommand({ Namespace: "AWS/Lambda", MetricName: "EventSourceMappingThrottled", Dimensions: [{ Name: "FunctionName", Value: "throttled-sqs-worker" }, { Name: "EventSourceMapping", Value: mapping.UUID! }], StartTime: new Date(clock.now() - 60_000), EndTime: new Date(clock.now() + 1), Period: 60, Statistics: ["Sum"] }));
-    assert.equal(metric.Datapoints?.reduce((sum, point) => sum + (point.Sum ?? 0), 0), 1);
+    let throttledMetric = 0;
+    await eventually(async () => {
+      const metric = await cloudwatch.send(new GetMetricStatisticsCommand({ Namespace: "AWS/Lambda", MetricName: "EventSourceMappingThrottled", Dimensions: [{ Name: "FunctionName", Value: "throttled-sqs-worker" }, { Name: "EventSourceMapping", Value: mapping.UUID! }], StartTime: new Date(clock.now() - 60_000), EndTime: new Date(clock.now() + 1), Period: 60, Statistics: ["Sum"] }));
+      throttledMetric = metric.Datapoints?.reduce((sum, point) => sum + (point.Sum ?? 0), 0) ?? 0;
+      return throttledMetric >= 1;
+    });
+    assert.equal(throttledMetric, 1);
 
     await lambda.send(new UpdateEventSourceMappingCommand({ UUID: mapping.UUID, Enabled: false })); clock.advance(0);
     await pump(clock, () => simulator.store.regionState(region).lambdaEventSourceMappings[mapping.UUID!]?.state === "Disabled");

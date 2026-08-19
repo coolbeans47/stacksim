@@ -75,7 +75,7 @@ test("SNS-02 validates current filter operators and complexity limits", () => {
       { priority: [{ numeric: [">=", 5, "<", 10] }] },
       { source: [{ "equals-ignore-case": "API" }] },
     ],
-    detail: { address: [{ ip: "10.0.0.0/8" }], state: [{ "anything-but": { suffix: "-ignored" } }] },
+    detail: { address: [{ cidr: "10.0.0.0/8" }], state: [{ "anything-but": { suffix: "-ignored" } }] },
   }), "MessageBody");
   assert.equal(policy.leafKeys, 5);
   assert.ok(policy.combinations <= 150);

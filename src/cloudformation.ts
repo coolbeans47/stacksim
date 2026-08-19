@@ -2757,6 +2757,22 @@ export class CloudFormationService {
     return { accountId: this.store.accountId, region: this.region, partition: "aws", stackId, logicalId, operationId, resourceOperationId, clientRequestToken: operation?.clientRequestToken, idempotencyKey: `${operationId}:${logicalId}:${step}`, deadlineAt: deadlineAt ?? this.clock.now() + PROVIDER_DEADLINE_MS, callbackContext, principal: { identity: principal, serviceRoleArn: this.state.stacks[stackId]?.roleArn } };
   }
 
+  private async releaseRetainedProviderOwnership(
+    stack: CloudFormationStackState,
+    logicalId: string,
+    resource: CloudFormationStackResourceState,
+    principal: PrincipalContext,
+    step: string,
+  ): Promise<void> {
+    if (!resource.physicalResourceId) return;
+    const provider = this.providers.require(resource.resourceType);
+    if (!provider.retain) return;
+    const resolved = await this.resolveDynamicReferenceProperties(resource.resourceType, resource.properties, principal);
+    const context = this.providerContext(stack.stackId, logicalId, stack.activeOperation!.operationId, principal, undefined, step);
+    const previous = provider.canonicalize(resolved, context);
+    await provider.retain(resource.physicalResourceId, previous, context);
+  }
+
   private validationError(error: unknown): AwsError {
     if (error instanceof AwsError) return error;
     if (error instanceof TemplateValidationError || (error && typeof error === "object" && (error as any).code === "ValidationError")) return new AwsError("ValidationError", error instanceof Error ? error.message : String(error), 400);
@@ -4215,7 +4231,7 @@ export class CloudFormationService {
       for (const logicalId of rollbackOrder) {
         activeLogicalId = logicalId;
         if (operation.rollbackLogicalIds.includes(logicalId)) continue; const mutation = ledger.records.find(record => record.logicalId === logicalId && record.kind === "CREATE"); const resource = mutation?.after ? structuredClone(mutation.after) : stack.resources[logicalId]; if (!resource) continue;
-        if (resource.deletionPolicy === "Retain" && !operation.retainExceptOnCreate) { resource.resourceStatus = "DELETE_SKIPPED"; this.detachNestedStack(resource); stack.resources[logicalId] = resource; operation.rollbackLogicalIds.push(logicalId); if (mutation) await this.mutationRollbackResult(operation.operationId, mutation.key, "SKIPPED", "Retained during create rollback"); this.event(stack, logicalId, resource.resourceType, "DELETE_SKIPPED", "Retained during create rollback", resource.physicalResourceId, operation.clientRequestToken); await this.checkpoint(stack, `resource:${logicalId}:rollback-retained`); await this.store.save(); continue; }
+        if (resource.deletionPolicy === "Retain" && !operation.retainExceptOnCreate) { await this.releaseRetainedProviderOwnership(stack, logicalId, resource, principal, "rollback-retain"); resource.resourceStatus = "DELETE_SKIPPED"; this.detachNestedStack(resource); stack.resources[logicalId] = resource; operation.rollbackLogicalIds.push(logicalId); if (mutation) await this.mutationRollbackResult(operation.operationId, mutation.key, "SKIPPED", "Retained during create rollback"); this.event(stack, logicalId, resource.resourceType, "DELETE_SKIPPED", "Retained during create rollback", resource.physicalResourceId, operation.clientRequestToken); await this.checkpoint(stack, `resource:${logicalId}:rollback-retained`); await this.store.save(); continue; }
         resource.resourceStatus = "DELETE_IN_PROGRESS";
         stack.resources[logicalId] = resource;
         this.event(stack, logicalId, resource.resourceType, "DELETE_IN_PROGRESS", "Create rollback", resource.physicalResourceId, operation.clientRequestToken);
@@ -4307,6 +4323,7 @@ export class CloudFormationService {
     if (mutation.status === "COMPLETE") return;
 
     if (retentionPolicy === "Retain" || retentionPolicy === "RetainExceptOnCreate") {
+      await this.releaseRetainedProviderOwnership(stack, logicalId, previousResource, principal, "replace-retain");
       mutation = await this.mutationComplete(operation.operationId, key);
       await this.mutationRollbackResult(operation.operationId, mutation.key, "SKIPPED", `Old physical resource retained by UpdateReplacePolicy ${retentionPolicy}`);
       this.event(stack, logicalId, previousResource.resourceType, "DELETE_SKIPPED", `Old physical resource retained by UpdateReplacePolicy ${retentionPolicy}`, previousResource.physicalResourceId, operation.clientRequestToken, previousResource.properties);
@@ -4412,7 +4429,7 @@ export class CloudFormationService {
       for (const logicalId of removalOrder) {
         activeLogicalId = logicalId; if (operation.completedLogicalIds.includes(logicalId)) continue; if (operation.cancelRequestedAt && !await this.hasStartedMutation(operation.operationId, logicalId)) throw new Error("Update cancelled by CancelUpdateStack"); const resource = stack.resources[logicalId] ?? snapshot.resources[logicalId] as CloudFormationStackResourceState; if (!resource) { operation.completedLogicalIds.push(logicalId); continue; } if (resource.resourceStatus !== "DELETE_IN_PROGRESS") { resource.resourceStatus = "DELETE_IN_PROGRESS"; resource.lastUpdatedTimestamp = this.clock.now(); stack.resources[logicalId] = resource; this.event(stack, logicalId, resource.resourceType, "DELETE_IN_PROGRESS", "Removed by stack update", resource.physicalResourceId, operation.clientRequestToken); await this.checkpoint(stack, `resource:${logicalId}:remove-intent`); await this.store.save(); }
         const retentionPolicy = resource.deletionPolicy ?? (resource.resourceType === RDS_DB_INSTANCE_TYPE ? "Snapshot" : "Delete");
-        if (retentionPolicy === "Retain" || retentionPolicy === "RetainExceptOnCreate") { resource.resourceStatus = "DELETE_SKIPPED"; this.detachNestedStack(resource); this.event(stack, logicalId, resource.resourceType, "DELETE_SKIPPED", "Removed by stack update and retained", resource.physicalResourceId, operation.clientRequestToken); }
+        if (retentionPolicy === "Retain" || retentionPolicy === "RetainExceptOnCreate") { await this.releaseRetainedProviderOwnership(stack, logicalId, resource, principal, "remove-retain"); resource.resourceStatus = "DELETE_SKIPPED"; this.detachNestedStack(resource); this.event(stack, logicalId, resource.resourceType, "DELETE_SKIPPED", "Removed by stack update and retained", resource.physicalResourceId, operation.clientRequestToken); }
         else { const provider = this.providers.require(resource.resourceType); const key = `${logicalId}:delete`; const mutation = await this.mutationIntent(operation.operationId, { key, logicalId, kind: "DELETE", before: snapshot.resources[logicalId] }); if (mutation.status !== "COMPLETE") { const resolved = await this.resolveDynamicReferenceProperties(resource.resourceType, resource.properties, principal); const previous = provider.canonicalize(resolved, this.providerContext(stack.stackId, logicalId, operation.operationId, principal, undefined, "delete")); await this.invokeProvider(stack, logicalId, "delete", "DELETE", provider, principal, providerContext => provider.delete(resource.physicalResourceId ?? "", previous, providerContext), previous as Readonly<Record<string, unknown>>, resource.physicalResourceId, retentionPolicy); await this.mutationComplete(operation.operationId, key); } resource.resourceStatus = "DELETE_COMPLETE"; this.event(stack, logicalId, resource.resourceType, "DELETE_COMPLETE", "Removed by stack update", resource.physicalResourceId, operation.clientRequestToken); }
         resource.lastUpdatedTimestamp = this.clock.now(); operation.completedLogicalIds.push(logicalId); delete stack.resources[logicalId]; delete resourceRefs[logicalId]; delete resourceAttributes[logicalId]; await this.checkpoint(stack, `resource:${logicalId}:remove-complete`); await this.store.save();
       }
@@ -4459,7 +4476,7 @@ export class CloudFormationService {
         try {
           if (record.kind === "CREATE" || record.kind === "REPLACE_CREATE") {
             const created = record.after; if (!created) throw new Error(`Rollback record ${record.key} is missing its created resource model`);
-            if (created.deletionPolicy === "Retain" && !operation.retainExceptOnCreate) await this.mutationRollbackResult(sourceOperationId, record.key, "SKIPPED", "Retained during update rollback");
+            if (created.deletionPolicy === "Retain" && !operation.retainExceptOnCreate) { await this.releaseRetainedProviderOwnership(stack, logicalId, created, executionPrincipal, `rollback-${record.sequence}-retain`); await this.mutationRollbackResult(sourceOperationId, record.key, "SKIPPED", "Retained during update rollback"); }
             else { const provider = this.providers.require(created.resourceType); const step = `rollback-${record.sequence}-delete`; const resolved = await this.resolveDynamicReferenceProperties(created.resourceType, created.properties, executionPrincipal); const model = provider.canonicalize(resolved, this.providerContext(stack.stackId, logicalId, operation.operationId, executionPrincipal, undefined, step)); await this.invokeProvider(stack, logicalId, step, "DELETE", provider, executionPrincipal, context => provider.delete(created.physicalResourceId ?? "", model, context), model as Readonly<Record<string, unknown>>, created.physicalResourceId); await this.mutationRollbackResult(sourceOperationId, record.key, "COMPLETE"); }
           } else if (record.kind === "UPDATE") {
             if (!record.before || !record.after) throw new Error(`Rollback record ${record.key} is missing its update models`);
@@ -4516,6 +4533,7 @@ export class CloudFormationService {
           resource.resourceStatus = "DELETE_SKIPPED";
           resource.resourceStatusReason = "No physical resource was created";
         } else if (operation.retainLogicalIds?.includes(logicalId) || resource.deletionPolicy === "Retain" || resource.deletionPolicy === "RetainExceptOnCreate") {
+          await this.releaseRetainedProviderOwnership(stack, logicalId, resource, executionPrincipal, "delete-retain");
           resource.resourceStatus = "DELETE_SKIPPED";
           this.detachNestedStack(resource);
         } else {

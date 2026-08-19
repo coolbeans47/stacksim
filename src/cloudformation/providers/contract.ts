@@ -222,6 +222,8 @@ export interface CloudFormationResourceProvider<Model = unknown> {
   create(desired: Model, context: ProviderContext): Promise<ProviderCreateResult<Model>>;
   read(physicalId: string, context: ProviderContext): Promise<ProviderReadResult<Model>>;
   update(physicalId: string, previous: Model, desired: Model, context: ProviderContext): Promise<ProviderUpdateResult<Model>>;
+  /** Release provider-local ownership metadata when CloudFormation retains the physical resource. */
+  retain?(physicalId: string, previous: Model, context: ProviderContext): Promise<void>;
   delete(physicalId: string, previous: Model, context: ProviderContext): Promise<ProviderDeleteResult>;
 
   ref(model: ProviderReadModel<Model>): unknown;
