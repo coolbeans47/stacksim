@@ -66,7 +66,7 @@ test("REST API SQS integrations support JSON actions, batches, documented path f
     const options = { endpoint, region, credentials };
     const apig = new APIGatewayClient(options); const iam = new IAMClient(options); const sqs = new SQSClient(options);
     clients.push(apig, iam, sqs);
-    const queueNames = { action: "apig-action", path: "apig-path", batch: "apig-batch", denied: "apig-denied" };
+    const queueNames = { action: "apig-action", conditioned: "apig-conditioned", path: "apig-path", batch: "apig-batch", denied: "apig-denied" };
     const queueUrls = Object.fromEntries(await Promise.all(Object.entries(queueNames).map(async ([key, name]) => [key, (await sqs.send(new CreateQueueCommand({ QueueName: name }))).QueueUrl!]))) as Record<keyof typeof queueNames, string>;
     const roleArn = await integrationRole(iam, [queueArn(queueNames.action), queueArn(queueNames.path), queueArn(queueNames.batch)]);
     const api = await apig.send(new CreateRestApiCommand({ name: "sqs-producers" }));
@@ -77,6 +77,17 @@ test("REST API SQS integrations support JSON actions, batches, documented path f
     await restResponse(apig, api.id!, action);
     const actionResult = await apig.send(new TestInvokeMethodCommand({ restApiId: api.id!, resourceId: action, httpMethod: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: "action mapped" }) }));
     assert.equal(actionResult.status, 200); assert.ok(JSON.parse(actionResult.body!).MessageId); assert.deepEqual(await bodies(sqs, queueUrls.action, 1), ["action mapped"]);
+
+    const conditioned = await restResource(apig, api.id!, rootResource.id!, "conditioned"); await restMethod(apig, api.id!, conditioned);
+    await apig.send(new PutIntegrationCommand({ restApiId: api.id!, resourceId: conditioned, httpMethod: "POST", type: "AWS", integrationHttpMethod: "POST", uri: `arn:aws:apigateway:${region}:sqs:action/SendMessage`, credentials: roleArn, requestTemplates: { "application/json": `{"QueueUrl":${JSON.stringify(queueUrls.conditioned)},"MessageBody":"source conditioned"}` } }));
+    await restResponse(apig, api.id!, conditioned);
+    const methodArn = `arn:aws:execute-api:${region}:${account}:${api.id}/test-invoke-stage/POST/conditioned`;
+    const sourcePolicy = (sourceArn: string) => JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { AWS: roleArn }, Action: "sqs:SendMessage", Resource: queueArn(queueNames.conditioned), Condition: { ArnEquals: { "aws:SourceArn": sourceArn } } }] });
+    await sqs.send(new SetQueueAttributesCommand({ QueueUrl: queueUrls.conditioned, Attributes: { Policy: sourcePolicy(methodArn) } }));
+    assert.equal((await apig.send(new TestInvokeMethodCommand({ restApiId: api.id!, resourceId: conditioned, httpMethod: "POST", headers: { "content-type": "application/json" }, body: "{}" }))).status, 200);
+    assert.deepEqual(await bodies(sqs, queueUrls.conditioned, 1), ["source conditioned"]);
+    await sqs.send(new SetQueueAttributesCommand({ QueueUrl: queueUrls.conditioned, Attributes: { Policy: sourcePolicy(`${methodArn}-wrong`) } }));
+    await assert.rejects(apig.send(new TestInvokeMethodCommand({ restApiId: api.id!, resourceId: conditioned, httpMethod: "POST", headers: { "content-type": "application/json" }, body: "{}" })), (error: any) => error.name === "AccessDeniedException");
 
     const batch = await restResource(apig, api.id!, rootResource.id!, "batch"); await restMethod(apig, api.id!, batch);
     await apig.send(new PutIntegrationCommand({ restApiId: api.id!, resourceId: batch, httpMethod: "POST", type: "AWS", integrationHttpMethod: "POST", uri: `arn:aws:apigateway:${region}:sqs:action/SendMessageBatch`, credentials: roleArn, requestTemplates: { "application/json": "$input.body" } }));

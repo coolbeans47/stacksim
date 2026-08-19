@@ -223,10 +223,10 @@ test("FIFO Lambda mappings enforce limits and do not acknowledge failed or inter
     acknowledge: async input => { acknowledged.push(...input.receiptHandles); },
     sendMessageToArn: async () => ({}),
   };
-  let interruptInvocation = false;
+  let interruptInvocation = false; let holdInvocations = false; const invocationReleases: Array<() => void> = []; const invokedGroups: string[] = [];
   const source = new LambdaSqsEventSource(h.store, "eu-west-1", h.clock, {
     resolveFunction: () => ({ functionName: "worker", functionArn: "arn:aws:lambda:eu-west-1:000000000000:function:worker", role: "arn:aws:iam::000000000000:role/worker", timeout: 1 }),
-    invoke: async () => interruptInvocation ? { payload: Buffer.from("null"), interrupted: true } : { payload: Buffer.from(JSON.stringify({ batchItemFailures: [{ itemIdentifier: "a-2" }] })) },
+    invoke: async (_functionName, _qualifier, payload) => { invokedGroups.push(JSON.parse(payload.toString("utf8")).Records[0].attributes.MessageGroupId); if (holdInvocations) await new Promise<void>(resolve => invocationReleases.push(resolve)); return interruptInvocation ? { payload: Buffer.from("null"), interrupted: true } : { payload: Buffer.from(JSON.stringify({ batchItemFailures: [{ itemIdentifier: "a-2" }] })) }; },
     isCurrent: () => true,
     wake: () => undefined,
   }, "off", undefined, port);
@@ -245,6 +245,13 @@ test("FIFO Lambda mappings enforce limits and do not acknowledge failed or inter
   await (source as any).invoke(mapping, [message("interrupted", "shutdown")]);
   assert.deepEqual(acknowledged, [], "shutdown-interrupted batches remain available for retry");
   assert.equal(mapping.lastProcessingResult, "before shutdown", "shutdown interruption is not reported as a successful mapping result");
+  interruptInvocation = false; holdInvocations = true; mapping.functionResponseTypes = []; invokedGroups.length = 0; source.start();
+  assert.equal((source as any).launch(mapping, [message("same-1", "same")]), true);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal((source as any).launch(mapping, [message("same-2", "same")]), false, "an uncapped FIFO mapping still excludes an active message group");
+  assert.equal((source as any).launch(mapping, [message("other-1", "other")]), true, "an independent FIFO group may run concurrently");
+  await new Promise(resolve => setTimeout(resolve, 0)); assert.deepEqual(invokedGroups.sort(), ["other", "same"]);
+  invocationReleases.splice(0).forEach(resolve => resolve()); await source.stop();
 });
 
 test("AWS Query/XML routes FIFO attributes and message fields through the shared engine", async () => {

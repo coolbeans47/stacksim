@@ -219,6 +219,33 @@ test("delay, long polling, visibility and retention deadlines survive restart", 
   assert(h.events.some(event => event.metricName === "NumberOfEmptyReceives"));
 });
 
+test("oldest-message gauges include delayed and in-flight work and exclude Standard poison pills", async () => {
+  const h = await harness();
+  const ageSamples = (queueName: string) => h.events.filter(event => event.namespace === "AWS/SQS" && event.metricName === "ApproximateAgeOfOldestMessage" && event.dimensions.QueueName === queueName);
+
+  const delayedUrl = (await h.client.send(new CreateQueueCommand({ QueueName: "age-delayed" }))).QueueUrl!;
+  await h.client.send(new SendMessageCommand({ QueueUrl: delayedUrl, MessageBody: "delayed", DelaySeconds: 30 })); h.clock.advance(5_000);
+  await h.client.send(new GetQueueAttributesCommand({ QueueUrl: delayedUrl, AttributeNames: ["ApproximateNumberOfMessagesDelayed"] }));
+  assert.equal(ageSamples("age-delayed").at(-1)?.value, 5, "a delayed-only queue keeps an oldest-age sample");
+
+  const inflightUrl = (await h.client.send(new CreateQueueCommand({ QueueName: "age-inflight" }))).QueueUrl!;
+  await h.client.send(new SendMessageCommand({ QueueUrl: inflightUrl, MessageBody: "in flight" })); h.clock.advance(4_000);
+  await h.client.send(new ReceiveMessageCommand({ QueueUrl: inflightUrl, VisibilityTimeout: 30 }));
+  await h.client.send(new GetQueueAttributesCommand({ QueueUrl: inflightUrl, AttributeNames: ["ApproximateNumberOfMessagesNotVisible"] }));
+  assert.equal(ageSamples("age-inflight").at(-1)?.value, 4, "an in-flight-only queue keeps an oldest-age sample");
+
+  const poisonUrl = (await h.client.send(new CreateQueueCommand({ QueueName: "age-poison" }))).QueueUrl!;
+  await h.client.send(new SendMessageCommand({ QueueUrl: poisonUrl, MessageBody: "poison" })); h.clock.advance(10_000);
+  for (let receive = 0; receive < 3; receive += 1) await h.client.send(new ReceiveMessageCommand({ QueueUrl: poisonUrl, VisibilityTimeout: 0 }));
+  await h.client.send(new SendMessageCommand({ QueueUrl: poisonUrl, MessageBody: "younger" }));
+  await h.client.send(new GetQueueAttributesCommand({ QueueUrl: poisonUrl, AttributeNames: ["ApproximateNumberOfMessages"] }));
+  assert.equal(ageSamples("age-poison").at(-1)?.value, 0, "a three-times-received Standard poison pill does not dominate the age");
+
+  const emptyUrl = (await h.client.send(new CreateQueueCommand({ QueueName: "age-empty" }))).QueueUrl!;
+  await h.client.send(new GetQueueAttributesCommand({ QueueUrl: emptyUrl, AttributeNames: ["ApproximateNumberOfMessages"] }));
+  assert.equal(ageSamples("age-empty").length, 0, "an empty queue omits the oldest-age sample");
+});
+
 test("canceled, deleted, and shutdown long polls release their waiters without leasing later messages", async () => {
   const h = await harness();
   const QueueUrl = (await h.client.send(new CreateQueueCommand({ QueueName: "cancel-poll" }))).QueueUrl!;
@@ -305,7 +332,8 @@ test("redrive policy atomically moves poison messages and lists DLQ sources", as
   const dead = (await h.client.send(new ReceiveMessageCommand({ QueueUrl: dlqUrl, AttributeNames: ["All"] }))).Messages![0];
   assert.equal(dead.Body, "poison");
   assert.equal(dead.MessageId, first.MessageId);
-  assert(h.events.some(event => event.metricName === "NumberOfMessagesMovedToDeadLetterQueue" && event.dimensions.SourceQueue === "orders-source" && event.dimensions.DeadLetterQueue === "orders-dlq"));
+  const moved = h.events.find(event => event.metricName === "NumberOfMessagesMovedToDeadLetterQueue");
+  assert.deepEqual(moved?.dimensions, { QueueName: "orders-source" });
 });
 
 test("raw AWS Query/XML and AWS JSON 1.0 share the queue engine", async () => {

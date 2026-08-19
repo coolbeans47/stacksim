@@ -9,10 +9,13 @@ import {
   GetEventSourceMappingCommand,
   InvokeCommand,
   LambdaClient,
+  PutFunctionConcurrencyCommand,
   PutFunctionEventInvokeConfigCommand,
+  UpdateEventSourceMappingCommand,
 } from "@aws-sdk/client-lambda";
 import { AttachRolePolicyCommand, CreateRoleCommand, IAMClient } from "@aws-sdk/client-iam";
-import { CreateQueueCommand, GetQueueAttributesCommand, SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
+import { CreateQueueCommand, GetQueueAttributesCommand, ReceiveMessageCommand, SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
+import { CloudWatchClient, GetMetricStatisticsCommand } from "@aws-sdk/client-cloudwatch";
 import { TestClock } from "../src/core/clock.js";
 import { createZip } from "../src/core/zip-create.js";
 import type { LambdaSqsMessageAttributeValue, LambdaSqsQueueDescriptor, LambdaSqsServicePort } from "../src/lambda-sqs-event-source.js";
@@ -38,6 +41,7 @@ class TestSqsPort implements LambdaSqsServicePort {
   readonly acknowledged = new Set<string>();
   readonly deliveries: Array<{ queueArn: string; input: { MessageBody: string; MessageAttributes?: Record<string, LambdaSqsMessageAttributeValue>; MessageSystemAttributes?: Record<string, LambdaSqsMessageAttributeValue> } }> = [];
   maximumInFlight = 0;
+  readonly maximumInFlightByQueue = new Map<string, number>();
   readonly receiveInputs: Array<{ waitTimeSeconds?: number; abortSignal?: AbortSignal }> = [];
   private serial = 0;
 
@@ -59,6 +63,8 @@ class TestSqsPort implements LambdaSqsServicePort {
     const now = this.clock.now(); const values = (this.messages.get(input.queueArn) ?? []).filter(message => message.visibleAt <= now).slice(0, input.maxNumberOfMessages);
     for (const message of values) { message.receiveCount++; message.receiptHandle = `receipt-${message.id}-${message.receiveCount}`; message.visibleAt = now + (input.visibilityTimeoutSeconds ?? this.descriptors.get(input.queueArn)!.visibilityTimeoutSeconds) * 1000; }
     const inFlight = [...this.messages.values()].flat().filter(message => message.visibleAt > now && !this.acknowledged.has(message.id)).length; this.maximumInFlight = Math.max(this.maximumInFlight, inFlight);
+    const queueInFlight = (this.messages.get(input.queueArn) ?? []).filter(message => message.visibleAt > now && !this.acknowledged.has(message.id)).length;
+    this.maximumInFlightByQueue.set(input.queueArn, Math.max(this.maximumInFlightByQueue.get(input.queueArn) ?? 0, queueInFlight));
     return { messages: values.map(message => ({ MessageId: message.id, ReceiptHandle: message.receiptHandle, Body: message.body, MD5OfBody: `md5-${message.id}`, MD5OfMessageAttributes: Object.keys(message.messageAttributes).length ? `attrs-${message.id}` : undefined, Attributes: { ApproximateReceiveCount: String(message.receiveCount), SentTimestamp: String(now - 100), ApproximateFirstReceiveTimestamp: String(now), AWSTraceHeader: message.systemAttributes.AWSTraceHeader.StringValue! }, MessageAttributes: message.messageAttributes })) };
   }
 
@@ -96,7 +102,7 @@ async function pump(clock: TestClock, accept: () => boolean, timeoutMs = 10_000)
 
 test("SQS event-source mappings use queue leases, filtering, partial acknowledgement, concurrency, and restart-safe visibility", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-sqs-lambda-")); const clock = new TestClock(Date.parse("2026-07-19T10:00:00Z")); const sqs = new TestSqsPort(clock);
-  const source = sqs.queue("worker-source", 5); const restartSource = sqs.queue("restart-source", 5); let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off"}); let lambda: LambdaClient | undefined;
+  const source = sqs.queue("worker-source", 5); const unboundedSource = sqs.queue("unbounded-source", 5); const restartSource = sqs.queue("restart-source", 5); let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off"}); let lambda: LambdaClient | undefined;
   const connect = () => { lambda = new LambdaClient({ endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials }); };
   try {
     simulator.lambda.setSqsService(sqs); await simulator.start(); connect();
@@ -111,8 +117,15 @@ test("SQS event-source mappings use queue leases, filtering, partial acknowledge
     await pump(clock, () => sqs.acknowledged.has(success) && sqs.acknowledged.has(filtered) && (sqs.messages.get(source.queueArn)?.find(message => message.id === partial)?.receiveCount ?? 0) >= 1 && (sqs.messages.get(source.queueArn)?.find(message => message.id === failed)?.receiveCount ?? 0) >= 1);
     assert(sqs.receiveInputs.some(input => input.waitTimeSeconds === 20 && input.abortSignal), "SQS mappings use cancellable long polls");
     assert.equal(sqs.acknowledged.has(partial), false); assert.equal(sqs.acknowledged.has(failed), false); assert.ok(sqs.maximumInFlight >= 2, "mapping maximum concurrency allows two leased batches");
+    assert.ok((sqs.maximumInFlightByQueue.get(source.queueArn) ?? 0) <= 2, "a configured maximum concurrency of two remains enforced");
     clock.advance(5_000); await pump(clock, () => (sqs.messages.get(source.queueArn)?.find(message => message.id === partial)?.receiveCount ?? 0) >= 2 && (sqs.messages.get(source.queueArn)?.find(message => message.id === failed)?.receiveCount ?? 0) >= 2);
     const view = await lambda!.send(new GetEventSourceMappingCommand({ UUID: created.UUID })); assert.equal(view.EventSourceArn, source.queueArn); assert.equal(view.BisectBatchOnFunctionError, undefined); assert.ok(["Partial batch failure", "Function error"].includes(view.LastProcessingResult ?? ""));
+
+    const unboundedMapping = await lambda!.send(new CreateEventSourceMappingCommand({ FunctionName: fn.FunctionArn, EventSourceArn: unboundedSource.queueArn, BatchSize: 1 })); clock.advance(0);
+    await pump(clock, () => simulator.store.regionState(region).lambdaEventSourceMappings[unboundedMapping.UUID!]?.state === "Enabled");
+    const unboundedOne = sqs.enqueue(unboundedSource.queueArn, JSON.stringify({ kind: "keep" })); const unboundedTwo = sqs.enqueue(unboundedSource.queueArn, JSON.stringify({ kind: "keep" }));
+    await pump(clock, () => sqs.acknowledged.has(unboundedOne) && sqs.acknowledged.has(unboundedTwo));
+    assert.ok((sqs.maximumInFlightByQueue.get(unboundedSource.queueArn) ?? 0) >= 2, "an omitted ScalingConfig does not serialize a Standard mapping");
 
     const restartMapping = await lambda!.send(new CreateEventSourceMappingCommand({ FunctionName: fn.FunctionArn, EventSourceArn: restartSource.queueArn, BatchSize: 2, MaximumBatchingWindowInSeconds: 2 })); clock.advance(0); const restartMessage = sqs.enqueue(restartSource.queueArn, JSON.stringify({ kind: "keep" }));
     await pump(clock, () => (sqs.messages.get(restartSource.queueArn)?.find(message => message.id === restartMessage)?.receiveCount ?? 0) === 1); assert.equal(sqs.acknowledged.has(restartMessage), false, "the batching window does not acknowledge before invoke");
@@ -178,4 +191,30 @@ test("the real SQS queue path enforces Lambda execution-role permissions and ack
     await simulator.stop().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("Lambda throttles retain SQS messages and publish EventSourceMappingThrottled", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-sqs-throttle-")); const clock = new TestClock(Date.parse("2026-07-19T12:00:00Z"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off"}); const clients: Array<{ destroy(): void }> = [];
+  try {
+    await simulator.start(); const options = { endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials };
+    const sqs = new SQSClient(options); const lambda = new LambdaClient(options); const cloudwatch = new CloudWatchClient(options); clients.push(sqs, lambda, cloudwatch);
+    const QueueUrl = (await sqs.send(new CreateQueueCommand({ QueueName: "throttled-worker", Attributes: { VisibilityTimeout: "2" } }))).QueueUrl!;
+    const queueArn = (await sqs.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ["QueueArn"] }))).Attributes!.QueueArn!;
+    const fn = await lambda.send(new CreateFunctionCommand({ FunctionName: "throttled-sqs-worker", Runtime: "nodejs22.x", Role: `arn:aws:iam::${account}:role/test`, Handler: "index.batch", Timeout: 1, Code: { ZipFile: code } }));
+    await lambda.send(new PutFunctionConcurrencyCommand({ FunctionName: fn.FunctionName, ReservedConcurrentExecutions: 0 }));
+    const mapping = await lambda.send(new CreateEventSourceMappingCommand({ FunctionName: fn.FunctionArn, EventSourceArn: queueArn, BatchSize: 1 })); clock.advance(0);
+    await pump(clock, () => simulator.store.regionState(region).lambdaEventSourceMappings[mapping.UUID!]?.state === "Enabled");
+    await sqs.send(new SendMessageCommand({ QueueUrl, MessageBody: "retain after throttle" }));
+    await pump(clock, () => /Rate Exceeded/.test(simulator.store.regionState(region).lambdaEventSourceMappings[mapping.UUID!]?.lastProcessingResult ?? ""));
+
+    const metric = await cloudwatch.send(new GetMetricStatisticsCommand({ Namespace: "AWS/Lambda", MetricName: "EventSourceMappingThrottled", Dimensions: [{ Name: "FunctionName", Value: "throttled-sqs-worker" }, { Name: "EventSourceMapping", Value: mapping.UUID! }], StartTime: new Date(clock.now() - 60_000), EndTime: new Date(clock.now() + 1), Period: 60, Statistics: ["Sum"] }));
+    assert.equal(metric.Datapoints?.reduce((sum, point) => sum + (point.Sum ?? 0), 0), 1);
+
+    await lambda.send(new UpdateEventSourceMappingCommand({ UUID: mapping.UUID, Enabled: false })); clock.advance(0);
+    await pump(clock, () => simulator.store.regionState(region).lambdaEventSourceMappings[mapping.UUID!]?.state === "Disabled");
+    clock.advance(2_001);
+    const retained = await sqs.send(new ReceiveMessageCommand({ QueueUrl, WaitTimeSeconds: 0, VisibilityTimeout: 0 }));
+    assert.equal(retained.Messages?.[0]?.Body, "retain after throttle");
+  } finally { clients.forEach(client => client.destroy()); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
 });

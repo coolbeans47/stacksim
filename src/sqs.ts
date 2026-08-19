@@ -1001,7 +1001,7 @@ export class SqsService {
         });
         if (moved) {
           this.notify(redriveTarget.queueArn);
-          await this.telemetry.publish({ namespace: "AWS/SQS", metricName: "NumberOfMessagesMovedToDeadLetterQueue", dimensions: { SourceQueue: queue.queueName, DeadLetterQueue: redriveTarget.queueName }, value: 1, unit: "Count", timestamp: this.clock.now() });
+          await this.telemetry.publish({ namespace: "AWS/SQS", metricName: "NumberOfMessagesMovedToDeadLetterQueue", dimensions: { QueueName: queue.queueName }, value: 1, unit: "Count", timestamp: this.clock.now() });
           await this.publishGauges(queue.state); await this.publishGauges(redriveTarget.state);
         }
         continue;
@@ -1467,11 +1467,12 @@ export class SqsService {
     const visible = messages.filter(message => message.availableAt <= now && (message.invisibleUntil ?? 0) <= now);
     const unavailable = messages.filter(message => (message.invisibleUntil ?? 0) > now);
     const delayed = messages.filter(message => message.availableAt > now);
-    const oldest = visible.length ? Math.max(0, now - Math.min(...visible.map(message => message.deadLetteredAt ?? message.sentAt))) / 1000 : 0;
+    const ageEligible = queue.attributes.FifoQueue === "true" ? messages : messages.filter(message => message.receiveCount < 3);
+    const oldest = ageEligible.length ? Math.max(0, now - Math.min(...ageEligible.map(message => message.deadLetteredAt ?? message.sentAt))) / 1000 : 0;
     await this.metric(queue.queueName, "ApproximateNumberOfMessagesVisible", visible.length, "Count", "gauge");
     if (unavailable.length) await this.metric(queue.queueName, "ApproximateNumberOfMessagesNotVisible", unavailable.length, "Count", "gauge");
     if (delayed.length) await this.metric(queue.queueName, "ApproximateNumberOfMessagesDelayed", delayed.length, "Count", "gauge");
-    if (visible.length) await this.metric(queue.queueName, "ApproximateAgeOfOldestMessage", oldest, "Seconds", "gauge");
+    if (ageEligible.length) await this.metric(queue.queueName, "ApproximateAgeOfOldestMessage", oldest, "Seconds", "gauge");
     if (queue.attributes.FifoQueue === "true") {
       const inflightGroups = new Set(unavailable.map(message => message.messageGroupId).filter((value): value is string => value !== undefined));
       await this.metric(queue.queueName, "ApproximateNumberOfGroupsWithInflightMessages", inflightGroups.size, "Count", "gauge");
@@ -1487,17 +1488,17 @@ export class SqsService {
     }
     const average = grouped.size ? [...grouped.values()].reduce((total, values) => total + values.length, 0) / grouped.size : 0;
     const noisy = new Set(grouped.size < 2 ? [] : [...grouped.entries()].filter(([, values]) => values.length > average).map(([group]) => group));
-    const quiet = messages.filter(message => message.messageGroupId === undefined || !noisy.has(message.messageGroupId));
+    const quiet = messages.filter(message => (message.messageGroupId === undefined || !noisy.has(message.messageGroupId)) && message.receiveCount < 3);
     const quietVisible = quiet.filter(message => message.availableAt <= now && (message.invisibleUntil ?? 0) <= now);
     const quietUnavailable = quiet.filter(message => (message.invisibleUntil ?? 0) > now);
     const quietDelayed = quiet.filter(message => message.availableAt > now);
-    const quietOldest = quietVisible.length ? Math.max(0, now - Math.min(...quietVisible.map(message => message.deadLetteredAt ?? message.sentAt))) / 1000 : 0;
+    const quietOldest = quiet.length ? Math.max(0, now - Math.min(...quiet.map(message => message.deadLetteredAt ?? message.sentAt))) / 1000 : 0;
     if (grouped.size) {
       await this.metric(queue.queueName, "ApproximateNumberOfNoisyGroups", noisy.size, "Count", "gauge");
       await this.metric(queue.queueName, "ApproximateNumberOfMessagesVisibleInQuietGroups", quietVisible.length, "Count", "gauge");
       if (quietUnavailable.length) await this.metric(queue.queueName, "ApproximateNumberOfMessagesNotVisibleInQuietGroups", quietUnavailable.length, "Count", "gauge");
       if (quietDelayed.length) await this.metric(queue.queueName, "ApproximateNumberOfMessagesDelayedInQuietGroups", quietDelayed.length, "Count", "gauge");
-      if (quietVisible.length) await this.metric(queue.queueName, "ApproximateAgeOfOldestMessageInQuietGroups", quietOldest, "Seconds", "gauge");
+      if (quiet.length) await this.metric(queue.queueName, "ApproximateAgeOfOldestMessageInQuietGroups", quietOldest, "Seconds", "gauge");
     }
   }
 
