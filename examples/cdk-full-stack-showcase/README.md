@@ -53,7 +53,7 @@ The stacks are deliberately split because the simulator generates the REST API I
 
 ## Project assumptions
 
-- Use the pinned versions in `package.json`: CDK CLI `2.1132.0`, `aws-cdk-lib` `2.261.0`, and `constructs` `10.7.1`. A different CDK release can emit a different deployment-helper graph.
+- Use the pinned versions in `package.json`: CDK CLI `2.1132.0`, `aws-cdk-lib` `2.265.0`, and `constructs` `10.7.1`. A different CDK release can emit a different deployment-helper graph.
 - Do **not** run `cdk bootstrap`. StackSim automatically manages its local file-asset bootstrap contract in the configured Region.
 - Atlas uses a small relay Lambda between EventBridge and SQS to keep that part of the event journey explicit.
 - The queues use SSE-SQS, Standard delivery, visibility retries, and a source-queue redrive policy. KMS-backed queues and EventBridge target DLQs are not implied.

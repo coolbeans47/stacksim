@@ -77,7 +77,7 @@ Install:
 The example pins:
 
 - AWS CDK CLI `2.1132.0`;
-- `aws-cdk-lib` `2.261.0`; and
+- `aws-cdk-lib` `2.265.0`; and
 - `constructs` `10.7.1`.
 
 Do not run `cdk bootstrap`. stacksim provides its bounded local bootstrap automatically.
