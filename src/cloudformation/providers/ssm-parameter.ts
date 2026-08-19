@@ -175,6 +175,9 @@ export function createSsmParameterProvider(ssm: SsmService): ProductionResourceP
       try { await ssm.DeleteParameterCloudFormation(physicalId, owner(context)); return { status: "SUCCESS", physicalId }; }
       catch (error) { return failure(error) as ProviderDeleteResult; }
     },
+    async retain(physicalId, _previous, context): Promise<void> {
+      await ssm.ReleaseParameterCloudFormation(physicalId, owner(context));
+    },
     ref(read: ProviderReadModel<SsmParameterModel>): unknown { return read.physicalId; },
     getAtt(read, attribute): unknown {
       if (Object.hasOwn(read.attributes, attribute)) return read.attributes[attribute];

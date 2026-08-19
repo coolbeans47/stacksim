@@ -213,9 +213,25 @@ interface ChangeSetExecutionArtifact {
   baselineTemplateDigest?: string;
   baselineProcessedTemplateDigest?: string;
   imports: Record<string, string>;
-  ssmParameters: Array<{ name: string; value: string }>;
+  ssmParameters: Array<{ name: string; value: string; generationId?: string; version?: number }>;
   nestedTemplateManifest?: NestedTemplateManifest;
   templateSource?: TemplateSourceArtifact;
+}
+
+interface DynamicReferenceResolution {
+  readonly value: string;
+  readonly generationId?: string;
+  readonly version?: number;
+}
+
+interface DynamicReferencePinsArtifact {
+  readonly schemaVersion: 1;
+  readonly references: Record<string, { family: "ssm" | "ssm-secure"; generationId: string; version?: number }>;
+}
+
+interface TypedSsmPinsArtifact {
+  readonly schemaVersion: 1;
+  readonly parameters: Array<{ name: string; generationId: string }>;
 }
 
 type ResourceMutationKind = "CREATE" | "UPDATE" | "DELETE" | "REPLACE_CREATE" | "REPLACE_DELETE";
@@ -457,8 +473,8 @@ export class CloudFormationService {
   private publishNotification?: (topicArn: string, message: string, stackId: string) => Promise<void>;
   private notificationDrain?: Promise<void>;
   private notificationTimer?: ReturnType<typeof setTimeout>;
-  private bootstrapParameterResolver?: (name: string) => string | undefined;
-  private dynamicReferenceResolver?: (reference: ParsedDynamicReference) => Promise<string>;
+  private bootstrapParameterResolver?: (name: string) => { value: string; generationId: string; version: number } | undefined;
+  private dynamicReferenceResolver?: (reference: ParsedDynamicReference) => Promise<DynamicReferenceResolution>;
 
   constructor(
     private readonly store: StateStore,
@@ -704,16 +720,18 @@ export class CloudFormationService {
     if (!this.stopping) void this.drainNotificationOutbox();
   }
 
-  setBootstrapParameterResolver(resolver: (name: string) => string | undefined): void {
+  setBootstrapParameterResolver(resolver: (name: string) => { value: string; generationId: string; version: number } | undefined): void {
     this.bootstrapParameterResolver = resolver;
   }
 
-  setDynamicReferenceResolver(resolver: (reference: ParsedDynamicReference) => Promise<string>): void {
+  setDynamicReferenceResolver(resolver: (reference: ParsedDynamicReference) => Promise<DynamicReferenceResolution>): void {
     this.dynamicReferenceResolver = resolver;
   }
 
-  private async resolveDynamicReferenceProperties(typeName: string, properties: Record<string, unknown>, principal: PrincipalContext): Promise<Record<string, unknown>> {
+  private async resolveDynamicReferenceProperties(typeName: string, properties: Record<string, unknown>, principal: PrincipalContext, operationId: string): Promise<Record<string, unknown>> {
     const provider = this.providers.require(typeName);
+    const pinArtifactId = `${operationId}.dynamic-reference-pins.json`;
+    let pins: DynamicReferencePinsArtifact | undefined;
     const visit = async (value: unknown, path: string, topProperty?: string): Promise<unknown> => {
       if (typeof value === "string") {
         const references = dynamicReferencesInString(value, path);
@@ -741,11 +759,28 @@ export class CloudFormationService {
           if (this.authorizeProviderTargets) await this.authorizeProviderTargets(principal, [{ action, resource, ...(context ? { context } : {}) }]);
           if (!this.dynamicReferenceResolver) throw new AwsError("ValidationError", "CloudFormation dynamic-reference resolution is unavailable", 400);
           const replacement = await this.dynamicReferenceResolver(reference);
-          resolved = resolved.split(reference.literal).join(replacement);
+          if (reference.family === "ssm" || reference.family === "ssm-secure") {
+            if (!replacement.generationId) throw new AwsError("ValidationError", "Parameter Store generation metadata is unavailable for a CloudFormation dynamic reference", 400);
+            pins ??= await this.journal.readJsonArtifact<DynamicReferencePinsArtifact>("operations", pinArtifactId) ?? { schemaVersion: 1, references: {} };
+            const pinned = pins.references[reference.literal];
+            const selectedVersion = reference.parameterVersion === undefined ? undefined : replacement.version;
+            if (pinned && (pinned.family !== reference.family || pinned.generationId !== replacement.generationId || pinned.version !== selectedVersion)) {
+              throw new AwsError("ValidationError", `Parameter Store dynamic reference ${reference.literal} selected a different parameter generation during this CloudFormation operation`, 400);
+            }
+            if (!pinned) {
+              pins.references[reference.literal] = { family: reference.family, generationId: replacement.generationId, ...(selectedVersion === undefined ? {} : { version: selectedVersion }) };
+              await this.journal.replaceJsonArtifact("operations", pinArtifactId, pins);
+            }
+          }
+          resolved = resolved.split(reference.literal).join(replacement.value);
         }
         return resolved;
       }
-      if (Array.isArray(value)) return Promise.all(value.map((item, index) => visit(item, `${path}[${index}]`, topProperty)));
+      if (Array.isArray(value)) {
+        const output = [];
+        for (let index = 0; index < value.length; index++) output.push(await visit(value[index], `${path}[${index}]`, topProperty));
+        return output;
+      }
       if (!value || typeof value !== "object") return value;
       const output: Record<string, unknown> = {};
       for (const [key, item] of Object.entries(value as Record<string, unknown>)) output[key] = await visit(item, `${path}.${key}`, topProperty ?? key);
@@ -955,7 +990,7 @@ export class CloudFormationService {
       for (const suffix of ["conditions", "graph", "imports", "stack", "provider-models", "nested-templates", "template-source"]) mark("plans", `${artifactId}.${suffix}.json`);
     };
     const markOperation = (operationId: string): void => {
-      mark("execution", `${operationId}.principal.json`); mark("rollback", `${operationId}.snapshot.json`); mark("operations", this.mutationArtifactId(operationId));
+      mark("execution", `${operationId}.principal.json`); mark("rollback", `${operationId}.snapshot.json`); mark("operations", this.mutationArtifactId(operationId)); mark("operations", `${operationId}.dynamic-reference-pins.json`); mark("operations", `${operationId}.typed-ssm-pins.json`);
       markPrefix("provider-checkpoints", `${operationId}.`); markPrefix("assets", `${operationId}.`);
     };
     for (const stack of Object.values(this.state.stacks)) {
@@ -1151,13 +1186,15 @@ export class CloudFormationService {
     const suppliedCapabilities = list<string>(input.Capabilities).map(String);
     const desiredTags = tags(input.Tags);
     let resolvedParameters: ResolvedParameters; let conditions: Record<string, boolean>; let processed: CloudFormationTemplate; let graph: ReturnType<typeof buildResourceDependencyGraph>; let importNames: string[];
+    const typedSsmGenerations = new Map<string, string>();
     try {
       const suppliedParameters = parameters(input.Parameters);
       await this.authorizeTypedSsmParameters(parsed.value, suppliedParameters, executionPrincipal);
-      resolvedParameters = resolveTemplateParameters(parsed.value.Parameters, suppliedParameters, { resolveSsmParameter: (name, type) => this.resolveBootstrapSsmParameter(name, type) });
+      resolvedParameters = resolveTemplateParameters(parsed.value.Parameters, suppliedParameters, { resolveSsmParameter: (name, type) => this.resolveBootstrapSsmParameter(name, type, typedSsmGenerations) });
       const pseudos = { ...cloudFormationPseudoParameters(this.store.accountId, this.region, stackId, stackName), "AWS::NotificationARNs": notificationArns };
       const availableExports = this.exportValues(); conditions = evaluateTemplateConditions(parsed.value, resolvedParameters.values, pseudos, availableExports); validateTemplateRules(parsed.value, resolvedParameters.values, pseudos, conditions, availableExports); processed = conditionallyProcessedTemplate(parsed.value, conditions); const openingEvaluation = { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, resourceRefs: {}, resourceAttributes: {}, imports: availableExports }; processed = await this.pinStaticFileAssets(processed, openingEvaluation, templateArtifactId, executionPrincipal, false, {}, prepared?.assetManifest); await this.pinNestedTemplateAssets(processed, openingEvaluation, templateArtifactId, executionPrincipal, prepared?.nestedTemplateManifest, { stackId, stackName, capabilities: suppliedCapabilities, tags: desiredTags }); this.assertCapabilities(processed, suppliedCapabilities); importNames = this.plannedImportNames(processed, resolvedParameters.values, pseudos, conditions, stackId); graph = buildResourceDependencyGraph(processed); this.validateOpeningResources(processed, stackId, operationId, executionPrincipal); this.validateProviderReferences(processed); this.preflightProviderModels(processed, { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: availableExports }, stackId, operationId, executionPrincipal, desiredTags);
     } catch (error) { throw this.validationError(error); }
+    const typedPins = this.typedSsmPins(parsed.value, resolvedParameters, typedSsmGenerations);
     const processedBody = JSON.stringify(processed); const processedDigest = createHash("sha256").update(processedBody).digest("hex");
     const stack: CloudFormationStackState = {
       stackId, stackName, description: parsed.value.Description, stackStatus: "CREATE_IN_PROGRESS", creationTime: reviewStack?.creationTime ?? now,
@@ -1173,6 +1210,7 @@ export class CloudFormationService {
     await this.journal.replaceTemplate(templateArtifactId, prepared?.originalBody ?? parsed.body, "original");
     await this.journal.replaceTemplate(templateArtifactId, processedBody, "processed");
     await this.journal.replaceJsonArtifact("parameters", `${templateArtifactId}.private.json`, { values: resolvedParameters.values, entries: resolvedParameters.entries });
+    await this.journal.replaceJsonArtifact("operations", `${operationId}.typed-ssm-pins.json`, typedPins);
     await this.journal.replaceJsonArtifact("execution", `${templateArtifactId}.principal.json`, executionPrincipal);
     await this.journal.replaceJsonArtifact("plans", `${templateArtifactId}.conditions.json`, conditions);
     await this.journal.replaceJsonArtifact("plans", `${templateArtifactId}.graph.json`, graph);
@@ -1200,10 +1238,12 @@ export class CloudFormationService {
     const desiredTemplateArtifactId = `${this.artifactId(stack.stackId)}-${operationId}`; const previousValues = Object.fromEntries(stack.parameters.filter(parameter => parameter.parameterValue !== undefined).map(parameter => [parameter.parameterKey, parameter.parameterValue!])); const suppliedParameterInputs = parameters(input.Parameters); const suppliedNames = new Set(suppliedParameterInputs.map(parameter => parameter.parameterKey)); for (const name of Object.keys(parsed.value.Parameters ?? {})) if (!suppliedNames.has(name) && previousValues[name] !== undefined) suppliedParameterInputs.push({ parameterKey: name, usePreviousValue: true });
     const notificationArns = input.NotificationARNs === undefined ? [...stack.notificationArns] : this.normalizedNotificationArns(input.NotificationARNs); const suppliedCapabilities = input.Capabilities === undefined ? [...stack.capabilities] : list<string>(input.Capabilities).map(String); const desiredTags = input.Tags === undefined ? structuredClone(stack.tags) : tags(input.Tags);
     let resolvedParameters: ResolvedParameters; let conditions: Record<string, boolean>; let processed: CloudFormationTemplate; let graph: ReturnType<typeof buildResourceDependencyGraph>; let importNames: string[];
-    try { await this.authorizeTypedSsmParameters(parsed.value, suppliedParameterInputs, executionPrincipal, previousValues); resolvedParameters = resolveTemplateParameters(parsed.value.Parameters, suppliedParameterInputs, { previous: previousValues, resolveSsmParameter: (name, type) => this.resolveBootstrapSsmParameter(name, type) }); const pseudos = { ...cloudFormationPseudoParameters(this.store.accountId, this.region, stack.stackId, stack.stackName), "AWS::NotificationARNs": notificationArns }; const availableExports = this.exportValues(); conditions = evaluateTemplateConditions(parsed.value, resolvedParameters.values, pseudos, availableExports); validateTemplateRules(parsed.value, resolvedParameters.values, pseudos, conditions, availableExports); processed = conditionallyProcessedTemplate(parsed.value, conditions); const openingEvaluation = { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, resourceRefs: {}, resourceAttributes: {}, imports: availableExports }; processed = await this.pinStaticFileAssets(processed, openingEvaluation, desiredTemplateArtifactId, executionPrincipal, false, stack.resources, prepared?.assetManifest); await this.pinNestedTemplateAssets(processed, openingEvaluation, desiredTemplateArtifactId, executionPrincipal, prepared?.nestedTemplateManifest, { stackId: stack.stackId, stackName: stack.stackName, logicalPath: stack.parentLogicalId, capabilities: suppliedCapabilities, tags: desiredTags, previousResources: stack.resources }); this.assertCapabilities(processed, suppliedCapabilities); importNames = this.plannedImportNames(processed, resolvedParameters.values, pseudos, conditions, stack.stackId); graph = buildResourceDependencyGraph(processed); this.validateOpeningResources(processed, stack.stackId, operationId, executionPrincipal); this.validateProviderReferences(processed); this.preflightProviderModels(processed, { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: availableExports }, stack.stackId, operationId, executionPrincipal, desiredTags, stack.resources); } catch (error) { throw this.validationError(error); }
+    const typedSsmGenerations = new Map<string, string>();
+    try { await this.authorizeTypedSsmParameters(parsed.value, suppliedParameterInputs, executionPrincipal, previousValues); resolvedParameters = resolveTemplateParameters(parsed.value.Parameters, suppliedParameterInputs, { previous: previousValues, resolveSsmParameter: (name, type) => this.resolveBootstrapSsmParameter(name, type, typedSsmGenerations) }); const pseudos = { ...cloudFormationPseudoParameters(this.store.accountId, this.region, stack.stackId, stack.stackName), "AWS::NotificationARNs": notificationArns }; const availableExports = this.exportValues(); conditions = evaluateTemplateConditions(parsed.value, resolvedParameters.values, pseudos, availableExports); validateTemplateRules(parsed.value, resolvedParameters.values, pseudos, conditions, availableExports); processed = conditionallyProcessedTemplate(parsed.value, conditions); const openingEvaluation = { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, resourceRefs: {}, resourceAttributes: {}, imports: availableExports }; processed = await this.pinStaticFileAssets(processed, openingEvaluation, desiredTemplateArtifactId, executionPrincipal, false, stack.resources, prepared?.assetManifest); await this.pinNestedTemplateAssets(processed, openingEvaluation, desiredTemplateArtifactId, executionPrincipal, prepared?.nestedTemplateManifest, { stackId: stack.stackId, stackName: stack.stackName, logicalPath: stack.parentLogicalId, capabilities: suppliedCapabilities, tags: desiredTags, previousResources: stack.resources }); this.assertCapabilities(processed, suppliedCapabilities); importNames = this.plannedImportNames(processed, resolvedParameters.values, pseudos, conditions, stack.stackId); graph = buildResourceDependencyGraph(processed); this.validateOpeningResources(processed, stack.stackId, operationId, executionPrincipal); this.validateProviderReferences(processed); this.preflightProviderModels(processed, { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: availableExports }, stack.stackId, operationId, executionPrincipal, desiredTags, stack.resources); } catch (error) { throw this.validationError(error); }
+    const typedPins = this.typedSsmPins(parsed.value, resolvedParameters, typedSsmGenerations);
     const processedBody = JSON.stringify(processed); const processedDigest = createHash("sha256").update(processedBody).digest("hex"); const sameParameters = canonical(resolvedParameters.entries.map(entry => [entry.parameterKey, entry.parameterValue, entry.resolvedValue])) === canonical(stack.parameters.map(entry => [entry.parameterKey, entry.parameterValue, entry.resolvedValue])); if (processedDigest === stack.processedTemplateDigest && sameParameters && canonical(desiredTags) === canonical(stack.tags) && canonical(suppliedCapabilities) === canonical(stack.capabilities) && canonical(notificationArns) === canonical(stack.notificationArns) && canonical(rollbackConfiguration) === canonical(stack.rollbackConfiguration ?? { rollbackTriggers: [] }) && (input.RoleARN ?? stack.roleArn) === stack.roleArn) throw new AwsError("ValidationError", "No updates are to be performed.", 400);
     const snapshot = { resources: stack.resources, outputs: stack.outputs, parameters: stack.parameters, tags: stack.tags, capabilities: stack.capabilities, notificationArns: stack.notificationArns, rollbackConfiguration: stack.rollbackConfiguration, roleArn: stack.roleArn, description: stack.description, nestedStackSource: stack.nestedStackSource, templateArtifactId: stack.templateArtifactId, templateDigest: stack.templateDigest, processedTemplateDigest: stack.processedTemplateDigest };
-    await this.journal.replaceTemplate(desiredTemplateArtifactId, prepared?.originalBody ?? parsed.body, "original"); await this.journal.replaceTemplate(desiredTemplateArtifactId, processedBody, "processed"); await this.journal.replaceJsonArtifact("parameters", `${desiredTemplateArtifactId}.private.json`, { values: resolvedParameters.values, entries: resolvedParameters.entries }); await this.journal.replaceJsonArtifact("execution", `${desiredTemplateArtifactId}.principal.json`, executionPrincipal); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.conditions.json`, conditions); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.graph.json`, graph); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.imports.json`, importNames); if (prepared?.templateSource ?? parsed.source) await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.template-source.json`, prepared?.templateSource ?? parsed.source); await this.journal.replaceJsonArtifact("rollback", `${operationId}.snapshot.json`, snapshot); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.stack.json`, { parameters: resolvedParameters.entries, tags: desiredTags, capabilities: suppliedCapabilities, notificationArns, rollbackConfiguration, roleArn: desiredRoleArn, description: processed.Description, templateDigest: requestTemplateDigest, processedTemplateDigest: processedDigest });
+    await this.journal.replaceTemplate(desiredTemplateArtifactId, prepared?.originalBody ?? parsed.body, "original"); await this.journal.replaceTemplate(desiredTemplateArtifactId, processedBody, "processed"); await this.journal.replaceJsonArtifact("parameters", `${desiredTemplateArtifactId}.private.json`, { values: resolvedParameters.values, entries: resolvedParameters.entries }); await this.journal.replaceJsonArtifact("operations", `${operationId}.typed-ssm-pins.json`, typedPins); await this.journal.replaceJsonArtifact("execution", `${desiredTemplateArtifactId}.principal.json`, executionPrincipal); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.conditions.json`, conditions); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.graph.json`, graph); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.imports.json`, importNames); if (prepared?.templateSource ?? parsed.source) await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.template-source.json`, prepared?.templateSource ?? parsed.source); await this.journal.replaceJsonArtifact("rollback", `${operationId}.snapshot.json`, snapshot); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.stack.json`, { parameters: resolvedParameters.entries, tags: desiredTags, capabilities: suppliedCapabilities, notificationArns, rollbackConfiguration, roleArn: desiredRoleArn, description: processed.Description, templateDigest: requestTemplateDigest, processedTemplateDigest: processedDigest });
     const removed = Object.keys(stack.resources).filter(logicalId => !processed.Resources[logicalId]).reverse(); const acceptedAt = this.clock.now(); stack.stackStatus = "UPDATE_IN_PROGRESS"; stack.stackStatusReason = undefined; stack.lastClientRequestToken = clientRequestToken; if (nestedSource) stack.nestedStackSource = structuredClone(nestedSource) as unknown as Record<string, unknown>; stack.activeOperation = { operationId, kind: "UPDATE", status: "PENDING", acceptedAt, clientRequestToken, orderedLogicalIds: [...graph.order, ...removed], completedLogicalIds: [], rollbackLogicalIds: [], desiredTemplateArtifactId, previousTemplateArtifactId: stack.templateArtifactId, desiredTemplateDigest: requestTemplateDigest, desiredProcessedTemplateDigest: processedDigest, disableRollback, retainExceptOnCreate, ...(owningParentOperationId ? { owningParentOperationId } : {}) }; if (clientRequestToken) this.state.clientTokens[clientRequestToken] = { operation: "UpdateStack", stackId: stack.stackId, operationId, inputDigest, createdAt: acceptedAt }; this.event(stack, stack.stackName, "AWS::CloudFormation::Stack", "UPDATE_IN_PROGRESS", undefined, stack.stackId, clientRequestToken); await this.checkpoint(stack, "accepted"); await this.store.save(); this.schedule(stack.stackId); return { StackId: stack.stackId, OperationId: operationId };
   }
 
@@ -1409,7 +1449,8 @@ export class CloudFormationService {
       }
     }
     for (const parameter of artifact.ssmParameters) {
-      if (!parameter || typeof parameter.name !== "string" || typeof parameter.value !== "string" || this.resolveBootstrapSsmParameter(parameter.name, "AWS::SSM::Parameter::Value<String>") !== parameter.value) {
+      const current = parameter && typeof parameter.name === "string" ? this.bootstrapParameterResolver?.(parameter.name) : undefined;
+      if (!parameter || typeof parameter.name !== "string" || typeof parameter.value !== "string" || !current || current.value !== parameter.value || parameter.generationId !== undefined && current.generationId !== parameter.generationId || parameter.version !== undefined && current.version !== parameter.version) {
         value.executionStatus = "OBSOLETE"; value.lastUpdatedTime = this.clock.now(); await this.store.save();
         throw new AwsError("InvalidChangeSetStatus", `Bootstrap SSM dependency changed after change set ${value.changeSetName} was created`, 400);
       }
@@ -2396,7 +2437,8 @@ export class CloudFormationService {
       const capabilities = input.Capabilities === undefined ? [...stack.capabilities] : list<string>(input.Capabilities).map(String);
       const desiredTags = input.Tags === undefined ? structuredClone(stack.tags) : tags(input.Tags);
       await this.authorizeTypedSsmParameters(parsed.value, suppliedParameterInputs, executionPrincipal, value.changeSetType === "UPDATE" ? previousValues : {});
-      const resolvedParameters = resolveTemplateParameters(parsed.value.Parameters, suppliedParameterInputs, { previous: value.changeSetType === "UPDATE" ? previousValues : undefined, resolveSsmParameter: (name, type) => this.resolveBootstrapSsmParameter(name, type) });
+      const typedSsmGenerations = new Map<string, string>();
+      const resolvedParameters = resolveTemplateParameters(parsed.value.Parameters, suppliedParameterInputs, { previous: value.changeSetType === "UPDATE" ? previousValues : undefined, resolveSsmParameter: (name, type) => this.resolveBootstrapSsmParameter(name, type, typedSsmGenerations) });
       const pseudos = { ...cloudFormationPseudoParameters(this.store.accountId, this.region, stack.stackId, stack.stackName), "AWS::NotificationARNs": notificationArns };
       const conditions = evaluateTemplateConditions(parsed.value, resolvedParameters.values, pseudos, planning.availableExports);
       validateTemplateRules(parsed.value, resolvedParameters.values, pseudos, conditions, planning.availableExports);
@@ -2439,7 +2481,12 @@ export class CloudFormationService {
       await this.journal.replaceJsonArtifact("plans", `${artifactId}.provider-models.json`, preflightModels);
       if (parsed.source) await this.journal.replaceJsonArtifact("plans", `${artifactId}.template-source.json`, parsed.source);
       await this.journal.replaceJsonArtifact("change-sets", `${artifactId}.changes.json`, changes);
-      const ssmParameters = Object.entries(parsed.value.Parameters ?? {}).filter(([, definition]) => definition.Type === "AWS::SSM::Parameter::Value<String>").map(([parameterKey]) => { const entry = resolvedParameters.entries.find(candidate => candidate.parameterKey === parameterKey); return { name: String(entry?.parameterValue ?? ""), value: String(entry?.resolvedValue ?? resolvedParameters.values[parameterKey] ?? "") }; });
+      const ssmParameters = Object.entries(parsed.value.Parameters ?? {}).filter(([, definition]) => definition.Type === "AWS::SSM::Parameter::Value<String>").map(([parameterKey]) => {
+        const entry = resolvedParameters.entries.find(candidate => candidate.parameterKey === parameterKey);
+        const name = String(entry?.parameterValue ?? "");
+        const generationId = typedSsmGenerations.get(name);
+        return { name, value: String(entry?.resolvedValue ?? resolvedParameters.values[parameterKey] ?? ""), ...(generationId ? { generationId } : {}) };
+      });
       const executionArtifact: ChangeSetExecutionArtifact = { schemaVersion: 2, StackName: stack.stackName, processedTemplateBody: processedBody, originalTemplateBody: parsed.body, originalTemplateDigest: parsed.digest, processedTemplateDigest: processedDigest, templateBodyMaximumBytes: input.TemplateURL !== undefined || input.UsePreviousTemplate === true ? TEMPLATE_URL_MAXIMUM_BYTES : TEMPLATE_BODY_MAXIMUM_BYTES, Parameters: list<any>(input.Parameters), Capabilities: capabilities, RoleARN: desiredRoleArn, NotificationARNs: notificationArns, RollbackConfiguration: input.RollbackConfiguration, Tags: Object.entries(desiredTags).map(([Key, Value]) => ({ Key, Value })), baselineTemplateDigest: value.changeSetType === "UPDATE" ? stack.templateDigest : undefined, baselineProcessedTemplateDigest: value.changeSetType === "UPDATE" ? stack.processedTemplateDigest : undefined, imports: Object.fromEntries(importNames.map(name => [name, String(planning.availableExports[name])])), ssmParameters, nestedTemplateManifest, templateSource: parsed.source };
       await this.journal.replaceJsonArtifact("change-sets", `${artifactId}.input.json`, executionArtifact);
       if (noUpdates) {
@@ -2699,11 +2746,35 @@ export class CloudFormationService {
     if (changed) await this.store.save();
   }
 
-  private resolveBootstrapSsmParameter(name: string, type: string): string {
+  private resolveBootstrapSsmParameter(name: string, type: string, generations?: Map<string, string>): string {
     if (type !== "AWS::SSM::Parameter::Value<String>") throw new AwsError("ValidationError", `CloudFormation supports only AWS::SSM::Parameter::Value<String>; received ${type}`, 400);
-    const value = this.bootstrapParameterResolver?.(name);
-    if (value === undefined) throw new AwsError("ValidationError", `SSM parameter ${name} is missing or is not a String parameter in the authoritative Parameter Store catalog`, 400);
-    return value;
+    const resolved = this.bootstrapParameterResolver?.(name);
+    if (resolved === undefined) throw new AwsError("ValidationError", `SSM parameter ${name} is missing or is not a String parameter in the authoritative Parameter Store catalog`, 400);
+    generations?.set(name, resolved.generationId);
+    return resolved.value;
+  }
+
+  private typedSsmPins(template: CloudFormationTemplate, resolvedParameters: ResolvedParameters, generations?: ReadonlyMap<string, string>): TypedSsmPinsArtifact {
+    const parameters = Object.entries(template.Parameters ?? {})
+      .filter(([, declaration]) => declaration.Type === "AWS::SSM::Parameter::Value<String>")
+      .map(([parameterKey]) => {
+        const entry = resolvedParameters.entries.find(candidate => candidate.parameterKey === parameterKey);
+        const name = String(entry?.parameterValue ?? "");
+        const generationId = generations?.get(name) ?? this.bootstrapParameterResolver?.(name)?.generationId;
+        if (!generationId) throw new AwsError("ValidationError", `SSM parameter ${name} is missing or is not a String parameter in the authoritative Parameter Store catalog`, 400);
+        return { name, generationId };
+      });
+    return { schemaVersion: 1, parameters };
+  }
+
+  private async assertTypedSsmPins(operationId: string): Promise<void> {
+    const pins = await this.journal.readJsonArtifact<TypedSsmPinsArtifact>("operations", `${operationId}.typed-ssm-pins.json`);
+    if (!pins) return;
+    if (pins.schemaVersion !== 1 || !Array.isArray(pins.parameters)) throw new Error("Typed Parameter Store generation pins are corrupt");
+    for (const pinned of pins.parameters) {
+      const current = this.bootstrapParameterResolver?.(pinned.name);
+      if (!current || current.generationId !== pinned.generationId) throw new AwsError("ValidationError", `SSM parameter ${pinned.name} selected a different parameter generation during this CloudFormation operation`, 400);
+    }
   }
 
   private async authorizeTypedSsmParameters(template: CloudFormationTemplate, supplied: readonly import("./cloudformation/parameters.js").ParameterInput[], principal: PrincipalContext, previous: Readonly<Record<string, string>> = {}): Promise<void> {
@@ -2767,7 +2838,7 @@ export class CloudFormationService {
     if (!resource.physicalResourceId) return;
     const provider = this.providers.require(resource.resourceType);
     if (!provider.retain) return;
-    const resolved = await this.resolveDynamicReferenceProperties(resource.resourceType, resource.properties, principal);
+    const resolved = await this.resolveDynamicReferenceProperties(resource.resourceType, resource.properties, principal, stack.activeOperation!.operationId);
     const context = this.providerContext(stack.stackId, logicalId, stack.activeOperation!.operationId, principal, undefined, step);
     const previous = provider.canonicalize(resolved, context);
     await provider.retain(resource.physicalResourceId, previous, context);
@@ -4175,6 +4246,7 @@ export class CloudFormationService {
     operation.status = "RUNNING"; operation.startedAt ??= this.clock.now(); await this.checkpoint(stack, "started"); await this.store.save();
     let activeLogicalId: string | undefined;
     try {
+      await this.assertTypedSsmPins(operation.operationId);
       const artifactId = stack.templateArtifactId ?? this.artifactId(stack.stackId); const body = await this.journal.readTemplate(artifactId, "processed"); if (body === undefined) throw new Error("Processed template artifact is missing"); const parsed = parseCloudFormationTemplate(body);
       const admission = await this.journal.readJsonArtifact<NestedTemplateManifest>("plans", `${artifactId}.nested-templates.json`);
       if (admission?.admissionFailure) throw new Error(admission.admissionFailure);
@@ -4192,7 +4264,7 @@ export class CloudFormationService {
         let resource = stack.resources[logicalId];
         if (!resource) {
           const context = { parameters, pseudoParameters: pseudos, mappings: parsed.Mappings, conditions, resourceRefs, resourceAttributes, imports: importedValues };
-          const evaluatedProperties = evaluateIntrinsicValue(definition.Properties ?? {}, context, `$.Resources.${logicalId}.Properties`) as Record<string, unknown>; const taggedProperties = this.mergeStackTags(provider, evaluatedProperties, stack.tags); const properties = await this.pinEvaluatedFileAsset(definition.Type, logicalId, taggedProperties, artifactId, operation.operationId, executionPrincipal); const resolvedProperties = await this.resolveDynamicReferenceProperties(definition.Type, properties, executionPrincipal); const metadata = evaluateIntrinsicValue(definition.Metadata ?? {}, context, `$.Resources.${logicalId}.Metadata`) as Record<string, unknown>;
+          const evaluatedProperties = evaluateIntrinsicValue(definition.Properties ?? {}, context, `$.Resources.${logicalId}.Properties`) as Record<string, unknown>; const taggedProperties = this.mergeStackTags(provider, evaluatedProperties, stack.tags); const properties = await this.pinEvaluatedFileAsset(definition.Type, logicalId, taggedProperties, artifactId, operation.operationId, executionPrincipal); const resolvedProperties = await this.resolveDynamicReferenceProperties(definition.Type, properties, executionPrincipal, operation.operationId); const metadata = evaluateIntrinsicValue(definition.Metadata ?? {}, context, `$.Resources.${logicalId}.Metadata`) as Record<string, unknown>;
           const validationContext = this.providerContext(stack.stackId, logicalId, operation.operationId, executionPrincipal, undefined, "plan"); const issues = provider.validate(resolvedProperties, validationContext); if (issues.length) throw new Error(issues.map(issue => `${logicalId}.${issue.path}: ${issue.message}`).join("; "));
           resource = { logicalResourceId: logicalId, resourceType: definition.Type, resourceStatus: "CREATE_IN_PROGRESS", lastUpdatedTimestamp: this.clock.now(), properties, attributes: {}, metadata, deletionPolicy: definition.DeletionPolicy, updateReplacePolicy: definition.UpdateReplacePolicy, dependsOn: list<string>(definition.DependsOn).map(String) };
           stack.resources[logicalId] = resource; this.event(stack, logicalId, resource.resourceType, "CREATE_IN_PROGRESS", undefined, undefined, operation.clientRequestToken, resource.properties); await this.checkpoint(stack, `resource:${logicalId}:create-intent`); await this.store.save();
@@ -4200,7 +4272,7 @@ export class CloudFormationService {
         const key = `${logicalId}:create`; let mutation = await this.mutationIntent(operation.operationId, { key, logicalId, kind: "CREATE", after: resource });
         if (mutation.status !== "COMPLETE") {
           resource.properties = await this.pinEvaluatedFileAsset(definition.Type, logicalId, resource.properties, artifactId, operation.operationId, executionPrincipal);
-          const resolvedProperties = await this.resolveDynamicReferenceProperties(definition.Type, resource.properties, executionPrincipal); const providerContext = this.providerContext(stack.stackId, logicalId, operation.operationId, executionPrincipal, undefined, "create"); const desired = provider.canonicalize(resolvedProperties, providerContext); const plan = provider.plan(undefined, desired, providerContext); if (plan.action !== "CREATE") throw new Error(`Provider ${definition.Type} returned ${plan.action} for a new resource`);
+          const resolvedProperties = await this.resolveDynamicReferenceProperties(definition.Type, resource.properties, executionPrincipal, operation.operationId); const providerContext = this.providerContext(stack.stackId, logicalId, operation.operationId, executionPrincipal, undefined, "create"); const desired = provider.canonicalize(resolvedProperties, providerContext); const plan = provider.plan(undefined, desired, providerContext); if (plan.action !== "CREATE") throw new Error(`Provider ${definition.Type} returned ${plan.action} for a new resource`);
           const result = await this.invokeProvider(stack, logicalId, "create", "CREATE", provider, executionPrincipal, context => provider.create(desired, context), desired as Readonly<Record<string, unknown>>);
           const created = this.resourceFromSuccess(logicalId, definition, resource.metadata ?? {}, provider, result, "CREATE_COMPLETE", resource.properties); mutation = await this.mutationComplete(operation.operationId, key, created);
         }
@@ -4238,7 +4310,7 @@ export class CloudFormationService {
         await this.checkpoint(stack, `resource:${logicalId}:rollback-delete-intent`);
         await this.store.save();
         const provider = this.providers.require(resource.resourceType);
-        const resolved = await this.resolveDynamicReferenceProperties(resource.resourceType, resource.properties, principal); const previous = provider.canonicalize(resolved, this.providerContext(stack.stackId, logicalId, operation.operationId, principal, undefined, "rollback-create"));
+        const resolved = await this.resolveDynamicReferenceProperties(resource.resourceType, resource.properties, principal, operation.operationId); const previous = provider.canonicalize(resolved, this.providerContext(stack.stackId, logicalId, operation.operationId, principal, undefined, "rollback-create"));
         const rollbackPhysicalId = resource.physicalResourceId;
         try {
           await this.invokeProvider(stack, logicalId, "rollback-create", "DELETE", provider, principal, context => provider.delete(resource.physicalResourceId ?? "", previous, context), previous as Readonly<Record<string, unknown>>, resource.physicalResourceId);
@@ -4332,7 +4404,7 @@ export class CloudFormationService {
 
     this.event(stack, logicalId, previousResource.resourceType, "DELETE_IN_PROGRESS", "Deleting old physical resource after replacement cutover", previousResource.physicalResourceId, operation.clientRequestToken, previousResource.properties); await this.checkpoint(stack, `resource:${logicalId}:replacement-delete-intent`); await this.store.save();
     const oldProvider = this.providers.require(previousResource.resourceType);
-    const resolvedPrevious = await this.resolveDynamicReferenceProperties(previousResource.resourceType, previousResource.properties, principal); const previous = oldProvider.canonicalize(resolvedPrevious, this.providerContext(stack.stackId, logicalId, operation.operationId, principal, undefined, "replace-delete"));
+    const resolvedPrevious = await this.resolveDynamicReferenceProperties(previousResource.resourceType, previousResource.properties, principal, operation.operationId); const previous = oldProvider.canonicalize(resolvedPrevious, this.providerContext(stack.stackId, logicalId, operation.operationId, principal, undefined, "replace-delete"));
     await this.invokeProvider(stack, logicalId, "replace-delete", "DELETE", oldProvider, principal, context => oldProvider.delete(previousResource.physicalResourceId ?? "", previous, context), previous as Readonly<Record<string, unknown>>, previousResource.physicalResourceId);
     await this.mutationComplete(operation.operationId, key);
     this.event(stack, logicalId, previousResource.resourceType, "DELETE_COMPLETE", "Old physical resource deleted after replacement cutover", previousResource.physicalResourceId, operation.clientRequestToken, previousResource.properties); await this.checkpoint(stack, `resource:${logicalId}:replacement-delete-complete`); await this.store.save();
@@ -4362,7 +4434,7 @@ export class CloudFormationService {
     this.event(stack, logicalId, previousResource.resourceType, "DELETE_IN_PROGRESS", "Deleting old custom-resource physical ID after update cutover", previousResource.physicalResourceId, operation.clientRequestToken, previousResource.properties);
     await this.checkpoint(stack, `resource:${logicalId}:${step}-intent`); await this.store.save();
     const provider = this.providers.require(previousResource.resourceType);
-    const resolvedPrevious = await this.resolveDynamicReferenceProperties(previousResource.resourceType, previousResource.properties, principal); const previous = provider.canonicalize(resolvedPrevious, this.providerContext(stack.stackId, logicalId, operation.operationId, principal, undefined, step));
+    const resolvedPrevious = await this.resolveDynamicReferenceProperties(previousResource.resourceType, previousResource.properties, principal, operation.operationId); const previous = provider.canonicalize(resolvedPrevious, this.providerContext(stack.stackId, logicalId, operation.operationId, principal, undefined, step));
     await this.invokeProvider(stack, logicalId, step, "DELETE", provider, principal, context => provider.delete(previousResource.physicalResourceId!, previous, context), previous as Readonly<Record<string, unknown>>, previousResource.physicalResourceId);
     this.event(stack, logicalId, previousResource.resourceType, "DELETE_COMPLETE", "Old custom-resource physical ID deleted after update cutover", previousResource.physicalResourceId, operation.clientRequestToken, previousResource.properties);
     await this.checkpoint(stack, `resource:${logicalId}:${step}-complete`); await this.store.save();
@@ -4373,6 +4445,7 @@ export class CloudFormationService {
     const desiredId = operation.desiredTemplateArtifactId;
     let activeLogicalId: string | undefined;
     try {
+      await this.assertTypedSsmPins(operation.operationId);
       const admission = await this.journal.readJsonArtifact<NestedTemplateManifest>("plans", `${desiredId}.nested-templates.json`);
       if (admission?.admissionFailure) throw new Error(admission.admissionFailure);
       const body = await this.journal.readTemplate(desiredId, "processed"); if (body === undefined) throw new Error("Desired processed template artifact is missing"); const desiredTemplate = parseCloudFormationTemplate(body); const graph = buildResourceDependencyGraph(desiredTemplate); const parameterArtifact = await this.journal.readJsonArtifact<{ values: Record<string, unknown> }>("parameters", `${desiredId}.private.json`); const conditions = await this.journal.readJsonArtifact<Record<string, boolean>>("plans", `${desiredId}.conditions.json`) ?? {}; const importNames = await this.journal.readJsonArtifact<string[]>("plans", `${desiredId}.imports.json`) ?? []; const importedValues = this.exportValues(); const principal = await this.journal.readJsonArtifact<PrincipalContext>("execution", `${desiredId}.principal.json`) ?? this.defaultExecutionPrincipal(); const stackPlan = await this.journal.readJsonArtifact<any>("plans", `${desiredId}.stack.json`); const snapshot = await this.journal.readJsonArtifact<any>("rollback", `${operation.operationId}.snapshot.json`); if (!parameterArtifact || !stackPlan || !snapshot) throw new Error("Update operation artifacts are incomplete");
@@ -4382,7 +4455,7 @@ export class CloudFormationService {
         activeLogicalId = logicalId;
         if (operation.completedLogicalIds.includes(logicalId)) continue;
         if (operation.cancelRequestedAt && !await this.hasStartedMutation(operation.operationId, logicalId)) throw new Error("Update cancelled by CancelUpdateStack");
-        const definition = desiredTemplate.Resources[logicalId]; const evaluation = { parameters: parameterArtifact.values, pseudoParameters: pseudos, mappings: desiredTemplate.Mappings, conditions, resourceRefs, resourceAttributes, imports: importedValues }; const evaluatedProperties = evaluateIntrinsicValue(definition.Properties ?? {}, evaluation, `$.Resources.${logicalId}.Properties`) as Record<string, unknown>; const desiredMetadata = evaluateIntrinsicValue(definition.Metadata ?? {}, evaluation, `$.Resources.${logicalId}.Metadata`) as Record<string, unknown>; const provider = this.providers.require(definition.Type); const taggedProperties = this.mergeStackTags(provider, evaluatedProperties, stackPlan.tags); const desiredProperties = await this.pinEvaluatedFileAsset(definition.Type, logicalId, taggedProperties, desiredId, operation.operationId, principal); const resolvedDesiredProperties = await this.resolveDynamicReferenceProperties(definition.Type, desiredProperties, principal); const context = this.providerContext(stack.stackId, logicalId, operation.operationId, principal, undefined, "plan"); const issues = provider.validate(resolvedDesiredProperties, context); if (issues.length) throw new Error(issues.map(issue => `${logicalId}.${issue.path}: ${issue.message}`).join("; ")); const desired = provider.canonicalize(resolvedDesiredProperties, context); let existing = stack.resources[logicalId]; const previousResource = snapshot.resources[logicalId] as CloudFormationStackResourceState | undefined;
+        const definition = desiredTemplate.Resources[logicalId]; const evaluation = { parameters: parameterArtifact.values, pseudoParameters: pseudos, mappings: desiredTemplate.Mappings, conditions, resourceRefs, resourceAttributes, imports: importedValues }; const evaluatedProperties = evaluateIntrinsicValue(definition.Properties ?? {}, evaluation, `$.Resources.${logicalId}.Properties`) as Record<string, unknown>; const desiredMetadata = evaluateIntrinsicValue(definition.Metadata ?? {}, evaluation, `$.Resources.${logicalId}.Metadata`) as Record<string, unknown>; const provider = this.providers.require(definition.Type); const taggedProperties = this.mergeStackTags(provider, evaluatedProperties, stackPlan.tags); const desiredProperties = await this.pinEvaluatedFileAsset(definition.Type, logicalId, taggedProperties, desiredId, operation.operationId, principal); const resolvedDesiredProperties = await this.resolveDynamicReferenceProperties(definition.Type, desiredProperties, principal, operation.operationId); const context = this.providerContext(stack.stackId, logicalId, operation.operationId, principal, undefined, "plan"); const issues = provider.validate(resolvedDesiredProperties, context); if (issues.length) throw new Error(issues.map(issue => `${logicalId}.${issue.path}: ${issue.message}`).join("; ")); const desired = provider.canonicalize(resolvedDesiredProperties, context); let existing = stack.resources[logicalId]; const previousResource = snapshot.resources[logicalId] as CloudFormationStackResourceState | undefined;
         if (!previousResource) {
           if (!existing) {
             existing = { logicalResourceId: logicalId, resourceType: definition.Type, resourceStatus: "CREATE_IN_PROGRESS", lastUpdatedTimestamp: this.clock.now(), properties: desiredProperties, attributes: {}, metadata: desiredMetadata, deletionPolicy: definition.DeletionPolicy, updateReplacePolicy: definition.UpdateReplacePolicy, dependsOn: list<string>(definition.DependsOn).map(String) }; stack.resources[logicalId] = existing; this.event(stack, logicalId, definition.Type, "CREATE_IN_PROGRESS", undefined, undefined, operation.clientRequestToken, desiredProperties); await this.checkpoint(stack, `resource:${logicalId}:create-intent`); await this.store.save();
@@ -4390,7 +4463,7 @@ export class CloudFormationService {
           const key = `${logicalId}:create`; let mutation = await this.mutationIntent(operation.operationId, { key, logicalId, kind: "CREATE", after: existing }); if (mutation.status !== "COMPLETE") { const result = await this.invokeProvider(stack, logicalId, "create", "CREATE", provider, principal, providerContext => provider.create(desired, providerContext), desired as Readonly<Record<string, unknown>>); const created = this.resourceFromSuccess(logicalId, definition, desiredMetadata, provider, result, "CREATE_COMPLETE", desiredProperties); mutation = await this.mutationComplete(operation.operationId, key, created); } if (!mutation.after) throw new Error(`Create mutation for ${logicalId} has no completed resource model`); existing = structuredClone(mutation.after); stack.resources[logicalId] = existing; this.event(stack, logicalId, definition.Type, "CREATE_COMPLETE", undefined, existing.physicalResourceId, operation.clientRequestToken, existing.properties);
         } else {
           if (!previousResource) throw new Error(`Update snapshot is missing prior resource ${logicalId}`);
-          const sameType = previousResource.resourceType === definition.Type; const resolvedPreviousProperties = sameType ? await this.resolveDynamicReferenceProperties(definition.Type, previousResource.properties, principal) : undefined; const previous = sameType ? provider.canonicalize(resolvedPreviousProperties!, context) : undefined; const plan = sameType ? provider.plan(previous, desired, context) : { action: "REPLACE" as const, replacementOrder: provider.schema.replacement.defaultOrder, reason: "Resource type changed" };
+          const sameType = previousResource.resourceType === definition.Type; const resolvedPreviousProperties = sameType ? await this.resolveDynamicReferenceProperties(definition.Type, previousResource.properties, principal, operation.operationId) : undefined; const previous = sameType ? provider.canonicalize(resolvedPreviousProperties!, context) : undefined; const plan = sameType ? provider.plan(previous, desired, context) : { action: "REPLACE" as const, replacementOrder: provider.schema.replacement.defaultOrder, reason: "Resource type changed" };
           if (plan.action === "UPDATE") {
             if (existing.resourceStatus !== "UPDATE_IN_PROGRESS") { existing.resourceStatus = "UPDATE_IN_PROGRESS"; existing.lastUpdatedTimestamp = this.clock.now(); this.event(stack, logicalId, definition.Type, "UPDATE_IN_PROGRESS", undefined, existing.physicalResourceId, operation.clientRequestToken, desiredProperties); await this.checkpoint(stack, `resource:${logicalId}:update-intent`); await this.store.save(); }
             const intendedAfter: CloudFormationStackResourceState = { ...structuredClone(previousResource), resourceStatus: "UPDATE_IN_PROGRESS", resourceStatusReason: undefined, lastUpdatedTimestamp: this.clock.now(), properties: structuredClone(desiredProperties), metadata: structuredClone(desiredMetadata), deletionPolicy: definition.DeletionPolicy, updateReplacePolicy: definition.UpdateReplacePolicy, dependsOn: list<string>(definition.DependsOn).map(String) };
@@ -4430,7 +4503,7 @@ export class CloudFormationService {
         activeLogicalId = logicalId; if (operation.completedLogicalIds.includes(logicalId)) continue; if (operation.cancelRequestedAt && !await this.hasStartedMutation(operation.operationId, logicalId)) throw new Error("Update cancelled by CancelUpdateStack"); const resource = stack.resources[logicalId] ?? snapshot.resources[logicalId] as CloudFormationStackResourceState; if (!resource) { operation.completedLogicalIds.push(logicalId); continue; } if (resource.resourceStatus !== "DELETE_IN_PROGRESS") { resource.resourceStatus = "DELETE_IN_PROGRESS"; resource.lastUpdatedTimestamp = this.clock.now(); stack.resources[logicalId] = resource; this.event(stack, logicalId, resource.resourceType, "DELETE_IN_PROGRESS", "Removed by stack update", resource.physicalResourceId, operation.clientRequestToken); await this.checkpoint(stack, `resource:${logicalId}:remove-intent`); await this.store.save(); }
         const retentionPolicy = resource.deletionPolicy ?? (resource.resourceType === RDS_DB_INSTANCE_TYPE ? "Snapshot" : "Delete");
         if (retentionPolicy === "Retain" || retentionPolicy === "RetainExceptOnCreate") { await this.releaseRetainedProviderOwnership(stack, logicalId, resource, principal, "remove-retain"); resource.resourceStatus = "DELETE_SKIPPED"; this.detachNestedStack(resource); this.event(stack, logicalId, resource.resourceType, "DELETE_SKIPPED", "Removed by stack update and retained", resource.physicalResourceId, operation.clientRequestToken); }
-        else { const provider = this.providers.require(resource.resourceType); const key = `${logicalId}:delete`; const mutation = await this.mutationIntent(operation.operationId, { key, logicalId, kind: "DELETE", before: snapshot.resources[logicalId] }); if (mutation.status !== "COMPLETE") { const resolved = await this.resolveDynamicReferenceProperties(resource.resourceType, resource.properties, principal); const previous = provider.canonicalize(resolved, this.providerContext(stack.stackId, logicalId, operation.operationId, principal, undefined, "delete")); await this.invokeProvider(stack, logicalId, "delete", "DELETE", provider, principal, providerContext => provider.delete(resource.physicalResourceId ?? "", previous, providerContext), previous as Readonly<Record<string, unknown>>, resource.physicalResourceId, retentionPolicy); await this.mutationComplete(operation.operationId, key); } resource.resourceStatus = "DELETE_COMPLETE"; this.event(stack, logicalId, resource.resourceType, "DELETE_COMPLETE", "Removed by stack update", resource.physicalResourceId, operation.clientRequestToken); }
+        else { const provider = this.providers.require(resource.resourceType); const key = `${logicalId}:delete`; const mutation = await this.mutationIntent(operation.operationId, { key, logicalId, kind: "DELETE", before: snapshot.resources[logicalId] }); if (mutation.status !== "COMPLETE") { const resolved = await this.resolveDynamicReferenceProperties(resource.resourceType, resource.properties, principal, operation.operationId); const previous = provider.canonicalize(resolved, this.providerContext(stack.stackId, logicalId, operation.operationId, principal, undefined, "delete")); await this.invokeProvider(stack, logicalId, "delete", "DELETE", provider, principal, providerContext => provider.delete(resource.physicalResourceId ?? "", previous, providerContext), previous as Readonly<Record<string, unknown>>, resource.physicalResourceId, retentionPolicy); await this.mutationComplete(operation.operationId, key); } resource.resourceStatus = "DELETE_COMPLETE"; this.event(stack, logicalId, resource.resourceType, "DELETE_COMPLETE", "Removed by stack update", resource.physicalResourceId, operation.clientRequestToken); }
         resource.lastUpdatedTimestamp = this.clock.now(); operation.completedLogicalIds.push(logicalId); delete stack.resources[logicalId]; delete resourceRefs[logicalId]; delete resourceAttributes[logicalId]; await this.checkpoint(stack, `resource:${logicalId}:remove-complete`); await this.store.save();
       }
       if (operation.cancelRequestedAt) throw new Error("Update cancelled by CancelUpdateStack");
@@ -4477,17 +4550,17 @@ export class CloudFormationService {
           if (record.kind === "CREATE" || record.kind === "REPLACE_CREATE") {
             const created = record.after; if (!created) throw new Error(`Rollback record ${record.key} is missing its created resource model`);
             if (created.deletionPolicy === "Retain" && !operation.retainExceptOnCreate) { await this.releaseRetainedProviderOwnership(stack, logicalId, created, executionPrincipal, `rollback-${record.sequence}-retain`); await this.mutationRollbackResult(sourceOperationId, record.key, "SKIPPED", "Retained during update rollback"); }
-            else { const provider = this.providers.require(created.resourceType); const step = `rollback-${record.sequence}-delete`; const resolved = await this.resolveDynamicReferenceProperties(created.resourceType, created.properties, executionPrincipal); const model = provider.canonicalize(resolved, this.providerContext(stack.stackId, logicalId, operation.operationId, executionPrincipal, undefined, step)); await this.invokeProvider(stack, logicalId, step, "DELETE", provider, executionPrincipal, context => provider.delete(created.physicalResourceId ?? "", model, context), model as Readonly<Record<string, unknown>>, created.physicalResourceId); await this.mutationRollbackResult(sourceOperationId, record.key, "COMPLETE"); }
+            else { const provider = this.providers.require(created.resourceType); const step = `rollback-${record.sequence}-delete`; const resolved = await this.resolveDynamicReferenceProperties(created.resourceType, created.properties, executionPrincipal, operation.operationId); const model = provider.canonicalize(resolved, this.providerContext(stack.stackId, logicalId, operation.operationId, executionPrincipal, undefined, step)); await this.invokeProvider(stack, logicalId, step, "DELETE", provider, executionPrincipal, context => provider.delete(created.physicalResourceId ?? "", model, context), model as Readonly<Record<string, unknown>>, created.physicalResourceId); await this.mutationRollbackResult(sourceOperationId, record.key, "COMPLETE"); }
           } else if (record.kind === "UPDATE") {
             if (!record.before || !record.after) throw new Error(`Rollback record ${record.key} is missing its update models`);
-            const provider = this.providers.require(record.before.resourceType); const step = `rollback-${record.sequence}-update`; const context = this.providerContext(stack.stackId, logicalId, operation.operationId, executionPrincipal, undefined, step); const resolvedFrom = await this.resolveDynamicReferenceProperties(record.after.resourceType, record.after.properties, executionPrincipal); const resolvedTo = await this.resolveDynamicReferenceProperties(record.before.resourceType, record.before.properties, executionPrincipal); const from = provider.canonicalize(resolvedFrom, context); const to = provider.canonicalize(resolvedTo, context); const retentionPolicy = record.after.updateReplacePolicy ?? "Delete";
+            const provider = this.providers.require(record.before.resourceType); const step = `rollback-${record.sequence}-update`; const context = this.providerContext(stack.stackId, logicalId, operation.operationId, executionPrincipal, undefined, step); const resolvedFrom = await this.resolveDynamicReferenceProperties(record.after.resourceType, record.after.properties, executionPrincipal, operation.operationId); const resolvedTo = await this.resolveDynamicReferenceProperties(record.before.resourceType, record.before.properties, executionPrincipal, operation.operationId); const from = provider.canonicalize(resolvedFrom, context); const to = provider.canonicalize(resolvedTo, context); const retentionPolicy = record.after.updateReplacePolicy ?? "Delete";
             if (retentionPolicy === "Delete" && this.isLambdaBackedCustomResource(record.after.resourceType)) await this.authorizeProviderOperation(stack, logicalId, "DELETE", provider.typeName, executionPrincipal, record.after.properties, record.after.physicalResourceId);
             const result = await this.invokeProvider(stack, logicalId, step, "UPDATE", provider, executionPrincipal, providerContext => provider.update(record.after!.physicalResourceId ?? "", from, to, providerContext), to as Readonly<Record<string, unknown>>, record.after.physicalResourceId);
             const restored = this.restoredResourceFromSuccess(record.before, provider, result);
             await this.cleanupCustomResourceUpdateCutover(stack, logicalId, record.after, restored, executionPrincipal, retentionPolicy, `${step}-cutover-delete`);
             await this.mutationRollbackResult(sourceOperationId, record.key, "COMPLETE", undefined, restored);
           } else {
-            if (!record.before) throw new Error(`Rollback record ${record.key} is missing its deleted resource model`); const provider = this.providers.require(record.before.resourceType); const step = `rollback-${record.sequence}-create`; const context = this.providerContext(stack.stackId, logicalId, operation.operationId, executionPrincipal, undefined, step); const resolved = await this.resolveDynamicReferenceProperties(record.before.resourceType, record.before.properties, executionPrincipal); const desired = provider.canonicalize(resolved, context); const plan = provider.plan(undefined, desired, context); if (plan.action !== "CREATE") throw new Error(`Provider ${provider.typeName} cannot recreate ${logicalId} during rollback`); const result = await this.invokeProvider(stack, logicalId, step, "CREATE", provider, executionPrincipal, providerContext => provider.create(desired, providerContext), desired as Readonly<Record<string, unknown>>); const restored = this.restoredResourceFromSuccess(record.before, provider, result); await this.mutationRollbackResult(sourceOperationId, record.key, "COMPLETE", undefined, restored);
+            if (!record.before) throw new Error(`Rollback record ${record.key} is missing its deleted resource model`); const provider = this.providers.require(record.before.resourceType); const step = `rollback-${record.sequence}-create`; const context = this.providerContext(stack.stackId, logicalId, operation.operationId, executionPrincipal, undefined, step); const resolved = await this.resolveDynamicReferenceProperties(record.before.resourceType, record.before.properties, executionPrincipal, operation.operationId); const desired = provider.canonicalize(resolved, context); const plan = provider.plan(undefined, desired, context); if (plan.action !== "CREATE") throw new Error(`Provider ${provider.typeName} cannot recreate ${logicalId} during rollback`); const result = await this.invokeProvider(stack, logicalId, step, "CREATE", provider, executionPrincipal, providerContext => provider.create(desired, providerContext), desired as Readonly<Record<string, unknown>>); const restored = this.restoredResourceFromSuccess(record.before, provider, result); await this.mutationRollbackResult(sourceOperationId, record.key, "COMPLETE", undefined, restored);
           }
         } catch (error) {
           if (error instanceof ProviderDeferred) throw error;
@@ -4538,7 +4611,7 @@ export class CloudFormationService {
           this.detachNestedStack(resource);
         } else {
           try {
-            const provider = this.providers.require(resource.resourceType); const key = `${logicalId}:delete`; const mutation = await this.mutationIntent(operation.operationId, { key, logicalId, kind: "DELETE", before: resource }); if (mutation.status !== "COMPLETE") { const resolved = await this.resolveDynamicReferenceProperties(resource.resourceType, resource.properties, executionPrincipal); const previous = provider.canonicalize(resolved, this.providerContext(stack.stackId, logicalId, operation.operationId, executionPrincipal, undefined, "delete")); const retentionPolicy = resource.deletionPolicy ?? (resource.resourceType === RDS_DB_INSTANCE_TYPE ? "Snapshot" : "Delete"); await this.invokeProvider(stack, logicalId, "delete", "DELETE", provider, executionPrincipal, context => provider.delete(resource.physicalResourceId ?? "", previous, context), previous as Readonly<Record<string, unknown>>, resource.physicalResourceId, retentionPolicy); await this.mutationComplete(operation.operationId, key); } resource.resourceStatus = "DELETE_COMPLETE";
+            const provider = this.providers.require(resource.resourceType); const key = `${logicalId}:delete`; const mutation = await this.mutationIntent(operation.operationId, { key, logicalId, kind: "DELETE", before: resource }); if (mutation.status !== "COMPLETE") { const resolved = await this.resolveDynamicReferenceProperties(resource.resourceType, resource.properties, executionPrincipal, operation.operationId); const previous = provider.canonicalize(resolved, this.providerContext(stack.stackId, logicalId, operation.operationId, executionPrincipal, undefined, "delete")); const retentionPolicy = resource.deletionPolicy ?? (resource.resourceType === RDS_DB_INSTANCE_TYPE ? "Snapshot" : "Delete"); await this.invokeProvider(stack, logicalId, "delete", "DELETE", provider, executionPrincipal, context => provider.delete(resource.physicalResourceId ?? "", previous, context), previous as Readonly<Record<string, unknown>>, resource.physicalResourceId, retentionPolicy); await this.mutationComplete(operation.operationId, key); } resource.resourceStatus = "DELETE_COMPLETE";
           } catch (error) {
             if (error instanceof ProviderDeferred || !operation.forceDelete) throw error;
             resource.resourceStatus = "DELETE_SKIPPED";

@@ -4,12 +4,12 @@ const help = {
   parameters: {
     level: "Partial",
     description: "A parameter is a named configuration value that applications can read at runtime. Names can use paths such as /my-app/dev/database/host, which makes related settings easier to organize and retrieve as a hierarchy without putting environment-specific values in source code.",
-    support: "Standard String, StringList, and SecureString parameters, names and hierarchies, descriptions, versions, parameter history and labels, filtering, pagination, tags, IAM authorization, and same-account single-Region persistence are active locally. Advanced tiers and policies and the rest of Systems Manager are unavailable.",
+    support: "Standard and Advanced String, StringList, and SecureString parameters, names and hierarchies, policies, descriptions, versions, parameter history and labels, filtering, pagination, tags, IAM authorization, and same-account single-Region persistence are active locally. Intelligent-Tiering and the rest of Systems Manager are unavailable.",
   },
   configuration: {
     level: "Partial",
     description: "Parameter configuration defines the stable name clients request, the kind of value stored, and optional validation and metadata. Use String for one value, StringList for a comma-separated list, or SecureString when local development credentials or other sensitive text should not be kept as plaintext.",
-    support: "This editor creates Standard-tier parameters with the text data type and supports descriptions, regular-expression allowed patterns, and initial tags. SecureString values use installation-local AES-256-GCM protection; explicit KMS keys, Advanced and Intelligent-Tiering parameters, non-text data types, and parameter policies are unavailable.",
+    support: "This editor creates Standard- or Advanced-tier text parameters and supports descriptions, regular-expression allowed patterns, initial tags, and Advanced policies. SecureString values use installation-local AES-256-GCM protection; explicit KMS keys, Intelligent-Tiering, and non-text data types are unavailable.",
   },
   value: {
     level: "Supported locally",
@@ -20,6 +20,11 @@ const help = {
     level: "Supported locally",
     description: "History shows retained immutable versions and the labels that select them. A label can identify only one version and can be moved atomically for rollback without changing the current numbered version.",
     support: "Paginated GetParameterHistory metadata, explicit ephemeral historical-value reveal, label creation and movement, safe unlabeling, ten labels per version, and labeled selectors are active locally.",
+  },
+  policies: {
+    level: "Supported locally",
+    description: "Advanced parameters can schedule expiration and notifications. Expiration deletes the parameter at the configured instant; notification policies emit safe value-free service events before expiration or after a no-change interval.",
+    support: "Expiration, ExpirationNotification, and NoChangeNotification policies, persisted due times, deterministic restart-safe processing, and status display are active locally. Advanced parameters cannot be downgraded to Standard.",
   },
   tags: {
     level: "Supported locally",
@@ -33,6 +38,7 @@ const targets = [
   ['.card:has(#parameter-create)', "Parameter configuration", "configuration"],
   ['.page-width:has([data-action="reveal"]) .card', "Value", "value"],
   ['.page-width:has([data-action="history"]) .card', "History and labels", "history"],
+  ['.page-width:has([data-action="reveal"]) .card:has(h2)', "Policies", "policies"],
   ['.page-width:has([data-action="tags"]) .card', "Tags", "tags"],
 ];
 

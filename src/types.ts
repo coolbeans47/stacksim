@@ -3275,6 +3275,8 @@ export interface ParameterState {
   owner: "application" | "stacksim:cdk-bootstrap";
   /** Private authoritative ownership marker; never returned by SSM APIs. */
   cloudFormationOwner?: string;
+  /** A retained CloudFormation resource may be claimed by a later matching provider create. */
+  cloudFormationRetained?: boolean;
   createdAt: number;
   lastModifiedAt: number;
   revision: number;

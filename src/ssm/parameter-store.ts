@@ -5,8 +5,8 @@ import { PaginationTokens } from "../core/pagination.js";
 import { EncryptedMaterialStore, type MaterialBinding } from "../configuration-secrets/encrypted-material-store.js";
 import { AwsError } from "../errors.js";
 import type { StateStore } from "../state.js";
-import type { CloudFormationBootstrapState, ParameterPolicyState, ParameterState, ParameterStoreEventOutboxState, ParameterVersionState } from "../types.js";
-import { canonicalParameterName, parameterValue, positiveInteger, tags, validation } from "./validation.js";
+import type { CloudFormationBootstrapState, ParameterPolicyState, ParameterState, ParameterStoreEventOutboxState, ParameterStoreRegionState, ParameterVersionState } from "../types.js";
+import { canonicalParameterName, canonicalParameterPath, parameterValue, positiveInteger, tags, validation } from "./validation.js";
 
 const TOMBSTONE_MS = 30_000;
 const MAX_VERSIONS = 100;
@@ -53,9 +53,12 @@ export class ParameterStore {
     await this.reconcileBootstrapFromState();
     const referenced = new Set<string>();
     for (const account of Object.values(this.store.state.accounts)) for (const region of Object.values(account.regions)) {
+      const parameterArns = new Set<string>();
       for (const parameter of Object.values(region.parameterStore?.parameters ?? {})) {
         parameter.policies ??= [];
-        if (parameter.owner === "stacksim:cdk-bootstrap" && parameter.cloudFormationOwner || parameter.cloudFormationOwner !== undefined && !parameter.cloudFormationOwner) throw new AwsError("InternalServerError", `Parameter ${parameter.name} has corrupt ownership metadata.`, 500);
+        if (parameterArns.has(parameter.arn)) throw new AwsError("InternalServerError", `Parameter ${parameter.name} has a duplicate catalog identity.`, 500);
+        parameterArns.add(parameter.arn);
+        if (parameter.owner === "stacksim:cdk-bootstrap" && (parameter.cloudFormationOwner || parameter.cloudFormationRetained) || parameter.cloudFormationOwner !== undefined && !parameter.cloudFormationOwner || parameter.cloudFormationOwner && parameter.cloudFormationRetained) throw new AwsError("InternalServerError", `Parameter ${parameter.name} has corrupt ownership metadata.`, 500);
         const counts = new Map<number, number>();
         for (const [label, version] of Object.entries(parameter.labels ?? {})) {
           if (!this.validLabel(label) || !parameter.versions[String(version)]) throw new AwsError("InternalServerError", `Parameter ${parameter.name} has corrupt label metadata.`, 500);
@@ -86,8 +89,8 @@ export class ParameterStore {
   private outbox(): ParameterStoreEventOutboxState[] { return this.control.eventOutbox ??= []; }
   private completions(): Record<string, number> { return this.control.completedPolicyOccurrences ??= {}; }
 
-  private enqueueChange(parameter: Pick<ParameterState, "name" | "arn">, operation: "Create" | "Update" | "Delete" | "LabelParameterVersion", now: number): void {
-    this.outbox().push({ id: randomUUID(), detailType: "Parameter Store Change", parameterName: parameter.name, parameterArn: parameter.arn, detail: { name: parameter.name, operation }, createdAt: now, attempts: 0, nextAttemptAt: now });
+  private enqueueChange(parameter: Pick<ParameterState, "name" | "arn" | "type" | "description">, operation: "Create" | "Update" | "Delete" | "LabelParameterVersion", now: number): void {
+    this.outbox().push({ id: randomUUID(), detailType: "Parameter Store Change", parameterName: parameter.name, parameterArn: parameter.arn, detail: { name: parameter.name, type: parameter.type, operation, ...(parameter.description === undefined ? {} : { description: parameter.description }) }, createdAt: now, attempts: 0, nextAttemptAt: now });
   }
 
   private enqueuePolicy(parameter: Pick<ParameterState, "name" | "arn">, policy: ParameterPolicyState, now: number): void {
@@ -212,9 +215,24 @@ export class ParameterStore {
     return { name, selector, label: selector };
   }
 
+  private parameterEntry(name: string): { key: string; parameter: ParameterState } | undefined {
+    const exact = this.control.parameters[name];
+    if (exact) return { key: name, parameter: exact };
+    const alias = name.startsWith("/") ? name.slice(1) : `/${name}`;
+    const parameter = this.control.parameters[alias];
+    return parameter ? { key: alias, parameter } : undefined;
+  }
+
   private parameter(name: string): ParameterState | undefined {
-    return this.control.parameters[name]
-      ?? (name.startsWith("/") ? this.control.parameters[name.slice(1)] : this.control.parameters[`/${name}`]);
+    return this.parameterEntry(name)?.parameter;
+  }
+
+  private tombstoneEntry(name: string): { key: string; tombstone: ParameterStoreRegionState["tombstones"][string] } | undefined {
+    const exact = this.control.tombstones[name];
+    if (exact) return { key: name, tombstone: exact };
+    const alias = name.startsWith("/") ? name.slice(1) : `/${name}`;
+    const tombstone = this.control.tombstones[alias];
+    return tombstone ? { key: alias, tombstone } : undefined;
   }
 
   private resolve(selector: Selector): { parameter?: ParameterState; version?: ParameterVersionState } {
@@ -291,8 +309,10 @@ export class ParameterStore {
     this.requireStarted();
     const name = canonicalParameterName(input?.Name, false);
     if (Buffer.byteLength(parameterArn(this.region, this.store.accountId, name), "utf8") > 1011) validation("Parameter name exceeds the maximum length after ARN prefix accounting.");
-    const existing = this.control.parameters[name];
-    const type = String(input?.Type ?? existing?.type ?? "String");
+    const existingEntry = this.parameterEntry(name);
+    const existing = existingEntry?.parameter;
+    if (!existing && (input?.Type === undefined || input.Type === "")) validation("Type is required when creating a parameter.");
+    const type = String(input?.Type ?? existing?.type);
     if (!["String", "StringList", "SecureString"].includes(type)) validation("Type must be String, StringList, or SecureString.");
     const requestedTier = String(input?.Tier ?? existing?.tier ?? "Standard");
     if (!new Set(["Standard", "Advanced"]).has(requestedTier)) validation("Tier must be Standard or Advanced; Intelligent-Tiering remains unsupported.");
@@ -304,8 +324,8 @@ export class ParameterStore {
     const suppliedTags = tags(input?.Tags);
     if (existing?.owner === "stacksim:cdk-bootstrap") throw new AwsError("AccessDeniedException", `Parameter ${name} is simulator-managed and cannot be changed through the public API.`, 400);
     if (existing?.cloudFormationOwner && existing.cloudFormationOwner !== cloudFormationOwner) throw new AwsError("AccessDeniedException", `Parameter ${name} is owned by a CloudFormation stack resource.`, 400);
-    if (existing && cloudFormationOwner && existing.cloudFormationOwner !== cloudFormationOwner) throw new AwsError("ParameterAlreadyExists", `The parameter already exists and is not owned by this CloudFormation resource.`, 400);
-    if (existing && cloudFormationOwner) {
+    if (existing && cloudFormationOwner && existing.cloudFormationOwner !== cloudFormationOwner && !existing.cloudFormationRetained) throw new AwsError("ParameterAlreadyExists", `The parameter already exists and is not owned by this CloudFormation resource.`, 400);
+    if (existing && cloudFormationOwner && existing.cloudFormationOwner === cloudFormationOwner) {
       const current = existing.versions[String(existing.currentVersion)];
       const sameValue = current?.storageKind === "PLAIN" && current.value === String(input?.Value ?? "");
       const sameTags = JSON.stringify(existing.tags) === JSON.stringify(suppliedTags);
@@ -321,8 +341,9 @@ export class ParameterStore {
     const allowedPattern = input?.AllowedPattern === undefined ? existing?.allowedPattern : input.AllowedPattern;
     const value = parameterValue(input?.Value, type as ParameterState["type"], allowedPattern, tier === "Advanced" ? 8192 : 4096);
     const now = this.clock.now();
-    const tombstone = this.control.tombstones[name];
-    if (!existing && tombstone && tombstone.reusableAt > now && !(cloudFormationOwner && tombstone.cloudFormationOwner)) throw new AwsError("ParameterAlreadyExists", `Parameter ${name} was recently deleted and cannot yet be recreated.`, 400);
+    const tombstoneEntry = this.tombstoneEntry(name);
+    const tombstone = tombstoneEntry?.tombstone;
+    if (!existing && tombstone && tombstone.reusableAt > now && !(cloudFormationOwner !== undefined && tombstone.cloudFormationOwner === cloudFormationOwner)) throw new AwsError("ParameterAlreadyExists", `Parameter ${name} was recently deleted and cannot yet be recreated.`, 400);
     const nextVersion = (existing?.currentVersion ?? 0) + 1;
     if (existing && Object.keys(existing.versions).length >= MAX_VERSIONS) {
       const oldest = Math.min(...Object.values(existing.versions).map(version => version.version));
@@ -345,9 +366,13 @@ export class ParameterStore {
     }
     try {
       return await this.store.withMutationLock(`ssm:${this.store.accountId}:${this.region}`, async () => {
-        const current = this.control.parameters[name];
+        const currentEntry = this.parameterEntry(name);
+        const current = currentEntry?.parameter;
+        const currentTombstoneEntry = this.tombstoneEntry(name);
+        const currentTombstone = currentTombstoneEntry?.tombstone;
         if (current?.owner === "stacksim:cdk-bootstrap") throw new AwsError("AccessDeniedException", `Parameter ${name} is simulator-managed.`, 400);
-        if (Boolean(current) !== Boolean(existing) || current && current.revision !== existing!.revision) throw new AwsError("TooManyUpdates", "The parameter was changed by another request.", 400);
+        if (currentEntry?.key !== existingEntry?.key || Boolean(current) !== Boolean(existing) || current && current.revision !== existing!.revision) throw new AwsError("TooManyUpdates", "The parameter was changed by another request.", 400);
+        if (!current && currentTombstone && currentTombstone.reusableAt > now && !(cloudFormationOwner !== undefined && currentTombstone.cloudFormationOwner === cloudFormationOwner)) throw new AwsError("ParameterAlreadyExists", `Parameter ${name} was recently deleted and cannot yet be recreated.`, 400);
         const versionMetadata = {
           version: nextVersion,
           createdAt: now,
@@ -362,7 +387,10 @@ export class ParameterStore {
           name, arn, generationId, type: type as ParameterState["type"], dataType: "text", tier, policies,
           currentVersion: 0, versions: {}, labels: {}, tags: suppliedTags, owner: "application", createdAt: now, lastModifiedAt: now, revision: 0,
         };
-        if (cloudFormationOwner) parameter.cloudFormationOwner = cloudFormationOwner;
+        if (cloudFormationOwner) {
+          parameter.cloudFormationOwner = cloudFormationOwner;
+          delete parameter.cloudFormationRetained;
+        }
         if (cloudFormationOwner) parameter.tags = suppliedTags;
         parameter.description = input?.Description === undefined ? parameter.description : input.Description || undefined;
         parameter.allowedPattern = allowedPattern || undefined;
@@ -376,8 +404,9 @@ export class ParameterStore {
         while (versions.length > MAX_VERSIONS) delete parameter.versions[String(versions.shift()!)];
         const before = structuredClone(this.control);
         try {
-          this.control.parameters[name] = parameter;
-          delete this.control.tombstones[name];
+          const catalogKey = currentEntry?.key ?? name;
+          this.control.parameters[catalogKey] = parameter;
+          if (currentTombstoneEntry) delete this.control.tombstones[currentTombstoneEntry.key];
           this.enqueueChange(parameter, current ? "Update" : "Create", now);
           this.control.revision++;
           await this.store.save();
@@ -399,21 +428,43 @@ export class ParameterStore {
     const Tags = input?.Tags && typeof input.Tags === "object" && !Array.isArray(input.Tags)
       ? Object.entries(input.Tags).sort(([left], [right]) => left.localeCompare(right)).map(([Key, Value]) => ({ Key, Value: String(Value) }))
       : input?.Tags;
-    return this.PutParameter({ ...input, Tags, Overwrite: this.control.parameters[canonicalParameterName(input?.Name, false)] !== undefined }, principalArn, cloudFormationOwner);
+    return this.PutParameter({ ...input, Tags, Overwrite: this.parameter(canonicalParameterName(input?.Name, false)) !== undefined }, principalArn, cloudFormationOwner);
   }
 
   readParameterCloudFormation(name: string): ParameterState | undefined {
     const canonical = canonicalParameterName(name, false);
-    const parameter = this.control.parameters[canonical];
+    const parameter = this.parameter(canonical);
     return parameter ? structuredClone(parameter) : undefined;
   }
 
   async DeleteParameterCloudFormation(name: string, cloudFormationOwner: string): Promise<void> {
     const canonical = canonicalParameterName(name, false);
-    const parameter = this.control.parameters[canonical];
-    if (!parameter) return;
+    const entry = this.parameterEntry(canonical);
+    const parameter = entry?.parameter;
+    if (!entry || !parameter) return;
     if (parameter.cloudFormationOwner !== cloudFormationOwner) throw new AwsError("AccessDeniedException", `Parameter ${canonical} is not owned by this CloudFormation resource.`, 400);
-    await this.deleteOne(canonical, false, cloudFormationOwner);
+    await this.deleteOne(entry.key, false, cloudFormationOwner);
+  }
+
+  async ReleaseParameterCloudFormation(name: string, cloudFormationOwner: string): Promise<void> {
+    const canonical = canonicalParameterName(name, false);
+    await this.store.withMutationLock(`ssm:${this.store.accountId}:${this.region}`, async () => {
+      const entry = this.parameterEntry(canonical);
+      if (!entry) return;
+      if (entry.parameter.cloudFormationRetained && !entry.parameter.cloudFormationOwner) return;
+      if (entry.parameter.cloudFormationOwner !== cloudFormationOwner) throw new AwsError("AccessDeniedException", `Parameter ${canonical} is not owned by this CloudFormation resource.`, 400);
+      const before = structuredClone(this.control);
+      try {
+        delete entry.parameter.cloudFormationOwner;
+        entry.parameter.cloudFormationRetained = true;
+        entry.parameter.revision++;
+        this.control.revision++;
+        await this.store.save();
+      } catch (error) {
+        this.store.regionState(this.region).parameterStore = before;
+        throw error;
+      }
+    });
   }
 
   async DeleteParameter(input: any): Promise<any> {
@@ -429,10 +480,11 @@ export class ParameterStore {
     for (const supplied of input.Names) {
       try {
         const name = canonicalParameterName(supplied, false);
-        const parameter = this.control.parameters[name];
+        const entry = this.parameterEntry(name);
+        const parameter = entry?.parameter;
         if (parameter?.owner === "stacksim:cdk-bootstrap") throw new AwsError("AccessDeniedException", `Parameter ${name} is simulator-managed and cannot be deleted.`, 400);
         if (!parameter) InvalidParameters.push(String(supplied));
-        else { await this.deleteOne(name, true); DeletedParameters.push(name); }
+        else { await this.deleteOne(entry!.key, true); DeletedParameters.push(parameter.name); }
       } catch { InvalidParameters.push(String(supplied)); }
     }
     return { DeletedParameters, InvalidParameters };
@@ -440,7 +492,8 @@ export class ParameterStore {
 
   private async deleteOne(name: string, batch: boolean, cloudFormationOwner?: string): Promise<void> {
     await this.store.withMutationLock(`ssm:${this.store.accountId}:${this.region}`, async () => {
-      const parameter = this.control.parameters[name];
+      const entry = this.parameterEntry(name);
+      const parameter = entry?.parameter;
       if (!parameter) {
         if (batch) return;
         throw new AwsError("ParameterNotFound", `Parameter ${name} not found.`, 400);
@@ -450,8 +503,9 @@ export class ParameterStore {
       const now = this.clock.now();
       const before = structuredClone(this.control);
       try {
-        delete this.control.parameters[name];
-        this.control.tombstones[name] = { generationId: parameter.generationId, deletedAt: now, reusableAt: now + TOMBSTONE_MS, ...(cloudFormationOwner ? { cloudFormationOwner } : {}) };
+        const catalogKey = entry!.key;
+        delete this.control.parameters[catalogKey];
+        this.control.tombstones[catalogKey] = { generationId: parameter.generationId, deletedAt: now, reusableAt: now + TOMBSTONE_MS, ...(cloudFormationOwner ? { cloudFormationOwner } : {}) };
         this.enqueueChange(parameter, "Delete", now);
         this.control.revision++;
         await this.store.save();
@@ -491,6 +545,7 @@ export class ParameterStore {
     return {
       Parameters: page.map(parameter => ({
         Name: parameter.name,
+        ARN: parameter.arn,
         Type: parameter.type,
         LastModifiedDate: parameter.lastModifiedAt / 1_000,
         LastModifiedUser: parameter.versions[String(parameter.currentVersion)]?.lastModifiedUser,
@@ -507,13 +562,13 @@ export class ParameterStore {
 
   async GetParametersByPath(input: any): Promise<any> {
     await this.reconcileBootstrapFromState();
-    const path = canonicalParameterName(input?.Path, false);
-    if (!path.startsWith("/")) validation("Path must be a hierarchy beginning with a slash.");
-    const prefix = path.endsWith("/") ? path : `${path}/`;
+    const path = canonicalParameterPath(input?.Path);
+    const prefix = path === "/" ? path : `${path}/`;
     const recursive = input?.Recursive === true;
     let values = Object.values(this.control.parameters).filter(parameter => {
-      if (!parameter.name.startsWith(prefix)) return false;
-      return recursive || !parameter.name.slice(prefix.length).includes("/");
+      const hierarchyName = parameter.name.startsWith("/") ? parameter.name : `/${parameter.name}`;
+      if (!hierarchyName.startsWith(prefix)) return false;
+      return recursive || !hierarchyName.slice(prefix.length).includes("/");
     }).sort((left, right) => left.name.localeCompare(right.name));
     const filters = input?.ParameterFilters ?? [];
     if (!Array.isArray(filters) || filters.some((filter: any) => !["Type", "KeyId", "Label"].includes(filter?.Key))) validation("Only Type, KeyId, and Label filters are valid for GetParametersByPath.");
@@ -521,7 +576,13 @@ export class ParameterStore {
     for (const filter of filters) {
       if (!Array.isArray(filter.Values) || filter.Values.length < 1) validation("Each parameter filter requires Values.");
       if (filter.Key === "Type") values = values.filter(parameter => (filter.Values ?? []).includes(parameter.type));
-      else if (filter.Key === "KeyId") values = [];
+      else if (filter.Key === "KeyId") {
+        const option = String(filter.Option ?? "Equals");
+        if (!new Set(["Equals", "BeginsWith"]).has(option)) validation("KeyId filters support Equals or BeginsWith.");
+        const serviceKey = "alias/aws/ssm";
+        const matchesServiceKey = filter.Values.map(String).some((value: string) => option === "BeginsWith" ? serviceKey.startsWith(value) : serviceKey === value);
+        values = matchesServiceKey ? values.filter(parameter => parameter.type === "SecureString") : [];
+      }
       else if (filter.Key === "Label") {
         if (filter.Option !== undefined && filter.Option !== "Equals" || filter.Values.length !== 1) validation("Label filters require exactly one value and the Equals option.");
         label = String(filter.Values[0]);
@@ -592,7 +653,8 @@ export class ParameterStore {
     const valid = requested.filter(this.validLabel);
     const invalid = requested.filter(label => !this.validLabel(label));
     return this.store.withMutationLock(`ssm:${this.store.accountId}:${this.region}`, async () => {
-      const parameter = this.control.parameters[name];
+      const entry = this.parameterEntry(name);
+      const parameter = entry?.parameter;
       if (!parameter) throw new AwsError("ParameterNotFound", `Parameter ${name} not found.`, 400);
       if (parameter.owner === "stacksim:cdk-bootstrap") throw new AwsError("AccessDeniedException", `Parameter ${name} is simulator-managed.`, 400);
       const versionNumber = input?.ParameterVersion === undefined ? parameter.currentVersion : this.parameterVersion(input.ParameterVersion);
@@ -600,7 +662,7 @@ export class ParameterStore {
       const labelsAfter = new Set(Object.entries(parameter.labels).filter(([, version]) => version === versionNumber).map(([label]) => label));
       for (const label of valid) labelsAfter.add(label);
       if (labelsAfter.size > 10) throw new AwsError("ParameterVersionLabelLimitExceeded", "A parameter version can have a maximum of ten labels.", 400);
-      if (valid.length) await this.commitParameterMutation(name, current => { for (const label of valid) current.labels[label] = versionNumber; }, "LabelParameterVersion");
+      if (valid.length) await this.commitParameterMutation(entry!.key, current => { for (const label of valid) current.labels[label] = versionNumber; }, "LabelParameterVersion");
       return { InvalidLabels: invalid, ParameterVersion: versionNumber };
     });
   }
@@ -610,13 +672,14 @@ export class ParameterStore {
     const versionNumber = this.parameterVersion(input?.ParameterVersion);
     const requested = this.labelList(input?.Labels);
     return this.store.withMutationLock(`ssm:${this.store.accountId}:${this.region}`, async () => {
-      const parameter = this.control.parameters[name];
+      const entry = this.parameterEntry(name);
+      const parameter = entry?.parameter;
       if (!parameter) throw new AwsError("ParameterNotFound", `Parameter ${name} not found.`, 400);
       if (parameter.owner === "stacksim:cdk-bootstrap") throw new AwsError("AccessDeniedException", `Parameter ${name} is simulator-managed.`, 400);
       if (!parameter.versions[String(versionNumber)]) throw new AwsError("ParameterVersionNotFound", `Parameter version ${versionNumber} for ${name} was not found.`, 400);
       const RemovedLabels = requested.filter(label => this.validLabel(label) && parameter.labels[label] === versionNumber);
       const InvalidLabels = requested.filter(label => !RemovedLabels.includes(label));
-      if (RemovedLabels.length) await this.commitParameterMutation(name, current => { for (const label of RemovedLabels) delete current.labels[label]; }, "LabelParameterVersion");
+      if (RemovedLabels.length) await this.commitParameterMutation(entry!.key, current => { for (const label of RemovedLabels) delete current.labels[label]; }, "LabelParameterVersion");
       return { RemovedLabels, InvalidLabels };
     });
   }
@@ -678,8 +741,7 @@ export class ParameterStore {
   private tagTarget(input: any): ParameterState {
     if (input?.ResourceType !== "Parameter") validation("Only ResourceType Parameter is supported.");
     const name = canonicalParameterName(input?.ResourceId, true);
-    const parameter = this.control.parameters[name]
-      ?? (name.startsWith("/") ? this.control.parameters[name.slice(1)] : this.control.parameters[`/${name}`]);
+    const parameter = this.parameter(name);
     if (!parameter) throw new AwsError("InvalidResourceId", `Parameter ${name} does not exist.`, 400);
     return parameter;
   }
@@ -703,7 +765,7 @@ export class ParameterStore {
 
   reconcileBootstrapRecord(bootstrap: CloudFormationBootstrapState): boolean {
     const name = canonicalParameterName(bootstrap.versionParameterName, false);
-    const existing = this.control.parameters[name];
+    const existing = this.parameter(name);
     const value = String(bootstrap.compatibilityVersion);
     if (existing) {
       if (existing.owner !== "stacksim:cdk-bootstrap") throw new AwsError("InvalidBootstrapState", `CDK bootstrap parameter ${name} already exists and is not owned by StackSim. Reset the local environment or remove the collision.`, 409);
@@ -742,7 +804,7 @@ export class ParameterStore {
 
   validateBootstrapRecord(bootstrap: CloudFormationBootstrapState): void {
     const name = canonicalParameterName(bootstrap.versionParameterName, false);
-    const existing = this.control.parameters[name];
+    const existing = this.parameter(name);
     if (existing && existing.owner !== "stacksim:cdk-bootstrap") {
       throw new AwsError("InvalidBootstrapState", `CDK bootstrap parameter ${name} already exists and is not owned by StackSim. Reset the local environment or remove the collision.`, 409);
     }
@@ -753,22 +815,33 @@ export class ParameterStore {
   }
 
   resolveBootstrapPlain(name: string): string | undefined {
-    const parameter = this.control.parameters[name];
+    const parameter = this.parameter(name);
     if (!parameter || parameter.owner !== "stacksim:cdk-bootstrap" || parameter.type !== "String") return undefined;
     const version = parameter.versions[String(parameter.currentVersion)];
     return version?.storageKind === "PLAIN" ? version.value : undefined;
   }
 
   resolveCloudFormationPlain(name: string): string | undefined {
+    return this.resolveCloudFormationParameter(name)?.value;
+  }
+
+  resolveCloudFormationParameter(name: string): { value: string; generationId: string; version: number } | undefined {
     const canonical = canonicalParameterName(name, false);
-    const parameter = this.control.parameters[canonical];
+    const parameter = this.parameter(canonical);
     if (!parameter || parameter.type !== "String") return undefined;
     const version = parameter.versions[String(parameter.currentVersion)];
-    return version?.storageKind === "PLAIN" ? version.value : undefined;
+    return version?.storageKind === "PLAIN" ? { value: version.value ?? "", generationId: parameter.generationId, version: version.version } : undefined;
   }
 
   async getParameterForService(name: string, withDecryption: boolean): Promise<any> {
-    return this.GetParameter({ Name: name, WithDecryption: withDecryption });
+    const selected = this.selector(name);
+    const found = this.resolve(selected);
+    if (!found.parameter) throw new AwsError("ParameterNotFound", `Parameter ${selected.name} not found.`, 400);
+    if (!found.version) {
+      if (selected.version) throw new AwsError("ParameterVersionNotFound", `Parameter version ${selected.version} for ${selected.name} was not found.`, 400);
+      throw new AwsError("ParameterNotFound", `Parameter ${selected.name} not found.`, 400);
+    }
+    return { Parameter: await this.view(found.parameter, found.version, withDecryption, selected.selector), generationId: found.parameter.generationId, version: found.version.version };
   }
 
   async reconcileBootstrapFromState(): Promise<void> {
@@ -783,9 +856,9 @@ export class ParameterStore {
     }
   }
 
-  localMetadata(): Array<{ name: string; arn: string; owner: ParameterState["owner"]; cloudFormationOwner?: string }> {
+  localMetadata(): Array<{ name: string; arn: string; owner: ParameterState["owner"]; cloudFormationOwner?: string; policies: Array<{ type: string; dueAt: number; status: string }> }> {
     return Object.values(this.control.parameters)
       .sort((left, right) => left.name.localeCompare(right.name))
-      .map(parameter => ({ name: parameter.name, arn: parameter.arn, owner: parameter.owner, cloudFormationOwner: parameter.cloudFormationOwner }));
+      .map(parameter => ({ name: parameter.name, arn: parameter.arn, owner: parameter.owner, cloudFormationOwner: parameter.cloudFormationOwner, policies: parameter.policies.map(policy => ({ type: policy.type, dueAt: policy.dueAt, status: this.completions()[policy.occurrenceId] ? "FINISHED" : "PENDING" })) }));
   }
 }

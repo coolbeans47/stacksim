@@ -56,6 +56,7 @@ export class SsmService {
   }
 
   resolveCloudFormationPlain(name: string): string | undefined { return this.parameterStore.resolveCloudFormationPlain(name); }
+  resolveCloudFormationParameter(name: string): ReturnType<ParameterStore["resolveCloudFormationParameter"]> { return this.parameterStore.resolveCloudFormationParameter(name); }
   getParameterForService(name: string, withDecryption: boolean): Promise<any> { return this.parameterStore.getParameterForService(name, withDecryption); }
 
   localMetadata(): ReturnType<ParameterStore["localMetadata"]> {
@@ -97,4 +98,5 @@ export class SsmService {
   PutParameterCloudFormation(input: any, owner: string, principalArn: string): Promise<any> { return this.parameterStore.PutParameterCloudFormation(input, owner, principalArn); }
   readParameterCloudFormation(name: string): ParameterState | undefined { return this.parameterStore.readParameterCloudFormation(name); }
   DeleteParameterCloudFormation(name: string, owner: string): Promise<void> { return this.parameterStore.DeleteParameterCloudFormation(name, owner); }
+  ReleaseParameterCloudFormation(name: string, owner: string): Promise<void> { return this.parameterStore.ReleaseParameterCloudFormation(name, owner); }
 }
