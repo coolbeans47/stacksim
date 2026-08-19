@@ -142,9 +142,7 @@ function createTopicAttributes(value: unknown): { displayName?: string } {
     throw new AwsError("InvalidParameter", `Topic attribute ${unsupported} is unsupported.`, 400);
   }
   if (source.FifoTopic !== undefined && source.FifoTopic !== "false") throw new AwsError("InvalidParameter", "FIFO topics are not available until SNS-04.", 400);
-  if (source.DisplayName !== undefined && (Buffer.byteLength(source.DisplayName) > 100 || !validUnicode(source.DisplayName) || /[\x00-\x1f\x7f]/.test(source.DisplayName))) {
-    throw new AwsError("InvalidParameter", "DisplayName must be valid UTF-8 text of at most 100 bytes without control characters.", 400);
-  }
+  if (source.DisplayName !== undefined) displayName(source.DisplayName);
   return source as any;
 }
 
@@ -166,8 +164,8 @@ function stringMap(value: unknown, label: string): Record<string, string> {
 }
 
 function displayName(value: string): string {
-  if (Buffer.byteLength(value) > 100 || !validUnicode(value) || /[\x00-\x1f\x7f]/.test(value)) {
-    throw new AwsError("InvalidParameter", "DisplayName must be valid UTF-8 text of at most 100 bytes without control characters.", 400);
+  if ([...value].length > 100 || !validUnicode(value) || /[\x00-\x1f\x7f]/.test(value)) {
+    throw new AwsError("InvalidParameter", "DisplayName must be valid UTF-8 text of at most 100 characters without control characters.", 400);
   }
   return value;
 }
@@ -296,6 +294,30 @@ function messageAttributeBytes(attributes: Record<string, SnsMessageAttributeSta
     + (value.binaryValueBase64 === undefined ? Buffer.byteLength(value.stringValue ?? "") : Buffer.from(value.binaryValueBase64, "base64").length), 0);
 }
 
+function unvalidatedMessageAttributeBytes(value: unknown): number {
+  const source: Record<string, any> = {};
+  if (Array.isArray(value)) {
+    for (const entry of attributeEntries(value)) source[String(entry.Name ?? entry.key ?? "")] = entry.Value ?? entry.value;
+  } else if (value && typeof value === "object") Object.assign(source, value);
+  return Object.entries(source).reduce((total, [name, raw]) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return total + Buffer.byteLength(name) + Buffer.byteLength(String(raw ?? ""));
+    const binary = (raw as any).BinaryValue;
+    let binaryBytes = 0;
+    if (binary instanceof Uint8Array) binaryBytes = binary.byteLength;
+    else if (binary !== undefined) {
+      const encoded = String(binary);
+      const decoded = Buffer.from(encoded, "base64");
+      binaryBytes = decoded.toString("base64").replace(/=+$/, "") === encoded.replace(/=+$/, "")
+        ? decoded.length
+        : Buffer.byteLength(encoded);
+    }
+    return total + Buffer.byteLength(name)
+      + Buffer.byteLength(String((raw as any).DataType ?? ""))
+      + Buffer.byteLength(String((raw as any).StringValue ?? ""))
+      + binaryBytes;
+  }, 0);
+}
+
 function topLevelJsonKeys(source: string): string[] {
   const keys: string[] = [];
   let depth = 0;
@@ -374,12 +396,6 @@ function normalizeQuery(action: string, parsed: Record<string, unknown>): any {
   if (action === "CreateTopic" && input.Tags !== undefined) input.Tags = asArray(input.Tags);
   if (input.TagKeys !== undefined) input.TagKeys = asArray(input.TagKeys).map(String);
   if (input.MessageAttributes !== undefined) input.MessageAttributes = normalizeMessageAttributes(input.MessageAttributes);
-  if (input.PublishBatchRequestEntries !== undefined) {
-    input.PublishBatchRequestEntries = asArray<any>(input.PublishBatchRequestEntries).map(entry => ({
-      ...entry,
-      ...(entry.MessageAttributes === undefined ? {} : { MessageAttributes: normalizeMessageAttributes(entry.MessageAttributes) }),
-    }));
-  }
   return input;
 }
 
@@ -618,7 +634,7 @@ export class SnsService {
         Resource: topic.arn,
       });
       policy.Statement = statements;
-      topic.policy = JSON.stringify(policy);
+      topic.policy = normalizePolicy(JSON.stringify(policy), topic.arn);
       topic.updatedAt = this.clock.now();
       this.control.revision++;
       await this.store.save();
@@ -632,7 +648,9 @@ export class SnsService {
     await this.store.withMutationLock(`sns:${this.store.accountId}:${this.region}:control`, async () => {
       const topic = this.requireTopic(input.TopicArn);
       const policy = JSON.parse(topic.policy);
-      policy.Statement = asArray<any>(policy.Statement).filter(statement => statement?.Sid !== label);
+      const statements = asArray<any>(policy.Statement);
+      if (!statements.some(statement => statement?.Sid === label)) throw new AwsError("InvalidParameter", `A policy statement with label ${label} does not exist.`, 400);
+      policy.Statement = statements.filter(statement => statement?.Sid !== label);
       topic.policy = JSON.stringify(policy);
       topic.updatedAt = this.clock.now();
       this.control.revision++;
@@ -809,6 +827,32 @@ export class SnsService {
     });
   }
 
+  async releaseCloudFormationRetainedTopic(topicArn: string, owner: string): Promise<void> {
+    await this.store.withMutationLock(`sns:${this.store.accountId}:${this.region}:control`, async () => {
+      const topic = this.topicByArn(topicArn, false);
+      if (!topic) return;
+      if (topic.cloudFormationOwner !== undefined && topic.cloudFormationOwner !== owner) {
+        throw new AwsError("ResourceConflictException", `Topic ${topicArn} is not owned by this CloudFormation resource.`, 409);
+      }
+      let changed = false;
+      if (topic.cloudFormationOwner === owner) {
+        delete topic.cloudFormationOwner;
+        changed = true;
+      }
+      for (const subscriptionArn of topic.subscriptionArns) {
+        const subscription = this.control.subscriptions[subscriptionArn];
+        if (subscription?.cloudFormationOwner === owner && subscription.cloudFormationInline) {
+          delete subscription.cloudFormationOwner;
+          delete subscription.cloudFormationInline;
+          changed = true;
+        }
+      }
+      if (!changed) return;
+      this.control.revision++;
+      await this.store.save();
+    });
+  }
+
   async deleteCloudFormationTopic(topicArn: string, owner: string): Promise<void> {
     await this.store.withMutationLock(`sns:${this.store.accountId}:${this.region}:control`, async () => {
       const topic = this.topicByArn(topicArn, false);
@@ -906,11 +950,17 @@ export class SnsService {
     const ids = entries.map(entry => String(entry?.Id ?? ""));
     if (ids.some(id => !/^[A-Za-z0-9_-]{1,80}$/.test(id)) || new Set(ids).size !== ids.length) throw new AwsError("InvalidParameter", "Batch entry Id values must be unique and contain 1 to 80 alphanumeric, hyphen, or underscore characters.", 400);
     const aggregate = entries.reduce((total, entry) => {
-      const attributes = entry?.MessageAttributes && !Array.isArray(entry.MessageAttributes)
-        && Object.values(entry.MessageAttributes).every(value => value && typeof value === "object" && Object.hasOwn(value as object, "dataType"))
-        ? entry.MessageAttributes as Record<string, SnsMessageAttributeState>
-        : normalizeMessageAttributes(entry?.MessageAttributes);
-      return total + Buffer.byteLength(String(entry?.Message ?? "")) + messageAttributeBytes(attributes);
+      let attributeBytes: number;
+      try {
+        const attributes = entry?.MessageAttributes && !Array.isArray(entry.MessageAttributes)
+          && Object.values(entry.MessageAttributes).every(value => value && typeof value === "object" && Object.hasOwn(value as object, "dataType"))
+          ? entry.MessageAttributes as Record<string, SnsMessageAttributeState>
+          : normalizeMessageAttributes(entry?.MessageAttributes);
+        attributeBytes = messageAttributeBytes(attributes);
+      } catch {
+        attributeBytes = unvalidatedMessageAttributeBytes(entry?.MessageAttributes);
+      }
+      return total + Buffer.byteLength(String(entry?.Message ?? "")) + attributeBytes;
     }, 0);
     if (aggregate > MAX_MESSAGE_BYTES) throw new AwsError("BatchRequestTooLong", "The aggregate batch payload exceeds 262144 bytes.", 400);
     const Successful: any[] = [];

@@ -382,6 +382,9 @@ function createTopicProvider(sns: SnsService): ProductionResourceProvider<SnsTop
       if (physicalId !== topicArn(desired.TopicName, context)) return { status: "FAILED", errorCode: "RequiresReplacement", message: "TopicName changes require replacement" };
       try { return await reconcile(physicalId, desired, context); } catch (error) { return failure(error); }
     },
+    async retain(physicalId, _previous, context): Promise<void> {
+      await sns.releaseCloudFormationRetainedTopic(physicalId, owner(context));
+    },
     async delete(physicalId, _previous, context): Promise<ProviderDeleteResult> {
       try {
         if (!sns.cloudFormationTopicOwner(physicalId)) return { status: "NOT_FOUND", physicalId };
