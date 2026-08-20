@@ -59,6 +59,9 @@ test("reviewed PSS-01 gaps enforce one slash identity, root paths, Type on creat
     assert.deepEqual(directRoot.Parameters?.map(parameter => parameter.Name), ["root-entry"]);
     const recursiveRoot = await client.send(new GetParametersByPathCommand({ Path: "/", Recursive: true, MaxResults: 10 }));
     assert.deepEqual(recursiveRoot.Parameters?.map(parameter => parameter.Name), ["/nested/value", "/secure/value", "root-entry"]);
+    const trailingSlash = await client.send(new GetParametersByPathCommand({ Path: "/secure/", Recursive: true }));
+    assert.deepEqual(trailingSlash.Parameters?.map(parameter => parameter.Name), ["/secure/value"]);
+    await assert.rejects(client.send(new GetParametersByPathCommand({ Path: "/secure//", Recursive: true })), (error: any) => error.name === "ValidationException");
 
     const defaultKey = await client.send(new GetParametersByPathCommand({
       Path: "/secure",
@@ -79,6 +82,44 @@ test("reviewed PSS-01 gaps enforce one slash identity, root paths, Type on creat
 
     await client.send(new DeleteParameterCommand({ Name: "/root-entry" }));
     await assert.rejects(client.send(new GetParameterCommand({ Name: "root-entry" })), (error: any) => error.name === "ParameterNotFound");
+  } finally {
+    client?.destroy();
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("reviewed PSSGAP-04 DescribeParameters supports completed AWS filters and modeled filter errors", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-pss-gaps-filters-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "off", cdkBootstrap: false });
+  let client: SSMClient | undefined;
+  try {
+    await simulator.start();
+    client = new SSMClient({ endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials, maxAttempts: 1 });
+    await client.send(new PutParameterCommand({ Name: "/filters/app/direct", Type: "String", Value: "direct", Tags: [{ Key: "environment", Value: "prod" }] }));
+    await client.send(new PutParameterCommand({ Name: "/filters/app/nested/secret", Type: "SecureString", Value: "secret", Tags: [{ Key: "environment", Value: "production" }] }));
+    await client.send(new PutParameterCommand({ Name: "/filters/other/list", Type: "StringList", Value: "one,two", Tags: [{ Key: "environment", Value: "dev" }] }));
+
+    const names = async (ParameterFilters: any[]) => (await client!.send(new DescribeParametersCommand({ ParameterFilters }))).Parameters?.map(parameter => parameter.Name);
+    assert.deepEqual(await names([{ Key: "tag:environment", Option: "Equals", Values: ["prod"] }]), ["/filters/app/direct"]);
+    assert.deepEqual(await names([{ Key: "tag:environment", Option: "BeginsWith", Values: ["prod"] }]), ["/filters/app/direct", "/filters/app/nested/secret"]);
+    assert.deepEqual(await names([{ Key: "Name", Option: "Contains", Values: ["nested"] }]), ["/filters/app/nested/secret"]);
+    assert.deepEqual(await names([{ Key: "Type", Option: "BeginsWith", Values: ["Secure"] }]), ["/filters/app/nested/secret"]);
+    assert.deepEqual(await names(Array.from({ length: 11 }, () => ({ Key: "Name", Option: "BeginsWith", Values: ["/filters/"] }))), ["/filters/app/direct", "/filters/app/nested/secret", "/filters/other/list"]);
+    assert.deepEqual(await names([{ Key: "Path", Option: "OneLevel", Values: ["/filters/app"] }]), ["/filters/app/direct"]);
+    assert.deepEqual(await names([{ Key: "Path", Option: "Recursive", Values: ["/filters/app/"] }]), ["/filters/app/direct", "/filters/app/nested/secret"]);
+
+    const defaultKey = await client.send(new DescribeParametersCommand({ ParameterFilters: [{ Key: "KeyId", Option: "Equals", Values: ["alias/aws/ssm"] }] }));
+    assert.deepEqual(defaultKey.Parameters?.map(parameter => parameter.Name), ["/filters/app/nested/secret"]);
+
+    for (const Key of ["Label", "TagKey", "TagValue", "PolicyType", "tag:"]) {
+      await assert.rejects(client.send(new DescribeParametersCommand({ ParameterFilters: [{ Key, Values: ["value"] }] })), (error: any) => error.name === "InvalidFilterKey");
+    }
+    await assert.rejects(client.send(new DescribeParametersCommand({ ParameterFilters: [{ Key: "Type", Option: "Contains", Values: ["String"] }] })), (error: any) => error.name === "InvalidFilterOption");
+    await assert.rejects(client.send(new DescribeParametersCommand({ ParameterFilters: [{ Key: "Path", Option: "Equals", Values: ["/filters"] }] })), (error: any) => error.name === "InvalidFilterOption");
+    await assert.rejects(client.send(new DescribeParametersCommand({ ParameterFilters: [{ Key: "Type", Values: [] }] })), (error: any) => error.name === "InvalidFilterValue");
+    await assert.rejects(client.send(new DescribeParametersCommand({ ParameterFilters: [{ Key: "Path", Option: "Recursive", Values: ["filters"] }] })), (error: any) => error.name === "InvalidFilterValue");
+    await assert.rejects(client.send(new DescribeParametersCommand({ Shared: true })), (error: any) => error.name === "ValidationException" && /not supported/i.test(error.message));
   } finally {
     client?.destroy();
     await simulator.stop().catch(() => undefined);

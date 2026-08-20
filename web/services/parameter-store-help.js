@@ -9,7 +9,7 @@ const help = {
   configuration: {
     level: "Partial",
     description: "Parameter configuration defines the stable name clients request, the kind of value stored, and optional validation and metadata. Use String for one value, StringList for a comma-separated list, or SecureString when local development credentials or other sensitive text should not be kept as plaintext.",
-    support: "This editor creates Standard- or Advanced-tier text parameters and supports descriptions, regular-expression allowed patterns, initial tags, and Advanced policies. SecureString values use installation-local AES-256-GCM protection; explicit KMS keys, Intelligent-Tiering, and non-text data types are unavailable.",
+    support: "This editor creates Standard- or Advanced-tier text parameters and supports descriptions, regular-expression allowed patterns, initial tags, and Advanced policies. UTF-8 values are limited to 4 KiB for Standard and 8 KiB for Advanced; an upgrade to Advanced is irreversible. SecureString values use installation-local AES-256-GCM protection; explicit KMS keys, Intelligent-Tiering, and non-text data types are unavailable.",
   },
   value: {
     level: "Supported locally",
@@ -24,7 +24,7 @@ const help = {
   policies: {
     level: "Supported locally",
     description: "Advanced parameters can schedule expiration and notifications. Expiration deletes the parameter at the configured instant; notification policies emit safe value-free service events before expiration or after a no-change interval.",
-    support: "Expiration, ExpirationNotification, and NoChangeNotification policies, persisted due times, deterministic restart-safe processing, and status display are active locally. Advanced parameters cannot be downgraded to Standard.",
+    support: "Expiration, ExpirationNotification, and NoChangeNotification policies, persisted due times, deterministic simulator-clock scan scheduling, startup recovery of overdue work, and status display are active locally. Completed occurrences do not repeat after restart. Advanced parameters cannot be downgraded to Standard.",
   },
   tags: {
     level: "Supported locally",

@@ -33,6 +33,7 @@ export function canonicalParameterPath(value: unknown): string {
   if (!supplied.startsWith("/")) return validation("Path must be a hierarchy beginning with a slash.");
   if (supplied === "/") return supplied;
   const normalized = supplied.endsWith("/") ? supplied.slice(0, -1) : supplied;
+  if (normalized.endsWith("/")) return validation("Paths cannot contain empty hierarchy segments.");
   canonicalParameterName(normalized, false);
   return normalized;
 }
