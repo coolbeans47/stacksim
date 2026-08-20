@@ -159,8 +159,8 @@
     },
     {
       "path": "dependency-manifest.json",
-      "sha256": "295e7d52d7b05dfffd1313745261cf28aba8db20dd4156aaa960be3950cee01d",
-      "bytes": 477256
+      "sha256": "95a6e510b793f46965e59af98bab2ca66b4511ace04de06244def59819bbc0ad",
+      "bytes": 477418
     },
     {
       "path": "endpoint-derivation.json",
@@ -174,8 +174,8 @@
     },
     {
       "path": "fixture-source-manifest.json",
-      "sha256": "4b75798d7b91adccb6aa71cd38dd034232c4f674cf5dbdbc7e81f39a5c249c10",
-      "bytes": 1061
+      "sha256": "e18e75e84683387efc9d6a6cec14ab36cbdca6d0c0801c9a31b9236025a222b7",
+      "bytes": 1751
     },
     {
       "path": "graph-manifest.json",

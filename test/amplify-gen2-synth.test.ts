@@ -73,6 +73,25 @@ test("AMX-01 supports the repository Node minimum and newer releases", async () 
 test("AMX-01 transitive manifest is an exact lockfile projection with registry integrities", async () => {
   const lock = await json(join(fixture, "package-lock.json"));
   const manifest = await json(join(evidence, "dependency-manifest.json"));
+  const sources = await json(join(evidence, "fixture-source-manifest.json"));
+  assert.equal(manifest.scope, "current-clean-install");
+  assert.equal(manifest.frozenSynthesisProvenance, "fixture-source-manifest.json");
+  assert.equal(sources.scope, "current-clean-install");
+  assert.deepEqual(manifest.directDependencies, (await json(join(fixture, "package.json"))).dependencies);
+  assert.deepEqual(manifest.directDevDependencies, { "aws-cdk-lib": "2.265.0" });
+  assert.deepEqual(sources.frozenSynthesisProvenance, {
+    status: "historical-compatibility-corpus",
+    nodeVersion: "24.14.0",
+    awsCdkLib: "2.263.0",
+    bucketDeploymentAwsCliLayerAsset: "a72522445441e9b66c2f16956c54d4786af8c61c156b80c48a6e7c32fcc49023.zip",
+    nodeVersionFile: { sha256: "75daa0bc10dae1f22b2d13386b55b232adf16930d4325902f37b5033b3a7ca93", bytes: 8 },
+    packageJson: { sha256: "67e02a0264f943e625933d80c634cd7794449bc9ae3d83697efcdcf175d0ca39", bytes: 388 },
+    packageLock: { sha256: "ef8f447f4f0a68b19043356a733d9c76d39ee221351c997bb457124c09b59f18", bytes: 729922 },
+  });
+  for (const entry of sources.files as Array<{ path: string; bytes: number; sha256: string }>) {
+    const content = canonicalTextBytes(await readFile(join(fixture, entry.path)));
+    assert.deepEqual({ bytes: content.length, sha256: digest(content) }, { bytes: entry.bytes, sha256: entry.sha256 }, `${entry.path} current-source provenance drift`);
+  }
   assert.equal(manifest.lockfileVersion, lock.lockfileVersion);
   assert.equal(manifest.selectedPackages.length, Object.keys(lock.packages).length);
   for (const selected of manifest.selectedPackages) {

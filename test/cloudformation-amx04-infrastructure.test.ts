@@ -13,6 +13,7 @@ import { ListExecutionsCommand, ListStateMachinesCommand, SFNClient } from "@aws
 import { CloudWatchLogsClient, FilterLogEventsCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { CloudWatchClient, GetMetricStatisticsCommand } from "@aws-sdk/client-cloudwatch";
 import { StackSim } from "../src/server.js";
+import { createZip } from "../src/core/zip-create.js";
 import { zipContentSnapshot, type ZipContentSnapshot } from "./support/artifact-snapshots.js";
 import { readCanonicalText } from "./support/frozen-text.js";
 
@@ -20,6 +21,12 @@ const region = "eu-west-1";
 const accountId = "000000000000";
 const credentials = { accessKeyId: "admin", secretAccessKey: "password" };
 const executionRoleArn = `arn:aws:iam::${accountId}:role/cdk-hnb659fds-cfn-exec-role-${accountId}-${region}`;
+const tableManagerAssetId = "f2c5bec0e463cae18d0bf683be5923ae6bd676a06af1a994bdfa076a66ac07d6";
+const autoDeleteAssetId = "faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6";
+const bucketDeploymentHandlerAssetId = "97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f";
+const codegenSourceAssetId = "0f7665a8e7b1e1ae8c018961a67ede6600792bf5393ac23068f79ccf68608357";
+const introspectionSourceAssetId = "5c0312441b16a7cf32bb8e3252a08bd1889a860bba81f5fa32c1053ec5371509";
+const legacyAwsCliLayerAssetId = "a72522445441e9b66c2f16956c54d4786af8c61c156b80c48a6e7c32fcc49023";
 const expectedZipContents: Record<string, ZipContentSnapshot> = {
   f2c5bec0e463cae18d0bf683be5923ae6bd676a06af1a994bdfa076a66ac07d6: { entries: 17, uncompressedBytes: 165497, sha256: "bd1de93b0a0c0574d56b9d0e30b6e005e497a38e78c38fcd5ac763460b2b06e0" },
   faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6: { entries: 1, uncompressedBytes: 4403, sha256: "a477eb808b7d9d512ec7e4fd41b470428586c790480dc1aced05c91ac7ecaa7e" },
@@ -36,6 +43,37 @@ function canonical(value: unknown): unknown {
     return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical((value as Record<string, unknown>)[key])]));
   }
   return value;
+}
+
+async function generatedAssetZip(fixture: string, assetId: string): Promise<Buffer> {
+  if (assetId === legacyAwsCliLayerAssetId) {
+    return createZip([{ name: "aws", content: "legacy aws cli layer attestation fixture\n" }]);
+  }
+  if (assetId === autoDeleteAssetId) {
+    return createZip([{ name: "index.js", content: await readFile(join(fixture, "node_modules", "aws-cdk-lib", "custom-resource-handlers", "dist", "aws-s3", "auto-delete-objects-handler", "index.js")) }]);
+  }
+  if (assetId === bucketDeploymentHandlerAssetId) {
+    return createZip([{ name: "index.py", content: await readFile(join(fixture, "node_modules", "aws-cdk-lib", "custom-resource-handlers", "dist", "aws-s3-deployment", "bucket-deployment-handler", "index.py")) }]);
+  }
+  if (assetId === codegenSourceAssetId) {
+    return createZip([{ name: "model-schema.graphql", content: await readCanonicalText(join(fixture, "evidence", "assets", `${assetId}-model-schema.graphql`)) }]);
+  }
+  if (assetId === introspectionSourceAssetId) {
+    return createZip([{ name: "modelIntrospectionSchema.json", content: await readCanonicalText(join(fixture, "evidence", "assets", `${assetId}-modelIntrospectionSchema.json`)) }]);
+  }
+  if (assetId === tableManagerAssetId) {
+    const source = join(fixture, "node_modules", "@aws-amplify", "data-construct", "node_modules", "@aws-amplify", "graphql-model-transformer", "lib", "resources", "amplify-dynamodb-table", "amplify-table-manager-lambda");
+    const names = [
+      "amplify-table-manager-handler.d.ts.map", "amplify-table-manager-handler.js", "amplify-table-manager-handler.js.map",
+      "cfn-response.d.ts.map", "cfn-response.js", "cfn-response.js.map",
+      "import-table.d.ts.map", "import-table.js", "import-table.js.map",
+      "outbound.d.ts.map", "outbound.js", "outbound.js.map",
+      "util.d.ts.map", "util.js", "util.js.map",
+      "node_modules/.package-lock.json", "node_modules/lodash.isequal/index.js",
+    ];
+    return createZip(await Promise.all(names.map(async name => ({ name, content: await readFile(join(source, ...name.split("/"))) }))));
+  }
+  throw new Error(`Unsupported generated AMX-04 asset ${assetId}`);
 }
 
 test("AMX-04A: the complete helper/resource/template/ZIP/layer/workflow manifest is immutable", async () => {
@@ -57,12 +95,20 @@ test("AMX-04A: the complete helper/resource/template/ZIP/layer/workflow manifest
     assert.equal(resource?.Type, expected.type, `${expected.template}/${expected.logicalId} type drift`);
     assert.equal(sha256(JSON.stringify(canonical(resource?.Properties ?? {}))), expected.propertiesSha256, `${expected.template}/${expected.logicalId} property drift`);
   }
-  const cache = join(fixture, ".amplify", "artifacts", "cdk.out", ".cache");
   for (const expected of manifest.assets) {
-    const path = expected.id === "a72522445441e9b66c2f16956c54d4786af8c61c156b80c48a6e7c32fcc49023"
-      ? join(fixture, ".amplify", "artifacts", "cdk.out", `asset.${expected.id}.zip`)
-      : join(cache, `${expected.id}.zip`);
-    const bytes = await readFile(path);
+    if (expected.id === legacyAwsCliLayerAssetId) {
+      // CDK 2.265 cannot recreate the retired archive. Preserve its protected
+      // historical metadata while runtime compatibility uses an attested ZIP below.
+      assert.deepEqual(expected, {
+        id: legacyAwsCliLayerAssetId,
+        kind: "bucket-deployment-awscli-layer-zip",
+        bytes: 21_558_128,
+        sha256: "e32c564500d8f80cfaaff79b1211480b95448f76780301d2b09c7133b89b4bd7",
+      }, "the frozen legacy layer metadata remains protected without requiring an ignored 21.5 MB archive");
+      assert.deepEqual(expectedZipContents[expected.id], { entries: 3239, uncompressedBytes: 36_379_161, sha256: "a04afd1eb1525705d06f7f33288d62073aef04be1a59b8ca37868a77afef7ce3" });
+      continue;
+    }
+    const bytes = await generatedAssetZip(fixture, expected.id);
     assert.deepEqual(zipContentSnapshot(bytes), expectedZipContents[expected.id], `${expected.kind} content drift`);
   }
   const workflow = templates.get("table-manager").Resources[manifest.workflow.logicalId];
@@ -207,20 +253,19 @@ test("AMX-04C/D: both exact generated BucketDeployments and S3AutoDeleteObjects 
     const cloudformation = new CloudFormationClient({ endpoint, region, credentials }); clients.push(cloudformation);
     const s3 = new S3Client({ endpoint, region, credentials, forcePathStyle: true }); clients.push(s3);
     const logs = new CloudWatchLogsClient({ endpoint, region, credentials }); clients.push(logs);
-    const out = join(process.cwd(), "test", "fixtures", "amplify-gen2-data", ".amplify", "artifacts", "cdk.out");
-    const cache = join(out, ".cache");
+    const fixture = join(process.cwd(), "test", "fixtures", "amplify-gen2-data");
     const assetHashes = [
-      "faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6",
-      "97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f",
-      "0f7665a8e7b1e1ae8c018961a67ede6600792bf5393ac23068f79ccf68608357",
-      "5c0312441b16a7cf32bb8e3252a08bd1889a860bba81f5fa32c1053ec5371509",
-      "a72522445441e9b66c2f16956c54d4786af8c61c156b80c48a6e7c32fcc49023",
+      autoDeleteAssetId,
+      bucketDeploymentHandlerAssetId,
+      codegenSourceAssetId,
+      introspectionSourceAssetId,
+      legacyAwsCliLayerAssetId,
     ];
     for (const assetHash of assetHashes) {
-      const path = assetHash.startsWith("a725") ? join(out, `asset.${assetHash}.zip`) : join(cache, `${assetHash}.zip`);
-      await s3.send(new PutObjectCommand({ Bucket: `cdk-hnb659fds-assets-${accountId}-${region}`, Key: `${assetHash}.zip`, Body: await readFile(path) }));
+      const body = await generatedAssetZip(fixture, assetHash);
+      await s3.send(new PutObjectCommand({ Bucket: `cdk-hnb659fds-assets-${accountId}-${region}`, Key: `${assetHash}.zip`, Body: body }));
     }
-    const data = JSON.parse(await readFile(join(process.cwd(), "test", "fixtures", "amplify-gen2-data", "evidence", "templates", "data.json"), "utf8"));
+    const data = JSON.parse(await readFile(join(fixture, "evidence", "templates", "data.json"), "utf8"));
     const logicalIds = [
       "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA",
       "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucketPolicyF1C1C548",
@@ -281,11 +326,12 @@ test("AMX-04B-D: the unchanged generated Provider framework creates, stabilizes,
     const sfn = new SFNClient({ endpoint, region, credentials }); clients.push(sfn);
     const logs = new CloudWatchLogsClient({ endpoint, region, credentials }); clients.push(logs);
     const cloudwatch = new CloudWatchClient({ endpoint, region, credentials }); clients.push(cloudwatch);
-    const assetHash = "f2c5bec0e463cae18d0bf683be5923ae6bd676a06af1a994bdfa076a66ac07d6";
-    const asset = await readFile(join(process.cwd(), "test", "fixtures", "amplify-gen2-data", ".amplify", "artifacts", "cdk.out", ".cache", `${assetHash}.zip`));
+    const fixture = join(process.cwd(), "test", "fixtures", "amplify-gen2-data");
+    const assetHash = tableManagerAssetId;
+    const asset = await generatedAssetZip(fixture, assetHash);
     await s3.send(new PutObjectCommand({ Bucket: `cdk-hnb659fds-assets-${accountId}-${region}`, Key: `${assetHash}.zip`, Body: asset }));
 
-    const managerTemplate = await readFile(join(process.cwd(), "test", "fixtures", "amplify-gen2-data", "evidence", "templates", "table-manager.json"), "utf8");
+    const managerTemplate = await readFile(join(fixture, "evidence", "templates", "table-manager.json"), "utf8");
     const manager = await cloudformation.send(new CreateStackCommand({
       StackName: "amx04-table-manager",
       TemplateBody: managerTemplate,
@@ -297,7 +343,7 @@ test("AMX-04B-D: the unchanged generated Provider framework creates, stabilizes,
     const serviceToken = managerComplete.Outputs?.find((output: { OutputKey?: string; OutputValue?: string }) => output.OutputKey?.endsWith("B513Arn"))?.OutputValue;
     assert.match(serviceToken ?? "", /^arn:aws:lambda:eu-west-1:000000000000:function:/);
 
-    const frozenTodo = JSON.parse(await readFile(join(process.cwd(), "test", "fixtures", "amplify-gen2-data", "evidence", "templates", "todo.json"), "utf8"));
+    const frozenTodo = JSON.parse(await readFile(join(fixture, "evidence", "templates", "todo.json"), "utf8"));
     const tableTemplate = (deletionProtectionEnabled: boolean): string => {
       const resource = structuredClone(frozenTodo.Resources.TodoTable);
       resource.Properties.deletionProtectionEnabled = deletionProtectionEnabled;

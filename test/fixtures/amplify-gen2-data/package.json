@@ -15,5 +15,8 @@
     "@aws-amplify/backend-cli": "1.9.0",
     "aws-amplify": "6.20.0",
     "typescript": "7.0.2"
+  },
+  "devDependencies": {
+    "aws-cdk-lib": "2.265.0"
   }
 }
