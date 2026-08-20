@@ -2,23 +2,23 @@
   "schemaVersion": 1,
   "baseline": {
     "awsCdkCli": "2.1132.0",
-    "awsCdkLib": "2.261.0",
+    "awsCdkLib": "2.265.0",
     "constructs": "10.7.1",
     "account": "000000000000",
     "region": "eu-west-1"
   },
   "files": {
-    "ReactBucketStack.template.json": "b9e220c5edd59e31deb21bf45cb6640a3cc2192010c8d541a008cc107ad478fb",
-    "ReactBucketStack.assets.json": "6baa9068949a0f860e01f04964ff6f1a0a294a83229744604d9ad7ee0d86e9d2",
-    "manifest.json": "cdf8ee1f688151cf506be6f9b7868175c3bc9d5f7080227678794b1ea6478ee6",
-    "tree.json": "75a7cc3cf7e2e836ff81ac548a6c11f4fab827283cf63371d177413846bffe9a"
+    "ReactBucketStack.template.json": "d5dad329f28a49bdbb31f7bcb07b0775a59ccb889004a546c61ae0be605a739d",
+    "ReactBucketStack.assets.json": "ab67226b39aa7076b77e8a806740e1f77fcecea42ae516d683a2f25b62b3efac",
+    "manifest.json": "50881699e70ecacdcfd93b7b92ad4a19ac6ddb4d5777dbf99f3fd8fd3c8fb2d6",
+    "tree.json": "acd0b1d31612c27252c6a8c322f771401f0db7fba03991d9c632279217191415"
   },
-  "assemblySha256": "cdc4dae9296760733dd2880755d76d2f1f42d2585bdcaf2bb58e65d1de11f53d",
+  "assemblySha256": "3ab3f1ade25dd607aa2bb21fdee0676533245ace7be3513d03a64a9f2285dee3",
   "assets": {
-    "awsCliLayer": "a72522445441e9b66c2f16956c54d4786af8c61c156b80c48a6e7c32fcc49023",
+    "awsCliLayer": "98f62bef9320f8c0a0a7be21d7c746f069131f196f51ffe3008a6bb730b368ec",
     "bucketDeploymentHandler": "97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f",
     "reactBuildV1": "c33c74ebfe63491213ee51f5f01cd1cfcd661703cca2fbc78c0d182850c1a6a3",
-    "stackTemplate": "b9e220c5edd59e31deb21bf45cb6640a3cc2192010c8d541a008cc107ad478fb"
+    "stackTemplate": "d5dad329f28a49bdbb31f7bcb07b0775a59ccb889004a546c61ae0be605a739d"
   },
   "resources": [
     ["FrontendBucketEFE2E19C", "AWS::S3::Bucket"],

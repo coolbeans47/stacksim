@@ -209,8 +209,8 @@ test("pinned unmodified CDK stays local and rejects deploys when the reduced boo
     assert.equal(synth.code, 0, `${synth.stdout}\n${synth.stderr}`);
     const synthesized = JSON.parse(await readFile(join(synthOutput, "EmptyStack.template.json"), "utf8"));
     const emptyDigests = await semanticCdkAssemblyDigests(synthOutput, ["EmptyStack.template.json"], ["manifest.json"]);
-    assert.equal(emptyDigests["EmptyStack.template.json"], "3965c05caab9639852b0c977d7e0553851e0c43c1dfdf18cffdab8049ab26f7b", "the pinned empty-stack semantic template corpus drifted");
-    assert.equal(emptyDigests["manifest.json"], "a28b711265efcfb71857415aaa68d1f0ddcabc957d26b1783e1b84817f4b4147", "the pinned empty-stack semantic cloud assembly drifted");
+    assert.equal(emptyDigests["EmptyStack.template.json"], "8eaab08c5f631b444760be51f9ee3eb36a27b0523b539eaf78b52491d7e7bf97", "the pinned empty-stack semantic template corpus drifted");
+    assert.equal(emptyDigests["manifest.json"], "c87f5cd9fb16691bbd46e5a85ee6dd0de1c129c5e07cce21af40ad9b5ae48c40", "the pinned empty-stack semantic cloud assembly drifted");
     assert.equal(synthesized.Parameters.BootstrapVersion.Type, "AWS::SSM::Parameter::Value<String>");
     assert.equal(synthesized.Parameters.BootstrapVersion.Default, "/cdk-bootstrap/hnb659fds/version");
     assert.ok(synthesized.Rules.CheckBootstrapVersion, "the default synthesizer bootstrap rule must remain intact");
@@ -492,11 +492,11 @@ test("pinned unmodified CDK deploy --all imports retained data into an API stack
     const multiAssembly = join(root, "deploy-all.out");
     const multiDigests = await semanticCdkAssemblyDigests(multiAssembly, ["DataStack.template.json", "ApiStack.template.json"], ["DataStack.assets.json", "ApiStack.assets.json", "manifest.json"]);
     assert.deepEqual(multiDigests, {
-      "DataStack.template.json": "ed5772410f0ef879d4a8b6070dbc68cb268b6c82edcda9df8a7a8987cbf45011",
-      "ApiStack.template.json": "27587feed5b26dee8020f0f1e17a7af209bae9668bf6e1b6fb37b7066ab5d58e",
-      "DataStack.assets.json": "4059dee8278b87e5fa369f41eb9c7d5ed3d0e83784b170acb5062b5fdfb10c5b",
-      "ApiStack.assets.json": "b2eca957a70678edd970ca92099d51bbf5aab377fbb118a6278defc311386138",
-      "manifest.json": "b7d6fef72bde2311475c8e5d28d29623f910a9bc072bfe7026a3b5e761f40933",
+      "DataStack.template.json": "6c02e99f9dbb4f130976d769e60b0496c0e18f35a9773ed2e934cacd0a6e7b6a",
+      "ApiStack.template.json": "d2c5223cbe654c6d75be984ed8e35d2154868a709bb3bcb7825e4aa3b676e5d8",
+      "DataStack.assets.json": "55c2b1e337399c08a9e945697e361f9e30010df8d80b03bb3620f7b3841ee990",
+      "ApiStack.assets.json": "3618046efc89180c516170cc6128e53708ddb14ee301bfc8a2f05e1da0562289",
+      "manifest.json": "53a55ae97016b5fb60f699089ffb55167c1c809aeea4f469ebb31656eaae575d",
     }, "the pinned multi-stack semantic assembly drifted");
     const active = (await cloudformation.send(new ListStacksCommand({ StackStatusFilter: ["CREATE_COMPLETE", "UPDATE_COMPLETE"] }))).StackSummaries?.map(stack => stack.StackName).sort();
     assert.deepEqual(active, ["ApiStack", "DataStack"]);

@@ -150,12 +150,12 @@ test("standard CDK deploys, updates, restarts, invokes, and destroys a Lambda RE
     const template = JSON.parse(templateBytes.toString("utf8")) as { Resources: Record<string, { Type: string; Properties?: Record<string, any> }> };
     const createDigests = await semanticCdkAssemblyDigests(createAssembly, ["RestStack.template.json"], ["RestStack.assets.json", "manifest.json"]);
     assert.deepEqual(createDigests, {
-      "RestStack.template.json": "204fa9daf762f778588e6f53b3782b101233694fa2d7030674bb1113a5489c8d",
-      "RestStack.assets.json": "400904db877d235dbac08d23aa35e18990bdbed9d5d1c6a84d37ee215f31051a",
-      "manifest.json": "f6d6e8818aa54a8a21c820bc844bb14b6e4890d703c6669922ff3eeb20c3ea5f",
+      "RestStack.template.json": "8a4012b58e6f8791725ab9b1d058329ee10e53d6c8253d9573d63a93822e465e",
+      "RestStack.assets.json": "3628a65edaf7100d2b3893976e5cbfbf24d86130a21e277844d6cdebcab4ab3c",
+      "manifest.json": "fd706cc39ee541144566d54bf88505431d4c0ce7d5569a0f3b9d8400aa305637",
     }, "the pinned REST semantic assembly drifted");
     const resourceTypes = Object.fromEntries(Object.entries(Object.values(template.Resources).reduce<Record<string, number>>((counts, resource) => ({ ...counts, [resource.Type]: (counts[resource.Type] ?? 0) + 1 }), {})).sort(([left], [right]) => left.localeCompare(right)));
-    assert.deepEqual(resourceTypes, expectedResourceTypes, "the pinned CDK 2.1132.0/aws-cdk-lib 2.261.0 resource corpus must not drift silently");
+    assert.deepEqual(resourceTypes, expectedResourceTypes, "the pinned CDK 2.1132.0/aws-cdk-lib 2.265.0 resource corpus must not drift silently");
     const tableTemplate = Object.values(template.Resources).find(resource => resource.Type === "AWS::DynamoDB::Table");
     assert.equal(tableTemplate?.Properties?.StreamSpecification?.StreamViewType, "NEW_AND_OLD_IMAGES");
     assert.deepEqual(tableTemplate?.Properties?.TimeToLiveSpecification, { AttributeName: "expiresAt", Enabled: true });
@@ -325,8 +325,8 @@ test("standard CDK deploys, updates, restarts, invokes, and destroys a Lambda RE
     assert.equal(retainedDeploy.code, 0, `${retainedDeploy.stdout}\n${retainedDeploy.stderr}`);
     const retainedAssembly = join(root, "retain-create.out");
     assert.deepEqual(await semanticCdkAssemblyDigests(retainedAssembly, ["RetainStack.template.json"], ["RetainStack.assets.json"]), {
-      "RetainStack.template.json": "51aee117dba47da90647b3a57a87218e63bb747d3634578cd6f4ca2a28e62ef3",
-      "RetainStack.assets.json": "897f73c1783ceaa0fb9bc884bd2cd7af07f17f0faffa5c7bdfbefb28afb43cf7",
+      "RetainStack.template.json": "2fe54b5a304c154eb423be1e47d76ce8e698c0c702fe08315af9b462f33f38f6",
+      "RetainStack.assets.json": "9c293686744170ced59b719f2db4126c1edf198f79f3b1efdd425a87915796b2",
     });
     const retainedTableName = (JSON.parse(await readFile(retainedOutputsFile, "utf8")).RetainStack as Record<string, string>).RetainedTableName;
     const retainedDestroy = await runCdk(["--output", join(root, "retain-destroy.out"), "destroy", "RetainStack", "--force"], env);
@@ -358,8 +358,8 @@ test("standard CDK deploys and destroys the ordinary apigateway.RestApi construc
     const assembly = join(root, "plain-deploy.out");
     const templateBytes = await readFile(join(assembly, "PlainRestStack.template.json"));
     assert.deepEqual(await semanticCdkAssemblyDigests(assembly, ["PlainRestStack.template.json"], ["PlainRestStack.assets.json"]), {
-      "PlainRestStack.template.json": "804762369314a570f8835c5f13a7fab638d6f84889bc849169fe08152728909d",
-      "PlainRestStack.assets.json": "c1dcf451478264557f82d9abafc86750f80599d13beeab7dd50e134ac17927c9",
+      "PlainRestStack.template.json": "70c7ef760fb919d3688befd1f521692c513da1a88cc57face224bea0b94415e5",
+      "PlainRestStack.assets.json": "6e4e421fc94e33831fe3c04e13e37907932a291b07cd58cf61d6aca351967026",
     });
     const template = JSON.parse(templateBytes.toString("utf8")) as { Resources: Record<string, { Type: string; DependsOn?: string[] }> };
     const typeCounts = Object.fromEntries(Object.entries(Object.values(template.Resources).reduce<Record<string, number>>((counts, resource) => ({ ...counts, [resource.Type]: (counts[resource.Type] ?? 0) + 1 }), {})).sort(([left], [right]) => left.localeCompare(right)));
