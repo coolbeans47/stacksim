@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CloudFormationClient, CreateStackCommand, DeleteStackCommand, DescribeStacksCommand, UpdateStackCommand } from "@aws-sdk/client-cloudformation";
 import { CreateSecretCommand, DescribeSecretCommand, GetResourcePolicyCommand, GetSecretValueCommand, SecretsManagerClient, UpdateSecretCommand } from "@aws-sdk/client-secrets-manager";
-import { GetParameterCommand, PutParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
+import { DeleteParameterCommand, GetParameterCommand, PutParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { App, RemovalPolicy, Stack } from "aws-cdk-lib";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
@@ -35,6 +35,16 @@ async function waitForStack(client: CloudFormationClient, clock: TestClock, name
     }
   }
   assert.fail(`stack ${name} did not reach ${terminal}`);
+}
+
+async function readTextTree(directory: string): Promise<string> {
+  const chunks: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) chunks.push(await readTextTree(path));
+    else if (entry.isFile()) chunks.push(await readFile(path, "utf8"));
+  }
+  return chunks.join("\n");
 }
 
 function template(description: string): string {
@@ -199,6 +209,70 @@ test("PSS-04 deploys, updates, restarts, protects, and deletes SSM and Secrets M
     await waitForStack(cloudformation, clock, "pss04-stack", "DELETE_COMPLETE");
     await assert.rejects(ssm.send(new GetParameterCommand({ Name: "/pss04/typed" })), /not found/i);
     await assert.rejects(secrets.send(new DescribeSecretCommand({ SecretId: "pss04/generated" })), /find|exist/i);
+  } finally {
+    destroyClients();
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("PSS-04 in-flight dynamic SSM generation pins survive restart and reject same-name recreation", { timeout: 60_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-pss04-dynamic-generation-"));
+  const clock = new TestClock(Date.now());
+  let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off" });
+  let cloudformation!: CloudFormationClient;
+  let ssm!: SSMClient;
+  const originalValue = "dynamic-source-before-recreation";
+  const recreatedValue = "dynamic-source-after-recreation";
+  const clients = (): void => {
+    const configuration = { endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials, maxAttempts: 1, systemClockOffset: clock.now() - Date.now() };
+    cloudformation = new CloudFormationClient(configuration);
+    ssm = new SSMClient(configuration);
+  };
+  const destroyClients = (): void => { cloudformation?.destroy(); ssm?.destroy(); };
+  try {
+    await simulator.start();
+    clients();
+    await ssm.send(new PutParameterCommand({ Name: "/pss04/restart/source", Type: "String", Value: originalValue }));
+
+    let paused = false;
+    simulator.cloudformation.setCheckpointInterceptorForTest(observation => {
+      if (observation.checkpoint !== "resource:Target:create-intent" || paused) return false;
+      paused = true;
+      return true;
+    });
+    const body = JSON.stringify({ Resources: {
+      Target: { Type: "AWS::SSM::Parameter", Properties: { Name: "/pss04/restart/target", Type: "String", Value: "{{resolve:ssm:/pss04/restart/source:1}}" } },
+    } });
+    await cloudformation.send(new CreateStackCommand({ StackName: "pss04-dynamic-generation", TemplateBody: body }));
+    for (let attempt = 0; attempt < 200 && !paused; attempt++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(paused, true, "the executor reaches a durable checkpoint after its first dynamic-reference resolution");
+
+    const stackState = Object.values(simulator.store.regionState(region).cloudformation.stacks).find(stack => stack.stackName === "pss04-dynamic-generation")!;
+    const operationId = stackState.activeOperation!.operationId;
+    const pinPath = join(root, "data", "cloudformation", "000000000000", region, "artifacts", "operations", `${operationId}.dynamic-reference-pins.json`);
+    const pinText = await readFile(pinPath, "utf8");
+    const pins = JSON.parse(pinText);
+    assert.equal(typeof pins.references["{{resolve:ssm:/pss04/restart/source:1}}"].generationId, "string");
+    assert.doesNotMatch(pinText, new RegExp(`${originalValue}|${recreatedValue}`));
+
+    await ssm.send(new DeleteParameterCommand({ Name: "/pss04/restart/source" }));
+    clock.advance(31_000);
+    await ssm.send(new PutParameterCommand({ Name: "/pss04/restart/source", Type: "String", Value: recreatedValue }));
+    assert.equal((await ssm.send(new GetParameterCommand({ Name: "/pss04/restart/source:1" }))).Parameter?.Value, recreatedValue);
+
+    destroyClients();
+    await simulator.stop();
+    simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off" });
+    await simulator.start();
+    clients();
+
+    const terminal = await waitForStack(cloudformation, clock, "pss04-dynamic-generation", "ROLLBACK_COMPLETE");
+    assert.match(terminal.StackStatusReason ?? "", /different parameter generation/i);
+    await assert.rejects(ssm.send(new GetParameterCommand({ Name: "/pss04/restart/target" })), (error: any) => error.name === "ParameterNotFound");
+
+    const cloudFormationData = await readTextTree(join(root, "data", "cloudformation", "000000000000", region));
+    assert.doesNotMatch(cloudFormationData, new RegExp(`${originalValue}|${recreatedValue}`));
   } finally {
     destroyClients();
     await simulator.stop().catch(() => undefined);

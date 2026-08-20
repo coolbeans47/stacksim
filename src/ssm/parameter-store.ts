@@ -12,6 +12,25 @@ const TOMBSTONE_MS = 30_000;
 const MAX_VERSIONS = 100;
 const POLICY_LIMIT = 10;
 const EVENT_RETRY_LIMIT_MS = 60_000;
+const DEFAULT_SECURE_STRING_KEY_ID = "alias/aws/ssm";
+
+const DESCRIBE_PARAMETER_FILTER_KEYS = new Set(["Name", "Type", "KeyId", "Path", "Tier", "DataType"]);
+
+function invalidFilterKey(key: unknown): never {
+  throw new AwsError("InvalidFilterKey", `The specified filter key ${String(key ?? "(empty)")} isn't valid.`, 400);
+}
+
+function invalidFilterOption(): never {
+  throw new AwsError("InvalidFilterOption", "The specified filter option isn't valid. Valid options are Equals and BeginsWith. For Path filter, valid options are Recursive and OneLevel.", 400);
+}
+
+function invalidFilterValue(): never {
+  throw new AwsError("InvalidFilterValue", "The filter value isn't valid. Verify the value and try again.", 400);
+}
+
+function matchesStringFilter(actual: string, option: string, requested: readonly string[]): boolean {
+  return requested.some(value => option === "BeginsWith" ? actual.startsWith(value) : option === "Contains" ? actual.includes(value) : actual === value);
+}
 
 export type ParameterStoreEventPublisher = (input: { source: "aws.ssm"; detailType: ParameterStoreEventOutboxState["detailType"]; detail: Readonly<Record<string, string>>; resources: string[]; time: number; eventBusName: "default"; deliveryLineage: string[] }) => Promise<unknown>;
 
@@ -519,19 +538,46 @@ export class ParameterStore {
 
   async DescribeParameters(input: any): Promise<any> {
     await this.reconcileBootstrapFromState();
+    if (input?.Shared === true) validation("Shared parameters are not supported in the installation-local Parameter Store profile.");
     const filters = input?.ParameterFilters === undefined ? [] : input.ParameterFilters;
-    if (!Array.isArray(filters) || filters.length > 10) validation("ParameterFilters is invalid.");
+    if (!Array.isArray(filters)) validation("ParameterFilters is invalid.");
     let values = Object.values(this.control.parameters).sort((left, right) => left.name.localeCompare(right.name));
     for (const filter of filters) {
-      if (!filter || typeof filter.Key !== "string" || !Array.isArray(filter.Values)) validation("ParameterFilters is invalid.");
-      const option = String(filter.Option ?? "Equals");
-      const requested = filter.Values.map(String);
-      if (filter.Key === "Name") values = values.filter(parameter => requested.some((value: string) => option === "BeginsWith" ? parameter.name.startsWith(value) : parameter.name === value));
-      else if (filter.Key === "Type") values = values.filter(parameter => requested.includes(parameter.type));
-      else if (filter.Key === "Tier") values = values.filter(parameter => requested.includes(parameter.tier));
-      else if (filter.Key === "DataType") values = values.filter(parameter => requested.includes(parameter.dataType));
-      else if (filter.Key === "Path") values = values.filter(parameter => requested.some((value: string) => parameter.name.startsWith(value.endsWith("/") ? value : `${value}/`)));
-      else validation(`Unsupported parameter filter key ${filter.Key}.`);
+      const key = filter?.Key;
+      const tagFilter = typeof key === "string" && key.startsWith("tag:") && key.length > 4 && key.length <= 132;
+      if (typeof key !== "string" || key.length > 132 || !tagFilter && !DESCRIBE_PARAMETER_FILTER_KEYS.has(key)) invalidFilterKey(key);
+      const option = filter.Option === undefined ? key === "Path" ? "Recursive" : "Equals" : filter.Option;
+      const supportedOptions = key === "Path"
+        ? new Set(["Recursive", "OneLevel"])
+        : key === "Name"
+          ? new Set(["Equals", "BeginsWith", "Contains"])
+          : new Set(["Equals", "BeginsWith"]);
+      if (typeof option !== "string" || !supportedOptions.has(option)) invalidFilterOption();
+      if (!Array.isArray(filter.Values) || filter.Values.length < 1 || filter.Values.length > 50 || filter.Values.some((value: unknown) => typeof value !== "string" || value.length < 1 || value.length > 1024)) invalidFilterValue();
+      const requested = filter.Values as string[];
+      if (key === "Path") {
+        const paths = requested.map(value => {
+          try { return canonicalParameterPath(value); } catch { return invalidFilterValue(); }
+        });
+        values = values.filter(parameter => {
+          const hierarchyName = parameter.name.startsWith("/") ? parameter.name : `/${parameter.name}`;
+          return paths.some(path => {
+            const prefix = path === "/" ? path : `${path}/`;
+            if (!hierarchyName.startsWith(prefix)) return false;
+            return option === "Recursive" || !hierarchyName.slice(prefix.length).includes("/");
+          });
+        });
+      } else if (tagFilter) {
+        const tagKey = key.slice(4);
+        values = values.filter(parameter => Object.hasOwn(parameter.tags, tagKey) && matchesStringFilter(parameter.tags[tagKey], option, requested));
+      } else if (key === "KeyId") {
+        values = values.filter(parameter => parameter.type === "SecureString" && matchesStringFilter(DEFAULT_SECURE_STRING_KEY_ID, option, requested));
+      } else {
+        values = values.filter(parameter => {
+          const actual = key === "Name" ? parameter.name : key === "Type" ? parameter.type : key === "Tier" ? parameter.tier : parameter.dataType;
+          return matchesStringFilter(actual, option, requested);
+        });
+      }
     }
     const max = positiveInteger(input?.MaxResults, "MaxResults", 1, 50, 50);
     const signature = JSON.stringify(filters);
@@ -579,8 +625,7 @@ export class ParameterStore {
       else if (filter.Key === "KeyId") {
         const option = String(filter.Option ?? "Equals");
         if (!new Set(["Equals", "BeginsWith"]).has(option)) validation("KeyId filters support Equals or BeginsWith.");
-        const serviceKey = "alias/aws/ssm";
-        const matchesServiceKey = filter.Values.map(String).some((value: string) => option === "BeginsWith" ? serviceKey.startsWith(value) : serviceKey === value);
+        const matchesServiceKey = filter.Values.map(String).some((value: string) => option === "BeginsWith" ? DEFAULT_SECURE_STRING_KEY_ID.startsWith(value) : DEFAULT_SECURE_STRING_KEY_ID === value);
         values = matchesServiceKey ? values.filter(parameter => parameter.type === "SecureString") : [];
       }
       else if (filter.Key === "Label") {

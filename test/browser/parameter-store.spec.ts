@@ -112,12 +112,17 @@ test.describe("PSS-01 Parameter Store console", () => {
 
   test("creates and edits an Advanced parameter policy with visible status and due time", async ({ page }) => {
     const name = "/browser/advanced/policy";
+    const marker = "advanced-value";
     const expiration = new Date(Date.now() + 3_600_000).toISOString();
     const policies = JSON.stringify([{ Type: "Expiration", Version: "1.0", Attributes: { Timestamp: expiration } }], null, 2);
     await page.goto(`${consoleUrl}#/systems-manager/parameter-store/create`);
+    const tierGuidance = page.locator(".parameter-tier-guidance");
+    await expect(tierGuidance).toContainText("Standard 4 KiB (4,096 bytes)");
+    await expect(tierGuidance).toContainText("Advanced 8 KiB (8,192 bytes)");
+    await expect(tierGuidance).toContainText("irreversible");
     await page.getByLabel("Name").fill(name);
     await page.getByLabel("Tier").selectOption("Advanced");
-    await page.getByLabel("Value").fill("advanced-value");
+    await page.getByLabel("Value").fill(marker);
     await page.getByLabel("Policies (JSON array)").fill(policies);
     await page.getByRole("button", { name: "Create parameter" }).click();
     await expect(page.getByRole("heading", { name })).toBeVisible();
@@ -125,16 +130,31 @@ test.describe("PSS-01 Parameter Store console", () => {
     const policiesCard = page.locator(".card").filter({ has: policiesHeading });
     await expect(policiesCard).toContainText("Expiration");
     await expect(policiesCard).toContainText("PENDING");
+    await expect(policiesCard).toContainText("next persisted due instant on the simulator clock");
+    await expect(policiesCard).toContainText("Overdue work runs once on startup");
     await expect(policiesCard).not.toContainText("No parameter policies");
+    const eventCard = page.locator(".parameter-eventbridge-events");
+    await expect(eventCard).toContainText("aws.ssm");
+    await expect(eventCard).toContainText("Parameter Store Change");
+    await expect(eventCard).toContainText("Parameter Store Policy Action");
+    await expect(eventCard).not.toContainText(marker);
+    const rulesLink = eventCard.getByRole("link", { name: "View rules on the default event bus" });
+    await expect(rulesLink).toHaveAttribute("href", "#/eventbridge/event-buses/default/rules");
+    await expect(rulesLink).not.toHaveAttribute("href", new RegExp(marker));
+    await expect(eventCard.getByRole("link", { name: "View payload-redacted monitoring" })).toHaveAttribute("href", "#/eventbridge/event-buses/default/monitoring");
 
     await page.getByRole("button", { name: "Edit value" }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog.getByLabel("Tier")).toHaveValue("Advanced");
+    await expect(dialog.locator(".parameter-tier-guidance")).toContainText("Advanced parameters cannot be downgraded");
     await dialog.getByLabel("New value").fill("advanced-updated");
     await dialog.getByRole("button", { name: "Save new version" }).click();
     const described = await ssm.send(new DescribeParametersCommand({ ParameterFilters: [{ Key: "Name", Values: [name] }] }));
     expect(described.Parameters?.[0]?.Tier).toBe("Advanced");
     expect(described.Parameters?.[0]?.Policies?.[0]?.PolicyType).toBe("Expiration");
+    await rulesLink.click();
+    await expect(page.getByRole("heading", { name: "Rules", exact: true })).toBeVisible();
+    expect(page.url()).not.toContain(marker);
   });
 
   test("explains Parameter Store input panels and their StackSim support", async ({ page }) => {
@@ -162,11 +182,13 @@ test.describe("PSS-01 Parameter Store console", () => {
     await page.getByRole("link", { name: "Create parameter" }).first().click();
     await expectHelp("Parameter configuration", "installation-local AES-256-GCM protection");
     await expectHelp("Parameter configuration", "Advanced policies");
+    await expectHelp("Parameter configuration", "4 KiB for Standard and 8 KiB for Advanced");
 
     const name = "/browser/tooltip/token";
     await ssm.send(new PutParameterCommand({ Name: name, Type: "SecureString", Value: "tooltip-secret", Tags: [{ Key: "environment", Value: "browser" }] }));
     await page.goto(`${consoleUrl}#/systems-manager/parameter-store/parameter/${encodeURIComponent(name)}`);
     await expectHelp("Value", "history browsing, and version labels");
+    await expectHelp("Policies", "deterministic simulator-clock scan scheduling");
     await expectHelp("Tags", "resource-tag authorization conditions");
   });
 });
