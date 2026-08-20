@@ -1,8 +1,27 @@
 {
+  "scope": "current-clean-install",
+  "frozenSynthesisProvenance": {
+    "status": "historical-compatibility-corpus",
+    "nodeVersion": "24.14.0",
+    "awsCdkLib": "2.263.0",
+    "bucketDeploymentAwsCliLayerAsset": "a72522445441e9b66c2f16956c54d4786af8c61c156b80c48a6e7c32fcc49023.zip",
+    "nodeVersionFile": {
+      "sha256": "75daa0bc10dae1f22b2d13386b55b232adf16930d4325902f37b5033b3a7ca93",
+      "bytes": 8
+    },
+    "packageJson": {
+      "sha256": "67e02a0264f943e625933d80c634cd7794449bc9ae3d83697efcdcf175d0ca39",
+      "bytes": 388
+    },
+    "packageLock": {
+      "sha256": "ef8f447f4f0a68b19043356a733d9c76d39ee221351c997bb457124c09b59f18",
+      "bytes": 729922
+    }
+  },
   "files": [
     {
       "path": ".node-version",
-      "sha256": "75daa0bc10dae1f22b2d13386b55b232adf16930d4325902f37b5033b3a7ca93",
+      "sha256": "88029f8a967e9b0a57e49328ab94fa6d74e07946e2b5d33626c82d0dc6e93d81",
       "bytes": 8
     },
     {
@@ -12,13 +31,13 @@
     },
     {
       "path": "package.json",
-      "sha256": "67e02a0264f943e625933d80c634cd7794449bc9ae3d83697efcdcf175d0ca39",
-      "bytes": 388
+      "sha256": "187a11212bb44578a73c02a9f77ecbf15f056c2e89867347c293ee1842a175cd",
+      "bytes": 445
     },
     {
       "path": "package-lock.json",
-      "sha256": "ef8f447f4f0a68b19043356a733d9c76d39ee221351c997bb457124c09b59f18",
-      "bytes": 729922
+      "sha256": "d94291cfe080e44aa91b5941bfa5fbada5aedebca6ef9116fd67f197312751e5",
+      "bytes": 729571
     },
     {
       "path": "tsconfig.json",

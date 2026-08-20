@@ -14,10 +14,76 @@ const tracePath = traceArg >= 0 ? resolve(process.argv[traceArg + 1]) : join(evi
 const synthesisTraceArg = process.argv.indexOf("--synthesis-trace");
 const synthesisTracePath = synthesisTraceArg >= 0 ? resolve(process.argv[synthesisTraceArg + 1]) : null;
 
+// The protected templates/graph remain the historical CDK 2.263 compatibility
+// corpus while dependency-only maintenance keeps the clean-install graph secure.
+// A deliberate corpus migration must update this provenance atomically.
+const frozenSynthesisProvenance = Object.freeze({
+  status: "historical-compatibility-corpus",
+  nodeVersion: "24.14.0",
+  awsCdkLib: "2.263.0",
+  bucketDeploymentAwsCliLayerAsset: "a72522445441e9b66c2f16956c54d4786af8c61c156b80c48a6e7c32fcc49023.zip",
+  nodeVersionFile: Object.freeze({ sha256: "75daa0bc10dae1f22b2d13386b55b232adf16930d4325902f37b5033b3a7ca93", bytes: 8 }),
+  packageJson: Object.freeze({ sha256: "67e02a0264f943e625933d80c634cd7794449bc9ae3d83697efcdcf175d0ca39", bytes: 388 }),
+  packageLock: Object.freeze({ sha256: "ef8f447f4f0a68b19043356a733d9c76d39ee221351c997bb457124c09b59f18", bytes: 729922 }),
+});
+
 const json = async path => JSON.parse(await readFile(path, "utf8"));
 const stableJson = value => `${JSON.stringify(value, null, 2)}\n`;
 const sha = value => createHash("sha256").update(value).digest("hex");
 const posix = value => value.replaceAll("\\", "/");
+const canonicalText = value => Buffer.from(value.toString("utf8").replaceAll("\r\n", "\n"));
+
+async function currentProjection() {
+  const packageJson = await json(join(fixture, "package.json"));
+  const lock = await json(join(fixture, "package-lock.json"));
+  const fixtureSourceFiles = [".node-version", ".npmrc", "package.json", "package-lock.json", "tsconfig.json", "amplify/backend.ts", "amplify/data/resource.ts"];
+  const fixtureSources = [];
+  for (const path of fixtureSourceFiles) {
+    const content = canonicalText(await readFile(join(fixture, path)));
+    fixtureSources.push({ path, sha256: sha(content), bytes: content.length });
+  }
+  const dependencies = Object.entries(lock.packages).map(([path, item]) => ({
+    path: posix(path || "."),
+    name: item.name ?? (path ? path.split("node_modules/").at(-1) : packageJson.name),
+    version: item.version ?? null,
+    resolved: item.resolved ?? null,
+    integrity: item.integrity ?? null,
+    link: item.link === true,
+  })).sort((a, b) => a.path.localeCompare(b.path));
+  return {
+    packageJson,
+    lock,
+    dependencyManifest: {
+      scope: "current-clean-install",
+      frozenSynthesisProvenance: "fixture-source-manifest.json",
+      nodeRange: packageJson.engines.node,
+      packageManager: packageJson.packageManager,
+      lockfileVersion: lock.lockfileVersion,
+      directDependencies: packageJson.dependencies,
+      directDevDependencies: packageJson.devDependencies ?? {},
+      selectedPackages: dependencies,
+    },
+    fixtureSourceManifest: { scope: "current-clean-install", frozenSynthesisProvenance, files: fixtureSources },
+  };
+}
+
+async function verifyCurrentProjection(projection) {
+  const expected = new Map([
+    ["dependency-manifest.json", canonicalText(stableJson(projection.dependencyManifest))],
+    ["fixture-source-manifest.json", canonicalText(stableJson(projection.fixtureSourceManifest))],
+  ]);
+  const drift = [];
+  for (const [name, content] of expected) {
+    const actual = canonicalText(await readFile(join(evidence, name)));
+    if (sha(actual) !== sha(content)) drift.push(name);
+  }
+  const manifest = await json(join(evidence, "evidence-manifest.json"));
+  for (const entry of manifest.files) {
+    const content = canonicalText(await readFile(join(evidence, entry.path)));
+    if (content.length !== entry.bytes || sha(content) !== entry.sha256) drift.push(`evidence-manifest:${entry.path}`);
+  }
+  if (drift.length) throw new Error(`AMX-01 current projection or protected evidence drift: ${[...new Set(drift)].sort().join(", ")}`);
+}
 
 function replaceStrings(value, replacements) {
   let text = JSON.stringify(value);
@@ -655,16 +721,9 @@ function amx09Manifest(protectedEvidence) {
   };
 }
 
-async function buildEvidence() {
+async function buildEvidence(projection) {
   const amx04HelperManifest = await json(join(evidence, "amx04-helper-manifest.json"));
-  const packageJson = await json(join(fixture, "package.json"));
-  const lock = await json(join(fixture, "package-lock.json"));
-  const fixtureSourceFiles = [".node-version", ".npmrc", "package.json", "package-lock.json", "tsconfig.json", "amplify/backend.ts", "amplify/data/resource.ts"];
-  const fixtureSources = [];
-  for (const path of fixtureSourceFiles) {
-    const content = await readFile(join(fixture, path));
-    fixtureSources.push({ path, sha256: sha(content), bytes: content.length });
-  }
+  const { packageJson, dependencyManifest, fixtureSourceManifest } = projection;
   const rawAssembly = await json(join(out, "manifest.json"));
   const assetFile = (await readdir(out)).find(name => name.endsWith(".assets.json"));
   if (!assetFile) throw new Error("Amplify CDK asset manifest is missing");
@@ -741,15 +800,6 @@ async function buildEvidence() {
   }
   assets.sort((a, b) => a.id.localeCompare(b.id));
 
-  const dependencies = Object.entries(lock.packages).map(([path, item]) => ({
-    path: posix(path || "."),
-    name: item.name ?? (path ? path.split("node_modules/").at(-1) : packageJson.name),
-    version: item.version ?? null,
-    resolved: item.resolved ?? null,
-    integrity: item.integrity ?? null,
-    link: item.link === true,
-  })).sort((a, b) => a.path.localeCompare(b.path));
-
   const trace = await json(tracePath);
   const existingOptionalNetwork = trace.result ? null : await json(join(evidence, "optional-network.json"));
   const existingSynthesisOnly = trace.result ? null : await json(join(evidence, "synthesis-only.json"));
@@ -815,8 +865,8 @@ async function buildEvidence() {
       ["amx07-data-manifest.json", amx07DataManifest],
       ["amx08-realtime-manifest.json", amx08RealtimeManifest],
       ["amx09-deployment-manifest.json", amx09DeploymentManifest],
-      ["dependency-manifest.json", { nodeRange: packageJson.engines.node, packageManager: packageJson.packageManager, lockfileVersion: lock.lockfileVersion, directDependencies: packageJson.dependencies, selectedPackages: dependencies }],
-      ["fixture-source-manifest.json", { files: fixtureSources }],
+      ["dependency-manifest.json", dependencyManifest],
+      ["fixture-source-manifest.json", fixtureSourceManifest],
       ["cloud-assembly.json", assembly],
       ["asset-manifest.json", assetManifest],
       ["assets-manifest.json", { assets }],
@@ -892,20 +942,30 @@ async function comparable(target) {
   return result;
 }
 
-const built = await buildEvidence();
-if (writeMode) {
-  await materialize(built, evidence);
-  await writeFile(join(root, "docs", "designs", "amplify-resource-inventory.md"), resourceInventory(built.graph), "utf8");
-  await writeFile(join(root, "docs", "designs", "amplify-action-inventory.md"), actionInventory(built.trace), "utf8");
-  console.log(`wrote AMX-01 through AMX-09 evidence to ${evidence}`);
+const projection = await currentProjection();
+const currentAwsCdkLib = projection.packageJson.devDependencies?.["aws-cdk-lib"];
+if (currentAwsCdkLib !== frozenSynthesisProvenance.awsCdkLib) {
+  if (writeMode) {
+    throw new Error(`Refusing to overwrite the protected aws-cdk-lib ${frozenSynthesisProvenance.awsCdkLib} synthesis corpus from the current ${currentAwsCdkLib ?? "unversioned"} fixture; update frozenSynthesisProvenance only as part of an atomic corpus migration`);
+  }
+  await verifyCurrentProjection(projection);
+  console.log(`AMX-01 current clean-install projection matches and the protected aws-cdk-lib ${frozenSynthesisProvenance.awsCdkLib} synthesis corpus remains unchanged`);
 } else {
-  const temp = join(fixture, ".amplify", "amx01-evidence-check");
-  await materialize(built, temp);
-  const expected = await comparable(evidence);
-  const actual = await comparable(temp);
-  const paths = [...new Set([...expected.keys(), ...actual.keys()])].sort();
-  const drift = paths.filter(path => expected.get(path) !== actual.get(path));
-  if (drift.length) throw new Error(`AMX-01 evidence drift: ${drift.join(", ")}`);
-  await rm(temp, { recursive: true, force: true });
-  console.log(`AMX-01 evidence matches ${paths.length} frozen files`);
+  const built = await buildEvidence(projection);
+  if (writeMode) {
+    await materialize(built, evidence);
+    await writeFile(join(root, "docs", "designs", "amplify-resource-inventory.md"), resourceInventory(built.graph), "utf8");
+    await writeFile(join(root, "docs", "designs", "amplify-action-inventory.md"), actionInventory(built.trace), "utf8");
+    console.log(`wrote AMX-01 through AMX-09 evidence to ${evidence}`);
+  } else {
+    const temp = join(fixture, ".amplify", "amx01-evidence-check");
+    await materialize(built, temp);
+    const expected = await comparable(evidence);
+    const actual = await comparable(temp);
+    const paths = [...new Set([...expected.keys(), ...actual.keys()])].sort();
+    const drift = paths.filter(path => expected.get(path) !== actual.get(path));
+    if (drift.length) throw new Error(`AMX-01 evidence drift: ${drift.join(", ")}`);
+    await rm(temp, { recursive: true, force: true });
+    console.log(`AMX-01 evidence matches ${paths.length} frozen files`);
+  }
 }

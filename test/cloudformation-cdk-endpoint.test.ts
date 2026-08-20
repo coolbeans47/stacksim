@@ -210,7 +210,7 @@ test("pinned unmodified CDK stays local and rejects deploys when the reduced boo
     const synthesized = JSON.parse(await readFile(join(synthOutput, "EmptyStack.template.json"), "utf8"));
     const emptyDigests = await semanticCdkAssemblyDigests(synthOutput, ["EmptyStack.template.json"], ["manifest.json"]);
     assert.equal(emptyDigests["EmptyStack.template.json"], "8eaab08c5f631b444760be51f9ee3eb36a27b0523b539eaf78b52491d7e7bf97", "the pinned empty-stack semantic template corpus drifted");
-    assert.equal(emptyDigests["manifest.json"], "c87f5cd9fb16691bbd46e5a85ee6dd0de1c129c5e07cce21af40ad9b5ae48c40", "the pinned empty-stack semantic cloud assembly drifted");
+    assert.equal(emptyDigests["manifest.json"], "3bb6eade359600b2cde68c2669ead928f364b71f7af294f65b9f6315d17640ee", "the pinned empty-stack semantic cloud assembly drifted");
     assert.equal(synthesized.Parameters.BootstrapVersion.Type, "AWS::SSM::Parameter::Value<String>");
     assert.equal(synthesized.Parameters.BootstrapVersion.Default, "/cdk-bootstrap/hnb659fds/version");
     assert.ok(synthesized.Rules.CheckBootstrapVersion, "the default synthesizer bootstrap rule must remain intact");

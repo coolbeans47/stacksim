@@ -18,6 +18,7 @@ import type { PrincipalContext } from "../src/auth/sigv4.js";
 import { CDK_BOOTSTRAP_POLICY_REVISION, cdkBootstrapNames } from "../src/cloudformation/bootstrap.js";
 import {
   createCdkBucketDeploymentProvider,
+  LEGACY_BUCKET_DEPLOYMENT_AWSCLI_ASSET,
   PINNED_BUCKET_DEPLOYMENT_AWSCLI_ASSET,
   PINNED_BUCKET_DEPLOYMENT_HANDLER_ASSET,
   type CdkBucketDeploymentModel,
@@ -57,14 +58,19 @@ async function body(output: Awaited<ReturnType<S3Client["send"]>> | any): Promis
   return Buffer.from(await output.Body.transformToByteArray());
 }
 
-async function seedPinnedHelper(simulator: StackSim, destinationBucket: string, s3: S3Client): Promise<void> {
+async function seedPinnedHelper(
+  simulator: StackSim,
+  destinationBucket: string,
+  s3: S3Client,
+  awsCliLayerAsset = PINNED_BUCKET_DEPLOYMENT_AWSCLI_ASSET,
+): Promise<void> {
   const sourceBucket = cdkBootstrapNames(accountId, region).bucketName;
   const sourceArn = `arn:aws:s3:::${sourceBucket}`;
   const destinationArn = `arn:aws:s3:::${destinationBucket}`;
   const handlerZip = createZip([{ name: "index.py", content: "def handler(event, context): return {}\n" }]);
   const layerZip = createZip([{ name: "aws", content: "pinned aws cli layer\n" }]);
   const handlerPut = await s3.send(new PutObjectCommand({ Bucket: sourceBucket, Key: PINNED_BUCKET_DEPLOYMENT_HANDLER_ASSET, Body: handlerZip }));
-  const layerPut = await s3.send(new PutObjectCommand({ Bucket: sourceBucket, Key: PINNED_BUCKET_DEPLOYMENT_AWSCLI_ASSET, Body: layerZip }));
+  const layerPut = await s3.send(new PutObjectCommand({ Bucket: sourceBucket, Key: awsCliLayerAsset, Body: layerZip }));
   assert.ok(handlerPut.VersionId && layerPut.VersionId);
   simulator.store.ensureAccount().iam.roles[roleName] = {
     roleName,
@@ -134,7 +140,7 @@ async function seedPinnedHelper(simulator: StackSim, destinationBucket: string, 
         resourceType: "AWS::Lambda::LayerVersion",
         physicalResourceId: layerArn,
         refValue: layerArn,
-        properties: { Content: { S3Bucket: sourceBucket, S3Key: PINNED_BUCKET_DEPLOYMENT_AWSCLI_ASSET, S3ObjectVersion: layerPut.VersionId } },
+        properties: { Content: { S3Bucket: sourceBucket, S3Key: awsCliLayerAsset, S3ObjectVersion: layerPut.VersionId } },
       },
       HelperRole: {
         logicalResourceId: "HelperRole",
@@ -281,6 +287,61 @@ test("native pinned BucketDeployment copies exact bytes, metadata, prunes, dedup
     assert.equal(removed.status, "SUCCESS");
     await assert.rejects(s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/index.html" })), (error: any) => error.name === "NoSuchKey");
     assert.ok((await s3.send(new GetObjectCommand({ Bucket: bootstrap, Key: secondKey }))).Body, "non-retaining application deletion crossed into the bootstrap bucket");
+  } finally {
+    s3?.destroy();
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy BucketDeployment AWS CLI layer supports create, update, retaining delete, and destructive delete", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cdk-bucket-legacy-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "off"});
+  let s3: S3Client | undefined;
+  try {
+    await simulator.start();
+    s3 = new S3Client({ endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials, forcePathStyle: true });
+    const destination = "provider-legacy-application";
+    const bootstrap = cdkBootstrapNames(accountId, region).bucketName;
+    await simulator.s3.ensureManagedBucket(bootstrap, CDK_BOOTSTRAP_POLICY_REVISION);
+    await s3.send(new CreateBucketCommand({ Bucket: destination }));
+    await seedPinnedHelper(simulator, destination, s3, LEGACY_BUCKET_DEPLOYMENT_AWSCLI_ASSET);
+
+    const firstKey = `${"5".repeat(64)}.zip`;
+    await s3.send(new PutObjectCommand({ Bucket: bootstrap, Key: firstKey, Body: createZip([
+      { name: "index.html", content: "<main>legacy first</main>" },
+      { name: "obsolete.txt", content: "remove me" },
+    ]) }));
+    const provider = createCdkBucketDeploymentProvider(simulator.s3, simulator.store);
+    const initial = provider.canonicalize(properties(firstKey, destination), context());
+    const created = await settle(current => provider.create(initial, current));
+    assert.equal(created.status, "SUCCESS");
+    assert.equal((await body(await s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/index.html" })))).toString(), "<main>legacy first</main>");
+
+    const secondKey = `${"6".repeat(64)}.zip`;
+    await s3.send(new PutObjectCommand({ Bucket: bootstrap, Key: secondKey, Body: createZip([
+      { name: "index.html", content: "<main>legacy second</main>" },
+    ]) }));
+    const updated = provider.canonicalize(properties(secondKey, destination), context());
+    const updateResult = await settle(current => provider.update(created.physicalId, initial, updated, current));
+    assert.equal(updateResult.status, "SUCCESS");
+    assert.equal((await body(await s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/index.html" })))).toString(), "<main>legacy second</main>");
+    await assert.rejects(s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/obsolete.txt" })), (error: any) => error.name === "NoSuchKey");
+
+    const layerContent = simulator.store.regionState(region).cloudformation.stacks[stackId].resources.AwsCliLayer.properties.Content as Record<string, unknown>;
+    layerContent.S3Key = `${"f".repeat(64)}.zip`;
+    const unsupported = await provider.create(updated, context());
+    assert.equal(unsupported.status, "FAILED");
+    assert.equal((unsupported as any).errorCode, "ProviderConfiguration");
+    layerContent.S3Key = LEGACY_BUCKET_DEPLOYMENT_AWSCLI_ASSET;
+
+    assert.equal((await provider.delete(created.physicalId, updated, context())).status, "SUCCESS");
+    assert.equal((await body(await s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/index.html" })))).toString(), "<main>legacy second</main>", "default RetainOnDelete removed a legacy deployment");
+
+    const destructive = provider.canonicalize({ ...properties(secondKey, destination), RetainOnDelete: false }, context());
+    const removed = await settle(current => provider.delete(created.physicalId, destructive, current));
+    assert.equal(removed.status, "SUCCESS");
+    await assert.rejects(s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/index.html" })), (error: any) => error.name === "NoSuchKey");
   } finally {
     s3?.destroy();
     await simulator.stop().catch(() => undefined);
