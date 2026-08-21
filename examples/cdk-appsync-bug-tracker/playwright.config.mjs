@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const manifest = JSON.parse(readFileSync(join(import.meta.dirname, ".runtime", "deployment.json"), "utf8"));
+const localAppSyncTls = new URL(manifest.graphqlEndpoint).protocol === "https:";
 
 export default defineConfig({
   testDir: "./test",
@@ -12,6 +13,7 @@ export default defineConfig({
   reporter: [["list"]],
   use: {
     baseURL: manifest.websiteUrl,
+    ignoreHTTPSErrors: localAppSyncTls,
     trace: "retain-on-failure",
   },
 });

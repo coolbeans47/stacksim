@@ -3,8 +3,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import {
-  account, awsEnvironment, endpoint, outputsFile, projectRoot, region,
-  runtimeRoot, sdkConfig,
+  account, appSyncCaCertificate, appSyncCaFile, awsEnvironment, endpoint,
+  outputsFile, projectRoot, region, runtimeRoot, sdkConfig,
 } from "./common.mjs";
 
 const require = createRequire(import.meta.url);
@@ -61,6 +61,7 @@ async function main() {
     stackName: "AppSyncBugTrackerStack",
   };
   await writeFile(`${runtimeRoot}/deployment.json`, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await writeFile(appSyncCaFile, await appSyncCaCertificate(), "utf8");
 
   const browserConfig = {
     configured: true,
@@ -80,6 +81,7 @@ async function main() {
     CacheControl: "no-store",
   }));
   console.log(`[bug-tracker] runtime manifest: ${runtimeRoot}/deployment.json`);
+  console.log(`[bug-tracker] local AppSync CA: ${appSyncCaFile}`);
   console.log("[bug-tracker] uploaded no-store frontend config.json after deployment");
 
   await run("seed users and bugs through GraphQL", process.execPath, ["scripts/seed.mjs"]);

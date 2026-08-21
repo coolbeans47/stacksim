@@ -107,9 +107,10 @@ npm run deploy
 2. synthesizes and audits the CDK assembly;
 3. runs an unmodified CDK deployment;
 4. writes the ignored `.runtime/deployment.json` from stack outputs;
-5. uploads a no-store `config.json` containing the local endpoint and key;
-6. seeds through AppSync GraphQL; and
-7. runs the deployed smoke test.
+5. saves StackSim's local AppSync CA as `.runtime/appsync-ca.pem`;
+6. uploads a no-store `config.json` containing the local endpoint and key;
+7. seeds through AppSync GraphQL; and
+8. runs the deployed smoke test.
 
 The stack remains deployed and the command prints its website URL. Re-run the
 seed safely:
@@ -160,6 +161,13 @@ If the API key is rotated or expires, run `npm run deploy` again so
 CloudFormation updates the key and the deployment script uploads a matching
 config.
 
+When StackSim is started with local AppSync TLS, the Node-based seed and smoke
+commands trust the StackSim CA automatically, while the Playwright commands
+accept the local certificate. To use the board in your regular browser, import
+`.runtime/appsync-ca.pem` into your operating system's trusted certificate
+store, then fully restart the browser. Trust only the CA produced by your local
+StackSim instance.
+
 ## GraphQL from curl or Postman
 
 Read values from `.runtime/deployment.json`:
@@ -172,7 +180,7 @@ APPSYNC_API_KEY="$(node -p "require('./.runtime/deployment.json').apiKey")"
 List bugs:
 
 ```bash
-curl -sS "$GRAPHQL_ENDPOINT" \
+curl -sS --cacert .runtime/appsync-ca.pem "$GRAPHQL_ENDPOINT" \
   -H 'content-type: application/json' \
   -H "x-api-key: $APPSYNC_API_KEY" \
   --data '{"query":"query { listBugs(limit: 5) { items { id title status severity assigneeId } nextToken } }"}'
@@ -181,7 +189,7 @@ curl -sS "$GRAPHQL_ENDPOINT" \
 Query the status GSI:
 
 ```bash
-curl -sS "$GRAPHQL_ENDPOINT" \
+curl -sS --cacert .runtime/appsync-ca.pem "$GRAPHQL_ENDPOINT" \
   -H 'content-type: application/json' \
   -H "x-api-key: $APPSYNC_API_KEY" \
   --data '{"query":"query ByStatus($status: BugStatus!) { bugsByStatus(status: $status, limit: 10) { items { id title updatedAt } nextToken } }","variables":{"status":"TRIAGE"}}'
@@ -190,7 +198,7 @@ curl -sS "$GRAPHQL_ENDPOINT" \
 Save a complete bug:
 
 ```bash
-curl -sS "$GRAPHQL_ENDPOINT" \
+curl -sS --cacert .runtime/appsync-ca.pem "$GRAPHQL_ENDPOINT" \
   -H 'content-type: application/json' \
   -H "x-api-key: $APPSYNC_API_KEY" \
   --data @- <<'JSON'
@@ -217,7 +225,7 @@ JSON
 Delete it:
 
 ```bash
-curl -sS "$GRAPHQL_ENDPOINT" \
+curl -sS --cacert .runtime/appsync-ca.pem "$GRAPHQL_ENDPOINT" \
   -H 'content-type: application/json' \
   -H "x-api-key: $APPSYNC_API_KEY" \
   --data '{"query":"mutation Delete($id: ID!) { deleteBug(id: $id) { id } }","variables":{"id":"BUG-200"}}'
