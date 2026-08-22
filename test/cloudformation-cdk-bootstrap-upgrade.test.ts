@@ -213,7 +213,10 @@ test("an older persisted reduced bootstrap upgrades on restart before standard C
 
     const deployRole = simulator.store.ensureAccount().iam.roles[names.roleNames.deploy];
     const deployPolicy = deployRole.inlinePolicies[CDK_BOOTSTRAP_POLICY_NAME];
-    assert.deepEqual(actions(deployPolicy, "DirectCloudFormationDeployment"), CLOUDFORMATION_SUPPORTED_ACTIONS.map(action => `cloudformation:${action}`).sort());
+    assert.deepEqual(actions(deployPolicy, "DirectCloudFormationDeployment"), CLOUDFORMATION_SUPPORTED_ACTIONS.filter(action => action !== "DescribeEvents").map(action => `cloudformation:${action}`).sort());
+    assert.deepEqual(statements(deployPolicy).find(statement => statement.Sid === "DescribeChangeSetValidationEvents"), {
+      Sid: "DescribeChangeSetValidationEvents", Effect: "Allow", Action: "cloudformation:DescribeEvents", Resource: `arn:aws:cloudformation:${region}:${accountId}:stack/*/*`,
+    });
     assert.deepEqual(statements(deployPolicy).find(statement => statement.Sid === "PassCloudFormationExecutionRole"), {
       Sid: "PassCloudFormationExecutionRole", Effect: "Allow", Action: "iam:PassRole", Resource: names.roleArns.cloudFormationExecution,
     });

@@ -2435,7 +2435,21 @@ export class StackSim {
       const changeSetMatch = path.match(/^stacks\/([^/]+)\/change-sets\/([^/]+)(?:\/(execute))?$/);
       if (changeSetMatch) {
         const stackName = decodeURIComponent(changeSetMatch[1]); const changeSetName = decodeURIComponent(changeSetMatch[2]); const action = changeSetMatch[3];
-        if (!action && req.method === "GET") return json(res, { changeSet: await cloudformation.DescribeChangeSet({ StackName: stackName, ChangeSetName: changeSetName, IncludePropertyValues: true }) });
+        if (!action && req.method === "GET") {
+          const unknown = [...url.searchParams.keys()].filter(name => name !== "eventsNextToken");
+          if (unknown.length) throw new AwsError("ValidationError", `Unknown change-set detail query parameter ${unknown.sort()[0]}`, 400);
+          const eventTokens = url.searchParams.getAll("eventsNextToken");
+          if (eventTokens.length > 1) throw new AwsError("ValidationError", "eventsNextToken may be supplied only once", 400);
+          const changeSet = await cloudformation.DescribeChangeSet({ StackName: stackName, ChangeSetName: changeSetName, IncludePropertyValues: true });
+          let operationEvents: any[] = [];
+          let operationEventsNextToken: string | undefined;
+          if (changeSet.Status === "FAILED") {
+            const events = await cloudformation.DescribeEvents({ StackName: stackName, ChangeSetName: changeSetName, Filters: { FailedEvents: true }, ...(eventTokens[0] ? { NextToken: eventTokens[0] } : {}) });
+            operationEvents = events.OperationEvents ?? [];
+            operationEventsNextToken = events.NextToken;
+          }
+          return json(res, { changeSet, operationEvents, ...(operationEventsNextToken ? { operationEventsNextToken } : {}) });
+        }
         if (!action && req.method === "DELETE") return json(res, await cloudformation.DeleteChangeSet({ StackName: stackName, ChangeSetName: changeSetName }));
         if (action === "execute" && req.method === "POST") return json(res, await cloudformation.ExecuteChangeSet({ StackName: stackName, ChangeSetName: changeSetName }, principal));
         return json(res, { message: "Unknown local CloudFormation change-set route" }, 404);

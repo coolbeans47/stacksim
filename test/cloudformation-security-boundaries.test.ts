@@ -9,6 +9,7 @@ import {
   CreateStackCommand,
   DeleteStackCommand,
   DescribeChangeSetCommand,
+  DescribeEventsCommand,
   DescribeStackEventsCommand,
   DescribeStacksCommand,
   UpdateStackCommand,
@@ -24,11 +25,14 @@ import {
 import { CloudWatchLogsClient, DescribeLogGroupsCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { DescribeTableCommand, DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
+  CreateAccessKeyCommand,
   CreateRoleCommand,
+  CreateUserCommand,
   GetRoleCommand,
   GetRolePolicyCommand,
   IAMClient,
   PutRolePolicyCommand,
+  PutUserPolicyCommand,
 } from "@aws-sdk/client-iam";
 import { GetFunctionCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { DescribeDBParameterGroupsCommand, RDSClient } from "@aws-sdk/client-rds";
@@ -159,6 +163,35 @@ test("CloudFormation execution-role permissions and same-stack PassRole ownershi
     await simulator.stop().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("CFN-18 rich GlobalTable create preauthorizes every recovery and settings action before mutation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn18-global-auth-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "enforce", cdkBootstrap: true });
+  const clients: Array<{ destroy(): void }> = [];
+  try {
+    await simulator.start(); const endpoint = `http://127.0.0.1:${simulator.port}`; const options = { endpoint, region, credentials, maxAttempts: 1 };
+    const cloudformation = new CloudFormationClient(options); const dynamodb = new DynamoDBClient(options); const iam = new IAMClient(options); clients.push(cloudformation, dynamodb, iam);
+    const names = cdkBootstrapNames("000000000000", region); const roleName = names.roleNames.cloudFormationExecution;
+    const original = policyDocument((await iam.send(new GetRolePolicyCommand({ RoleName: roleName, PolicyName: CDK_BOOTSTRAP_POLICY_NAME }))).PolicyDocument);
+    const required = ["dynamodb:DescribeTable", "dynamodb:ListTagsOfResource", "dynamodb:DescribeContinuousBackups", "dynamodb:CreateTable", "dynamodb:UpdateTable", "dynamodb:UpdateContinuousBackups", "dynamodb:TagResource", "dynamodb:DeleteTable"];
+    for (const [position, missing] of required.entries()) {
+      const restricted = structuredClone(original);
+      for (const statement of restricted.Statement ?? []) {
+        const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+        statement.Action = actions.filter((action: unknown) => action !== missing);
+      }
+      await iam.send(new PutRolePolicyCommand({ RoleName: roleName, PolicyName: CDK_BOOTSTRAP_POLICY_NAME, PolicyDocument: JSON.stringify(restricted) }));
+      const tableName = `cfn18-denied-${position}`;
+      const template = JSON.stringify({ Resources: { RichTable: { Type: "AWS::DynamoDB::GlobalTable", Properties: { TableName: tableName, AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }], BillingMode: "PAY_PER_REQUEST", KeySchema: [{ AttributeName: "id", KeyType: "HASH" }], Replicas: [{ Region: region, DeletionProtectionEnabled: true, PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true, RecoveryPeriodInDays: 35 }, TableClass: "STANDARD", Tags: [{ Key: "scope", Value: "cfn18" }] }], SSESpecification: { SSEEnabled: false } } } } });
+      const created = await cloudformation.send(new CreateStackCommand({ StackName: `cfn18-denied-${position}`, TemplateBody: template, RoleARN: names.roleArns.cloudFormationExecution }));
+      await waitForStack(cloudformation, created.StackId!, "ROLLBACK_COMPLETE");
+      const events = await cloudformation.send(new DescribeStackEventsCommand({ StackName: created.StackId }));
+      assert.ok(events.StackEvents?.some(event => event.LogicalResourceId === "RichTable" && event.ResourceStatus === "CREATE_FAILED" && (event.ResourceStatusReason ?? "").includes(missing)), `missing ${missing} was not reported`);
+      await assert.rejects(dynamodb.send(new DescribeTableCommand({ TableName: tableName })), error => (error as any).name === "ResourceNotFoundException");
+      await iam.send(new PutRolePolicyCommand({ RoleName: roleName, PolicyName: CDK_BOOTSTRAP_POLICY_NAME, PolicyDocument: JSON.stringify(original) }));
+    }
+  } finally { clients.forEach(client => client.destroy()); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
 });
 
 test("DBParameterGroup CREATE preauthorizes rollback deletion before provider mutation", async () => {
@@ -559,6 +592,104 @@ test("NoEcho parameters and provider-sensitive values stay redacted in stack, ev
     await waitForStack(cloudformation, created.StackId!, "DELETE_COMPLETE");
   } finally {
     cloudformation?.destroy();
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("DescribeEvents requires its exact action and remains scoped to the requested stack", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-describe-events-auth-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "enforce", cdkBootstrap: true });
+  const clients: Array<{ destroy(): void }> = [];
+  try {
+    await simulator.start();
+    const endpoint = `http://127.0.0.1:${simulator.port}`;
+    const options = { endpoint, region, credentials, maxAttempts: 1 };
+    const cloudformation = new CloudFormationClient(options);
+    const iam = new IAMClient(options);
+    clients.push(cloudformation, iam);
+
+    const invalidTemplate = JSON.stringify({ Resources: {
+      InvalidTable: {
+        Type: "AWS::DynamoDB::Table",
+        Properties: {
+          BillingMode: "PAY_PER_REQUEST",
+          AttributeDefinitions: [
+            { AttributeName: "pk", AttributeType: "S" },
+            { AttributeName: "unused", AttributeType: "S" },
+          ],
+          KeySchema: [
+            { AttributeName: "pk", KeyType: "HASH" },
+            { AttributeName: "missing", KeyType: "RANGE" },
+          ],
+        },
+      },
+    } });
+    const createFailedChangeSet = async (stackName: string, changeSetName: string): Promise<string> => {
+      const created = await cloudformation.send(new CreateChangeSetCommand({
+        StackName: stackName,
+        ChangeSetName: changeSetName,
+        ChangeSetType: "CREATE",
+        TemplateBody: invalidTemplate,
+      }));
+      assert.equal((await waitForChangeSet(cloudformation, created.Id!)).Status, "FAILED");
+      return created.Id!;
+    };
+    const allowedChangeSet = await createFailedChangeSet("events-visible", "invalid-visible");
+    const hiddenChangeSet = await createFailedChangeSet("events-hidden", "invalid-hidden");
+
+    await iam.send(new CreateUserCommand({ UserName: "events-reader" }));
+    const accessKey = (await iam.send(new CreateAccessKeyCommand({ UserName: "events-reader" }))).AccessKey!;
+    const reader = new CloudFormationClient({
+      endpoint,
+      region,
+      maxAttempts: 1,
+      credentials: { accessKeyId: accessKey.AccessKeyId!, secretAccessKey: accessKey.SecretAccessKey! },
+    });
+    clients.push(reader);
+    const request = (stackName: string, changeSetName: string) => reader.send(new DescribeEventsCommand({
+      StackName: stackName,
+      ChangeSetName: changeSetName,
+      Filters: { FailedEvents: true },
+    }));
+
+    await assert.rejects(request("events-visible", allowedChangeSet), error => {
+      assert.equal((error as { name?: string }).name, "AccessDenied");
+      assert.match((error as Error).message, /cloudformation:DescribeEvents/);
+      return true;
+    });
+
+    await iam.send(new PutUserPolicyCommand({
+      UserName: "events-reader",
+      PolicyName: "ReadVisibleValidationEvents",
+      PolicyDocument: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+          Effect: "Allow",
+          Action: "cloudformation:DescribeEvents",
+          Resource: `arn:aws:cloudformation:${region}:000000000000:stack/events-visible/*`,
+        }],
+      }),
+    }));
+
+    const visible = await request("events-visible", allowedChangeSet);
+    assert.ok((visible.OperationEvents?.length ?? 0) > 0);
+    assert.ok(visible.OperationEvents?.every(event => event.ValidationStatus === "FAILED"));
+
+    await assert.rejects(request("events-hidden", hiddenChangeSet), error => {
+      assert.equal((error as { name?: string }).name, "AccessDenied");
+      assert.match((error as Error).message, /cloudformation:DescribeEvents/);
+      assert.doesNotMatch((error as Error).message, /invalid-hidden/);
+      return true;
+    });
+    assert.ok(simulator.store.ensureAccount().iam.authorizationDecisions.some(decision =>
+      decision.principalArn.endsWith(":user/events-reader")
+      && decision.action === "cloudformation:DescribeEvents"
+      && decision.resource === `arn:aws:cloudformation:${region}:000000000000:stack/events-hidden/*`
+      && decision.decision !== "allowed",
+    ));
+  } finally {
+    clients.forEach(client => client.destroy());
     await simulator.stop().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }

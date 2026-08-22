@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import type { CognitoService } from "../../cognito.js";
 import { AwsError } from "../../errors.js";
@@ -258,7 +259,7 @@ function owner(context: ProviderContext): string {
 }
 
 function issue(path: string, message: string, code: ProviderValidationIssue["code"] = "InvalidProperty"): ProviderValidationIssue {
-  return { path, message, code };
+  return { path, pathSegments: providerValidationPathSegments(path), message, code };
 }
 
 function exactObject(value: unknown, allowed: readonly string[], path: string, issues: ProviderValidationIssue[]): void {

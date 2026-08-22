@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import { AwsError } from "../../errors.js";
 import { RdsManager } from "../../rds.js";
@@ -152,7 +153,7 @@ function generatedName(context: GeneratedNameContext, maximum: number): string {
 export function rdsDbParameterGroupPhysicalId(context: GeneratedNameContext): string {
   return generatedName(context, 255);
 }
-function issue(issues: ProviderValidationIssue[], path: string, message: string): void { issues.push({ code: "InvalidProperty", path, message }); }
+function issue(issues: ProviderValidationIssue[], path: string, message: string): void { issues.push({ code: "InvalidProperty", path, pathSegments: providerValidationPathSegments(path), message }); }
 
 function tags(value: unknown, maximum = 48): readonly { Key: string; Value: string }[] {
   if (value === undefined) return [];

@@ -430,6 +430,11 @@ test("pagination tokens are opaque, operation-bound, and tamper evident", () => 
   assert.deepEqual(tokens.decode("ListThings", token), { after: "b", limit: 10 });
   assert.throws(() => tokens.decode("OtherOperation", token), /Invalid pagination token/);
   assert.throws(() => tokens.decode("ListThings", `${token.slice(0, -1)}x`), /Invalid pagination token/);
+  const [payload, signature] = token.split(".");
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const finalIndex = alphabet.indexOf(signature.at(-1)!); const alias = alphabet[finalIndex + 1];
+  assert.equal(finalIndex % 4, 0); assert.ok(alias);
+  assert.throws(() => tokens.decode("ListThings", `${payload}.${signature.slice(0, -1)}${alias}`), /Invalid pagination token/);
 });
 
 test("scheduler uses an injectable clock and cancels every pending job on shutdown", () => {

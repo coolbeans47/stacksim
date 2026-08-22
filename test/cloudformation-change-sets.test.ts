@@ -10,6 +10,7 @@ import {
   DeleteChangeSetCommand,
   DeleteStackCommand,
   DescribeChangeSetCommand,
+  DescribeEventsCommand,
   DescribeStacksCommand,
   ExecuteChangeSetCommand,
   GetTemplateCommand,
@@ -147,6 +148,72 @@ test("official SDK change sets plan durably, execute exactly once, and expose st
     assert.equal(unavailable.Status, "FAILED"); assert.equal(unavailable.ExecutionStatus, "UNAVAILABLE"); assert.match(unavailable.StatusReason ?? "", /didn't contain changes/i);
     await cloudformation.send(new DeleteChangeSetCommand({ ChangeSetName: noOp.Id }));
     assert.ok(!(await cloudformation.send(new ListChangeSetsCommand({ StackName: created.StackId }))).Summaries?.some(summary => summary.ChangeSetId === noOp.Id));
+  } finally {
+    cloudformation?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("failed change-set provider validation exposes stable structured DescribeEvents diagnostics", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn17-events-"));
+  let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "off" });
+  let cloudformation: CloudFormationClient | undefined;
+  try {
+    await simulator.start(); cloudformation = client(simulator);
+    const planned = await cloudformation.send(new CreateChangeSetCommand({
+      StackName: "validation-events-stack",
+      ChangeSetName: "invalid-table",
+      ChangeSetType: "CREATE",
+      TemplateBody: JSON.stringify({
+        Parameters: { Secret: { Type: "String", NoEcho: true } },
+        Resources: {
+          InvalidTable: {
+            Type: "AWS::DynamoDB::Table",
+            Properties: {
+              AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }],
+              KeySchema: [{ AttributeName: "id", KeyType: "HASH" }],
+              BillingMode: "PAY_PER_REQUEST",
+              StackSimInvalidAlpha: { Ref: "Secret" },
+              StackSimInvalidBeta: true,
+            },
+          },
+        },
+      }),
+      Parameters: [{ ParameterKey: "Secret", ParameterValue: "secret-shaped-value" }],
+    }));
+    const failed = await cloudformation.send(new DescribeChangeSetCommand({ StackName: planned.StackId, ChangeSetName: planned.Id }));
+    assert.equal(failed.Status, "FAILED");
+    assert.doesNotMatch(failed.StatusReason ?? "", /secret-shaped-value/);
+    const first = await cloudformation.send(new DescribeEventsCommand({ StackName: planned.StackId, ChangeSetName: planned.Id, Filters: { FailedEvents: true } }));
+    assert.deepEqual(first.OperationEvents?.map(event => event.ValidationPath), [
+      "/Resources/InvalidTable/Properties/StackSimInvalidAlpha",
+      "/Resources/InvalidTable/Properties/StackSimInvalidBeta",
+    ]);
+    assert.deepEqual(first.OperationEvents?.map(event => event.ValidationStatusReason), [
+      "AWS::DynamoDB::Table does not support property StackSimInvalidAlpha",
+      "AWS::DynamoDB::Table does not support property StackSimInvalidBeta",
+    ]);
+    assert.ok(first.OperationEvents?.every(event => event.EventType === "VALIDATION_ERROR" && event.OperationType === "CREATE_CHANGESET" && event.ValidationFailureMode === "FAIL" && event.ValidationName === "PROPERTY_VALIDATION" && event.ValidationStatus === "FAILED"));
+    const stable = first.OperationEvents?.map(event => ({ id: event.EventId, time: event.Timestamp?.getTime(), operation: event.OperationId }));
+
+    cloudformation.destroy(); cloudformation = undefined; await simulator.stop();
+    simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "off" }); await simulator.start(); cloudformation = client(simulator);
+    const recovered = await cloudformation.send(new DescribeEventsCommand({ StackName: planned.StackId, ChangeSetName: planned.Id, Filters: { FailedEvents: true } }));
+    assert.deepEqual(recovered.OperationEvents?.map(event => ({ id: event.EventId, time: event.Timestamp?.getTime(), operation: event.OperationId })), stable);
+    await assert.rejects(cloudformation.send(new DescribeEventsCommand({ StackName: planned.StackId, ChangeSetName: planned.Id, Filters: { FailedEvents: false } })), (error: any) => error.name === "ValidationError");
+
+    const invalidProperties = Object.fromEntries(Array.from({ length: 101 }, (_, index) => [`StackSimInvalid${String(index).padStart(3, "0")}`, true]));
+    const paged = await cloudformation.send(new CreateChangeSetCommand({
+      StackName: "validation-events-stack", ChangeSetName: "invalid-table-paged", ChangeSetType: "CREATE",
+      TemplateBody: JSON.stringify({ Resources: { InvalidTable: { Type: "AWS::DynamoDB::Table", Properties: { AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }], KeySchema: [{ AttributeName: "id", KeyType: "HASH" }], BillingMode: "PAY_PER_REQUEST", ...invalidProperties } } } }),
+    }));
+    const pageOne = await cloudformation.send(new DescribeEventsCommand({ StackName: planned.StackId, ChangeSetName: paged.Id, Filters: { FailedEvents: true } }));
+    assert.equal(pageOne.OperationEvents?.length, 100); assert.ok(pageOne.NextToken);
+    const pageTwo = await cloudformation.send(new DescribeEventsCommand({ StackName: planned.StackId, ChangeSetName: paged.Id, Filters: { FailedEvents: true }, NextToken: pageOne.NextToken }));
+    assert.equal(pageTwo.OperationEvents?.length, 1); assert.equal(pageTwo.NextToken, undefined);
+    assert.equal(pageOne.OperationEvents?.[0].ValidationPath, "/Resources/InvalidTable/Properties/StackSimInvalid000");
+    assert.equal(pageTwo.OperationEvents?.[0].ValidationPath, "/Resources/InvalidTable/Properties/StackSimInvalid100");
+    const tamperedToken = `${pageOne.NextToken!.slice(0, -1)}${pageOne.NextToken!.endsWith("A") ? "B" : "A"}`;
+    await assert.rejects(cloudformation.send(new DescribeEventsCommand({ StackName: planned.StackId, ChangeSetName: paged.Id, Filters: { FailedEvents: true }, NextToken: tamperedToken })), (error: any) => error.name === "ValidationError");
   } finally {
     cloudformation?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true });
   }

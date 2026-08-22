@@ -21,12 +21,11 @@ import {
 } from "./providers/sns.js";
 
 export const CDK_BOOTSTRAP_QUALIFIER = "hnb659fds";
-// The pinned CDK CLI gates `cdk rollback` on bootstrap template version 23.
-// AWS version 23 adds only RollbackStack/ContinueUpdateRollback to the deploy
-// role; this reduced local contract grants those exact actions while image/ECR
-// publication remains independently and explicitly unavailable.
+// The reduced compatibility value remains 23. Internal revision 17 adds only
+// the stack-scoped DescribeEvents permission required by modern CDK failed-plan
+// diagnostics; it does not advertise the cumulative upstream version 30 template.
 export const CDK_BOOTSTRAP_COMPATIBILITY_VERSION = 23;
-export const CDK_BOOTSTRAP_POLICY_REVISION = 16;
+export const CDK_BOOTSTRAP_POLICY_REVISION = 17;
 export const CDK_BOOTSTRAP_VERSION_PARAMETER = `/cdk-bootstrap/${CDK_BOOTSTRAP_QUALIFIER}/version`;
 export const CDK_BOOTSTRAP_POLICY_NAME = "stacksim-cdk-bootstrap";
 export const CDK_BOOTSTRAP_COGNITO_POLICY_NAME = "stacksim-cdk-bootstrap-cognito";
@@ -144,6 +143,12 @@ function deploymentPolicy(bucketName: string, executionRoleArn: string, accountI
           "cloudformation:RollbackStack", "cloudformation:UpdateStack", "cloudformation:UpdateTerminationProtection", "cloudformation:ValidateTemplate",
         ],
         Resource: "*",
+      },
+      {
+        Sid: "DescribeChangeSetValidationEvents",
+        Effect: "Allow",
+        Action: "cloudformation:DescribeEvents",
+        Resource: `arn:aws:cloudformation:${region}:${accountId}:stack/*/*`,
       },
       {
         Sid: "ReadBootstrapAssets",

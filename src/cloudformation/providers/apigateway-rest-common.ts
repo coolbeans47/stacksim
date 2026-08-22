@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import type { ApiGatewayService } from "../../apigateway.js";
 import { AwsError } from "../../errors.js";
@@ -197,7 +198,7 @@ function canonicalValue(value: any): any { if (Array.isArray(value)) return valu
 function withoutUndefined(value: any): any { if (Array.isArray(value)) return value.map(withoutUndefined); if (!isObject(value)) return value; return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined).map(([key, item]) => [key, withoutUndefined(item)])); }
 function stringMap(value: unknown): Readonly<Record<string, string>> { return Object.freeze(Object.fromEntries(Object.entries(isObject(value) ? value : {}).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, String(item)]))); }
 function same(left: unknown, right: unknown): boolean { return JSON.stringify(left) === JSON.stringify(right); }
-function issue(path: string, message: string, code: ProviderValidationIssue["code"] = "InvalidProperty"): ProviderValidationIssue { return { code, path, message }; }
+function issue(path: string, message: string, code: ProviderValidationIssue["code"] = "InvalidProperty"): ProviderValidationIssue { return { code, path, pathSegments: providerValidationPathSegments(path), message }; }
 function throwIssues(issues: readonly ProviderValidationIssue[]): void { if (issues.length) throw new TypeError(issues.map(value => `${value.path}: ${value.message}`).join("; ")); }
 function failure(error: unknown): ProviderFailed { if (error instanceof AwsError) return { status: "FAILED", errorCode: error.code, message: error.message, ...(error.status >= 500 ? { retryable: true } : {}) }; return { status: "FAILED", errorCode: "InternalFailure", message: error instanceof Error ? error.message : String(error), retryable: true }; }
 function isMissing(error: unknown): boolean { return error instanceof AwsError && ["NotFoundException", "ResourceNotFoundException"].includes(error.code); }

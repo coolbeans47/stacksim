@@ -362,6 +362,17 @@ function changeDetailsMarkup(details) {
   }).join("")}</div>`;
 }
 
+function validationEventRow(event) {
+  return `<tr><td class="mono">${escapeHtml(field(event, "LogicalResourceId", "logicalResourceId") ?? "-")}</td><td class="mono">${escapeHtml(field(event, "ResourceType", "resourceType") ?? "-")}</td><td class="mono">${escapeHtml(field(event, "ValidationPath", "validationPath") ?? "-")}</td><td>${escapeHtml(field(event, "ValidationStatusReason", "validationStatusReason") ?? "-")}</td></tr>`;
+}
+
+function validationEventsContent(payload) {
+  const events = normalizeCollection(payload, "operationEvents", "OperationEvents");
+  const token = field(payload, "operationEventsNextToken", "OperationEventsNextToken");
+  const rows = events.map(validationEventRow).join("");
+  return `<section class="card cloudformation-validation-events"><div class="card-header"><div><h2>Validation errors <span class="muted">(${events.length})</span></h2><p class="muted small">Property validation reported while CloudFormation planned this change set.</p></div>${token ? `<button class="button" data-action="load-validation-events" data-next-token="${escapeHtml(token)}">Load more</button>` : ""}</div>${rows ? `<div class="table-wrap"><table class="cloudformation-validation-event-table"><thead><tr><th>Logical resource</th><th>Resource type</th><th>Validation path</th><th>Message</th></tr></thead><tbody>${rows}</tbody></table></div>` : emptyState("!", "No property validation events", "This failure did not include structured provider validation events.")}</section>`;
+}
+
 function changeSetDetailContent(payload, stackName) {
   const changeSet = field(payload, "changeSet", "ChangeSet") ?? payload;
   const name = String(field(changeSet, "changeSetName", "ChangeSetName") ?? "");
@@ -385,7 +396,7 @@ function changeSetDetailContent(payload, stackName) {
   const parameters = array(changeSet, "parameters", "Parameters");
   const replacementNames = replacementResources.map(resource => field(resource, "logicalResourceId", "LogicalResourceId") ?? "Unknown resource");
   const replacementWarning = replacementResources.length ? `<div class="alert warning cloudformation-replacement-warning" role="alert"><strong>${replacementResources.length} resource replacement${replacementResources.length === 1 ? "" : "s"} may occur</strong><br>${replacementNames.map(value => `<span class="mono">${escapeHtml(value)}</span>`).join(", ")}. Review recreation requirements and replacement policy actions before execution.</div>` : "";
-  return `<section class="card cloudformation-change-set-detail" data-change-set-name="${escapeHtml(name)}" data-replacement-count="${replacementResources.length}" data-replacement-resources="${escapeHtml(replacementNames.join(", "))}"><div class="card-header"><div><h2>${escapeHtml(name)}</h2><p class="muted small">${escapeHtml(field(changeSet, "description", "Description") ?? "CloudFormation change set")}</p></div>${actionMarkup}</div><div class="card-body detail-grid"><dl class="key-value"><dt>Status</dt><dd>${statusMarkup(status)}</dd><dt>Status reason</dt><dd>${escapeHtml(field(changeSet, "statusReason", "StatusReason") ?? "-")}</dd></dl><dl class="key-value"><dt>Execution status</dt><dd>${statusMarkup(executionStatus)}</dd><dt>Type</dt><dd>${escapeHtml(field(changeSet, "changeSetType", "ChangeSetType") ?? "-")}</dd></dl><dl class="key-value"><dt>Created</dt><dd>${dateMarkup(field(changeSet, "creationTime", "CreationTime"))}</dd><dt>Change set ID</dt><dd class="mono">${escapeHtml(id)}</dd></dl></div></section>${replacementWarning}<section class="card"><div class="card-header"><h2>Changes <span class="muted">(${changes.length})</span></h2></div>${rows ? `<div class="table-wrap"><table class="cloudformation-change-table"><thead><tr><th>Logical ID</th><th>Action</th><th>Resource type</th><th>Replacement</th><th>Policy action</th><th>Scope</th><th>Property details</th></tr></thead><tbody>${rows}</tbody></table></div>` : emptyState("C", "No resource changes", "This change set does not contain material resource changes.")}</section><div class="cloudformation-change-set-metadata">${parametersContent(parameters)}${tagsContent(tags)}</div>`;
+  return `<section class="card cloudformation-change-set-detail" data-change-set-name="${escapeHtml(name)}" data-replacement-count="${replacementResources.length}" data-replacement-resources="${escapeHtml(replacementNames.join(", "))}"><div class="card-header"><div><h2>${escapeHtml(name)}</h2><p class="muted small">${escapeHtml(field(changeSet, "description", "Description") ?? "CloudFormation change set")}</p></div>${actionMarkup}</div><div class="card-body detail-grid"><dl class="key-value"><dt>Status</dt><dd>${statusMarkup(status)}</dd><dt>Status reason</dt><dd>${escapeHtml(field(changeSet, "statusReason", "StatusReason") ?? "-")}</dd></dl><dl class="key-value"><dt>Execution status</dt><dd>${statusMarkup(executionStatus)}</dd><dt>Type</dt><dd>${escapeHtml(field(changeSet, "changeSetType", "ChangeSetType") ?? "-")}</dd></dl><dl class="key-value"><dt>Created</dt><dd>${dateMarkup(field(changeSet, "creationTime", "CreationTime"))}</dd><dt>Change set ID</dt><dd class="mono">${escapeHtml(id)}</dd></dl></div></section>${replacementWarning}${status === "FAILED" ? validationEventsContent(payload) : ""}<section class="card"><div class="card-header"><h2>Changes <span class="muted">(${changes.length})</span></h2></div>${rows ? `<div class="table-wrap"><table class="cloudformation-change-table"><thead><tr><th>Logical ID</th><th>Action</th><th>Resource type</th><th>Replacement</th><th>Policy action</th><th>Scope</th><th>Property details</th></tr></thead><tbody>${rows}</tbody></table></div>` : emptyState("C", "No resource changes", "This change set does not contain material resource changes.")}</section><div class="cloudformation-change-set-metadata">${parametersContent(parameters)}${tagsContent(tags)}</div>`;
 }
 
 const emptyTemplate = JSON.stringify({ AWSTemplateFormatVersion: "2010-09-09", Resources: {} }, null, 2);
@@ -551,6 +562,27 @@ async function stackPage(name, active, context, changeSetName) {
     });
   };
   bindOperationFilter();
+  context.main.querySelector('[data-action="load-validation-events"]')?.addEventListener("click", async event => {
+    const button = event.currentTarget;
+    const token = button.dataset.nextToken;
+    if (!token) return;
+    button.disabled = true;
+    try {
+      const payload = await rest(`${changeSetPath(canonicalName, changeSetName)}?eventsNextToken=${encodeURIComponent(token)}`);
+      const events = normalizeCollection(payload, "operationEvents", "OperationEvents");
+      const body = context.main.querySelector(".cloudformation-validation-event-table tbody");
+      if (body) body.insertAdjacentHTML("beforeend", events.map(validationEventRow).join(""));
+      const count = context.main.querySelectorAll(".cloudformation-validation-event-table tbody tr").length;
+      const headingCount = context.main.querySelector(".cloudformation-validation-events h2 .muted");
+      if (headingCount) headingCount.textContent = `(${count})`;
+      const next = field(payload, "operationEventsNextToken", "OperationEventsNextToken");
+      if (next) { button.dataset.nextToken = next; button.disabled = false; }
+      else button.remove();
+    } catch (error) {
+      button.disabled = false;
+      context.showError(error);
+    }
+  });
   context.main.querySelector('[data-action="refresh"]')?.addEventListener("click", () => context.route(false));
   context.main.querySelector('[data-action="update-stack"]')?.addEventListener("click", async () => {
     try { await openStackUpdate(context, stack); } catch (error) { context.showError(error); }

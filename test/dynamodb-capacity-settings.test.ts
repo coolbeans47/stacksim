@@ -34,7 +34,7 @@ test("DynamoDB table settings, tags, encryption, auto scaling, and update timest
       TableName: "ConfiguredRecords", BillingMode: "PAY_PER_REQUEST", AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }], KeySchema: [{ AttributeName: "id", KeyType: "HASH" }],
       DeletionProtectionEnabled: true, TableClass: "STANDARD_INFREQUENT_ACCESS", OnDemandThroughput: { MaxReadRequestUnits: 10, MaxWriteRequestUnits: 7 }, WarmThroughput: { ReadUnitsPerSecond: 20, WriteUnitsPerSecond: 10 }, Tags: [{ Key: "team", Value: "platform" }, { Key: "environment", Value: "local" }],
     }));
-    const arn = created.TableDescription!.TableArn!; assert.equal(created.TableDescription?.TableStatus, "CREATING"); assert.deepEqual(created.TableDescription?.OnDemandThroughput, { MaxReadRequestUnits: 10, MaxWriteRequestUnits: 7 }); assert.deepEqual(created.TableDescription?.WarmThroughput, { ReadUnitsPerSecond: 20, WriteUnitsPerSecond: 10, Status: "CREATING" }); assert.equal(created.TableDescription?.DeletionProtectionEnabled, true); assert.equal(created.TableDescription?.TableClassSummary?.TableClass, "STANDARD_INFREQUENT_ACCESS"); assert.deepEqual(created.TableDescription?.SSEDescription, { SSEType: "AES256", Status: "ENABLED" });
+    const arn = created.TableDescription!.TableArn!; assert.equal(created.TableDescription?.TableStatus, "CREATING"); assert.deepEqual(created.TableDescription?.OnDemandThroughput, { MaxReadRequestUnits: 10, MaxWriteRequestUnits: 7 }); assert.deepEqual(created.TableDescription?.WarmThroughput, { ReadUnitsPerSecond: 20, WriteUnitsPerSecond: 10, Status: "CREATING" }); assert.equal(created.TableDescription?.DeletionProtectionEnabled, true); assert.equal(created.TableDescription?.TableClassSummary?.TableClass, "STANDARD_INFREQUENT_ACCESS"); assert.equal(created.TableDescription?.SSEDescription, undefined);
     await tick(clock);
     assert.equal((await client.send(new DescribeTableCommand({ TableName: arn }))).Table?.TableName, "ConfiguredRecords"); assert.deepEqual((await client.send(new ListTagsOfResourceCommand({ ResourceArn: arn }))).Tags, [{ Key: "environment", Value: "local" }, { Key: "team", Value: "platform" }]);
     assert.deepEqual((await client.send(new DescribeTableCommand({ TableName: "ConfiguredRecords" }))).Table?.WarmThroughput, { ReadUnitsPerSecond: 20, WriteUnitsPerSecond: 10, Status: "ACTIVE" });
@@ -55,6 +55,17 @@ test("DynamoDB table settings, tags, encryption, auto scaling, and update timest
 
     client.destroy(); await simulator.stop(); simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region: "eu-west-1", clock, authMode: "off"}); await simulator.start(); client = clientFor(simulator);
     described = (await client.send(new DescribeTableCommand({ TableName: "ConfiguredRecords" }))).Table!; assert.equal(described.DeletionProtectionEnabled, false); assert.deepEqual(described.OnDemandThroughput, { MaxWriteRequestUnits: 9 }); assert.equal(described.SSEDescription?.Status, "UPDATING"); assert.deepEqual((await client.send(new ListTagsOfResourceCommand({ ResourceArn: arn }))).Tags, [{ Key: "owner", Value: "learning" }, { Key: "team", Value: "database" }]); assert.equal((await client.send(new DescribeTableReplicaAutoScalingCommand({ TableName: "ScalingRecords" }))).TableAutoScalingDescription?.Replicas?.[0].GlobalSecondaryIndexes?.[0].IndexName, "ByCategory"); assert.equal(simulator.store.state.schemaVersion, CURRENT_SCHEMA_VERSION);
+  } finally { client?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
+});
+
+test("DynamoDB omits SSEDescription when a KMS-encrypted table returns to the AWS owned key", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-ddb-owned-key-")); const clock = new TestClock(Date.parse("2026-07-15T23:00:00Z")); const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region: "eu-west-1", clock, authMode: "off" }); let client: DynamoDBClient | undefined;
+  try {
+    await simulator.start(); client = clientFor(simulator);
+    const created = await client.send(new CreateTableCommand({ TableName: "EncryptedRecords", BillingMode: "PAY_PER_REQUEST", AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }], KeySchema: [{ AttributeName: "id", KeyType: "HASH" }], SSESpecification: { Enabled: true, SSEType: "KMS", KMSMasterKeyId: "arn:aws:kms:eu-west-1:000000000000:key/local-only" } }));
+    assert.equal(created.TableDescription?.SSEDescription?.SSEType, "KMS"); await tick(clock);
+    const updating = await client.send(new UpdateTableCommand({ TableName: "EncryptedRecords", SSESpecification: { Enabled: false } })); assert.equal(updating.TableDescription?.SSEDescription, undefined); await tick(clock);
+    assert.equal((await client.send(new DescribeTableCommand({ TableName: "EncryptedRecords" }))).Table?.SSEDescription, undefined);
   } finally { client?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
 });
 

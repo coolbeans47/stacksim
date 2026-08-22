@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import { AwsError } from "../../errors.js";
 import type { SecretsManagerService } from "../../secrets-manager.js";
@@ -88,7 +89,7 @@ function owner(context: ProviderContext): string { return `${context.stackId}/${
 function clientToken(context: ProviderContext): string { return createHash("sha256").update(context.idempotencyKey).digest("hex"); }
 function changed<Model extends object>(previous: Model, desired: Model): string[] { return [...new Set([...Object.keys(previous), ...Object.keys(desired)])].filter(key => !same((previous as any)[key], (desired as any)[key])).sort(); }
 function failure<Model>(error: unknown): ProviderUpdateResult<Model> { const aws = error instanceof AwsError ? error : new AwsError("InternalFailure", error instanceof Error ? error.message : String(error), 500); return { status: "FAILED", errorCode: aws.code, message: aws.message, retryable: aws.status >= 500 }; }
-function issue(issues: ProviderValidationIssue[], path: string, message: string): void { issues.push({ code: "InvalidProperty", path, message }); }
+function issue(issues: ProviderValidationIssue[], path: string, message: string): void { issues.push({ code: "InvalidProperty", path, pathSegments: providerValidationPathSegments(path), message }); }
 
 export function createSecretsManagerRotationScheduleProvider(service: SecretsManagerService): ProductionResourceProvider<SecretsManagerRotationScheduleModel> {
   const success = (arn: string, model: SecretsManagerRotationScheduleModel) => ({ status: "SUCCESS" as const, physicalId: arn, model: { physicalId: arn, properties: { ...model, SecretId: arn }, attributes: {} } });

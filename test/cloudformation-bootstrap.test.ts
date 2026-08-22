@@ -84,6 +84,10 @@ test("bootstrap manager creates the reduced CDK contract durably and idempotentl
     assert.equal(CDK_BOOTSTRAP_COMPATIBILITY_VERSION, 23, "the reduced contract includes the pinned CLI's rollback permission gate");
     assert.ok(actions(deployment.inlinePolicies[CDK_BOOTSTRAP_POLICY_NAME], "DirectCloudFormationDeployment").includes("cloudformation:RollbackStack"));
     assert.ok(actions(deployment.inlinePolicies[CDK_BOOTSTRAP_POLICY_NAME], "DirectCloudFormationDeployment").includes("cloudformation:ContinueUpdateRollback"));
+    assert.equal(actions(deployment.inlinePolicies[CDK_BOOTSTRAP_POLICY_NAME], "DirectCloudFormationDeployment").includes("cloudformation:DescribeEvents"), false);
+    assert.deepEqual(statements(deployment.inlinePolicies[CDK_BOOTSTRAP_POLICY_NAME]).find(statement => statement.Sid === "DescribeChangeSetValidationEvents"), {
+      Sid: "DescribeChangeSetValidationEvents", Effect: "Allow", Action: "cloudformation:DescribeEvents", Resource: `arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/*/*`,
+    });
     const passRole = statements(deployment.inlinePolicies[CDK_BOOTSTRAP_POLICY_NAME]).find(statement => statement.Sid === "PassCloudFormationExecutionRole");
     assert.deepEqual(passRole, { Sid: "PassCloudFormationExecutionRole", Effect: "Allow", Action: "iam:PassRole", Resource: names.roleArns.cloudFormationExecution });
     const file = context.store.ensureAccount().iam.roles[names.roleNames.filePublishing];

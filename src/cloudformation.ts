@@ -68,6 +68,7 @@ import {
   type ProviderOperation,
   type ProviderOperationCheckpoint,
   type ProviderProgress,
+  type ProviderValidationIssue,
   validateDeclaredProperties,
 } from "./cloudformation/providers/index.js";
 
@@ -78,7 +79,7 @@ export const CLOUDFORMATION_SUPPORTED_ACTIONS = Object.freeze([
   "DescribeStackResource", "DescribeStackResources", "ListStackResources", "GetTemplate",
   "GetTemplateSummary", "UpdateTerminationProtection", "DeleteStack",
   "UpdateStack", "CancelUpdateStack", "RollbackStack", "ContinueUpdateRollback",
-  "CreateChangeSet", "DescribeChangeSet", "ListChangeSets", "DeleteChangeSet", "ExecuteChangeSet",
+  "CreateChangeSet", "DescribeChangeSet", "DescribeEvents", "ListChangeSets", "DeleteChangeSet", "ExecuteChangeSet",
   "ListExports", "ListImports",
 ]);
 const SUPPORTED_ACTIONS = new Set<string>(CLOUDFORMATION_SUPPORTED_ACTIONS);
@@ -193,6 +194,35 @@ interface ChangeSetPlanningArtifact {
   planningOperationId: string;
   baselineDigest: string;
   availableExports: Record<string, string>;
+}
+
+interface ContextualProviderValidationIssue extends ProviderValidationIssue {
+  readonly logicalResourceId: string;
+  readonly resourceType: string;
+  readonly origin: "DECLARATION" | "PROVIDER";
+}
+
+interface ChangeSetPlanningOutcomeEventV1 {
+  readonly sequence: number;
+  readonly eventId: string;
+  readonly eventType: "VALIDATION_ERROR";
+  readonly logicalResourceId: string;
+  readonly resourceType: string;
+  readonly issueCode: ProviderValidationIssue["code"];
+  readonly validationPath: string;
+  readonly validationName: "PROPERTY_VALIDATION";
+  readonly validationStatusReason: string;
+}
+
+interface ChangeSetPlanningOutcomeV1 {
+  readonly schemaVersion: 1;
+  readonly changeSetId: string;
+  readonly stackId: string;
+  readonly planningOperationId: string;
+  readonly terminalStatus: "FAILED";
+  readonly terminalReason: string;
+  readonly recordedAt: number;
+  readonly events: readonly ChangeSetPlanningOutcomeEventV1[];
 }
 
 interface ChangeSetExecutionArtifact {
@@ -1005,7 +1035,7 @@ export class CloudFormationService {
     for (const value of Object.values(this.state.changeSets)) {
       if (!value.templateArtifactId) continue;
       markTemplate(value.templateArtifactId);
-      for (const suffix of ["planning", "changes", "input"]) mark("change-sets", `${value.templateArtifactId}.${suffix}.json`);
+      for (const suffix of ["planning", "changes", "input", "planning-outcome"]) mark("change-sets", `${value.templateArtifactId}.${suffix}.json`);
     }
 
     for (const collection of ["templates", "parameters", "execution", "plans", "rollback", "operations", "provider-checkpoints", "assets", "change-sets"]) {
@@ -1380,6 +1410,46 @@ export class CloudFormationService {
   async DescribeChangeSet(input: any): Promise<any> {
     const value = this.changeSet(String(input.ChangeSetName ?? ""), input.StackName === undefined ? undefined : String(input.StackName)); await this.syncChangeSetExecution(value); const changes = await this.journal.readJsonArtifact<Array<Record<string, unknown>>>("change-sets", `${value.templateArtifactId}.changes.json`) ?? value.changes; const page = this.page(`DescribeChangeSet:${value.changeSetId}`, input.NextToken, this.changeSetChangesView(changes, input.IncludePropertyValues === true), 100);
     return { ChangeSetName: value.changeSetName, ChangeSetId: value.changeSetId, StackId: value.stackId, StackName: value.stackName, Description: value.description, Parameters: value.parameters.map(parameterView), CreationTime: new Date(value.creationTime), ExecutionStatus: value.executionStatus, Status: value.status, StatusReason: value.statusReason, NotificationARNs: value.notificationArns ?? [], RollbackConfiguration: this.rollbackConfigurationView(value.rollbackConfiguration), Capabilities: value.capabilities, Tags: Object.entries(value.tags).sort(([a], [b]) => a.localeCompare(b)).map(([Key, Value]) => ({ Key, Value })), Changes: page.values, NextToken: page.nextToken, IncludeNestedStacks: value.includeNestedStacks ?? false, ParentChangeSetId: value.parentChangeSetId, RootChangeSetId: value.rootChangeSetId, OnStackFailure: value.onStackFailure, ChangeSetType: value.changeSetType };
+  }
+
+  async DescribeEvents(input: any): Promise<any> {
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new AwsError("ValidationError", "DescribeEvents input must be an object", 400);
+    const allowed = new Set(["StackName", "ChangeSetName", "Filters", "NextToken"]);
+    const unknown = Object.keys(input).filter(name => !allowed.has(name)).sort();
+    if (unknown.length) throw new AwsError("ValidationError", `DescribeEvents does not support member ${unknown[0]}`, 400);
+    const stackIdentifier = typeof input.StackName === "string" ? input.StackName : "";
+    if (!stackIdentifier) throw new AwsError("ValidationError", "StackName is required", 400);
+    const changeSetIdentifier = typeof input.ChangeSetName === "string" ? input.ChangeSetName : "";
+    if (!changeSetIdentifier || !(STACK_NAME.test(changeSetIdentifier) || /^arn:aws:cloudformation:[a-z0-9-]+:\d{12}:changeSet\/[A-Za-z][-A-Za-z0-9]*\/[A-Za-z0-9-]+$/.test(changeSetIdentifier))) {
+      throw new AwsError("ValidationError", "ChangeSetName must be a valid change-set name or ARN", 400);
+    }
+    if (!input.Filters || typeof input.Filters !== "object" || Array.isArray(input.Filters)
+      || Object.keys(input.Filters).length !== 1 || !Object.hasOwn(input.Filters, "FailedEvents") || input.Filters.FailedEvents !== true) {
+      throw new AwsError("ValidationError", "DescribeEvents requires Filters.FailedEvents=true", 400);
+    }
+    if (input.NextToken !== undefined && (typeof input.NextToken !== "string" || !input.NextToken || input.NextToken.length > 1024)) throw new AwsError("ValidationError", "NextToken is invalid", 400);
+    const stack = this.stack(stackIdentifier, true);
+    const value = this.stackScopedChangeSet(stack, changeSetIdentifier);
+    const outcome = await this.readPlanningOutcome(value);
+    const events = (outcome?.events ?? []).map(event => ({
+      EventId: event.eventId,
+      EventType: event.eventType,
+      OperationId: outcome!.planningOperationId,
+      OperationType: "CREATE_CHANGESET",
+      StackId: outcome!.stackId,
+      LogicalResourceId: event.logicalResourceId,
+      PhysicalResourceId: "",
+      ResourceType: event.resourceType,
+      Timestamp: new Date(outcome!.recordedAt),
+      ValidationFailureMode: "FAIL",
+      ValidationName: event.validationName,
+      ValidationStatus: "FAILED",
+      ValidationStatusReason: event.validationStatusReason,
+      ValidationPath: event.validationPath,
+    })).sort((left, right) => right.Timestamp.getTime() - left.Timestamp.getTime()
+      || (outcome!.events.find(candidate => candidate.eventId === left.EventId)!.sequence - outcome!.events.find(candidate => candidate.eventId === right.EventId)!.sequence));
+    const page = this.page(`DescribeEvents:${stack.stackId}:${value.changeSetId}:failed`, input.NextToken, events, 100);
+    return { OperationEvents: page.values, NextToken: page.nextToken };
   }
 
   async ListChangeSets(input: any): Promise<any> {
@@ -2164,19 +2234,30 @@ export class CloudFormationService {
     }
   }
 
-  private validateOpeningResources(template: CloudFormationTemplate, stackId: string, operationId: string, principal: PrincipalContext): void {
+  private collectOpeningResourceIssues(template: CloudFormationTemplate, sortLogicalIds = false, stopAtFirstIssue = false): ContextualProviderValidationIssue[] {
     const unknownTypes = [...new Set(Object.values<any>(template.Resources ?? {}).map(definition => String(definition.Type)).filter(typeName => !this.providers.get(typeName)))].sort();
     if (unknownTypes.length === 1) throw new AwsError("ValidationError", `Unrecognized resource type ${unknownTypes[0]}; support is assigned to a later CloudFormation phase`, 400);
     if (unknownTypes.length > 1) throw new AwsError("ValidationError", `Unrecognized resource types: ${unknownTypes.join(", ")}; support is assigned to later CloudFormation phases`, 400);
-    for (const [logicalId, definition] of Object.entries<any>(template.Resources ?? {})) {
+    const entries = Object.entries<any>(template.Resources ?? {});
+    if (sortLogicalIds) entries.sort(([left], [right]) => left.localeCompare(right));
+    const collected: ContextualProviderValidationIssue[] = [];
+    for (const [logicalId, definition] of entries) {
       const provider = this.providers.require(definition.Type);
       const properties = definition.Properties ?? {}; const issues = validateDeclaredProperties(properties, provider.schema).filter(issue => {
-        if (issue.code !== "InvalidType") return true; const propertyName = issue.path.match(/^Properties\.([^.]+)/)?.[1]; return !propertyName || !isIntrinsicExpression((properties as Record<string, unknown>)[propertyName]);
-      }); if (issues.length) throw new AwsError("ValidationError", issues.map(issue => `${logicalId}.${issue.path}: ${issue.message}`).join("; "), 400);
+        if (issue.code !== "InvalidType") return true; const propertyName = issue.pathSegments[1]; return !propertyName || !isIntrinsicExpression((properties as Record<string, unknown>)[propertyName]);
+      });
+      collected.push(...issues.map(issue => ({ ...issue, logicalResourceId: logicalId, resourceType: String(definition.Type), origin: "DECLARATION" as const })));
+      if (issues.length && stopAtFirstIssue) return collected;
       // Standalone RDS DB instances default to a real RDS-03 final snapshot.
       const deletionPolicy = definition.DeletionPolicy ?? (definition.Type === "AWS::RDS::DBInstance" ? "Snapshot" : "Delete"); if (!provider.schema.retention.deletionPolicies.includes(deletionPolicy)) throw new AwsError("ValidationError", `${definition.Type} does not support DeletionPolicy ${deletionPolicy}`, 400);
       const updateReplacePolicy = definition.UpdateReplacePolicy ?? "Delete"; if (!provider.schema.retention.updateReplacePolicies.includes(updateReplacePolicy)) throw new AwsError("ValidationError", `${definition.Type} does not support UpdateReplacePolicy ${updateReplacePolicy}`, 400);
     }
+    return collected;
+  }
+
+  private validateOpeningResources(template: CloudFormationTemplate, _stackId: string, _operationId: string, _principal: PrincipalContext): void {
+    const issues = this.collectOpeningResourceIssues(template, false, true);
+    if (issues.length) throw new AwsError("ValidationError", issues.map(issue => `${issue.logicalResourceId}.${issue.path}: ${issue.message}`).join("; "), 400);
   }
 
   /**
@@ -2195,6 +2276,8 @@ export class CloudFormationService {
     stackTags: Record<string, string>,
     previousResources: Record<string, CloudFormationStackResourceState> = {},
     deferredParameterValues: ReadonlySet<string> = new Set(),
+    validationIssues?: ContextualProviderValidationIssue[],
+    skipLogicalIds: ReadonlySet<string> = new Set(),
   ): Record<string, PreflightResourceModel> {
     const planned: Record<string, PreflightResourceModel> = {};
     const resourceRefs: Record<string, unknown> = {};
@@ -2206,6 +2289,7 @@ export class CloudFormationService {
     const graph = buildResourceDependencyGraph(template);
     const resourceLogicalIds = Object.keys(template.Resources);
     for (const logicalId of graph.order) {
+      if (skipLogicalIds.has(logicalId)) continue;
       const definition = template.Resources[logicalId];
       const references = collectIntrinsicReferences(definition.Properties ?? {}, { resourceLogicalIds, parameters: evaluation.parameters });
       if (references.resourceDependencies.some(dependency => !Object.hasOwn(resourceAttributes, dependency) && !Object.hasOwn(resourceRefs, dependency))) continue;
@@ -2229,6 +2313,10 @@ export class CloudFormationService {
           return Boolean(value && typeof value === "object" && Object.values(value as Record<string, unknown>).some(containsDeferredParameter));
         };
         if (containsDeferredParameter(properties)) continue;
+        if (issues.length && validationIssues) {
+          validationIssues.push(...issues.map(issue => ({ ...issue, logicalResourceId: logicalId, resourceType: String(definition.Type), origin: "PROVIDER" as const })));
+          continue;
+        }
         if (issues.length) throw new Error(issues.map(issue => `${issue.path}: ${issue.message}`).join("; "));
         const desired = provider.canonicalize(properties, providerContext) as Record<string, unknown>;
         const previousState = previousResources[logicalId];
@@ -2389,6 +2477,147 @@ export class CloudFormationService {
     return value;
   }
 
+  private stackScopedChangeSet(stack: CloudFormationStackState, identifier: string): CloudFormationChangeSetState {
+    const value = identifier.startsWith("arn:aws:cloudformation:")
+      ? this.state.changeSets[identifier]
+      : this.state.changeSets[this.state.changeSetNames[this.changeSetKey(stack.stackId, identifier)]];
+    if (!value || value.stackId !== stack.stackId || value.status === "DELETE_COMPLETE") {
+      throw new AwsError("ChangeSetNotFound", `ChangeSet ${identifier || "(missing)"} does not exist`, 404);
+    }
+    return value;
+  }
+
+  private planningOutcomeArtifactId(value: CloudFormationChangeSetState): string {
+    if (!value.templateArtifactId) throw new AwsError("InternalFailure", `Change set ${value.changeSetName} has no planning artifact identity`, 500);
+    return `${value.templateArtifactId}.planning-outcome.json`;
+  }
+
+  private validatePlanningOutcome(raw: unknown, value: CloudFormationChangeSetState, planningOperationId?: string): ChangeSetPlanningOutcomeV1 {
+    const fail = (): never => { throw new AwsError("InternalFailure", `Change set ${value.changeSetName} planning outcome is corrupt or belongs to another operation`, 500); };
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fail();
+    const outcome = raw as Record<string, unknown>;
+    const keys = ["schemaVersion", "changeSetId", "stackId", "planningOperationId", "terminalStatus", "terminalReason", "recordedAt", "events"];
+    if (Object.keys(outcome).sort().join("\0") !== [...keys].sort().join("\0")) return fail();
+    if (outcome.schemaVersion !== 1 || outcome.changeSetId !== value.changeSetId || outcome.stackId !== value.stackId
+      || typeof outcome.planningOperationId !== "string" || !outcome.planningOperationId
+      || planningOperationId !== undefined && outcome.planningOperationId !== planningOperationId
+      || outcome.terminalStatus !== "FAILED" || typeof outcome.terminalReason !== "string" || !outcome.terminalReason
+      || !Number.isSafeInteger(outcome.recordedAt) || Number(outcome.recordedAt) < 0 || !Array.isArray(outcome.events)) return fail();
+    const codes = new Set(["InvalidType", "MissingRequiredProperty", "UnsupportedProperty", "InvalidProperty"]);
+    const eventIds = new Set<string>();
+    const events: ChangeSetPlanningOutcomeEventV1[] = [];
+    for (const [index, rawEvent] of outcome.events.entries()) {
+      if (!rawEvent || typeof rawEvent !== "object" || Array.isArray(rawEvent)) return fail();
+      const event = rawEvent as Record<string, unknown>;
+      const eventKeys = ["sequence", "eventId", "eventType", "logicalResourceId", "resourceType", "issueCode", "validationPath", "validationName", "validationStatusReason"];
+      if (Object.keys(event).sort().join("\0") !== [...eventKeys].sort().join("\0") || event.sequence !== index
+        || typeof event.eventId !== "string" || !/^evt-[0-9a-f]{32}$/.test(event.eventId) || eventIds.has(event.eventId)
+        || event.eventType !== "VALIDATION_ERROR" || typeof event.logicalResourceId !== "string" || !/^[A-Za-z][A-Za-z0-9]*$/.test(event.logicalResourceId)
+        || typeof event.resourceType !== "string" || !event.resourceType || !codes.has(String(event.issueCode))
+        || typeof event.validationPath !== "string" || !event.validationPath.startsWith(`/Resources/${this.pointerSegment(event.logicalResourceId)}/Properties`)
+        || event.validationName !== "PROPERTY_VALIDATION" || typeof event.validationStatusReason !== "string") return fail();
+      eventIds.add(event.eventId);
+      events.push(event as unknown as ChangeSetPlanningOutcomeEventV1);
+    }
+    return { ...(outcome as unknown as ChangeSetPlanningOutcomeV1), events: Object.freeze(events) };
+  }
+
+  private async readPlanningOutcome(value: CloudFormationChangeSetState, planningOperationId?: string): Promise<ChangeSetPlanningOutcomeV1 | undefined> {
+    let raw: unknown;
+    try { raw = await this.journal.readJsonArtifact("change-sets", this.planningOutcomeArtifactId(value)); }
+    catch { throw new AwsError("InternalFailure", `Change set ${value.changeSetName} planning outcome is corrupt`, 500); }
+    return raw === undefined ? undefined : this.validatePlanningOutcome(raw, value, planningOperationId);
+  }
+
+  private pointerSegment(value: string): string { return value.replace(/~/g, "~0").replace(/\//g, "~1"); }
+
+  private scalarLeaves(value: unknown, output: Set<string>): void {
+    if (typeof value === "string" && value.length) output.add(value);
+    else if (typeof value === "number" || typeof value === "boolean") output.add(String(value));
+    else if (Array.isArray(value)) for (const item of value) this.scalarLeaves(item, output);
+    else if (value && typeof value === "object") for (const item of Object.values(value as Record<string, unknown>)) this.scalarLeaves(item, output);
+  }
+
+  private planningSensitiveStrings(
+    template: CloudFormationTemplate,
+    resolved: ResolvedParameters,
+    evaluation: { pseudoParameters: Record<string, unknown>; conditions: Record<string, boolean>; imports: Record<string, unknown> },
+  ): string[] {
+    const sensitive = new Set<string>();
+    for (const entry of resolved.entries) if (entry.noEcho) {
+      this.scalarLeaves(entry.parameterValue, sensitive);
+      this.scalarLeaves(entry.resolvedValue, sensitive);
+      this.scalarLeaves(resolved.values[entry.parameterKey], sensitive);
+    }
+    for (const definition of Object.values(template.Resources)) {
+      const provider = this.providers.get(definition.Type);
+      const properties = definition.Properties ?? {};
+      for (const [name, declaration] of Object.entries(provider?.schema.properties ?? {})) {
+        if (!declaration.sensitive || !Object.hasOwn(properties, name)) continue;
+        this.scalarLeaves(properties[name], sensitive);
+        try {
+          this.scalarLeaves(evaluateIntrinsicValue(properties[name], {
+            parameters: resolved.values,
+            pseudoParameters: evaluation.pseudoParameters,
+            mappings: template.Mappings,
+            conditions: evaluation.conditions,
+            imports: evaluation.imports,
+            resourceRefs: {},
+            resourceAttributes: {},
+          }, `$.Resources.${definition.Type}.Properties.${name}`), sensitive);
+        } catch { /* Resource-dependent sensitive values retain deferred generic behavior. */ }
+      }
+    }
+    return [...sensitive].filter(Boolean).sort((left, right) => right.length - left.length || left.localeCompare(right));
+  }
+
+  private redactIssueText(value: string, sensitive: readonly string[]): string {
+    let redacted = value;
+    for (const secret of sensitive) redacted = redacted.split(secret).join("****");
+    return redacted;
+  }
+
+  private buildPlanningOutcome(value: CloudFormationChangeSetState, planningOperationId: string, issues: readonly ContextualProviderValidationIssue[], sensitive: readonly string[]): ChangeSetPlanningOutcomeV1 {
+    const redacted = issues.map(issue => {
+      const pathSegments = issue.pathSegments.map(segment => this.redactIssueText(segment, sensitive));
+      return {
+        ...issue,
+        path: this.redactIssueText(issue.path, sensitive),
+        pathSegments,
+        message: this.redactIssueText(issue.message, sensitive),
+        validationPath: `/${["Resources", issue.logicalResourceId, ...pathSegments].map(segment => this.pointerSegment(segment)).join("/")}`,
+      };
+    }).sort((left, right) => left.logicalResourceId.localeCompare(right.logicalResourceId)
+      || left.validationPath.localeCompare(right.validationPath)
+      || left.code.localeCompare(right.code)
+      || left.message.localeCompare(right.message)
+      || (left.origin === right.origin ? 0 : left.origin === "DECLARATION" ? -1 : 1));
+    const unique = redacted.filter((issue, index) => index === 0 || canonical([
+      issue.logicalResourceId, issue.resourceType, issue.code, issue.pathSegments, issue.message,
+    ]) !== canonical([
+      redacted[index - 1].logicalResourceId, redacted[index - 1].resourceType, redacted[index - 1].code, redacted[index - 1].pathSegments, redacted[index - 1].message,
+    ]));
+    const recordedAt = this.clock.now();
+    const terminalReason = unique.map(issue => issue.origin === "DECLARATION"
+      ? `${issue.logicalResourceId}.${issue.path}: ${issue.message}`
+      : `${issue.logicalResourceId}: ${issue.path}: ${issue.message}`).join("; ");
+    const events = unique.map((issue, sequence): ChangeSetPlanningOutcomeEventV1 => {
+      const digest = createHash("sha256").update(JSON.stringify([value.changeSetId, planningOperationId, sequence, issue.logicalResourceId, issue.resourceType, issue.code, issue.validationPath, issue.message])).digest("hex");
+      return {
+        sequence,
+        eventId: `evt-${digest.slice(0, 32)}`,
+        eventType: "VALIDATION_ERROR",
+        logicalResourceId: issue.logicalResourceId,
+        resourceType: issue.resourceType,
+        issueCode: issue.code,
+        validationPath: issue.validationPath,
+        validationName: "PROPERTY_VALIDATION",
+        validationStatusReason: issue.message,
+      };
+    });
+    return { schemaVersion: 1, changeSetId: value.changeSetId, stackId: value.stackId, planningOperationId, terminalStatus: "FAILED", terminalReason, recordedAt, events };
+  }
+
   private changeSetSummary(value: CloudFormationChangeSetState): any {
     return { StackId: value.stackId, StackName: value.stackName, ChangeSetId: value.changeSetId, ChangeSetName: value.changeSetName, ExecutionStatus: value.executionStatus, Status: value.status, StatusReason: value.statusReason, CreationTime: new Date(value.creationTime), Description: value.description, IncludeNestedStacks: value.includeNestedStacks ?? false, ParentChangeSetId: value.parentChangeSetId, RootChangeSetId: value.rootChangeSetId };
   }
@@ -2420,6 +2649,15 @@ export class CloudFormationService {
       const input: any = structuredClone(planning.input);
       const stack = this.state.stacks[value.stackId];
       if (!stack) throw new Error(`Stack ${value.stackName} no longer exists`);
+      const recoveredOutcome = await this.readPlanningOutcome(value, planning.planningOperationId);
+      if (recoveredOutcome) {
+        value.status = "FAILED";
+        value.executionStatus = "UNAVAILABLE";
+        value.statusReason = recoveredOutcome.terminalReason;
+        value.lastUpdatedTime = recoveredOutcome.recordedAt;
+        await this.store.save();
+        return;
+      }
       if (this.changeSetBaselineDigest(stack) !== planning.baselineDigest) throw new Error(`Stack ${value.stackName} changed before change set planning could be recovered`);
       if (input.UsePreviousTemplate === true && (input.TemplateBody !== undefined || input.TemplateURL !== undefined)) throw new AwsError("ValidationError", "UsePreviousTemplate cannot be combined with TemplateBody or TemplateURL", 400);
       if (value.changeSetType === "CREATE" && input.UsePreviousTemplate === true) throw new AwsError("ValidationError", "CREATE change sets cannot use a previous template", 400);
@@ -2450,11 +2688,23 @@ export class CloudFormationService {
       this.assertCapabilities(processed, capabilities);
       const importNames = this.plannedImportNames(processed, resolvedParameters.values, pseudos, conditions, stack.stackId, planning.availableExports);
       const graph = buildResourceDependencyGraph(processed);
-      this.validateOpeningResources(processed, stack.stackId, planning.planningOperationId, executionPrincipal);
+      const declarationIssues = this.collectOpeningResourceIssues(processed, true, false);
       this.validateProviderReferences(processed);
       const processedBody = JSON.stringify(processed);
       const processedDigest = createHash("sha256").update(processedBody).digest("hex");
-      const preflightModels = this.preflightProviderModels(processed, { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: planning.availableExports }, stack.stackId, planning.planningOperationId, executionPrincipal, desiredTags, value.changeSetType === "UPDATE" ? stack.resources : {});
+      const providerIssues: ContextualProviderValidationIssue[] = [];
+      const preflightModels = this.preflightProviderModels(processed, { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: planning.availableExports }, stack.stackId, planning.planningOperationId, executionPrincipal, desiredTags, value.changeSetType === "UPDATE" ? stack.resources : {}, new Set(), providerIssues, new Set(declarationIssues.map(issue => issue.logicalResourceId)));
+      const validationIssues = [...declarationIssues, ...providerIssues];
+      if (validationIssues.length) {
+        const outcome = this.buildPlanningOutcome(value, planning.planningOperationId, validationIssues, this.planningSensitiveStrings(processed, resolvedParameters, { pseudoParameters: pseudos, conditions, imports: planning.availableExports }));
+        await this.journal.replaceJsonArtifact("change-sets", this.planningOutcomeArtifactId(value), outcome);
+        value.status = "FAILED";
+        value.executionStatus = "UNAVAILABLE";
+        value.statusReason = outcome.terminalReason;
+        value.lastUpdatedTime = outcome.recordedAt;
+        await this.store.save();
+        return;
+      }
       const previousProcessedBody = value.changeSetType === "UPDATE" && stack.templateArtifactId ? await this.journal.readTemplate(stack.templateArtifactId, "processed") : undefined;
       const previousProcessed = previousProcessedBody ? JSON.parse(previousProcessedBody) as CloudFormationTemplate : undefined;
       const changes = this.changeSetPlan(value.changeSetType === "UPDATE" ? stack : undefined, processed, preflightModels, previousProcessed);
@@ -3456,9 +3706,28 @@ export class CloudFormationService {
       if (operation === "DELETE") add("rds:DeleteDBParameterGroup");
     } else if (typeName === "AWS::DynamoDB::GlobalTable") {
       add("dynamodb:DescribeTable", "dynamodb:ListTagsOfResource");
-      if (create) add("dynamodb:CreateTable", "dynamodb:UpdateTable");
-      if (update) add("dynamodb:UpdateTable");
-      if (operation === "DELETE") add("dynamodb:DeleteTable", "dynamodb:UpdateTable");
+      const previousGlobal = stack.resources[logicalId]?.properties ?? {};
+      const desiredReplicas = Array.isArray(properties.Replicas) ? properties.Replicas : [];
+      const previousReplicas = Array.isArray(previousGlobal.Replicas) ? previousGlobal.Replicas : [];
+      const richSingleton = desiredReplicas.length === 1;
+      const previousRichSingleton = previousReplicas.length === 1;
+      if (richSingleton || previousRichSingleton) add("dynamodb:DescribeContinuousBackups");
+      if (create) add("dynamodb:CreateTable", "dynamodb:UpdateTable", "dynamodb:DeleteTable", ...(richSingleton ? ["dynamodb:UpdateContinuousBackups", "dynamodb:TagResource"] : []));
+      if (update) {
+        if (!richSingleton || !previousRichSingleton) add("dynamodb:UpdateTable");
+        else {
+          const desiredReplica = desiredReplicas[0] as Record<string, unknown>; const previousReplica = previousReplicas[0] as Record<string, unknown>;
+          if (canonical(properties.GlobalSecondaryIndexes) !== canonical(previousGlobal.GlobalSecondaryIndexes)
+            || canonical(desiredReplica?.DeletionProtectionEnabled) !== canonical(previousReplica?.DeletionProtectionEnabled)
+            || canonical(desiredReplica?.TableClass) !== canonical(previousReplica?.TableClass)) add("dynamodb:UpdateTable");
+          if (canonical(desiredReplica?.PointInTimeRecoverySpecification) !== canonical(previousReplica?.PointInTimeRecoverySpecification)) add("dynamodb:UpdateContinuousBackups");
+          const nestedTags = (value: unknown): Array<{ Key: string; Value: string }> => Array.isArray(value) ? value.filter((tag: any) => typeof tag?.Key === "string").map((tag: any) => ({ Key: String(tag.Key), Value: String(tag.Value ?? "") })) : [];
+          const beforeTags = nestedTags(previousReplica?.Tags); const afterTags = nestedTags(desiredReplica?.Tags); const before = Object.fromEntries(beforeTags.map(tag => [tag.Key, tag.Value])); const after = Object.fromEntries(afterTags.map(tag => [tag.Key, tag.Value]));
+          if (afterTags.some(tag => before[tag.Key] !== tag.Value)) add("dynamodb:TagResource");
+          if (beforeTags.some(tag => !Object.hasOwn(after, tag.Key))) add("dynamodb:UntagResource");
+        }
+      }
+      if (operation === "DELETE") add("dynamodb:DeleteTable", ...(!previousRichSingleton ? ["dynamodb:UpdateTable"] : []));
     } else if (typeName === "AWS::DynamoDB::Table") {
       add("dynamodb:DescribeTable", "dynamodb:DescribeTimeToLive", "dynamodb:DescribeContinuousBackups", "dynamodb:ListTagsOfResource");
       if (create) add("dynamodb:CreateTable");
@@ -3784,12 +4053,24 @@ export class CloudFormationService {
             }
           }
           for (const region of [...regions].sort()) resources.push(`arn:aws:dynamodb:${region}:${accountId}:table/${tableName}`);
+          const nestedTags = Array.isArray((properties.Replicas as any)?.[0]?.Tags) ? tags((properties.Replicas as any)[0].Tags) : [];
+          const previousNestedTags = Array.isArray((stack.resources[logicalId]?.properties.Replicas as any)?.[0]?.Tags) ? tags((stack.resources[logicalId]?.properties.Replicas as any)[0].Tags) : [];
+          const previousMap = Object.fromEntries(previousNestedTags.map(tag => [tag.Key, tag.Value]));
+          const desiredMap = Object.fromEntries(nestedTags.map(tag => [tag.Key, tag.Value]));
+          const currentTags = this.store.regionState(this.region).tables[tableName]?.tags ?? {};
           if (action === "dynamodb:CreateTable") {
             const owner = createHash("sha256").update(`${stack.stackId}\0${logicalId}`).digest("hex");
+            const requested = [...nestedTags, { Key: "stacksim:cloudformation:owner", Value: owner }];
             context = {
-              "aws:TagKeys": ["stacksim:cloudformation:owner"],
-              "aws:RequestTag/stacksim:cloudformation:owner": owner,
+              "aws:TagKeys": requested.map(tag => tag.Key),
+              ...Object.fromEntries(requested.map(tag => [`aws:RequestTag/${tag.Key}`, tag.Value])),
             };
+          } else if (action === "dynamodb:TagResource") {
+            const requested = nestedTags.filter(tag => previousMap[tag.Key] !== tag.Value);
+            context = { ...Object.fromEntries(Object.entries(currentTags).map(([key, value]) => [`aws:ResourceTag/${key}`, value])), "aws:TagKeys": requested.map(tag => tag.Key), ...Object.fromEntries(requested.map(tag => [`aws:RequestTag/${tag.Key}`, tag.Value])) };
+          } else if (action === "dynamodb:UntagResource") {
+            const removed = Object.keys(previousMap).filter(key => !Object.hasOwn(desiredMap, key));
+            context = { ...Object.fromEntries(Object.entries(currentTags).map(([key, value]) => [`aws:ResourceTag/${key}`, value])), "aws:TagKeys": removed };
           }
         }
       } else if (typeName === "AWS::DynamoDB::Table") {

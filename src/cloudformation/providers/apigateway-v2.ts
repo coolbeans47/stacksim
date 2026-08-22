@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import type { ApiGatewayV2Service } from "../../apigateway-v2.js";
 import { AwsError } from "../../errors.js";
 import {
@@ -324,7 +325,7 @@ function stringMap(value: unknown): Readonly<Record<string, string>> {
 }
 function tags(value: unknown): Readonly<Record<string, string>> { return stringMap(value); }
 function same(left: unknown, right: unknown): boolean { return JSON.stringify(left) === JSON.stringify(right); }
-function issue(path: string, message: string, code: ProviderValidationIssue["code"] = "InvalidProperty"): ProviderValidationIssue { return { code, path, message }; }
+function issue(path: string, message: string, code: ProviderValidationIssue["code"] = "InvalidProperty"): ProviderValidationIssue { return { code, path, pathSegments: providerValidationPathSegments(path), message }; }
 function throwIssues(issues: readonly ProviderValidationIssue[]): void { if (issues.length) throw new TypeError(issues.map(value => `${value.path}: ${value.message}`).join("; ")); }
 function failure(error: unknown): ProviderFailed {
   if (error instanceof AwsError) return { status: "FAILED", errorCode: error.code, message: error.message, ...(error.status >= 500 ? { retryable: true } : {}) };

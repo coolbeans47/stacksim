@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import { AwsError } from "../../errors.js";
 import type { SsmService } from "../../ssm.js";
@@ -101,7 +102,7 @@ function failure(error: unknown): ProviderUpdateResult<SsmParameterModel> {
   const aws = error instanceof AwsError ? error : new AwsError("InternalFailure", error instanceof Error ? error.message : String(error), 500);
   return { status: "FAILED", errorCode: aws.code, message: aws.message, retryable: aws.status >= 500 };
 }
-function issue(issues: ProviderValidationIssue[], path: string, message: string): void { issues.push({ code: "InvalidProperty", path, message }); }
+function issue(issues: ProviderValidationIssue[], path: string, message: string): void { issues.push({ code: "InvalidProperty", path, pathSegments: providerValidationPathSegments(path), message }); }
 
 export function createSsmParameterProvider(ssm: SsmService): ProductionResourceProvider<SsmParameterModel> {
   return {

@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import {
   ProviderReferenceError,
@@ -72,7 +73,7 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 function issue(issues: ProviderValidationIssue[], path: string, message: string): void {
-  issues.push({ code: "InvalidProperty", path, message });
+  issues.push({ code: "InvalidProperty", path, pathSegments: providerValidationPathSegments(path), message });
 }
 
 function validateNestedStack(properties: unknown): ProviderValidationIssue[] {

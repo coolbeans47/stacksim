@@ -96,7 +96,32 @@ export interface ProviderValidationIssue {
   readonly code: "InvalidType" | "MissingRequiredProperty" | "UnsupportedProperty" | "InvalidProperty";
   /** A path rooted at Properties, for example Properties.FunctionName. */
   readonly path: string;
+  /** Authoritative path components. Display paths are retained only for compatibility. */
+  readonly pathSegments: readonly string[];
   readonly message: string;
+}
+
+/**
+ * Convert a producer-owned legacy display path into structured components.
+ * New validators should pass their naturally available components directly;
+ * this helper exists for the compilation-wide migration of older validators.
+ */
+export function providerValidationPathSegments(path: string): readonly string[] {
+  const segments = path.replace(/\[(\d+)\]/g, ".$1").split(".").filter(Boolean);
+  if (segments[0] !== "Properties") throw new TypeError(`Provider validation paths must be rooted at Properties: ${path}`);
+  return Object.freeze(segments);
+}
+
+export function providerValidationIssue(
+  code: ProviderValidationIssue["code"],
+  legacyPath: string,
+  pathSegments: readonly string[],
+  message: string,
+): ProviderValidationIssue {
+  if (!pathSegments.length || pathSegments[0] !== "Properties" || pathSegments.some(segment => typeof segment !== "string" || !segment.length)) {
+    throw new TypeError("Provider validation pathSegments must be nonempty and rooted at Properties");
+  }
+  return Object.freeze({ code, path: legacyPath, pathSegments: Object.freeze([...pathSegments]), message });
 }
 
 export interface ProviderPrincipalContext {
@@ -254,36 +279,24 @@ function matchesValueType(value: unknown, type: ProviderPropertyValueType): bool
 /** Shared shallow validation for the provider's declared top-level boundary. */
 export function validateDeclaredProperties(properties: unknown, schema: ProviderSchema): ProviderValidationIssue[] {
   if (!isRecord(properties)) {
-    return [{ code: "InvalidType", path: "Properties", message: `${schema.typeName} Properties must be an object` }];
+    return [providerValidationIssue("InvalidType", "Properties", ["Properties"], `${schema.typeName} Properties must be an object`)];
   }
 
   const issues: ProviderValidationIssue[] = [];
   for (const name of Object.keys(properties).sort()) {
     const declaration = schema.properties[name];
     if (!declaration && schema.unknownProperties === "REJECT") {
-      issues.push({
-        code: "UnsupportedProperty",
-        path: `Properties.${name}`,
-        message: `${schema.typeName} does not support property ${name}`,
-      });
+      issues.push(providerValidationIssue("UnsupportedProperty", `Properties.${name}`, ["Properties", name], `${schema.typeName} does not support property ${name}`));
       continue;
     }
     if (declaration && !matchesValueType(properties[name], declaration.valueType)) {
-      issues.push({
-        code: "InvalidType",
-        path: `Properties.${name}`,
-        message: `${schema.typeName} property ${name} must be ${declaration.valueType}`,
-      });
+      issues.push(providerValidationIssue("InvalidType", `Properties.${name}`, ["Properties", name], `${schema.typeName} property ${name} must be ${declaration.valueType}`));
     }
   }
 
   for (const [name, declaration] of Object.entries(schema.properties).sort(([left], [right]) => left.localeCompare(right))) {
     if (declaration.required && !Object.prototype.hasOwnProperty.call(properties, name)) {
-      issues.push({
-        code: "MissingRequiredProperty",
-        path: `Properties.${name}`,
-        message: `${schema.typeName} requires property ${name}`,
-      });
+      issues.push(providerValidationIssue("MissingRequiredProperty", `Properties.${name}`, ["Properties", name], `${schema.typeName} requires property ${name}`));
     }
   }
   return issues;

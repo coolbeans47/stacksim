@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import { AwsError } from "../../errors.js";
 import type { SecretsManagerService } from "../../secrets-manager.js";
@@ -77,7 +78,7 @@ function tags(value: unknown): readonly Tag[] {
     return { Key: item.Key, Value: item.Value };
   }).sort((a, b) => a.Key.localeCompare(b.Key));
 }
-function issue(issues: ProviderValidationIssue[], path: string, message: string): void { issues.push({ code: "InvalidProperty", path, message }); }
+function issue(issues: ProviderValidationIssue[], path: string, message: string): void { issues.push({ code: "InvalidProperty", path, pathSegments: providerValidationPathSegments(path), message }); }
 function failed(error: unknown): ProviderUpdateResult<SecretsManagerSecretModel> {
   const aws = error instanceof AwsError ? error : new AwsError("InternalFailure", error instanceof Error ? error.message : String(error), 500);
   return { status: "FAILED", errorCode: aws.code, message: aws.message, retryable: aws.status >= 500 };

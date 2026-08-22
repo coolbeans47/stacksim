@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import type { ProviderContext, ProviderFailed, ProviderValidationIssue } from "./contract.js";
 import { AwsError } from "../../errors.js";
@@ -91,7 +92,7 @@ export function generatedIamName(context: ProviderContext, maximumLength: number
 }
 
 export function issue(code: ProviderValidationIssue["code"], path: string, message: string): ProviderValidationIssue {
-  return { code, path, message };
+  return { code, path, pathSegments: providerValidationPathSegments(path), message };
 }
 
 export function validateName(value: unknown, path: string, maximumLength: number, issues: ProviderValidationIssue[]): void {

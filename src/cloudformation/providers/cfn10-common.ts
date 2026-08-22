@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { AwsError } from "../../errors.js";
 import {
   ProviderReferenceError,
+  providerValidationIssue,
+  providerValidationPathSegments,
   type ProviderContext,
   type ProviderDeleteResult,
   type ProviderPlan,
@@ -43,7 +45,7 @@ export function cfn10Same(left: unknown, right: unknown): boolean {
 }
 
 export function cfn10Issue(issues: ProviderValidationIssue[], path: string, message: string, code: ProviderValidationIssue["code"] = "InvalidProperty"): void {
-  issues.push({ code, path, message });
+  issues.push(providerValidationIssue(code, path, providerValidationPathSegments(path), message));
 }
 
 export function cfn10ExactKeys(value: Cfn10Object, allowed: readonly string[], path: string, issues: ProviderValidationIssue[]): void {

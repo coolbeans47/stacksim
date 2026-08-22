@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import type { LambdaService } from "../../lambda.js";
 import type { S3Service } from "../../s3.js";
@@ -142,8 +143,8 @@ function tagMap(model: LambdaFunctionModel, context: ProviderContext): Record<st
 
 function validateNested(properties: Record<string, unknown>, context: ProviderContext): ProviderValidationIssue[] {
   const issues: ProviderValidationIssue[] = [];
-  const invalid = (path: string, message: string) => issues.push({ code: "InvalidProperty", path, message });
-  const unsupported = (path: string, message: string) => issues.push({ code: "UnsupportedProperty", path, message });
+  const invalid = (path: string, message: string) => issues.push({ code: "InvalidProperty", path, pathSegments: providerValidationPathSegments(path), message });
+  const unsupported = (path: string, message: string) => issues.push({ code: "UnsupportedProperty", path, pathSegments: providerValidationPathSegments(path), message });
   const rejectUnknown = (value: Record<string, unknown>, path: string, allowed: readonly string[]) => {
     const accepted = new Set(allowed);
     for (const key of Object.keys(value)) if (!accepted.has(key)) unsupported(`${path}.${key}`, `${key} is not supported in ${path}`);

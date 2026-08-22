@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import { AwsError } from "../../errors.js";
 import type { LambdaService } from "../../lambda.js";
@@ -143,7 +144,7 @@ function issue(
   message: string,
   code: ProviderValidationIssue["code"] = "InvalidProperty",
 ): void {
-  output.push({ code, path, message });
+  output.push({ code, path, pathSegments: providerValidationPathSegments(path), message });
 }
 
 function rejectUnknown(

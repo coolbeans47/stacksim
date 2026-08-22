@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -323,6 +323,77 @@ test("DDBGAP-06/07 CreateTable lifecycle stays CREATING until tick and GSI Query
       ExpressionAttributeNames: { "#owner": "owner" }, ExpressionAttributeValues: { ":owner": { S: "team" } },
     })), (error: any) => error.name === "ResourceNotFoundException");
     await tick(clock);
+  } finally {
+    client?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("DDBGAP-15 completed GSI deletes prune only obsolete definitions and old snapshots stay forward-safe", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-ddbgap-active-definitions-"));
+  const clock = new TestClock(Date.parse("2026-08-21T10:00:00Z"));
+  let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region: westRegion, clock, authMode: "off" });
+  let client: DynamoDBClient | undefined;
+  try {
+    await simulator.start(); client = clientFor(simulator);
+    await client.send(new CreateTableCommand({
+      TableName: "DefinitionLifecycle", BillingMode: "PAY_PER_REQUEST",
+      AttributeDefinitions: [
+        { AttributeName: "id", AttributeType: "S" },
+        { AttributeName: "shared", AttributeType: "S" },
+        { AttributeName: "obsolete", AttributeType: "S" },
+      ],
+      KeySchema: [{ AttributeName: "id", KeyType: "HASH" }],
+      GlobalSecondaryIndexes: [
+        { IndexName: "KeepShared", KeySchema: [{ AttributeName: "shared", KeyType: "HASH" }], Projection: { ProjectionType: "ALL" } },
+        { IndexName: "DeleteObsolete", KeySchema: [{ AttributeName: "obsolete", KeyType: "HASH" }, { AttributeName: "shared", KeyType: "RANGE" }], Projection: { ProjectionType: "KEYS_ONLY" } },
+      ],
+    }));
+    await awaitActive(client, clock, "DefinitionLifecycle");
+
+    // Treat the successful UpdateTable response as lost. Before stabilization the
+    // deleting index and every definition used by it remain authoritative.
+    await client.send(new UpdateTableCommand({ TableName: "DefinitionLifecycle", GlobalSecondaryIndexUpdates: [{ Delete: { IndexName: "DeleteObsolete" } }] }));
+    let described = (await client.send(new DescribeTableCommand({ TableName: "DefinitionLifecycle" }))).Table!;
+    assert.equal(described.GlobalSecondaryIndexes?.find(index => index.IndexName === "DeleteObsolete")?.IndexStatus, "DELETING");
+    assert.deepEqual(described.AttributeDefinitions?.map(definition => definition.AttributeName), ["id", "shared", "obsolete"]);
+
+    client.destroy(); await simulator.stop();
+    simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region: westRegion, clock, authMode: "off" });
+    await simulator.start(); client = clientFor(simulator);
+    described = (await client.send(new DescribeTableCommand({ TableName: "DefinitionLifecycle" }))).Table!;
+    assert.equal(described.GlobalSecondaryIndexes?.find(index => index.IndexName === "DeleteObsolete")?.IndexStatus, "DELETING");
+    assert.deepEqual(described.AttributeDefinitions?.map(definition => definition.AttributeName), ["id", "shared", "obsolete"]);
+    await tick(clock);
+    described = (await client.send(new DescribeTableCommand({ TableName: "DefinitionLifecycle" }))).Table!;
+    assert.deepEqual(described.GlobalSecondaryIndexes?.map(index => index.IndexName), ["KeepShared"]);
+    assert.deepEqual(described.AttributeDefinitions?.map(definition => definition.AttributeName), ["id", "shared"]);
+
+    client.destroy(); await simulator.stop();
+    const statePath = join(root, "state.json");
+    const stale = JSON.parse(await readFile(statePath, "utf8"));
+    stale.accounts["000000000000"].regions[westRegion].tables.DefinitionLifecycle.attributeDefinitions.push({ AttributeName: "obsolete", AttributeType: "S" });
+    await writeFile(statePath, JSON.stringify(stale), { mode: 0o600 });
+
+    simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region: westRegion, clock, authMode: "off" });
+    await simulator.start(); client = clientFor(simulator);
+    described = (await client.send(new DescribeTableCommand({ TableName: "DefinitionLifecycle" }))).Table!;
+    assert.deepEqual(described.AttributeDefinitions?.map(definition => definition.AttributeName), ["id", "shared"], "old stale snapshots are canonical on read");
+
+    await client.send(new UpdateTableCommand({
+      TableName: "DefinitionLifecycle",
+      AttributeDefinitions: [{ AttributeName: "replacement", AttributeType: "N" }],
+      GlobalSecondaryIndexUpdates: [{ Create: { IndexName: "AddReplacement", KeySchema: [{ AttributeName: "replacement", KeyType: "HASH" }], Projection: { ProjectionType: "ALL" } } }],
+    }));
+    await tick(clock);
+    described = (await client.send(new DescribeTableCommand({ TableName: "DefinitionLifecycle" }))).Table!;
+    assert.deepEqual(described.GlobalSecondaryIndexes?.map(index => index.IndexName), ["KeepShared", "AddReplacement"]);
+    assert.deepEqual(described.AttributeDefinitions?.map(definition => definition.AttributeName), ["id", "shared", "replacement"]);
+
+    client.destroy(); await simulator.stop();
+    simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region: westRegion, clock, authMode: "off" });
+    await simulator.start(); client = clientFor(simulator);
+    described = (await client.send(new DescribeTableCommand({ TableName: "DefinitionLifecycle" }))).Table!;
+    assert.deepEqual(described.AttributeDefinitions?.map(definition => definition.AttributeName), ["id", "shared", "replacement"]);
   } finally {
     client?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true });
   }

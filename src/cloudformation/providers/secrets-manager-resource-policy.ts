@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { AwsError } from "../../errors.js";
 import type { SecretsManagerService } from "../../secrets-manager.js";
 import {
@@ -67,7 +68,7 @@ export function createSecretsManagerResourcePolicyProvider(service: SecretsManag
     validate(properties: unknown): readonly ProviderValidationIssue[] {
       const issues = [...validateDeclaredProperties(properties ?? {}, SECRETS_MANAGER_RESOURCE_POLICY_SCHEMA)];
       if (!record(properties)) return issues;
-      if (typeof properties.SecretId === "string" && (properties.SecretId.length < 1 || properties.SecretId.length > 2048)) issues.push({ code: "InvalidProperty", path: "Properties.SecretId", message: "SecretId must contain 1-2048 characters" });
+      if (typeof properties.SecretId === "string" && (properties.SecretId.length < 1 || properties.SecretId.length > 2048)) issues.push({ code: "InvalidProperty", path: "Properties.SecretId", pathSegments: providerValidationPathSegments("Properties.SecretId"), message: "SecretId must contain 1-2048 characters" });
       return issues;
     },
     canonicalize(properties: unknown, context): SecretsManagerResourcePolicyModel {

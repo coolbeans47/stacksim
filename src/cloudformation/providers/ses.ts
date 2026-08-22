@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import type { SesService } from "../../ses.js";
 import { AwsError } from "../../errors.js";
@@ -255,7 +256,7 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 function issue(issues: ProviderValidationIssue[], code: ProviderValidationIssue["code"], path: string, message: string): void {
-  issues.push({ code, path, message });
+  issues.push({ code, path, pathSegments: providerValidationPathSegments(path), message });
 }
 
 function exactKeys(value: Record<string, unknown>, allowed: readonly string[], path: string, issues: ProviderValidationIssue[]): void {
