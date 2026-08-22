@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import { AwsError } from "../../errors.js";
 import type { LambdaService } from "../../lambda.js";
@@ -76,8 +77,8 @@ function owner(context: ProviderContext): string {
 
 function validateNested(properties: Record<string, unknown>, context: ProviderContext): ProviderValidationIssue[] {
   const issues: ProviderValidationIssue[] = [];
-  const invalid = (path: string, message: string) => issues.push({ code: "InvalidProperty", path, message });
-  const unsupported = (path: string, message: string) => issues.push({ code: "UnsupportedProperty", path, message });
+  const invalid = (path: string, message: string) => issues.push({ code: "InvalidProperty", path, pathSegments: providerValidationPathSegments(path), message });
+  const unsupported = (path: string, message: string) => issues.push({ code: "UnsupportedProperty", path, pathSegments: providerValidationPathSegments(path), message });
   if (properties.LayerName !== undefined && (typeof properties.LayerName !== "string" || !/^[A-Za-z0-9-_]{1,140}$/.test(properties.LayerName))) invalid("Properties.LayerName", "LayerName must contain 1-140 letters, numbers, hyphens, or underscores");
   if (!properties.LayerName && !/^[A-Za-z0-9-_]{1,140}$/.test(generatedName(context))) invalid("Properties.LayerName", "The generated layer name is invalid");
   if (!record(properties.Content)) invalid("Properties.Content", "Content must be an object");

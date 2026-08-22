@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import type { LambdaService } from "../../lambda.js";
 import type { StateStore } from "../../state.js";
 import type { LambdaState } from "../../types.js";
@@ -54,8 +55,8 @@ function schema(typeName: string): ProviderSchema {
 function validateServiceTokenFormat(value: unknown, context: ProviderContext, issues: ProviderValidationIssue[]): void {
   if (typeof value !== "string") return;
   const match = value.match(/^arn:(aws):lambda:([^:]+):(\d{12}):function:([A-Za-z0-9-_]{1,64})(?::([A-Za-z0-9-_.$]+))?$/);
-  if (!match) { issues.push({ code: "InvalidProperty", path: "Properties.ServiceToken", message: "ServiceToken must be a local Lambda function, version, or alias ARN" }); return; }
-  if (match[2] !== context.region || match[3] !== context.accountId) issues.push({ code: "InvalidProperty", path: "Properties.ServiceToken", message: "ServiceToken must use the stack account and Region" });
+  if (!match) { issues.push({ code: "InvalidProperty", path: "Properties.ServiceToken", pathSegments: providerValidationPathSegments("Properties.ServiceToken"), message: "ServiceToken must be a local Lambda function, version, or alias ARN" }); return; }
+  if (match[2] !== context.region || match[3] !== context.accountId) issues.push({ code: "InvalidProperty", path: "Properties.ServiceToken", pathSegments: providerValidationPathSegments("Properties.ServiceToken"), message: "ServiceToken must use the stack account and Region" });
 }
 
 function resolveTarget(store: StateStore, context: ProviderContext, serviceToken: string): TokenTarget {
@@ -173,7 +174,7 @@ export function createLambdaCustomResourceProvider(
       if (!record(properties)) return issues;
       validateServiceTokenFormat(properties.ServiceToken, context, issues);
       const timeout = properties.ServiceTimeout;
-      if (timeout !== undefined && (!Number.isSafeInteger(timeout) || Number(timeout) < MINIMUM_TIMEOUT_SECONDS || Number(timeout) > PROVIDER_DEADLINE_SECONDS)) issues.push({ code: "InvalidProperty", path: "Properties.ServiceTimeout", message: `ServiceTimeout must be an integer from ${MINIMUM_TIMEOUT_SECONDS} through ${PROVIDER_DEADLINE_SECONDS}` });
+      if (timeout !== undefined && (!Number.isSafeInteger(timeout) || Number(timeout) < MINIMUM_TIMEOUT_SECONDS || Number(timeout) > PROVIDER_DEADLINE_SECONDS)) issues.push({ code: "InvalidProperty", path: "Properties.ServiceTimeout", pathSegments: providerValidationPathSegments("Properties.ServiceTimeout"), message: `ServiceTimeout must be an integer from ${MINIMUM_TIMEOUT_SECONDS} through ${PROVIDER_DEADLINE_SECONDS}` });
       if (declaration?.validate) issues.push(...declaration.validate(properties));
       return issues;
     },

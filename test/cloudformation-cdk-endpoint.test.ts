@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CloudFormationClient, DeleteStackCommand, ListExportsCommand, ListImportsCommand, ListStacksCommand } from "@aws-sdk/client-cloudformation";
-import { DescribeTableCommand, DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DescribeContinuousBackupsCommand, DescribeTableCommand, DynamoDBClient, PutItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { HeadObjectCommand, ListObjectVersionsCommand, S3Client } from "@aws-sdk/client-s3";
 import { StackSim } from "../src/server.js";
 import { CLOUDFORMATION_SUPPORTED_ACTIONS } from "../src/cloudformation.js";
@@ -36,6 +36,8 @@ interface AwsCall {
 const sourceRoot = process.cwd();
 const fixture = join(sourceRoot, "test", "fixtures", "cdk", "empty-stack");
 const multiStackFixture = join(sourceRoot, "test", "fixtures", "cdk", "multi-stack");
+const tableV2Fixture = join(sourceRoot, "test", "fixtures", "cdk", "table-v2");
+const cfn17InvalidFixture = join(sourceRoot, "test", "fixtures", "cdk", "cfn17-invalid-table");
 const tripwire = join(sourceRoot, "test", "fixtures", "cdk", "network-tripwire.cjs");
 const region = "eu-west-1";
 
@@ -470,6 +472,63 @@ test("pinned unmodified default CDK deploys through local change sets for create
   } finally {
     cloudformation?.destroy(); await proxy?.close().catch(() => undefined); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true });
   }
+});
+
+test("CFN-18 unmodified default CDK deploys, restarts, no-ops, queries, and destroys the portable TableV2 fixture", { timeout: 900_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cdk-table-v2-deploy-"));
+  let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: join(root, "data"), region, authMode: "enforce", cdkBootstrap: true });
+  let proxy: Awaited<ReturnType<typeof tracingProxy>> | undefined; let dynamodb: DynamoDBClient | undefined; let command = "startup"; const calls: AwsCall[] = [];
+  let env: NodeJS.ProcessEnv;
+  const connect = async () => {
+    await simulator.start(); proxy = await tracingProxy(simulator.port, calls, () => command); env = { ...localCdkEnvironment(proxy.endpoint, root), CDK_DEFAULT_ACCOUNT: "000000000000", CDK_DEFAULT_REGION: region };
+    dynamodb = new DynamoDBClient({ endpoint: proxy.endpoint, region, credentials: { accessKeyId: "admin", secretAccessKey: "password" }, maxAttempts: 1 });
+  };
+  try {
+    await connect();
+    command = "table-v2-create";
+    const created = await runCdk(["--output", join(root, "create.out"), "deploy", "TableV2Fixture", "--require-approval", "never"], env!, cdkCommandTimeoutMs, tableV2Fixture);
+    assert.equal(created.code, 0, `${created.stdout}\n${created.stderr}\ntrace=${JSON.stringify(calls.filter(call => call.command === command), null, 2)}`);
+    const table = (await dynamodb!.send(new DescribeTableCommand({ TableName: "stacksim-shipments-dev-auth" }))).Table!;
+    assert.equal(table.GlobalSecondaryIndexes?.length, 3); assert.equal(table.DeletionProtectionEnabled, false); assert.equal(table.TableClassSummary?.TableClass, "STANDARD");
+    assert.equal((await dynamodb!.send(new DescribeContinuousBackupsCommand({ TableName: table.TableName! }))).ContinuousBackupsDescription?.PointInTimeRecoveryDescription?.RecoveryPeriodInDays, 35);
+    await dynamodb!.send(new PutItemCommand({ TableName: table.TableName, Item: { id: { S: "one" }, type: { S: "member" }, email: { S: "a@example.test" }, cid: { S: "company" }, userId: { S: "user" } } }));
+    for (const [IndexName, key, value] of [["email-index", "email", "a@example.test"], ["company-memberships-index", "cid", "company"], ["user-memberships-index", "userId", "user"]] as const) {
+      assert.equal((await dynamodb!.send(new QueryCommand({ TableName: table.TableName, IndexName, KeyConditionExpression: "#key = :value", ExpressionAttributeNames: { "#key": key }, ExpressionAttributeValues: { ":value": { S: value } } }))).Count, 1);
+    }
+
+    dynamodb!.destroy(); dynamodb = undefined; await proxy!.close(); proxy = undefined; await simulator.stop();
+    simulator = new StackSim({ port: 0, invokePort: 0, dataDir: join(root, "data"), region, authMode: "enforce", cdkBootstrap: true }); await connect();
+    command = "table-v2-noop-after-restart";
+    const noOp = await runCdk(["--output", join(root, "noop.out"), "deploy", "TableV2Fixture", "--require-approval", "never"], env!, cdkCommandTimeoutMs, tableV2Fixture);
+    assert.equal(noOp.code, 0, `${noOp.stdout}\n${noOp.stderr}\ntrace=${JSON.stringify(calls.filter(call => call.command === command), null, 2)}`); assert.match(`${noOp.stdout}\n${noOp.stderr}`, /no changes/i);
+
+    command = "table-v2-destroy";
+    const destroyed = await runCdk(["--output", join(root, "destroy.out"), "destroy", "TableV2Fixture", "--force"], env!, cdkCommandTimeoutMs, tableV2Fixture);
+    assert.equal(destroyed.code, 0, `${destroyed.stdout}\n${destroyed.stderr}\ntrace=${JSON.stringify(calls.filter(call => call.command === command), null, 2)}`);
+    await assert.rejects(dynamodb!.send(new DescribeTableCommand({ TableName: "stacksim-shipments-dev-auth" })), error => (error as any).name === "ResourceNotFoundException");
+    assert.ok(!calls.some(call => !["127.0.0.1", "localhost"].some(host => call.host.startsWith(host))), "all CDK traffic must remain local");
+  } finally { dynamodb?.destroy(); await proxy?.close().catch(() => undefined); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
+});
+
+test("CFN-17 unmodified CDK renders both production-provider validation events without bootstrap advice", { timeout: 600_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cdk-cfn17-invalid-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: join(root, "data"), region, authMode: "enforce", cdkBootstrap: true });
+  const calls: AwsCall[] = []; const command = "cfn17-invalid-deploy"; let proxy: Awaited<ReturnType<typeof tracingProxy>> | undefined;
+  try {
+    await simulator.start(); proxy = await tracingProxy(simulator.port, calls, () => command);
+    const env = { ...localCdkEnvironment(proxy.endpoint, root), CDK_DEFAULT_ACCOUNT: "000000000000", CDK_DEFAULT_REGION: region };
+    const deployed = await runCdk(["--output", join(root, "invalid.out"), "deploy", "Cfn17InvalidTable", "--require-approval", "never"], env, cdkCommandTimeoutMs, cfn17InvalidFixture);
+    assert.notEqual(deployed.code, 0, `${deployed.stdout}\n${deployed.stderr}`);
+    const output = `${deployed.stdout}\n${deployed.stderr}`;
+    assert.match(output, /\/Resources\/InvalidTable\/Properties\/StackSimInvalidAlpha/);
+    assert.match(output, /\/Resources\/InvalidTable\/Properties\/StackSimInvalidBeta/);
+    assert.match(output, /AWS::DynamoDB::Table does not support property StackSimInvalidAlpha/);
+    assert.match(output, /AWS::DynamoDB::Table does not support property StackSimInvalidBeta/);
+    assert.doesNotMatch(output, /AccessDenied|re-bootstrap|version 30|current version: unknown/i);
+    const actions = calls.filter(call => call.service === "cloudformation").map(call => call.action);
+    assert.ok(actions.includes("CreateChangeSet")); assert.ok(actions.includes("DescribeChangeSet")); assert.ok(actions.includes("DescribeEvents")); assert.ok(!actions.includes("ExecuteChangeSet"));
+    assert.ok(!simulator.store.regionState(region).tables["cfn17-invalid-table"], "failed planning must not create the invalid table");
+  } finally { await proxy?.close().catch(() => undefined); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
 });
 
 test("pinned unmodified CDK deploy --all imports retained data into an API stack and destroys in reverse dependency order", { timeout: 600_000 }, async () => {

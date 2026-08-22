@@ -210,20 +210,24 @@ test("declared property validation rejects unknown, missing, and wrong-type inpu
     {
       code: "InvalidType",
       path: "Properties.Enabled",
+      pathSegments: ["Properties", "Enabled"],
       message: "Test::Validated property Enabled must be boolean",
     },
     {
       code: "UnsupportedProperty",
       path: "Properties.Zed",
+      pathSegments: ["Properties", "Zed"],
       message: "Test::Validated does not support property Zed",
     },
     {
       code: "MissingRequiredProperty",
       path: "Properties.Name",
+      pathSegments: ["Properties", "Name"],
       message: "Test::Validated requires property Name",
     },
   ]);
   assert.equal(validateDeclaredProperties([], declaration)[0].path, "Properties");
+  assert.deepEqual(validateDeclaredProperties([], declaration)[0].pathSegments, ["Properties"]);
 });
 
 test("CDK metadata provider validates, canonicalizes, and dry-plans without service mutation", () => {

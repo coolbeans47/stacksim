@@ -117,6 +117,11 @@ function validateSse(value: any, now: number): TableState["sse"] {
   return { sseType: "KMS", status: "UPDATING", ...(value.KMSMasterKeyId ? { kmsMasterKeyId: value.KMSMasterKeyId } : {}), lastUpdatedAt: now };
 }
 
+function sseDescription(value: TableState["sse"]): any | undefined {
+  if (value.sseType !== "KMS") return undefined;
+  return { SSEType: value.sseType, Status: value.status, ...(value.kmsMasterKeyId ? { KMSMasterKeyArn: value.kmsMasterKeyId } : {}) };
+}
+
 function validateAutoScalingSetting(value: any): DynamoAutoScalingSettingState {
   if (!value || !Number.isInteger(value.MinimumUnits) || value.MinimumUnits < 1 || !Number.isInteger(value.MaximumUnits) || value.MaximumUnits < value.MinimumUnits) throw new AwsError("ValidationException", "Auto scaling MinimumUnits and MaximumUnits must be positive integers and maximum must not be lower than minimum");
   if (value.AutoScalingDisabled !== undefined && typeof value.AutoScalingDisabled !== "boolean") throw new AwsError("ValidationException", "AutoScalingDisabled must be a boolean");
@@ -172,13 +177,29 @@ function validateIndexAttributes(table: TableState, item: Item): void {
   }
 }
 
+/** Definitions required by the table and every currently visible index. */
+export function activeAttributeDefinitions(table: Pick<TableState, "keySchema" | "attributeDefinitions" | "localSecondaryIndexes" | "globalSecondaryIndexes">): TableState["attributeDefinitions"] {
+  const used = new Set([
+    ...table.keySchema,
+    ...(table.localSecondaryIndexes ?? []).flatMap(index => index.keySchema),
+    ...(table.globalSecondaryIndexes ?? []).flatMap(index => index.keySchema),
+  ].map(key => key.AttributeName));
+  const emitted = new Set<string>();
+  return table.attributeDefinitions.filter(definition => {
+    if (!used.has(definition.AttributeName) || emitted.has(definition.AttributeName)) return false;
+    emitted.add(definition.AttributeName);
+    return true;
+  });
+}
+
 function tableDescription(table: TableState, store?: StateStore): any {
   const description = (index: DynamoIndexState, local: boolean) => {
     const entries = indexItems(table, index);
     return { IndexName: index.indexName, KeySchema: index.keySchema, Projection: index.projection, IndexArn: `${table.arn}/index/${index.indexName}`, ItemCount: entries.length, IndexSizeBytes: Buffer.byteLength(JSON.stringify(entries)), ...(!local ? { IndexStatus: index.indexStatus ?? "ACTIVE", ...(index.backfilling !== undefined ? { Backfilling: index.backfilling } : {}), ProvisionedThroughput: throughputDescription(index.provisionedThroughput), ...(index.onDemandThroughput && Object.keys(index.onDemandThroughput).length ? { OnDemandThroughput: clone(index.onDemandThroughput) } : {}), ...(index.warmThroughput ? { WarmThroughput: warmThroughputDescription(index.warmThroughput) } : {}) } : {}) };
   };
+  const encryption = sseDescription(table.sse);
   return {
-    AttributeDefinitions: table.attributeDefinitions,
+    AttributeDefinitions: activeAttributeDefinitions(table),
     TableName: table.name,
     KeySchema: table.keySchema,
     TableStatus: table.status,
@@ -195,7 +216,7 @@ function tableDescription(table: TableState, store?: StateStore): any {
     WarmThroughput: table.warmThroughput
       ? warmThroughputDescription(table.warmThroughput)
       : { ...DYNAMODB_DEFAULT_WARM_THROUGHPUT, Status: table.status === "CREATING" ? "CREATING" : table.status === "UPDATING" ? "UPDATING" : "ACTIVE" },
-    SSEDescription: { SSEType: table.sse.sseType, Status: table.sse.status, ...(table.sse.kmsMasterKeyId ? { KMSMasterKeyArn: table.sse.kmsMasterKeyId } : {}) },
+    ...(encryption ? { SSEDescription: encryption } : {}),
     ...(table.restoreSummary ? { RestoreSummary: { RestoreDateTime: table.restoreSummary.restoreDateTime / 1000, RestoreInProgress: table.restoreSummary.restoreInProgress, ...(table.restoreSummary.sourceBackupArn ? { SourceBackupArn: table.restoreSummary.sourceBackupArn } : {}), ...(table.restoreSummary.sourceTableArn ? { SourceTableArn: table.restoreSummary.sourceTableArn } : {}) } } : {}),
     ...(table.streamSpecification ? { StreamSpecification: clone(table.streamSpecification) } : {}),
     ...(table.latestStreamArn ? { LatestStreamArn: table.latestStreamArn, LatestStreamLabel: table.latestStreamArn.split("/stream/")[1] } : {}),
@@ -511,6 +532,20 @@ export class DynamoDbService {
       if (table.status !== "CREATING" || table.restoreSummary?.restoreInProgress) continue;
       if (Object.values(this.imports).some(job => job.tableArn === table.arn && job.importStatus === "IN_PROGRESS")) continue;
       this.scheduleTableActivation(table);
+    }
+    for (const table of Object.values(this.tables)) {
+      if (table.status !== "UPDATING") continue;
+      this.transition(table, () => {
+        const deleting = (table.globalSecondaryIndexes ?? []).filter(index => index.indexStatus === "DELETING");
+        table.globalSecondaryIndexes = table.globalSecondaryIndexes?.filter(index => index.indexStatus !== "DELETING");
+        for (const index of deleting) delete table.contributorInsights[index.indexName];
+        for (const index of table.globalSecondaryIndexes ?? []) {
+          if (index.indexStatus === "CREATING" || index.indexStatus === "UPDATING") index.indexStatus = "ACTIVE";
+          if (index.backfilling !== undefined) index.backfilling = false;
+          if (index.warmThroughput) index.warmThroughput.status = "ACTIVE";
+        }
+        table.attributeDefinitions = activeAttributeDefinitions(table);
+      });
     }
     for (const table of Object.values(this.tables)) { const pending = Object.values(this.streams).filter(stream => stream.tableName === table.name && (stream.streamStatus === "ENABLING" || stream.streamStatus === "DISABLING")); if (pending.length) this.transition(table, () => { for (const stream of pending) stream.streamStatus = stream.streamStatus === "ENABLING" ? "ENABLED" : "DISABLED"; }); }
     if (!this.scheduler) return; const schedule = () => this.scheduler!.schedule(async () => { await this.sweepTtlNow(); schedule(); }, this.ttlSchedule.sweepEveryMs); schedule();
@@ -1006,7 +1041,8 @@ export class DynamoDbService {
   private async backupDescription(backup: DynamoBackupState, status?: "CREATING" | "AVAILABLE" | "DELETED"): Promise<any> {
     const source = (await this.backupPersistence.readSnapshot(backup.snapshotHash)).table;
     const indexDescription = (index: DynamoIndexState) => ({ IndexName: index.indexName, KeySchema: clone(index.keySchema), Projection: clone(index.projection), ...(index.provisionedThroughput ? { ProvisionedThroughput: { ReadCapacityUnits: index.provisionedThroughput.ReadCapacityUnits, WriteCapacityUnits: index.provisionedThroughput.WriteCapacityUnits } } : {}), ...(index.onDemandThroughput && Object.keys(index.onDemandThroughput).length ? { OnDemandThroughput: clone(index.onDemandThroughput) } : {}) });
-    return { BackupDetails: this.backupDetails(backup, status), SourceTableDetails: { BillingMode: source.billingMode, ItemCount: Object.keys(source.items).length, KeySchema: clone(source.keySchema), ...(source.onDemandThroughput && Object.keys(source.onDemandThroughput).length ? { OnDemandThroughput: clone(source.onDemandThroughput) } : {}), ...(source.provisionedThroughput ? { ProvisionedThroughput: { ReadCapacityUnits: source.provisionedThroughput.ReadCapacityUnits, WriteCapacityUnits: source.provisionedThroughput.WriteCapacityUnits } } : {}), TableArn: source.arn, TableCreationDateTime: source.createdAt / 1000, TableId: source.id, TableName: source.name, TableSizeBytes: backup.sizeBytes }, SourceTableFeatureDetails: { GlobalSecondaryIndexes: (source.globalSecondaryIndexes ?? []).map(indexDescription), LocalSecondaryIndexes: (source.localSecondaryIndexes ?? []).map(indexDescription), SSEDescription: { SSEType: source.sse.sseType, Status: source.sse.status, ...(source.sse.kmsMasterKeyId ? { KMSMasterKeyArn: source.sse.kmsMasterKeyId } : {}) }, TimeToLiveDescription: { ...(source.timeToLive.attributeName ? { AttributeName: source.timeToLive.attributeName } : {}), TimeToLiveStatus: source.timeToLive.status } } };
+    const encryption = sseDescription(source.sse);
+    return { BackupDetails: this.backupDetails(backup, status), SourceTableDetails: { BillingMode: source.billingMode, ItemCount: Object.keys(source.items).length, KeySchema: clone(source.keySchema), ...(source.onDemandThroughput && Object.keys(source.onDemandThroughput).length ? { OnDemandThroughput: clone(source.onDemandThroughput) } : {}), ...(source.provisionedThroughput ? { ProvisionedThroughput: { ReadCapacityUnits: source.provisionedThroughput.ReadCapacityUnits, WriteCapacityUnits: source.provisionedThroughput.WriteCapacityUnits } } : {}), TableArn: source.arn, TableCreationDateTime: source.createdAt / 1000, TableId: source.id, TableName: source.name, TableSizeBytes: backup.sizeBytes }, SourceTableFeatureDetails: { GlobalSecondaryIndexes: (source.globalSecondaryIndexes ?? []).map(indexDescription), LocalSecondaryIndexes: (source.localSecondaryIndexes ?? []).map(indexDescription), ...(encryption ? { SSEDescription: encryption } : {}), TimeToLiveDescription: { ...(source.timeToLive.attributeName ? { AttributeName: source.timeToLive.attributeName } : {}), TimeToLiveStatus: source.timeToLive.status } } };
   }
 
   private requireBackup(value: unknown): DynamoBackupState {
@@ -1593,7 +1629,7 @@ export class DynamoDbService {
       if (kinds.length !== 1) throw new AwsError("ValidationException", "Each index update must contain exactly one action");
       if (update.Create) {
         const existingGlobal = (next.globalSecondaryIndexes ?? []).map(index => ({ IndexName: index.indexName, KeySchema: index.keySchema, Projection: index.projection, ...(index.provisionedThroughput ? { ProvisionedThroughput: index.provisionedThroughput } : {}), ...(index.onDemandThroughput ? { OnDemandThroughput: index.onDemandThroughput } : {}), ...(index.warmThroughput ? { WarmThroughput: index.warmThroughput } : {}) }));
-        const definitionInput = { ...input, BillingMode: next.billingMode, KeySchema: next.keySchema, AttributeDefinitions: [...next.attributeDefinitions, ...(input.AttributeDefinitions ?? [])].filter((value, index, array) => array.findIndex(item => item.AttributeName === value.AttributeName) === index), GlobalSecondaryIndexes: [...existingGlobal, update.Create], LocalSecondaryIndexes: next.localSecondaryIndexes?.map(index => ({ IndexName: index.indexName, KeySchema: index.keySchema, Projection: index.projection })) ?? [] };
+        const definitionInput = { ...input, BillingMode: next.billingMode, KeySchema: next.keySchema, AttributeDefinitions: [...activeAttributeDefinitions(next), ...(input.AttributeDefinitions ?? [])].filter((value, index, array) => array.findIndex(item => item.AttributeName === value.AttributeName) === index), GlobalSecondaryIndexes: [...existingGlobal, update.Create], LocalSecondaryIndexes: next.localSecondaryIndexes?.map(index => ({ IndexName: index.indexName, KeySchema: index.keySchema, Projection: index.projection })) ?? [] };
         const created = validateIndexDefinitions(definitionInput, now).global.find(index => index.indexName === update.Create.IndexName)!;
         if ([...(next.localSecondaryIndexes ?? []), ...(next.globalSecondaryIndexes ?? [])].some(index => index.indexName === created.indexName)) throw new AwsError("ValidationException", "Index already exists");
         created.backfilling = true; next.globalSecondaryIndexes ??= []; next.globalSecondaryIndexes.push(created); next.attributeDefinitions = definitionInput.AttributeDefinitions;
@@ -1607,7 +1643,7 @@ export class DynamoDbService {
           if (request.OnDemandThroughput !== undefined) { if (next.billingMode !== "PAY_PER_REQUEST") throw new AwsError("ValidationException", "OnDemandThroughput is only valid in PAY_PER_REQUEST capacity mode"); const changed = validateOnDemandThroughput(request.OnDemandThroughput, true)!; const merged = { ...(index.onDemandThroughput ?? {}), ...changed }; for (const field of ["MaxReadRequestUnits", "MaxWriteRequestUnits"] as const) if (request.OnDemandThroughput[field] === -1) delete merged[field]; index.onDemandThroughput = merged; }
           if (request.WarmThroughput !== undefined) index.warmThroughput = validateWarmThroughput(request.WarmThroughput, now, "UPDATING");
           index.indexStatus = "UPDATING"; finishes.push(() => { index.indexStatus = "ACTIVE"; if (index.warmThroughput) index.warmThroughput.status = "ACTIVE"; });
-        } else { index.indexStatus = "DELETING"; finishes.push(() => { next.globalSecondaryIndexes = next.globalSecondaryIndexes?.filter(candidate => candidate !== index); delete next.contributorInsights[index.indexName]; }); }
+        } else { index.indexStatus = "DELETING"; finishes.push(() => { next.globalSecondaryIndexes = next.globalSecondaryIndexes?.filter(candidate => candidate !== index); delete next.contributorInsights[index.indexName]; next.attributeDefinitions = activeAttributeDefinitions(next); }); }
       }
     }
     if (input.StreamSpecification !== undefined) { const configured = this.configureStream(next, input.StreamSpecification); if (configured.retired) finishes.push(() => { configured.retired!.streamStatus = "DISABLED"; }); if (configured.enabled) finishes.push(() => { configured.enabled!.streamStatus = "ENABLED"; }); }

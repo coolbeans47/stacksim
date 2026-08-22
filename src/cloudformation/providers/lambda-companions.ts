@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import type { LambdaService } from "../../lambda.js";
 import { AwsError } from "../../errors.js";
@@ -105,16 +106,16 @@ function invoker(lambda: LambdaService) {
 function provisionedConcurrencyIssues(value: unknown, path: string, issues: ProviderValidationIssue[]): void {
   if (value === undefined) return;
   if (!record(value)) {
-    issues.push({ code: "InvalidType", path, message: "ProvisionedConcurrencyConfig must be an object" });
+    issues.push({ code: "InvalidType", path, pathSegments: providerValidationPathSegments(path), message: "ProvisionedConcurrencyConfig must be an object" });
     return;
   }
   for (const key of Object.keys(value)) {
-    if (key !== "ProvisionedConcurrentExecutions") issues.push({ code: "UnsupportedProperty", path: `${path}.${key}`, message: `ProvisionedConcurrencyConfig does not support ${key}` });
+    if (key !== "ProvisionedConcurrentExecutions") issues.push({ code: "UnsupportedProperty", path: `${path}.${key}`, pathSegments: providerValidationPathSegments(`${path}.${key}`), message: `ProvisionedConcurrencyConfig does not support ${key}` });
   }
   if (value.ProvisionedConcurrentExecutions === undefined) {
-    issues.push({ code: "MissingRequiredProperty", path: `${path}.ProvisionedConcurrentExecutions`, message: "ProvisionedConcurrentExecutions is required" });
+    issues.push({ code: "MissingRequiredProperty", path: `${path}.ProvisionedConcurrentExecutions`, pathSegments: providerValidationPathSegments(`${path}.ProvisionedConcurrentExecutions`), message: "ProvisionedConcurrentExecutions is required" });
   } else if (typeof value.ProvisionedConcurrentExecutions !== "number" || !Number.isInteger(value.ProvisionedConcurrentExecutions) || value.ProvisionedConcurrentExecutions < 1) {
-    issues.push({ code: "InvalidProperty", path: `${path}.ProvisionedConcurrentExecutions`, message: "ProvisionedConcurrentExecutions must be an integer of at least 1" });
+    issues.push({ code: "InvalidProperty", path: `${path}.ProvisionedConcurrentExecutions`, pathSegments: providerValidationPathSegments(`${path}.ProvisionedConcurrentExecutions`), message: "ProvisionedConcurrentExecutions must be an integer of at least 1" });
   }
 }
 
@@ -238,12 +239,12 @@ export function createLambdaPermissionProvider(lambda: LambdaService): Productio
     typeName: LAMBDA_PERMISSION_TYPE, providerVersion: 1, visibility: "production", schema: LAMBDA_PERMISSION_SCHEMA,
     validate(properties: unknown): readonly ProviderValidationIssue[] {
       const issues = validateDeclaredProperties(properties ?? {}, LAMBDA_PERMISSION_SCHEMA); if (!record(properties)) return issues;
-      if (typeof properties.Action === "string" && !/^(?:lambda:[A-Za-z*]+|\*)$/.test(properties.Action)) issues.push({ code: "InvalidProperty", path: "Properties.Action", message: "Action must be a Lambda action" });
-      if (typeof properties.SourceAccount === "string" && !/^\d{12}$/.test(properties.SourceAccount)) issues.push({ code: "InvalidProperty", path: "Properties.SourceAccount", message: "SourceAccount must contain 12 digits" });
-      if (typeof properties.FunctionUrlAuthType === "string" && !["AWS_IAM", "NONE"].includes(properties.FunctionUrlAuthType)) issues.push({ code: "InvalidProperty", path: "Properties.FunctionUrlAuthType", message: "FunctionUrlAuthType must be AWS_IAM or NONE" });
-      if (properties.FunctionUrlAuthType !== undefined && properties.Action !== "lambda:InvokeFunctionUrl") issues.push({ code: "InvalidProperty", path: "Properties.FunctionUrlAuthType", message: "FunctionUrlAuthType requires Action lambda:InvokeFunctionUrl" });
-      if (properties.InvokedViaFunctionUrl !== undefined && properties.Action !== "lambda:InvokeFunction") issues.push({ code: "InvalidProperty", path: "Properties.InvokedViaFunctionUrl", message: "InvokedViaFunctionUrl requires Action lambda:InvokeFunction" });
-      if (typeof properties.Principal === "string" && properties.Principal.endsWith(".amazonaws.com") && !new Set(["apigateway.amazonaws.com", "events.amazonaws.com", "s3.amazonaws.com", "secretsmanager.amazonaws.com", "sns.amazonaws.com"]).has(properties.Principal)) issues.push({ code: "InvalidProperty", path: "Properties.Principal", message: `Service principal ${properties.Principal} is not backed by a supported local invocation source` });
+      if (typeof properties.Action === "string" && !/^(?:lambda:[A-Za-z*]+|\*)$/.test(properties.Action)) issues.push({ code: "InvalidProperty", path: "Properties.Action", pathSegments: providerValidationPathSegments("Properties.Action"), message: "Action must be a Lambda action" });
+      if (typeof properties.SourceAccount === "string" && !/^\d{12}$/.test(properties.SourceAccount)) issues.push({ code: "InvalidProperty", path: "Properties.SourceAccount", pathSegments: providerValidationPathSegments("Properties.SourceAccount"), message: "SourceAccount must contain 12 digits" });
+      if (typeof properties.FunctionUrlAuthType === "string" && !["AWS_IAM", "NONE"].includes(properties.FunctionUrlAuthType)) issues.push({ code: "InvalidProperty", path: "Properties.FunctionUrlAuthType", pathSegments: providerValidationPathSegments("Properties.FunctionUrlAuthType"), message: "FunctionUrlAuthType must be AWS_IAM or NONE" });
+      if (properties.FunctionUrlAuthType !== undefined && properties.Action !== "lambda:InvokeFunctionUrl") issues.push({ code: "InvalidProperty", path: "Properties.FunctionUrlAuthType", pathSegments: providerValidationPathSegments("Properties.FunctionUrlAuthType"), message: "FunctionUrlAuthType requires Action lambda:InvokeFunctionUrl" });
+      if (properties.InvokedViaFunctionUrl !== undefined && properties.Action !== "lambda:InvokeFunction") issues.push({ code: "InvalidProperty", path: "Properties.InvokedViaFunctionUrl", pathSegments: providerValidationPathSegments("Properties.InvokedViaFunctionUrl"), message: "InvokedViaFunctionUrl requires Action lambda:InvokeFunction" });
+      if (typeof properties.Principal === "string" && properties.Principal.endsWith(".amazonaws.com") && !new Set(["apigateway.amazonaws.com", "events.amazonaws.com", "s3.amazonaws.com", "secretsmanager.amazonaws.com", "sns.amazonaws.com"]).has(properties.Principal)) issues.push({ code: "InvalidProperty", path: "Properties.Principal", pathSegments: providerValidationPathSegments("Properties.Principal"), message: `Service principal ${properties.Principal} is not backed by a supported local invocation source` });
       return issues;
     },
     canonicalize(properties: unknown, context: ProviderContext): PermissionModel {
@@ -335,7 +336,7 @@ export function createLambdaVersionProvider(lambda: LambdaService): ProductionRe
     validate(properties: unknown): readonly ProviderValidationIssue[] {
       const issues = validateDeclaredProperties(properties ?? {}, LAMBDA_VERSION_SCHEMA);
       if (record(properties)) {
-        if (properties.Description !== undefined && String(properties.Description).length > 256) issues.push({ code: "InvalidProperty", path: "Properties.Description", message: "Description must contain at most 256 characters" });
+        if (properties.Description !== undefined && String(properties.Description).length > 256) issues.push({ code: "InvalidProperty", path: "Properties.Description", pathSegments: providerValidationPathSegments("Properties.Description"), message: "Description must contain at most 256 characters" });
         provisionedConcurrencyIssues(properties.ProvisionedConcurrencyConfig, "Properties.ProvisionedConcurrencyConfig", issues);
       }
       return issues;
@@ -460,10 +461,10 @@ export function createLambdaAliasProvider(lambda: LambdaService): ProductionReso
     typeName: LAMBDA_ALIAS_TYPE, providerVersion: 1, visibility: "production", schema: LAMBDA_ALIAS_SCHEMA,
     validate(properties: unknown): readonly ProviderValidationIssue[] {
       const issues = validateDeclaredProperties(properties ?? {}, LAMBDA_ALIAS_SCHEMA); if (!record(properties)) return issues;
-      if (typeof properties.Name === "string" && (!/^[A-Za-z-_][A-Za-z0-9-_]{0,127}$/.test(properties.Name) || /^\d+$/.test(properties.Name))) issues.push({ code: "InvalidProperty", path: "Properties.Name", message: "Name must be a non-numeric Lambda alias name" });
-      if (typeof properties.FunctionVersion === "string" && !/^\d+$/.test(properties.FunctionVersion)) issues.push({ code: "InvalidProperty", path: "Properties.FunctionVersion", message: "Alias must target a published numeric version" });
+      if (typeof properties.Name === "string" && (!/^[A-Za-z-_][A-Za-z0-9-_]{0,127}$/.test(properties.Name) || /^\d+$/.test(properties.Name))) issues.push({ code: "InvalidProperty", path: "Properties.Name", pathSegments: providerValidationPathSegments("Properties.Name"), message: "Name must be a non-numeric Lambda alias name" });
+      if (typeof properties.FunctionVersion === "string" && !/^\d+$/.test(properties.FunctionVersion)) issues.push({ code: "InvalidProperty", path: "Properties.FunctionVersion", pathSegments: providerValidationPathSegments("Properties.FunctionVersion"), message: "Alias must target a published numeric version" });
       provisionedConcurrencyIssues(properties.ProvisionedConcurrencyConfig, "Properties.ProvisionedConcurrencyConfig", issues);
-      try { aliasRouting(properties.RoutingConfig); } catch (error) { issues.push({ code: "InvalidProperty", path: "Properties.RoutingConfig", message: error instanceof Error ? error.message : String(error) }); } return issues;
+      try { aliasRouting(properties.RoutingConfig); } catch (error) { issues.push({ code: "InvalidProperty", path: "Properties.RoutingConfig", pathSegments: providerValidationPathSegments("Properties.RoutingConfig"), message: error instanceof Error ? error.message : String(error) }); } return issues;
     },
     canonicalize(properties: unknown, context: ProviderContext): AliasModel {
       if (!record(properties)) throw new TypeError(`${LAMBDA_ALIAS_TYPE} Properties must be an object`); const issues = this.validate(properties, context); if (issues.length) throw new TypeError(issues.map(issue => `${issue.path}: ${issue.message}`).join("; "));

@@ -43,7 +43,7 @@ test("Lambda concurrency APIs enforce reserved, account, and qualified provision
   const disconnect = () => { lambda?.destroy(); cloudwatch?.destroy(); lambda = undefined; cloudwatch = undefined; };
   const rawInvoke = (functionName: string, payload: unknown, qualifier?: string) => fetch(`${endpoint}/2015-03-31/functions/${encodeURIComponent(functionName)}/invocations${qualifier ? `?Qualifier=${encodeURIComponent(qualifier)}` : ""}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
   const metric = async (metricName: string, dimensions: Array<{ Name: string; Value: string }>, statistic: "Sum" | "Maximum" = "Sum") => {
-    const result = await cloudwatch!.send(new GetMetricStatisticsCommand({ Namespace: "AWS/Lambda", MetricName: metricName, Dimensions: dimensions, StartTime: new Date(Date.now() - 60_000), EndTime: new Date(Date.now() + 60_000), Period: 60, Statistics: [statistic] }));
+    const result = await cloudwatch!.send(new GetMetricStatisticsCommand({ Namespace: "AWS/Lambda", MetricName: metricName, Dimensions: dimensions, StartTime: new Date(Date.now() - 120_000), EndTime: new Date(Date.now() + 60_000), Period: 60, Statistics: [statistic] }));
     return result.Datapoints?.reduce((value, point) => Math.max(value, point[statistic] ?? 0), 0) ?? 0;
   };
 

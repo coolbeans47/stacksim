@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import { AwsError } from "../../errors.js";
 import type {
@@ -47,7 +48,7 @@ export function issue(
   message: string,
   code: ProviderValidationIssue["code"] = "InvalidProperty",
 ): void {
-  issues.push({ code, path, message });
+  issues.push({ code, path, pathSegments: providerValidationPathSegments(path), message });
 }
 
 export function exactKeys(

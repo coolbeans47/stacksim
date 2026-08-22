@@ -101,6 +101,78 @@ test("CFN-15 non-Lambda providers use authoritative supported-service behavior",
       await assert.rejects(simulator.dynamodb.DescribeTable({ TableName: desired.TableName }), error => (error as { code?: string }).code === "ResourceNotFoundException");
     });
 
+    await t.test("CFN-18 GlobalTable backs the rich single-Region TableV2 lifecycle", async () => {
+      const provider = createDynamoDbGlobalTableProvider(simulator.dynamodb);
+      const providerContext = context("RichTableV2");
+      const properties = {
+        TableName: "cfn18-rich-table",
+        AttributeDefinitions: [
+          { AttributeName: "id", AttributeType: "S" }, { AttributeName: "type", AttributeType: "S" },
+          { AttributeName: "email", AttributeType: "S" }, { AttributeName: "cid", AttributeType: "S" }, { AttributeName: "userId", AttributeType: "S" },
+        ],
+        BillingMode: "PAY_PER_REQUEST",
+        GlobalSecondaryIndexes: [
+          { IndexName: "email-index", KeySchema: [{ AttributeName: "email", KeyType: "HASH" }], Projection: { ProjectionType: "KEYS_ONLY" } },
+          { IndexName: "company-memberships-index", KeySchema: [{ AttributeName: "cid", KeyType: "HASH" }, { AttributeName: "userId", KeyType: "RANGE" }], Projection: { ProjectionType: "KEYS_ONLY" } },
+          { IndexName: "user-memberships-index", KeySchema: [{ AttributeName: "userId", KeyType: "HASH" }, { AttributeName: "cid", KeyType: "RANGE" }], Projection: { ProjectionType: "KEYS_ONLY" } },
+        ],
+        KeySchema: [{ AttributeName: "id", KeyType: "HASH" }, { AttributeName: "type", KeyType: "RANGE" }],
+        Replicas: [{ Region: region, DeletionProtectionEnabled: true, GlobalSecondaryIndexes: [{ IndexName: "email-index" }, { IndexName: "company-memberships-index" }, { IndexName: "user-memberships-index" }], PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true, RecoveryPeriodInDays: 35 }, TableClass: "STANDARD", Tags: [{ Key: "Application", Value: "StackSimShipments" }, { Key: "Environment", Value: "dev" }] }],
+        SSESpecification: { SSEEnabled: false },
+      } as const;
+      const desired = provider.canonicalize(properties, providerContext);
+      assert.deepEqual(provider.plan(desired, desired, providerContext).action, "NO_OP");
+      assert.throws(() => provider.canonicalize({ ...properties, Replicas: [{ ...properties.Replicas[0], Region: "us-east-1" }] }, providerContext), /stack Region/);
+      assert.throws(() => provider.canonicalize({ ...properties, SSESpecification: { SSEEnabled: true } }, providerContext), /AWS-owned encryption/);
+
+      const created = await settle("RichTableV2", current => provider.create(desired, current));
+      assert.equal(created.status, "SUCCESS", JSON.stringify(created));
+      const table = (await simulator.dynamodb.DescribeTable({ TableName: desired.TableName })).Table;
+      assert.equal(table.DeletionProtectionEnabled, true);
+      assert.equal(table.GlobalSecondaryIndexes.length, 3);
+      assert.equal(table.TableClassSummary.TableClass, "STANDARD");
+      assert.equal((await simulator.dynamodb.DescribeContinuousBackups({ TableName: desired.TableName })).ContinuousBackupsDescription.PointInTimeRecoveryDescription.RecoveryPeriodInDays, 35);
+      const serviceTags = (await simulator.dynamodb.ListTagsOfResource({ ResourceArn: table.TableArn })).Tags;
+      assert.equal(serviceTags.length, 3, "two user tags plus the private owner tag");
+
+      await simulator.dynamodb.PutItem({ TableName: desired.TableName, Item: { id: { S: "one" }, type: { S: "member" }, email: { S: "a@example.test" }, cid: { S: "company" }, userId: { S: "user" } } });
+      for (const [IndexName, expression, names, values] of [
+        ["email-index", "#key = :value", { "#key": "email" }, { ":value": { S: "a@example.test" } }],
+        ["company-memberships-index", "#key = :value", { "#key": "cid" }, { ":value": { S: "company" } }],
+        ["user-memberships-index", "#key = :value", { "#key": "userId" }, { ":value": { S: "user" } }],
+      ] as const) assert.equal((await simulator.dynamodb.Query({ TableName: desired.TableName, IndexName, KeyConditionExpression: expression, ExpressionAttributeNames: names, ExpressionAttributeValues: values })).Count, 1);
+
+      const settings = provider.canonicalize({ ...properties, Replicas: [{ Region: region, DeletionProtectionEnabled: false, GlobalSecondaryIndexes: properties.Replicas[0].GlobalSecondaryIndexes, PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: false }, TableClass: "STANDARD_INFREQUENT_ACCESS", Tags: [{ Key: "Application", Value: "StackSimShipmentsV2" }] }] }, providerContext);
+      const updated = await settle("RichTableV2", current => provider.update(desired.TableName, desired, settings, current));
+      assert.equal(updated.status, "SUCCESS", JSON.stringify(updated));
+      const afterSettings = (await simulator.dynamodb.DescribeTable({ TableName: desired.TableName })).Table;
+      assert.equal(afterSettings.DeletionProtectionEnabled, false); assert.equal(afterSettings.TableClassSummary.TableClass, "STANDARD_INFREQUENT_ACCESS");
+      assert.equal((await simulator.dynamodb.DescribeContinuousBackups({ TableName: desired.TableName })).ContinuousBackupsDescription.PointInTimeRecoveryDescription.PointInTimeRecoveryStatus, "DISABLED");
+
+      const withoutEmail = provider.canonicalize({ ...properties, AttributeDefinitions: properties.AttributeDefinitions.filter(item => item.AttributeName !== "email"), GlobalSecondaryIndexes: properties.GlobalSecondaryIndexes.filter(item => item.IndexName !== "email-index"), Replicas: [{ Region: region, DeletionProtectionEnabled: false, GlobalSecondaryIndexes: properties.Replicas[0].GlobalSecondaryIndexes.filter(item => item.IndexName !== "email-index"), PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: false }, TableClass: "STANDARD_INFREQUENT_ACCESS", Tags: [{ Key: "Application", Value: "StackSimShipmentsV2" }] }] }, providerContext);
+      const removed = await settle("RichTableV2", current => provider.update(desired.TableName, settings, withoutEmail, current));
+      assert.equal(removed.status, "SUCCESS", JSON.stringify(removed));
+      assert.ok(!(await simulator.dynamodb.DescribeTable({ TableName: desired.TableName })).Table.AttributeDefinitions.some((item: any) => item.AttributeName === "email"));
+
+      assert.equal((await settle("RichTableV2", current => provider.delete(desired.TableName, withoutEmail, current))).status, "SUCCESS");
+    });
+
+    await t.test("CFN-18 stages both profile transitions through a no-mutation checkpoint", async () => {
+      const provider = createDynamoDbGlobalTableProvider(simulator.dynamodb); const providerContext = context("ProfileTransition");
+      const common = { TableName: "cfn18-profile-transition", AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }], BillingMode: "PAY_PER_REQUEST", KeySchema: [{ AttributeName: "id", KeyType: "HASH" }], StreamSpecification: { StreamViewType: "NEW_AND_OLD_IMAGES" } } as const;
+      const rich = provider.canonicalize({ ...common, Replicas: [{ Region: region }] }, providerContext);
+      const bare = provider.canonicalize({ ...common, Replicas: [{ Region: region }, { Region: "us-east-1" }] }, providerContext);
+      assert.equal((await settle("ProfileTransition", current => provider.create(rich, current))).status, "SUCCESS");
+      const first = await provider.update(rich.TableName, rich, bare, providerContext);
+      assert.equal(first.status, "IN_PROGRESS"); assert.equal(first.status === "IN_PROGRESS" ? first.checkpoint.callbackContext.transition : false, true);
+      assert.deepEqual(((await simulator.dynamodb.DescribeTable({ TableName: rich.TableName })).Table.Replicas ?? []).map((item: any) => item.RegionName), [], "the first transition callback must not mutate membership");
+      const toBare = await settle("ProfileTransition", current => provider.update(rich.TableName, rich, bare, current)); assert.equal(toBare.status, "SUCCESS", JSON.stringify(toBare));
+      assert.deepEqual((await simulator.dynamodb.DescribeTable({ TableName: rich.TableName })).Table.Replicas.map((item: any) => item.RegionName).sort(), [region, "us-east-1"].sort());
+      const toRich = await settle("ProfileTransition", current => provider.update(rich.TableName, bare, rich, current)); assert.equal(toRich.status, "SUCCESS", JSON.stringify(toRich));
+      assert.equal((await simulator.dynamodb.DescribeTable({ TableName: rich.TableName })).Table.Replicas?.length ?? 0, 0, "absence of the replica descriptor is the authoritative singleton form");
+      assert.equal((await settle("ProfileTransition", current => provider.delete(rich.TableName, rich, current))).status, "SUCCESS");
+    });
+
     await t.test("MetricStream manages executable local JSON delivery configuration and tags", async () => {
       const provider = createCloudWatchMetricStreamProvider(simulator.metrics);
       const providerContext = context("MetricStream");

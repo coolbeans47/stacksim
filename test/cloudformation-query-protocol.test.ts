@@ -189,6 +189,27 @@ test("raw CloudFormation Query uses AWS list encoding, escaping, request IDs, an
   }
 });
 
+test("CFN-17 raw DescribeEvents enforces its exact nested request and official XML projection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn17-query-events-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "off" }); let client: CloudFormationClient | undefined;
+  try {
+    await simulator.start(); const endpoint = `http://127.0.0.1:${simulator.port}`; client = new CloudFormationClient({ endpoint, region, credentials, maxAttempts: 1 });
+    const planned = await client.send(new CreateChangeSetCommand({ StackName: "raw-validation-events", ChangeSetName: "invalid", ChangeSetType: "CREATE", TemplateBody: JSON.stringify({ Resources: { InvalidTable: { Type: "AWS::DynamoDB::Table", Properties: { AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }], KeySchema: [{ AttributeName: "id", KeyType: "HASH" }], BillingMode: "PAY_PER_REQUEST", StackSimInvalidAlpha: true } } } }) }));
+    const described = await query(endpoint, { Action: "DescribeEvents", StackName: planned.StackId!, ChangeSetName: planned.Id!, "Filters.FailedEvents": "true" });
+    assert.equal(described.status, 200, described.text); assertRequestId(described);
+    assert.equal(members(described.text, "OperationEvents"), 1);
+    assert.equal(xmlValue(described.text, "EventType"), "VALIDATION_ERROR"); assert.equal(xmlValue(described.text, "ValidationFailureMode"), "FAIL"); assert.equal(xmlValue(described.text, "ValidationName"), "PROPERTY_VALIDATION"); assert.equal(xmlValue(described.text, "ValidationStatus"), "FAILED");
+    assert.equal(xmlValue(described.text, "ValidationPath"), "/Resources/InvalidTable/Properties/StackSimInvalidAlpha");
+    assert.equal(xmlValue(described.text, "ValidationStatusReason"), "AWS::DynamoDB::Table does not support property StackSimInvalidAlpha");
+    const unknown = await query(endpoint, { Action: "DescribeEvents", StackName: planned.StackId!, ChangeSetName: planned.Id!, "Filters.FailedEvents": "true", Unexpected: "x" });
+    assert.equal(unknown.status, 400); assert.equal(xmlValue(unknown.text, "Code"), "ValidationError"); assert.match(xmlValue(unknown.text, "Message") ?? "", /does not support member Unexpected/);
+    const wrongFilter = await query(endpoint, { Action: "DescribeEvents", StackName: planned.StackId!, ChangeSetName: planned.Id!, "Filters.FailedEvents": "false" });
+    assert.equal(wrongFilter.status, 400); assert.match(xmlValue(wrongFilter.text, "Message") ?? "", /FailedEvents=true/);
+    const mismatch = await query(endpoint, { Action: "DescribeEvents", StackName: "another-stack", ChangeSetName: planned.Id!, "Filters.FailedEvents": "true" });
+    assert.equal(mismatch.status, 400); assert.match(xmlValue(mismatch.text, "Message") ?? "", /does not exist|not found/i);
+  } finally { client?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
+});
+
 test("raw Query covers missing stacks, template input failures, and durable client-token replay", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-cfn01-query-boundaries-"));
   let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "off"});

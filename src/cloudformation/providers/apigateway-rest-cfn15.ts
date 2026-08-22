@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import type { ApiGatewayService } from "../../apigateway.js";
 import { AwsError } from "../../errors.js";
@@ -369,7 +370,7 @@ function issue(
   message: string,
   code: ProviderValidationIssue["code"] = "InvalidProperty",
 ): ProviderValidationIssue {
-  return { code, path, message };
+  return { code, path, pathSegments: providerValidationPathSegments(path), message };
 }
 
 function throwIssues(issues: readonly ProviderValidationIssue[]): void {

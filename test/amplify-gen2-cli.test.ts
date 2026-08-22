@@ -63,8 +63,8 @@ test("AMX-09 deploys the unchanged sandbox, writes usable outputs, survives rest
   assert.equal(evidence.calls.some((call: any) => call.service === "amplify"), false, "AMX-02A remains inactive");
 
   assert.equal(evidence.bootstrap.descriptor.compatibilityVersion, 23);
-  assert.equal(evidence.bootstrap.descriptor.policyRevision, 16);
-  assert.equal(evidence.bootstrap.bucket.managedRevision, 16);
+  assert.equal(evidence.bootstrap.descriptor.policyRevision, 17);
+  assert.equal(evidence.bootstrap.bucket.managedRevision, 17);
   assert.equal(evidence.bootstrap.versionParameter.Parameter.Value, "23");
   assert.deepEqual(Object.fromEntries(evidence.bootstrap.roles.map((role: any) => [role.purpose, role.roleName])), {
     deploy: "cdk-hnb659fds-deploy-role-000000000000-eu-west-1",

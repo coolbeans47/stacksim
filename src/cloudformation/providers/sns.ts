@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import type { SnsService } from "../../sns.js";
 import { AwsError } from "../../errors.js";
@@ -204,7 +205,7 @@ function missing(error: unknown): boolean {
   return error instanceof AwsError && error.code === "NotFound";
 }
 function issue(issues: ProviderValidationIssue[], path: string, message: string, code: ProviderValidationIssue["code"] = "InvalidProperty"): void {
-  issues.push({ code, path, message });
+  issues.push({ code, path, pathSegments: providerValidationPathSegments(path), message });
 }
 function exact(value: Record<string, unknown>, allowed: readonly string[], path: string, issues: ProviderValidationIssue[]): void {
   for (const key of Object.keys(value)) if (!allowed.includes(key)) issue(issues, `${path}.${key}`, `${path} does not support property ${key}`, "UnsupportedProperty");

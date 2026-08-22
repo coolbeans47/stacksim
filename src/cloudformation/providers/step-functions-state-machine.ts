@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import { AwsError } from "../../errors.js";
 import type { StepFunctionsService } from "../../step-functions.js";
@@ -229,8 +230,8 @@ export function createStepFunctionsStateMachineProvider(stepFunctions: StepFunct
     validate(properties: unknown, context: ProviderContext): readonly ProviderValidationIssue[] {
       const issues = validateDeclaredProperties(properties ?? {}, STEP_FUNCTIONS_STATE_MACHINE_SCHEMA);
       if (!record(properties)) return issues;
-      const invalid = (path: string, message: string) => issues.push({ code: "InvalidProperty", path, message });
-      const unsupported = (path: string, message: string) => issues.push({ code: "UnsupportedProperty", path, message });
+      const invalid = (path: string, message: string) => issues.push({ code: "InvalidProperty", path, pathSegments: providerValidationPathSegments(path), message });
+      const unsupported = (path: string, message: string) => issues.push({ code: "UnsupportedProperty", path, pathSegments: providerValidationPathSegments(path), message });
       if ((properties.Definition === undefined) === (properties.DefinitionString === undefined)) invalid("Properties", "Specify exactly one of Definition or DefinitionString");
       if (properties.DefinitionSubstitutions !== undefined && (!record(properties.DefinitionSubstitutions) || Object.values(properties.DefinitionSubstitutions).some(item => typeof item !== "string"))) invalid("Properties.DefinitionSubstitutions", "DefinitionSubstitutions must be a string map");
       const name = properties.StateMachineName;

@@ -34,7 +34,7 @@ export const CLOUDFORMATION_ACTION_INVENTORY = [
   { action: "DescribeAccountLimits", classification: "dependency" },
   { action: "DescribeChangeSet", classification: "implemented" },
   { action: "DescribeChangeSetHooks", classification: "non-goal" },
-  { action: "DescribeEvents", classification: "dependency" },
+  { action: "DescribeEvents", classification: "implemented" },
   { action: "DescribeGeneratedTemplate", classification: "dependency" },
   { action: "DescribeOrganizationsAccess", classification: "non-goal" },
   { action: "DescribePublisher", classification: "non-goal" },

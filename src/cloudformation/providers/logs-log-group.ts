@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import type { CloudWatchLogsService } from "../../cloudwatch-logs.js";
 import { AwsError } from "../../errors.js";
@@ -96,9 +97,9 @@ export function createLogGroupProvider(logs: CloudWatchLogsService): ProductionR
     validate(properties: unknown): readonly ProviderValidationIssue[] {
       const issues = validateDeclaredProperties(properties ?? {}, LOG_GROUP_SCHEMA);
       if (!record(properties)) return issues;
-      if (properties.LogGroupName !== undefined && (typeof properties.LogGroupName !== "string" || !/^[.\-_/#A-Za-z0-9]{1,512}$/.test(properties.LogGroupName) || properties.LogGroupName.startsWith("aws/"))) issues.push({ code: "InvalidProperty", path: "Properties.LogGroupName", message: "LogGroupName must be a valid 1-512 character group name outside the reserved aws/ prefix" });
-      if (properties.RetentionInDays !== undefined && (!Number.isInteger(properties.RetentionInDays) || !RETENTION_DAYS.has(Number(properties.RetentionInDays)))) issues.push({ code: "InvalidProperty", path: "Properties.RetentionInDays", message: "RetentionInDays is not supported by the Logs service" });
-      try { tags(properties.Tags); } catch (error) { issues.push({ code: "InvalidProperty", path: "Properties.Tags", message: error instanceof Error ? error.message : String(error) }); }
+      if (properties.LogGroupName !== undefined && (typeof properties.LogGroupName !== "string" || !/^[.\-_/#A-Za-z0-9]{1,512}$/.test(properties.LogGroupName) || properties.LogGroupName.startsWith("aws/"))) issues.push({ code: "InvalidProperty", path: "Properties.LogGroupName", pathSegments: providerValidationPathSegments("Properties.LogGroupName"), message: "LogGroupName must be a valid 1-512 character group name outside the reserved aws/ prefix" });
+      if (properties.RetentionInDays !== undefined && (!Number.isInteger(properties.RetentionInDays) || !RETENTION_DAYS.has(Number(properties.RetentionInDays)))) issues.push({ code: "InvalidProperty", path: "Properties.RetentionInDays", pathSegments: providerValidationPathSegments("Properties.RetentionInDays"), message: "RetentionInDays is not supported by the Logs service" });
+      try { tags(properties.Tags); } catch (error) { issues.push({ code: "InvalidProperty", path: "Properties.Tags", pathSegments: providerValidationPathSegments("Properties.Tags"), message: error instanceof Error ? error.message : String(error) }); }
       return issues;
     },
     canonicalize(properties: unknown, context: ProviderContext): LogGroupModel {

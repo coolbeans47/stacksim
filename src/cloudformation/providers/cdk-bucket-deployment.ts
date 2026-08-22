@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import { extname } from "node:path";
 import { evaluateRoleAuthorization, evaluateTrust } from "../../iam/evaluator.js";
@@ -143,7 +144,7 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 function issue(path: string, message: string, code: ProviderValidationIssue["code"] = "InvalidProperty"): ProviderValidationIssue {
-  return { code, path, message };
+  return { code, path, pathSegments: providerValidationPathSegments(path), message };
 }
 
 function same(left: unknown, right: unknown): boolean { return JSON.stringify(left) === JSON.stringify(right); }

@@ -1,3 +1,4 @@
+import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import { DYNAMODB_DEFAULT_WARM_THROUGHPUT, type DynamoDbService } from "../../dynamodb.js";
 import { AwsError } from "../../errors.js";
@@ -185,7 +186,7 @@ function ownerValue(context: ProviderContext): string {
 }
 
 function issue(issues: ProviderValidationIssue[], path: string, message: string, code: ProviderValidationIssue["code"] = "InvalidProperty"): void {
-  issues.push({ code, path, message });
+  issues.push({ code, path, pathSegments: providerValidationPathSegments(path), message });
 }
 
 function exactKeys(value: Record<string, unknown>, allowed: readonly string[], path: string, issues: ProviderValidationIssue[]): void {
