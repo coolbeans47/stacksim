@@ -25,6 +25,7 @@ function inferService(path, headers) {
   if (pathname.startsWith("/_stacksim/api/eventbridge/")) return "events";
   if (pathname.startsWith("/_stacksim/api/sns/")) return "sns";
   if (pathname.startsWith("/_stacksim/api/rds/")) return "rds";
+  if (pathname.startsWith("/_stacksim/api/xray/")) return "xray";
   if (pathname.startsWith("/_stacksim/api/")) return "sts";
   if (pathname.startsWith("/v2/email/")) return "ses";
   if (/^\/(?:2014-11-13|2015-03-31|2016-08-19|2017-03-31|2017-10-31|2018-10-31|2019-09-25|2019-09-30|2020-04-22|2020-06-30|2021-07-20|2021-10-31|2021-11-15|2024-08-31|2025-11-30|2025-12-01)(?:\/|$)/.test(pathname)) return "lambda";

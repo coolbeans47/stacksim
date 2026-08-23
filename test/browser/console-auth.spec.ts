@@ -98,6 +98,11 @@ test.describe("authenticated console", () => {
     expect(signed.some(value => value.includes("/lambda/aws4_request"))).toBeTruthy();
     expect(signed.some(value => value.includes("/appsync/aws4_request"))).toBeTruthy();
 
+    await page.locator('[data-service-key="xray"]').getByRole("link", { name: "View resources" }).click();
+    await expect(page).toHaveURL(/#\/xray\/traces$/);
+    await expect(page.getByRole("heading", { name: "Traces", exact: true })).toBeVisible();
+    expect(signed.some(value => value.includes("/xray/aws4_request"))).toBeTruthy();
+
     await page.goto(`${consoleUrl}#/appsync/apis`);
     await expect(page.getByRole("heading", { name: "No GraphQL APIs" })).toBeVisible();
     await page.reload();
