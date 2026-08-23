@@ -8,6 +8,7 @@ export const CLOUDFORMATION_RESOURCE_INVENTORY = [
   "AWS::ApiGatewayV2::Integration", "AWS::ApiGatewayV2::IntegrationResponse", "AWS::ApiGatewayV2::Model", "AWS::ApiGatewayV2::Route", "AWS::ApiGatewayV2::RouteResponse", "AWS::ApiGatewayV2::Stage",
   "AWS::AppSync::ApiKey", "AWS::AppSync::DataSource", "AWS::AppSync::FunctionConfiguration", "AWS::AppSync::GraphQLApi", "AWS::AppSync::GraphQLSchema", "AWS::AppSync::Resolver",
   "AWS::CDK::Metadata", "AWS::CloudFormation::CustomResource", "AWS::CloudFormation::Stack",
+  "AWS::CloudFront::Distribution", "AWS::CloudFront::Function", "AWS::CloudFront::OriginAccessControl", "AWS::CloudFront::ResponseHeadersPolicy",
   "AWS::CloudWatch::Alarm", "AWS::CloudWatch::AnomalyDetector", "AWS::CloudWatch::CompositeAlarm", "AWS::CloudWatch::Dashboard", "AWS::CloudWatch::InsightRule", "AWS::CloudWatch::MetricStream",
   "AWS::Cognito::UserPool", "AWS::Cognito::UserPoolClient", "AWS::Cognito::UserPoolDomain", "AWS::Cognito::UserPoolGroup",
   "AWS::Cognito::UserPoolIdentityProvider", "AWS::Cognito::UserPoolResourceServer", "AWS::Cognito::UserPoolUser", "AWS::Cognito::UserPoolUserToGroupAttachment",

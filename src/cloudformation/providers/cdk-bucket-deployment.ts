@@ -45,19 +45,36 @@ const MAX_ASSET_OBJECT_BYTES = 64 * 1024 * 1024;
 const MAX_ASSET_ENTRY_COUNT = 10_000;
 const MAX_DESTINATION_OBJECT_COUNT = 10_000;
 const MAX_MUTATIONS_PER_CALLBACK = 256;
+const MAX_SOURCE_COUNT = 32;
+const MAX_MARKERS_PER_SOURCE = 256;
+const MAX_MARKER_TOKEN_BYTES = 128;
+const MAX_MARKER_VALUE_BYTES = 16 * 1024;
+const MAX_CACHE_CONTROL_BYTES = 1_024;
+const MAX_INVALIDATION_PATH_COUNT = 3_000;
+const MAX_INVALIDATION_PATH_BYTES = 4_000;
 const BASIC_EXECUTION_POLICY = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole";
+const MARKER_TOKEN = /^<<marker:0x[a-f0-9]{4}:[0-9]+>>$/;
+const ANY_MARKER_TOKEN = /<<marker[^<>]*>>/g;
+
+export interface CdkBucketDeploymentInvalidationPort {
+  createInvalidation(distributionId: string, paths: string[], callerReference: string): Promise<{ id: string; status: string }>;
+  getInvalidation(distributionId: string, invalidationId: string): { id: string; status: string } | Promise<{ id: string; status: string }>;
+}
 
 export interface CdkBucketDeploymentModel {
   readonly ServiceToken: string;
   readonly SourceBucketNames: readonly string[];
   readonly SourceObjectKeys: readonly string[];
-  /** The emitted helper's empty marker selects the root of the single source archive. */
-  readonly SourceMarkers: readonly Readonly<Record<string, never>>[];
+  readonly SourceMarkers: readonly Readonly<Record<string, string>>[];
+  readonly SourceMarkersConfig: readonly Readonly<Record<string, never>>[];
   readonly DestinationBucketName: string;
   readonly DestinationBucketArn?: string;
   readonly DestinationBucketKeyPrefix?: string;
   readonly WaitForDistributionInvalidation: true;
-  readonly Prune: true;
+  readonly Prune: boolean;
+  readonly SystemMetadata?: Readonly<{ "cache-control"?: string }>;
+  readonly DistributionId?: string;
+  readonly DistributionPaths?: readonly string[];
   readonly OutputObjectKeys: true;
   /** The pinned helper defaults this property to true when it is omitted. */
   readonly RetainOnDelete: boolean;
@@ -71,11 +88,15 @@ export const CDK_BUCKET_DEPLOYMENT_SCHEMA: ProviderSchema = Object.freeze({
     SourceBucketNames: Object.freeze({ valueType: "array", required: true, updateBehavior: "MUTABLE" }),
     SourceObjectKeys: Object.freeze({ valueType: "array", required: true, updateBehavior: "MUTABLE" }),
     SourceMarkers: Object.freeze({ valueType: "array", updateBehavior: "MUTABLE" }),
+    SourceMarkersConfig: Object.freeze({ valueType: "array", updateBehavior: "MUTABLE" }),
     DestinationBucketName: Object.freeze({ valueType: "string", required: true, updateBehavior: "MUTABLE" }),
     DestinationBucketArn: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
     DestinationBucketKeyPrefix: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
     WaitForDistributionInvalidation: Object.freeze({ valueType: "boolean", required: true, updateBehavior: "MUTABLE" }),
     Prune: Object.freeze({ valueType: "boolean", required: true, updateBehavior: "MUTABLE" }),
+    SystemMetadata: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
+    DistributionId: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
+    DistributionPaths: Object.freeze({ valueType: "array", updateBehavior: "MUTABLE" }),
     OutputObjectKeys: Object.freeze({ valueType: "boolean", required: true, updateBehavior: "MUTABLE" }),
     RetainOnDelete: Object.freeze({ valueType: "boolean", updateBehavior: "MUTABLE" }),
   }),
@@ -101,15 +122,19 @@ interface SourcePin {
 }
 
 interface DeploymentCheckpoint extends ProviderJsonObject {
-  readonly phase: "deploy" | "delete-old";
+  readonly phase: "deploy" | "delete-old" | "delete" | "invalidation-intent" | "invalidation-created";
   readonly sourcePins: Array<{ versionId: string; sha256: string; etag: string; size: number }>;
   readonly batchStarted: boolean;
+  readonly invalidationPhase: "" | "create" | "update" | "rollback" | "delete";
+  readonly invalidationCallerReference: string;
+  readonly invalidationId: string;
 }
 
 interface PreparedObject {
   readonly key: string;
   readonly content: Buffer;
   readonly contentType: string;
+  readonly cacheControl?: string;
 }
 
 interface PreparedDeployment {
@@ -122,6 +147,7 @@ interface AcceptedAssetReference {
   readonly logicalId: string;
   readonly resourceType: string;
   readonly propertyPath: string;
+  readonly elementIndex?: number;
   readonly bucket: string;
   readonly key: string;
   readonly versionId: string;
@@ -131,7 +157,7 @@ interface AcceptedAssetReference {
 }
 
 interface AcceptedAssetManifest {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 1 | 2;
   readonly references: readonly AcceptedAssetReference[];
 }
 
@@ -170,13 +196,27 @@ function validateModel(properties: unknown, context: ProviderContext): ProviderV
   const sourceBuckets = properties.SourceBucketNames;
   const sourceKeys = properties.SourceObjectKeys;
   const sourceMarkers = properties.SourceMarkers;
-  if (Array.isArray(sourceBuckets) && (sourceBuckets.length !== 1 || sourceBuckets.some(value => typeof value !== "string" || !value))) invalid("Properties.SourceBucketNames", "The pinned BucketDeployment slice requires exactly one nonempty source bucket name");
-  if (Array.isArray(sourceKeys) && (sourceKeys.length !== 1 || sourceKeys.some(value => typeof value !== "string" || !/^[a-f0-9]{64}\.zip$/.test(value)))) invalid("Properties.SourceObjectKeys", "The pinned BucketDeployment slice requires exactly one immutable 64-hex .zip asset key");
+  const sourceMarkersConfig = properties.SourceMarkersConfig;
+  if (Array.isArray(sourceBuckets) && (!sourceBuckets.length || sourceBuckets.length > MAX_SOURCE_COUNT || sourceBuckets.some(value => typeof value !== "string" || !value))) invalid("Properties.SourceBucketNames", `BucketDeployment requires 1..${MAX_SOURCE_COUNT} nonempty source bucket names`);
+  if (Array.isArray(sourceKeys) && (!sourceKeys.length || sourceKeys.length > MAX_SOURCE_COUNT || sourceKeys.some(value => typeof value !== "string" || !/^[a-f0-9]{64}\.zip$/.test(value)))) invalid("Properties.SourceObjectKeys", `BucketDeployment requires 1..${MAX_SOURCE_COUNT} immutable 64-hex .zip asset keys`);
   if (Array.isArray(sourceBuckets) && Array.isArray(sourceKeys) && sourceBuckets.length !== sourceKeys.length) invalid("Properties.SourceObjectKeys", "Source bucket and object-key arrays must have equal length");
-  if (sourceMarkers !== undefined && Array.isArray(sourceMarkers) && (sourceMarkers.length !== 1 || sourceMarkers.some(value => !record(value) || Object.keys(value).length !== 0))) invalid("Properties.SourceMarkers", "The pinned BucketDeployment slice requires exactly one empty source marker selecting the archive root");
+  if (sourceMarkers !== undefined && Array.isArray(sourceMarkers) && sourceMarkers.some(value => !record(value)
+    || Object.keys(value).length > MAX_MARKERS_PER_SOURCE
+    || Object.entries(value).some(([token, replacement]) => !MARKER_TOKEN.test(token)
+      || Buffer.byteLength(token, "utf8") > MAX_MARKER_TOKEN_BYTES
+      || typeof replacement !== "string"
+      || Buffer.byteLength(replacement, "utf8") > MAX_MARKER_VALUE_BYTES))) {
+    invalid("Properties.SourceMarkers", "SourceMarkers must contain only bounded exact marker tokens mapped to resolved scalar strings");
+  }
+  if (Array.isArray(sourceMarkers)) {
+    const tokens = sourceMarkers.flatMap(value => record(value) ? Object.keys(value) : []);
+    if (new Set(tokens).size !== tokens.length) invalid("Properties.SourceMarkers", "Source marker tokens must be unique across the ordered sources");
+  }
   if (Array.isArray(sourceKeys) && Array.isArray(sourceMarkers) && sourceKeys.length !== sourceMarkers.length) invalid("Properties.SourceMarkers", "Source object-key and marker arrays must have equal length");
+  if (sourceMarkersConfig !== undefined && Array.isArray(sourceMarkersConfig) && sourceMarkersConfig.some(value => !record(value) || Object.keys(value).length !== 0)) invalid("Properties.SourceMarkersConfig", "CFR-01 supports only empty SourceMarkersConfig entries");
+  if (Array.isArray(sourceKeys) && Array.isArray(sourceMarkersConfig) && sourceKeys.length !== sourceMarkersConfig.length) invalid("Properties.SourceMarkersConfig", "Source object-key and marker-config arrays must have equal length");
   const expectedBootstrap = cdkBootstrapNames(context.accountId, context.region).bucketName;
-  if (Array.isArray(sourceBuckets) && sourceBuckets.length === 1 && sourceBuckets[0] !== expectedBootstrap) invalid("Properties.SourceBucketNames", "Source assets must come from the simulator-managed CDK bootstrap bucket");
+  if (Array.isArray(sourceBuckets) && sourceBuckets.some(value => value !== expectedBootstrap)) invalid("Properties.SourceBucketNames", "Every source asset must come from the simulator-managed CDK bootstrap bucket");
   if (typeof properties.DestinationBucketName === "string") {
     if (!properties.DestinationBucketName) invalid("Properties.DestinationBucketName", "DestinationBucketName must not be empty");
     if (Array.isArray(sourceBuckets) && sourceBuckets.includes(properties.DestinationBucketName)) invalid("Properties.DestinationBucketName", "The bootstrap source bucket and application destination bucket must be different");
@@ -190,8 +230,21 @@ function validateModel(properties: unknown, context: ProviderContext): ProviderV
     if (Buffer.byteLength(prefix, "utf8") > 104) invalid("Properties.DestinationBucketKeyPrefix", "DestinationBucketKeyPrefix must be at most 104 UTF-8 bytes for the pinned construct");
     if (prefix.includes("\0") || prefix.includes("\\") || prefix.startsWith("/") || /[\u0000-\u001f\u007f]/.test(prefix) || prefix.split("/").some(part => part === "." || part === "..")) invalid("Properties.DestinationBucketKeyPrefix", "DestinationBucketKeyPrefix is unsafe");
   }
-  if (properties.WaitForDistributionInvalidation !== true) invalid("Properties.WaitForDistributionInvalidation", "Only WaitForDistributionInvalidation=true is supported; CloudFront is not part of this helper slice");
-  if (properties.Prune !== true) invalid("Properties.Prune", "The pinned helper slice requires Prune=true");
+  if (properties.WaitForDistributionInvalidation !== true) invalid("Properties.WaitForDistributionInvalidation", "Only WaitForDistributionInvalidation=true is supported");
+  if (properties.Prune !== true && properties.Prune !== false) invalid("Properties.Prune", "Prune must be a boolean");
+  const systemMetadata = properties.SystemMetadata;
+  if (systemMetadata !== undefined && record(systemMetadata)) {
+    const keys = Object.keys(systemMetadata);
+    if (keys.some(key => key !== "cache-control")) invalid("Properties.SystemMetadata", "CFR-01 supports only lowercase cache-control system metadata");
+    const cacheControl = systemMetadata["cache-control"];
+    if (cacheControl !== undefined && (typeof cacheControl !== "string" || Buffer.byteLength(cacheControl, "utf8") > MAX_CACHE_CONTROL_BYTES || /[\r\n]/.test(cacheControl))) invalid("Properties.SystemMetadata.cache-control", "cache-control must be a bounded string without CR or LF");
+  }
+  const distributionId = properties.DistributionId;
+  const distributionPaths = properties.DistributionPaths;
+  if (distributionId !== undefined && typeof distributionId === "string" && (!distributionId || Buffer.byteLength(distributionId, "utf8") > 128 || !/^[A-Z0-9]+$/.test(distributionId))) invalid("Properties.DistributionId", "DistributionId is invalid");
+  if (distributionId !== undefined && (!Array.isArray(distributionPaths) || !distributionPaths.length)) invalid("Properties.DistributionPaths", "DistributionId requires nonempty DistributionPaths");
+  if (distributionId === undefined && distributionPaths !== undefined) invalid("Properties.DistributionPaths", "DistributionPaths requires DistributionId");
+  if (Array.isArray(distributionPaths) && (!distributionPaths.length || distributionPaths.length > MAX_INVALIDATION_PATH_COUNT || distributionPaths.some(path => typeof path !== "string" || !path.startsWith("/") || Buffer.byteLength(path, "utf8") > MAX_INVALIDATION_PATH_BYTES || path.slice(0, -1).includes("*")))) invalid("Properties.DistributionPaths", "Invalidation paths are invalid or exceed the CFR-01 bounds");
   if (properties.OutputObjectKeys !== true) invalid("Properties.OutputObjectKeys", "The pinned helper slice requires OutputObjectKeys=true");
   if (typeof properties.ServiceToken === "string") {
     const expression = new RegExp(`^arn:${context.partition}:lambda:${context.region}:${context.accountId}:function:[A-Za-z0-9-_]{1,64}$`);
@@ -211,11 +264,12 @@ function physicalId(context: ProviderContext): string {
 }
 
 function success(model: CdkBucketDeploymentModel, context: ProviderContext, id = physicalId(context)): ProviderSuccess<CdkBucketDeploymentModel> {
-  const destinationBucketArn = model.DestinationBucketArn ?? `arn:${context.partition}:s3:::${model.DestinationBucketName}`;
+  const attributes: Record<string, unknown> = { SourceObjectKeys: [...model.SourceObjectKeys] };
+  if (model.DestinationBucketArn !== undefined) attributes.DestinationBucketArn = model.DestinationBucketArn;
   return {
     status: "SUCCESS",
     physicalId: id,
-    model: { physicalId: id, properties: model, attributes: { SourceObjectKeys: [...model.SourceObjectKeys], DestinationBucketArn: destinationBucketArn } },
+    model: { physicalId: id, properties: model, attributes },
   };
 }
 
@@ -227,6 +281,7 @@ function failure(error: unknown): ProviderFailed {
   if (error instanceof DeploymentBoundaryError) return { status: "FAILED", errorCode: error.code, message: error.message };
   if (error instanceof AwsError && error.code === "InvalidParameterValueException") return { status: "FAILED", errorCode: "InvalidAsset", message: error.message };
   if (error instanceof AwsError) return { status: "FAILED", errorCode: error.code, message: `The backing S3 operation failed (${error.code})` };
+  if (record(error) && typeof error.code === "string") return { status: "FAILED", errorCode: error.code, message: "The CloudFront invalidation operation failed" };
   return { status: "FAILED", errorCode: "InternalFailure", message: "The local BucketDeployment provider failed without exposing asset data or host paths" };
 }
 
@@ -301,17 +356,23 @@ function requireRoleGrants(store: StateStore, roleArn: string, checks: ReadonlyA
 }
 
 function commonRoleChecks(model: CdkBucketDeploymentModel): Array<readonly [string, string]> {
-  const sourceBucketArn = `arn:aws:s3:::${model.SourceBucketNames[0]}`;
-  const sourceObjectArn = `${sourceBucketArn}/${model.SourceObjectKeys[0]}`;
   const destinationBucketArn = model.DestinationBucketArn ?? `arn:aws:s3:::${model.DestinationBucketName}`;
-  return [
-    ["s3:GetBucketLocation", sourceBucketArn],
-    ["s3:ListBucket", sourceBucketArn],
-    ["s3:GetObject", sourceObjectArn],
-    ["s3:GetObjectVersion", sourceObjectArn],
+  const checks: Array<readonly [string, string]> = [
     ["s3:GetBucketLocation", destinationBucketArn],
     ["s3:ListBucket", destinationBucketArn],
   ];
+  for (let index = 0; index < model.SourceObjectKeys.length; index += 1) {
+    const sourceBucketArn = `arn:aws:s3:::${model.SourceBucketNames[index]}`;
+    const sourceObjectArn = `${sourceBucketArn}/${model.SourceObjectKeys[index]}`;
+    checks.push(["s3:GetBucketLocation", sourceBucketArn], ["s3:ListBucket", sourceBucketArn], ["s3:GetObject", sourceObjectArn], ["s3:GetObjectVersion", sourceObjectArn]);
+  }
+  return checks;
+}
+
+function invalidationRoleChecks(model: CdkBucketDeploymentModel, context: ProviderContext): Array<readonly [string, string]> {
+  if (!model.DistributionId) return [];
+  const arn = `arn:${context.partition}:cloudfront::${context.accountId}:distribution/${model.DistributionId}`;
+  return [["cloudfront:CreateInvalidation", arn], ["cloudfront:GetInvalidation", arn]];
 }
 
 function contentTypeFor(key: string): string {
@@ -326,40 +387,87 @@ function contentTypeFor(key: string): string {
   return types[extension] ?? "application/octet-stream";
 }
 
-function prepareObjects(entries: readonly ValidatedZipEntry[], model: CdkBucketDeploymentModel): PreparedObject[] {
-  const objects = entries.map(entry => ({ key: destinationKey(model.DestinationBucketKeyPrefix, entry.name), content: entry.content, contentType: contentTypeFor(entry.name) }));
-  if (objects.some(object => Buffer.byteLength(object.key, "utf8") > 1_024)) throw new DeploymentBoundaryError("InvalidAsset", "A deployed object key exceeds S3's 1,024-byte key limit");
-  return objects.sort((left, right) => Buffer.compare(Buffer.from(left.key), Buffer.from(right.key)));
+function replaceSourceMarkers(entries: readonly ValidatedZipEntry[], markers: Readonly<Record<string, string>>): ValidatedZipEntry[] {
+  const output = entries.map(entry => ({ ...entry, content: Buffer.from(entry.content) }));
+  for (const [token, replacement] of Object.entries(markers).sort(([left], [right]) => left.localeCompare(right))) {
+    const needle = Buffer.from(token, "utf8");
+    let occurrences = 0;
+    let foundEntry = -1;
+    let foundAt = -1;
+    for (let entryIndex = 0; entryIndex < output.length; entryIndex += 1) {
+      for (let offset = 0; (offset = output[entryIndex].content.indexOf(needle, offset)) >= 0; offset += needle.length) { occurrences += 1; foundEntry = entryIndex; foundAt = offset; }
+    }
+    if (occurrences !== 1) throw new DeploymentBoundaryError("InvalidAsset", occurrences ? "A source marker token occurs more than once in its source" : "A declared source marker token does not occur in its source");
+    const content = output[foundEntry].content;
+    output[foundEntry] = { ...output[foundEntry], content: Buffer.concat([content.subarray(0, foundAt), Buffer.from(replacement, "utf8"), content.subarray(foundAt + needle.length)]) };
+  }
+  for (const entry of output) {
+    ANY_MARKER_TOKEN.lastIndex = 0;
+    if (ANY_MARKER_TOKEN.test(entry.content.toString("utf8"))) throw new DeploymentBoundaryError("InvalidAsset", "A source contains an unknown or leftover marker token");
+    if (entry.content.length > MAX_ASSET_OBJECT_BYTES) throw new DeploymentBoundaryError("InvalidAsset", "Marker expansion makes an object exceed the per-object limit");
+  }
+  return output;
+}
+
+function overlayObjects(
+  target: Map<string, PreparedObject>,
+  entries: readonly ValidatedZipEntry[],
+  model: CdkBucketDeploymentModel,
+): void {
+  for (const entry of entries) {
+    const key = destinationKey(model.DestinationBucketKeyPrefix, entry.name);
+    if (Buffer.byteLength(key, "utf8") > 1_024) throw new DeploymentBoundaryError("InvalidAsset", "A deployed object key exceeds S3's 1,024-byte key limit");
+    target.set(key, {
+      key,
+      content: entry.content,
+      contentType: contentTypeFor(entry.name),
+      ...(model.SystemMetadata?.["cache-control"] === undefined ? {} : { cacheControl: model.SystemMetadata["cache-control"] }),
+    });
+  }
 }
 
 function checkpoint(value: Readonly<ProviderJsonObject> | undefined): DeploymentCheckpoint | undefined {
   if (!value) return undefined;
   const phase = value.phase;
   const pins = value.sourcePins;
-  if ((phase !== "deploy" && phase !== "delete-old") || typeof value.batchStarted !== "boolean" || !Array.isArray(pins) || pins.length !== 1 || pins.some(pin => !record(pin)
+  const phases = new Set(["deploy", "delete-old", "delete", "invalidation-intent", "invalidation-created"]);
+  const invalidationPhases = new Set(["create", "update", "rollback", "delete"]);
+  if (typeof phase !== "string" || !phases.has(phase) || typeof value.batchStarted !== "boolean" || !Array.isArray(pins) || pins.length > MAX_SOURCE_COUNT || pins.some(pin => !record(pin)
     || typeof pin.versionId !== "string" || !pin.versionId
     || typeof pin.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(pin.sha256)
     || typeof pin.etag !== "string" || !pin.etag
-    || typeof pin.size !== "number" || !Number.isSafeInteger(pin.size) || pin.size < 0)) {
+    || typeof pin.size !== "number" || !Number.isSafeInteger(pin.size) || pin.size < 0)
+    || ((phase === "invalidation-intent" || phase === "invalidation-created")
+      && (typeof value.invalidationPhase !== "string" || !invalidationPhases.has(value.invalidationPhase)
+        || typeof value.invalidationCallerReference !== "string" || !value.invalidationCallerReference
+        || (phase === "invalidation-created" && (typeof value.invalidationId !== "string" || !value.invalidationId))))) {
     throw new DeploymentBoundaryError("InvalidCheckpoint", "The durable BucketDeployment checkpoint is malformed");
   }
-  return { phase, batchStarted: value.batchStarted, sourcePins: pins.map(pin => ({ versionId: String((pin as any).versionId), sha256: String((pin as any).sha256), etag: String((pin as any).etag), size: Number((pin as any).size) })) };
+  return {
+    phase: phase as DeploymentCheckpoint["phase"],
+    batchStarted: value.batchStarted,
+    sourcePins: pins.map(pin => ({ versionId: String((pin as any).versionId), sha256: String((pin as any).sha256), etag: String((pin as any).etag), size: Number((pin as any).size) })),
+    invalidationPhase: value.invalidationPhase === undefined ? "" : value.invalidationPhase as DeploymentCheckpoint["invalidationPhase"],
+    invalidationCallerReference: value.invalidationCallerReference === undefined ? "" : String(value.invalidationCallerReference),
+    invalidationId: value.invalidationId === undefined ? "" : String(value.invalidationId),
+  };
 }
 
-async function acceptedSourcePin(store: StateStore, model: CdkBucketDeploymentModel, context: ProviderContext): Promise<SourcePin | undefined> {
+async function acceptedSourcePin(store: StateStore, model: CdkBucketDeploymentModel, context: ProviderContext, elementIndex: number): Promise<SourcePin | undefined> {
   const journal = new CloudFormationJournal(store.root, store.accountId, context.region);
-  const artifactId = `${context.operationId}.${context.logicalId}.SourceObjectKeys.json`;
+  const artifactId = `${context.operationId}.${context.logicalId}.SourceObjectKeys.${elementIndex}.json`;
   const stack = store.regionState(context.region).cloudformation.stacks[context.stackId];
   const active = stack?.activeOperation;
   const rollback = stack?.stackStatus === "UPDATE_ROLLBACK_IN_PROGRESS" || active?.kind === "ROLLBACK_UPDATE";
   let reference: AcceptedAssetReference | undefined;
   if (rollback && active?.previousTemplateArtifactId) {
     const manifest = await journal.readJsonArtifact<AcceptedAssetManifest>("assets", `${active.previousTemplateArtifactId}.json`);
-    if (!manifest || manifest.schemaVersion !== 1 || !Array.isArray(manifest.references)) throw new DeploymentBoundaryError("MissingAssetCheckpoint", "The previous BucketDeployment source-asset manifest required for rollback is missing");
-    reference = manifest.references.find(candidate => candidate.logicalId === context.logicalId && candidate.propertyPath === "SourceObjectKeys");
+    if (!manifest || ![1, 2].includes(manifest.schemaVersion) || !Array.isArray(manifest.references)) throw new DeploymentBoundaryError("MissingAssetCheckpoint", "The previous BucketDeployment source-asset manifest required for rollback is missing");
+    reference = manifest.references.find(candidate => candidate.logicalId === context.logicalId && candidate.propertyPath === "SourceObjectKeys" && (candidate.elementIndex ?? 0) === elementIndex);
     if (!reference) throw new DeploymentBoundaryError("MissingAssetCheckpoint", "The previous BucketDeployment source asset required for rollback is missing from its manifest");
   } else {
     reference = await journal.readJsonArtifact<AcceptedAssetReference>("assets", artifactId);
+    if (reference === undefined && elementIndex === 0) reference = await journal.readJsonArtifact<AcceptedAssetReference>("assets", `${context.operationId}.${context.logicalId}.SourceObjectKeys.json`);
   }
   if (reference === undefined) {
     // Direct provider harnesses and rollback of an older resource do not have a
@@ -373,8 +481,9 @@ async function acceptedSourcePin(store: StateStore, model: CdkBucketDeploymentMo
     || reference.logicalId !== context.logicalId
     || reference.resourceType !== CDK_BUCKET_DEPLOYMENT_TYPE
     || reference.propertyPath !== "SourceObjectKeys"
-    || reference.bucket !== model.SourceBucketNames[0]
-    || reference.key !== model.SourceObjectKeys[0]
+    || (reference.elementIndex ?? 0) !== elementIndex
+    || reference.bucket !== model.SourceBucketNames[elementIndex]
+    || reference.key !== model.SourceObjectKeys[elementIndex]
     || typeof reference.versionId !== "string" || !reference.versionId
     || typeof reference.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(reference.sha256)
     || typeof reference.etag !== "string" || !reference.etag
@@ -392,20 +501,49 @@ async function prepareDeployment(
   pins?: readonly SourcePin[],
 ): Promise<PreparedDeployment> {
   const fn = await validatePinnedHelper(s3, store, model, context);
-  requireRoleGrants(store, fn.role, commonRoleChecks(model));
-  const sourceBucket = await s3.readBucketInternal(model.SourceBucketNames[0]);
-  if (!sourceBucket || sourceBucket.managedBy !== "stacksim-cdk-bootstrap" || sourceBucket.region !== context.region) throw new DeploymentBoundaryError("InvalidSource", "The source bucket is not the simulator-managed CDK bootstrap bucket in this Region");
+  requireRoleGrants(store, fn.role, [...commonRoleChecks(model), ...invalidationRoleChecks(model, context)]);
+  if (pins && pins.length !== model.SourceObjectKeys.length) throw new DeploymentBoundaryError("InvalidCheckpoint", "The source-pin count does not match the accepted multi-source deployment");
+  for (const bucketName of model.SourceBucketNames) {
+    const sourceBucket = await s3.readBucketInternal(bucketName);
+    if (!sourceBucket || sourceBucket.managedBy !== "stacksim-cdk-bootstrap" || sourceBucket.region !== context.region) throw new DeploymentBoundaryError("InvalidSource", "A source bucket is not the simulator-managed CDK bootstrap bucket in this Region");
+  }
   const destinationBucket = await s3.readBucketInternal(model.DestinationBucketName);
   if (!destinationBucket || destinationBucket.managedBy) throw new DeploymentBoundaryError("InvalidDestination", "The destination must be a separate application-owned S3 bucket in this Region");
-  const accepted = await acceptedSourcePin(store, model, context);
-  if (pins?.[0] && accepted && (pins[0].versionId !== accepted.versionId || pins[0].sha256 !== accepted.sha256 || pins[0].etag !== accepted.etag || pins[0].size !== accepted.size)) {
-    throw new DeploymentBoundaryError("AssetChanged", "The durable deployment callback and accepted source-asset checkpoints disagree");
+  const overlay = new Map<string, PreparedObject>();
+  const sourcePins: SourcePin[] = [];
+  const sources: Array<Awaited<ReturnType<S3Service["readObjectBytes"]>>> = [];
+  let archiveBytes = 0;
+  for (let index = 0; index < model.SourceObjectKeys.length; index += 1) {
+    const accepted = await acceptedSourcePin(store, model, context, index);
+    if (pins?.[index] && accepted && (pins[index].versionId !== accepted.versionId || pins[index].sha256 !== accepted.sha256 || pins[index].etag !== accepted.etag || pins[index].size !== accepted.size)) {
+      throw new DeploymentBoundaryError("AssetChanged", "A durable deployment callback and accepted source-asset checkpoint disagree");
+    }
+    const expected = pins?.[index] ?? accepted;
+    const source = await s3.readObjectBytes(model.SourceBucketNames[index], model.SourceObjectKeys[index], expected?.versionId, MAX_SOURCE_ARCHIVE_BYTES);
+    archiveBytes += source.size;
+    if (archiveBytes > MAX_SOURCE_ARCHIVE_BYTES) throw new DeploymentBoundaryError("InvalidAsset", "The combined source archives exceed the deployment archive limit");
+    if (expected && (source.versionId !== expected.versionId || source.sha256 !== expected.sha256 || source.etag !== expected.etag || source.size !== expected.size)) throw new DeploymentBoundaryError("AssetChanged", "A pinned source asset fingerprint changed during deployment");
+    sources.push(source);
+    sourcePins.push({ versionId: source.versionId, sha256: source.sha256, etag: source.etag, size: source.size });
   }
-  const expected = pins?.[0] ?? accepted;
-  const source = await s3.readObjectBytes(model.SourceBucketNames[0], model.SourceObjectKeys[0], expected?.versionId, MAX_SOURCE_ARCHIVE_BYTES);
-  if (expected && (source.versionId !== expected.versionId || source.sha256 !== expected.sha256 || source.etag !== expected.etag || source.size !== expected.size)) throw new DeploymentBoundaryError("AssetChanged", "The pinned source asset fingerprint changed during deployment");
-  const archive = readZipEntries(source.body, { maxEntryCount: MAX_ASSET_ENTRY_COUNT, maxEntrySize: MAX_ASSET_OBJECT_BYTES, maxUncompressedSize: MAX_EXPANDED_ASSET_BYTES });
-  const objects = prepareObjects(archive.entries, model);
+  // Do not begin extraction until every declared source has been independently
+  // version/digest/ETag/size pinned.
+  let expandedBytes = 0;
+  let expandedEntries = 0;
+  for (let index = 0; index < sources.length; index += 1) {
+    const source = sources[index];
+    const archive = readZipEntries(source.body, {
+      maxEntryCount: Math.max(1, MAX_ASSET_ENTRY_COUNT - expandedEntries),
+      maxEntrySize: MAX_ASSET_OBJECT_BYTES,
+      maxUncompressedSize: Math.max(1, MAX_EXPANDED_ASSET_BYTES - expandedBytes),
+    });
+    expandedEntries += archive.entries.length;
+    expandedBytes += archive.entries.reduce((sum, entry) => sum + entry.content.length, 0);
+    if (expandedEntries > MAX_ASSET_ENTRY_COUNT || expandedBytes > MAX_EXPANDED_ASSET_BYTES) throw new DeploymentBoundaryError("InvalidAsset", "The combined expanded sources exceed the deployment limits");
+    overlayObjects(overlay, replaceSourceMarkers(archive.entries, model.SourceMarkers[index]), model);
+  }
+  const objects = [...overlay.values()].sort((left, right) => Buffer.compare(Buffer.from(left.key), Buffer.from(right.key)));
+  if (objects.length > MAX_DESTINATION_OBJECT_COUNT || objects.reduce((sum, object) => sum + object.content.length, 0) > MAX_EXPANDED_ASSET_BYTES) throw new DeploymentBoundaryError("InvalidAsset", "The merged deployment output exceeds the destination limits");
   const current = await s3.listCurrentObjectsInternal(model.DestinationBucketName, prefixRoot(model.DestinationBucketKeyPrefix));
   if (current.length > MAX_DESTINATION_OBJECT_COUNT) throw new DeploymentBoundaryError("DestinationLimitExceeded", `The destination prefix contains more than ${MAX_DESTINATION_OBJECT_COUNT} current objects`);
   const destinationBucketArn = `arn:aws:s3:::${model.DestinationBucketName}`;
@@ -414,22 +552,25 @@ async function prepareDeployment(
   const desiredKeys = new Set(objects.map(object => object.key));
   if (model.Prune) for (const object of current) if (!desiredKeys.has(object.key)) checks.push(["s3:DeleteObject", `${destinationBucketArn}/${object.key}`]);
   requireRoleGrants(store, fn.role, checks);
-  return { objects, current, sourcePins: [{ versionId: source.versionId, sha256: source.sha256, etag: source.etag, size: source.size }] };
+  return { objects, current, sourcePins };
 }
 
 function deploymentCheckpoint(phase: DeploymentCheckpoint["phase"], pins: readonly SourcePin[], batchStarted: boolean): DeploymentCheckpoint {
-  return { phase, batchStarted, sourcePins: pins.map(pin => ({ versionId: pin.versionId, sha256: pin.sha256, etag: pin.etag, size: pin.size })) };
+  return { phase, batchStarted, sourcePins: pins.map(pin => ({ versionId: pin.versionId, sha256: pin.sha256, etag: pin.etag, size: pin.size })), invalidationPhase: "", invalidationCallerReference: "", invalidationId: "" };
 }
 
-async function deployPrepared(s3: S3Service, prepared: PreparedDeployment, model: CdkBucketDeploymentModel, context: ProviderContext, phase: DeploymentCheckpoint["phase"], batchStarted: boolean): Promise<ProviderInProgress | ProviderSuccess<CdkBucketDeploymentModel>> {
+async function deployPrepared(s3: S3Service, prepared: PreparedDeployment, model: CdkBucketDeploymentModel, context: ProviderContext, phase: DeploymentCheckpoint["phase"], batchStarted: boolean): Promise<ProviderInProgress | true> {
   const current = new Map(prepared.current.map(object => [object.key, object]));
   const mutationLimit = batchStarted ? MAX_MUTATIONS_PER_CALLBACK : 1;
   let mutations = 0;
   for (const object of prepared.objects) {
     const existing = current.get(object.key);
     const expectedDigest = createHash("sha256").update(object.content).digest("hex");
-    if (existing?.sha256 === expectedDigest && existing.contentType === object.contentType && !existing.contentEncoding && !existing.contentDisposition && !existing.contentLanguage && !existing.cacheControl && !existing.expires && !Object.keys(existing.metadata).length && !Object.keys(existing.tags).length) continue;
-    const result = await s3.putObjectBytesInternal(model.DestinationBucketName, object.key, object.content, { contentType: object.contentType });
+    // aws s3 sync does not retroactively rewrite metadata when the object bytes
+    // and key are unchanged. A subsequently copied object receives the current
+    // exact metadata value.
+    if (existing?.sha256 === expectedDigest && existing.contentType === object.contentType && !existing.contentEncoding && !existing.contentDisposition && !existing.contentLanguage && !existing.expires && !Object.keys(existing.metadata).length && !Object.keys(existing.tags).length) continue;
+    const result = await s3.putObjectBytesInternal(model.DestinationBucketName, object.key, object.content, { contentType: object.contentType, ...(object.cacheControl === undefined ? {} : { cacheControl: object.cacheControl }) });
     if (result.changed && ++mutations >= mutationLimit) return inProgress(context, deploymentCheckpoint(phase, prepared.sourcePins, true));
   }
   if (model.Prune) {
@@ -440,24 +581,82 @@ async function deployPrepared(s3: S3Service, prepared: PreparedDeployment, model
       if (result.deleted && ++mutations >= mutationLimit) return inProgress(context, deploymentCheckpoint(phase, prepared.sourcePins, true));
     }
   }
-  return success(model, context);
+  return true;
 }
 
-async function deletePrefix(s3: S3Service, store: StateStore, model: CdkBucketDeploymentModel, context: ProviderContext): Promise<ProviderDeleteResult | ProviderInProgress> {
+async function deletePrefix(s3: S3Service, store: StateStore, model: CdkBucketDeploymentModel, context: ProviderContext): Promise<boolean> {
   const fn = await validatePinnedHelper(s3, store, model, context);
   const bucket = await s3.readBucketInternal(model.DestinationBucketName);
-  if (!bucket) return { status: "NOT_FOUND", physicalId: physicalId(context) };
+  if (!bucket) return true;
   const current = await s3.listCurrentObjectsInternal(model.DestinationBucketName, prefixRoot(model.DestinationBucketKeyPrefix));
   if (current.length > MAX_DESTINATION_OBJECT_COUNT) throw new DeploymentBoundaryError("DestinationLimitExceeded", `The destination prefix contains more than ${MAX_DESTINATION_OBJECT_COUNT} current objects`);
-  if (!current.length) return { status: "SUCCESS", physicalId: physicalId(context) };
+  if (!current.length) return true;
   const destinationBucketArn = `arn:aws:s3:::${model.DestinationBucketName}`;
   requireRoleGrants(store, fn.role, [["s3:ListBucket", destinationBucketArn], ...current.slice(0, MAX_MUTATIONS_PER_CALLBACK).map(object => ["s3:DeleteObject", `${destinationBucketArn}/${object.key}`] as const)]);
   let deleted = 0;
   for (const object of current.slice(0, MAX_MUTATIONS_PER_CALLBACK)) if ((await s3.deleteObjectInternal(model.DestinationBucketName, object.key)).deleted) deleted += 1;
-  return deleted > 0 && current.length > deleted ? { status: "IN_PROGRESS", callbackAfterMs: 1, checkpoint: { schemaVersion: 1, physicalId: physicalId(context), callbackContext: {} } } : { status: "SUCCESS", physicalId: physicalId(context) };
+  return !(deleted > 0 && current.length > deleted);
 }
 
-export function createCdkBucketDeploymentProvider(s3: S3Service, store: StateStore): ProductionResourceProvider<CdkBucketDeploymentModel> {
+function invalidationCallerReference(context: ProviderContext, phase: Exclude<DeploymentCheckpoint["invalidationPhase"], "">): string {
+  return `stacksim-${phase}-${createHash("sha256").update(`${context.resourceOperationId}\0${context.logicalId}\0${phase}`).digest("hex")}`;
+}
+
+function invalidationCheckpoint(
+  phase: "invalidation-intent" | "invalidation-created",
+  pins: readonly SourcePin[],
+  invalidationPhase: Exclude<DeploymentCheckpoint["invalidationPhase"], "">,
+  context: ProviderContext,
+  invalidationId?: string,
+): DeploymentCheckpoint {
+  return {
+    phase,
+    batchStarted: true,
+    sourcePins: pins.map(pin => ({ ...pin })),
+    invalidationPhase,
+    invalidationCallerReference: invalidationCallerReference(context, invalidationPhase),
+    invalidationId: invalidationId ?? "",
+  };
+}
+
+function operationInvalidationPhase(store: StateStore, context: ProviderContext, fallback: "create" | "update"): "create" | "update" | "rollback" {
+  const stack = store.regionState(context.region).cloudformation.stacks[context.stackId];
+  return stack?.stackStatus === "UPDATE_ROLLBACK_IN_PROGRESS" || stack?.activeOperation?.kind === "ROLLBACK_UPDATE" ? "rollback" : fallback;
+}
+
+function beginInvalidation(
+  model: CdkBucketDeploymentModel,
+  context: ProviderContext,
+  pins: readonly SourcePin[],
+  phase: Exclude<DeploymentCheckpoint["invalidationPhase"], "">,
+): ProviderInProgress | ProviderSuccess<CdkBucketDeploymentModel> {
+  return model.DistributionId ? inProgress(context, invalidationCheckpoint("invalidation-intent", pins, phase, context)) : success(model, context);
+}
+
+async function continueInvalidation(
+  s3: S3Service,
+  store: StateStore,
+  invalidations: CdkBucketDeploymentInvalidationPort | undefined,
+  model: CdkBucketDeploymentModel,
+  context: ProviderContext,
+  prior: DeploymentCheckpoint,
+): Promise<ProviderInProgress | ProviderSuccess<CdkBucketDeploymentModel>> {
+  if (!model.DistributionId || !model.DistributionPaths || !invalidations) throw new DeploymentBoundaryError("ProviderConfiguration", "CloudFront invalidation support is unavailable for this BucketDeployment");
+  const phase = prior.invalidationPhase as Exclude<DeploymentCheckpoint["invalidationPhase"], "">;
+  if (prior.invalidationCallerReference !== invalidationCallerReference(context, phase)) throw new DeploymentBoundaryError("InvalidCheckpoint", "The durable invalidation caller reference is malformed");
+  const fn = await validatePinnedHelper(s3, store, model, context);
+  requireRoleGrants(store, fn.role, invalidationRoleChecks(model, context));
+  if (prior.phase === "invalidation-intent") {
+    const created = await invalidations.createInvalidation(model.DistributionId, [...model.DistributionPaths], prior.invalidationCallerReference!);
+    if (!created.id) throw new DeploymentBoundaryError("InvalidationFailed", "CloudFront returned an invalid invalidation identity");
+    return inProgress(context, invalidationCheckpoint("invalidation-created", prior.sourcePins, phase, context, created.id));
+  }
+  const current = await invalidations.getInvalidation(model.DistributionId, prior.invalidationId!);
+  if (current.id !== prior.invalidationId) throw new DeploymentBoundaryError("InvalidationFailed", "CloudFront returned a different invalidation identity");
+  return current.status === "Completed" ? success(model, context) : inProgress(context, prior);
+}
+
+export function createCdkBucketDeploymentProvider(s3: S3Service, store: StateStore, invalidations?: CdkBucketDeploymentInvalidationPort): ProductionResourceProvider<CdkBucketDeploymentModel> {
   return {
     typeName: CDK_BUCKET_DEPLOYMENT_TYPE,
     providerVersion: 1,
@@ -470,16 +669,24 @@ export function createCdkBucketDeploymentProvider(s3: S3Service, store: StateSto
       const issues = validateModel(properties, context);
       if (issues.length) throwValidation(issues);
       const value = properties as Record<string, unknown>;
+      const sourceBuckets = value.SourceBucketNames as unknown[];
+      const sourceKeys = value.SourceObjectKeys as unknown[];
+      const markerValues = value.SourceMarkers as unknown[] | undefined;
+      const markerConfigValues = value.SourceMarkersConfig as unknown[] | undefined;
       return Object.freeze({
         ServiceToken: String(value.ServiceToken),
-        SourceBucketNames: Object.freeze([String((value.SourceBucketNames as unknown[])[0])]),
-        SourceObjectKeys: Object.freeze([String((value.SourceObjectKeys as unknown[])[0])]),
-        SourceMarkers: Object.freeze([Object.freeze({})]),
+        SourceBucketNames: Object.freeze(sourceBuckets.map(String)),
+        SourceObjectKeys: Object.freeze(sourceKeys.map(String)),
+        SourceMarkers: Object.freeze((markerValues ?? sourceKeys.map(() => ({}))).map(item => Object.freeze(Object.fromEntries(Object.entries(item as Record<string, unknown>).map(([key, replacement]) => [key, String(replacement)]))))),
+        SourceMarkersConfig: Object.freeze((markerConfigValues ?? sourceKeys.map(() => ({}))).map(() => Object.freeze({}))),
         DestinationBucketName: String(value.DestinationBucketName),
         ...(value.DestinationBucketArn === undefined ? {} : { DestinationBucketArn: String(value.DestinationBucketArn) }),
         ...(canonicalPrefix(value.DestinationBucketKeyPrefix) ? { DestinationBucketKeyPrefix: canonicalPrefix(value.DestinationBucketKeyPrefix) } : {}),
         WaitForDistributionInvalidation: true,
-        Prune: true,
+        Prune: Boolean(value.Prune),
+        ...(value.SystemMetadata === undefined ? {} : { SystemMetadata: Object.freeze({ ...value.SystemMetadata as Record<string, string> }) }),
+        ...(value.DistributionId === undefined ? {} : { DistributionId: String(value.DistributionId) }),
+        ...(value.DistributionPaths === undefined ? {} : { DistributionPaths: Object.freeze((value.DistributionPaths as unknown[]).map(String)) }),
         OutputObjectKeys: true,
         RetainOnDelete: value.RetainOnDelete === undefined ? true : Boolean(value.RetainOnDelete),
       });
@@ -498,9 +705,12 @@ export function createCdkBucketDeploymentProvider(s3: S3Service, store: StateSto
     async create(desired: CdkBucketDeploymentModel, context: ProviderContext) {
       try {
         const prior = checkpoint(context.callbackContext);
+        if (prior?.phase === "invalidation-intent" || prior?.phase === "invalidation-created") return await continueInvalidation(s3, store, invalidations, desired, context, prior);
+        if (desired.DistributionId && !invalidations) throw new DeploymentBoundaryError("ProviderConfiguration", "CloudFront invalidation support is unavailable for this BucketDeployment");
         const prepared = await prepareDeployment(s3, store, desired, context, prior?.sourcePins);
         if (!prior) return inProgress(context, deploymentCheckpoint("deploy", prepared.sourcePins, false));
-        return await deployPrepared(s3, prepared, desired, context, prior.phase, prior.batchStarted);
+        const deployed = await deployPrepared(s3, prepared, desired, context, prior.phase, prior.batchStarted);
+        return deployed === true ? beginInvalidation(desired, context, prepared.sourcePins, operationInvalidationPhase(store, context, "create")) : deployed;
       } catch (error) { return failure(error); }
     },
 
@@ -519,25 +729,39 @@ export function createCdkBucketDeploymentProvider(s3: S3Service, store: StateSto
       try {
         if (id !== physicalId(context)) throw new DeploymentBoundaryError("OwnershipConflict", "The BucketDeployment physical ID is not owned by this stack resource");
         const prior = checkpoint(context.callbackContext);
+        if (prior?.phase === "invalidation-intent" || prior?.phase === "invalidation-created") return await continueInvalidation(s3, store, invalidations, desired, context, prior);
+        if (desired.DistributionId && !invalidations) throw new DeploymentBoundaryError("ProviderConfiguration", "CloudFront invalidation support is unavailable for this BucketDeployment");
         const destinationChanged = previous.DestinationBucketName !== desired.DestinationBucketName || previous.DestinationBucketKeyPrefix !== desired.DestinationBucketKeyPrefix;
         if (destinationChanged && !desired.RetainOnDelete && prior?.phase === "delete-old") {
           const deleted = await deletePrefix(s3, store, previous, context);
-          if (deleted.status === "IN_PROGRESS") return inProgress(context, deploymentCheckpoint("delete-old", prior.sourcePins, true));
+          if (!deleted) return inProgress(context, deploymentCheckpoint("delete-old", prior.sourcePins, true));
           return inProgress(context, deploymentCheckpoint("deploy", prior.sourcePins, false));
         }
         const prepared = await prepareDeployment(s3, store, desired, context, prior?.sourcePins);
         if (!prior) return inProgress(context, deploymentCheckpoint(destinationChanged && !desired.RetainOnDelete ? "delete-old" : "deploy", prepared.sourcePins, false));
         if (prior.phase === "delete-old") return inProgress(context, deploymentCheckpoint("deploy", prepared.sourcePins, false));
-        return await deployPrepared(s3, prepared, desired, context, "deploy", prior.batchStarted);
+        const deployed = await deployPrepared(s3, prepared, desired, context, "deploy", prior.batchStarted);
+        return deployed === true ? beginInvalidation(desired, context, prepared.sourcePins, operationInvalidationPhase(store, context, "update")) : deployed;
       } catch (error) { return failure(error); }
     },
 
     async delete(id: string, previous: CdkBucketDeploymentModel, context: ProviderContext): Promise<ProviderDeleteResult> {
       try {
         if (id !== physicalId(context)) return { status: "NOT_FOUND", physicalId: id };
-        await validatePinnedHelper(s3, store, previous, context);
-        if (previous.RetainOnDelete) return { status: "SUCCESS", physicalId: id };
-        return await deletePrefix(s3, store, previous, context);
+        const prior = checkpoint(context.callbackContext);
+        if (prior?.phase === "invalidation-intent" || prior?.phase === "invalidation-created") {
+          const result = await continueInvalidation(s3, store, invalidations, previous, context, prior);
+          return result.status === "SUCCESS" ? { status: "SUCCESS", physicalId: id } : result;
+        }
+        if (previous.DistributionId && !invalidations) throw new DeploymentBoundaryError("ProviderConfiguration", "CloudFront invalidation support is unavailable for this BucketDeployment");
+        const fn = await validatePinnedHelper(s3, store, previous, context);
+        requireRoleGrants(store, fn.role, invalidationRoleChecks(previous, context));
+        if (!previous.RetainOnDelete) {
+          const deleted = await deletePrefix(s3, store, previous, context);
+          if (!deleted) return inProgress(context, deploymentCheckpoint("delete", [], true));
+        }
+        const result = beginInvalidation(previous, context, [], "delete");
+        return result.status === "SUCCESS" ? { status: "SUCCESS", physicalId: id } : result;
       } catch (error) { return failure(error); }
     },
 

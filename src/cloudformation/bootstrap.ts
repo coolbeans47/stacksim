@@ -25,7 +25,7 @@ export const CDK_BOOTSTRAP_QUALIFIER = "hnb659fds";
 // the stack-scoped DescribeEvents permission required by modern CDK failed-plan
 // diagnostics; it does not advertise the cumulative upstream version 30 template.
 export const CDK_BOOTSTRAP_COMPATIBILITY_VERSION = 23;
-export const CDK_BOOTSTRAP_POLICY_REVISION = 17;
+export const CDK_BOOTSTRAP_POLICY_REVISION = 18;
 export const CDK_BOOTSTRAP_VERSION_PARAMETER = `/cdk-bootstrap/${CDK_BOOTSTRAP_QUALIFIER}/version`;
 export const CDK_BOOTSTRAP_POLICY_NAME = "stacksim-cdk-bootstrap";
 export const CDK_BOOTSTRAP_COGNITO_POLICY_NAME = "stacksim-cdk-bootstrap-cognito";
@@ -222,6 +222,19 @@ function cognitoExecutionPolicy(accountId: string, region: string): PolicyDocume
     ...(Array.isArray(base.Statement) ? base.Statement : [base.Statement]),
     ...amx04ExecutionPolicy(accountId, region).Statement as any[],
     {
+      Sid: "ManageOpeningCloudFrontResources",
+      Effect: "Allow",
+      Action: [
+        "cloudfront:CreateDistribution", "cloudfront:DeleteDistribution", "cloudfront:GetDistribution", "cloudfront:GetDistributionConfig", "cloudfront:ListDistributions", "cloudfront:UpdateDistribution",
+        "cloudfront:CreateFunction", "cloudfront:DeleteFunction", "cloudfront:DescribeFunction", "cloudfront:GetFunction", "cloudfront:ListFunctions", "cloudfront:PublishFunction", "cloudfront:UpdateFunction",
+        "cloudfront:CreateOriginAccessControl", "cloudfront:DeleteOriginAccessControl", "cloudfront:GetOriginAccessControl", "cloudfront:GetOriginAccessControlConfig", "cloudfront:ListOriginAccessControls", "cloudfront:UpdateOriginAccessControl",
+        "cloudfront:CreateResponseHeadersPolicy", "cloudfront:DeleteResponseHeadersPolicy", "cloudfront:GetResponseHeadersPolicy", "cloudfront:GetResponseHeadersPolicyConfig", "cloudfront:ListResponseHeadersPolicies", "cloudfront:UpdateResponseHeadersPolicy",
+        "cloudfront:CreateInvalidation", "cloudfront:GetInvalidation", "cloudfront:ListInvalidations", "cloudfront:GetCachePolicy", "cloudfront:GetCachePolicyConfig", "cloudfront:ListCachePolicies",
+        "cloudfront:ListTagsForResource", "cloudfront:TagResource", "cloudfront:UntagResource",
+      ],
+      Resource: "*",
+    },
+    {
       Sid: "ManageParameterStoreResources",
       Effect: "Allow",
       Action: ["ssm:AddTagsToResource", "ssm:DeleteParameter", "ssm:GetParameter", "ssm:GetParameters", "ssm:ListTagsForResource", "ssm:PutParameter", "ssm:RemoveTagsFromResource"],
@@ -256,9 +269,9 @@ function executionPolicy(bucketName: string, accountId: string, region: string):
         Sid: "ManageApplicationBuckets",
         Effect: "Allow",
         Action: [
-          "s3:CreateBucket", "s3:DeleteBucket", "s3:DeleteBucketPolicy", "s3:DeleteBucketTagging", "s3:DeleteBucketWebsite", "s3:DeletePublicAccessBlock",
-          "s3:GetBucketLocation", "s3:GetBucketPolicy", "s3:GetBucketTagging", "s3:GetBucketVersioning", "s3:GetBucketWebsite", "s3:GetEncryptionConfiguration", "s3:GetPublicAccessBlock", "s3:HeadBucket",
-          "s3:PutBucketEncryption", "s3:PutBucketPolicy", "s3:PutBucketTagging", "s3:PutBucketVersioning", "s3:PutBucketWebsite", "s3:PutPublicAccessBlock",
+          "s3:CreateBucket", "s3:DeleteBucket", "s3:DeleteBucketPolicy", "s3:DeleteBucketTagging", "s3:DeleteBucketWebsite",
+          "s3:GetBucketLocation", "s3:GetBucketOwnershipControls", "s3:GetBucketPolicy", "s3:GetBucketPublicAccessBlock", "s3:GetBucketTagging", "s3:GetBucketVersioning", "s3:GetBucketWebsite", "s3:GetEncryptionConfiguration", "s3:HeadBucket",
+          "s3:PutBucketEncryption", "s3:PutBucketOwnershipControls", "s3:PutBucketPolicy", "s3:PutBucketPublicAccessBlock", "s3:PutBucketTagging", "s3:PutBucketVersioning", "s3:PutBucketWebsite",
         ],
         Resource: "arn:aws:s3:::*",
       },

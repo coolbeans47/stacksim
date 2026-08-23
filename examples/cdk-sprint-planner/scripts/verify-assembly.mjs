@@ -25,6 +25,16 @@ for (const type of types) if (!allowed.has(type)) throw new Error(`Unsupported s
 const userPool = resources.find(resource => resource.Type === "AWS::Cognito::UserPool");
 const appClient = resources.find(resource => resource.Type === "AWS::Cognito::UserPoolClient");
 if (!userPool || !appClient) throw new Error("The application stack must own a Cognito user pool and app client");
+const smsVerificationMessage = userPool.Properties.SmsVerificationMessage;
+if (!smsVerificationMessage || userPool.Properties.VerificationMessageTemplate?.SmsMessage !== smsVerificationMessage) {
+  throw new Error("The pinned UserPool L2 SMS compatibility defaults are missing or inconsistent");
+}
+if (JSON.stringify(userPool.Properties.AutoVerifiedAttributes) !== JSON.stringify(["email"])) {
+  throw new Error("The Cognito user pool must keep auto-verification email-only");
+}
+if (JSON.stringify(userPool.Properties.AccountRecoverySetting?.RecoveryMechanisms) !== JSON.stringify([{ Name: "verified_email", Priority: 1 }])) {
+  throw new Error("The Cognito user pool must keep account recovery email-only");
+}
 if (appClient.Properties.UserPoolId?.Ref !== userPool.logicalId) throw new Error("The Cognito app client does not reference the synthesized user pool");
 const authorizers = resources.filter(resource => resource.Type === "AWS::ApiGatewayV2::Authorizer");
 const jwt = authorizers.find(resource => resource.Properties.AuthorizerType === "JWT");

@@ -118,6 +118,8 @@ interface CloudFormationAssetReference {
   readonly logicalId: string;
   readonly resourceType: string;
   readonly propertyPath: "Code" | "Content" | "BodyS3Location" | "SourceObjectKeys";
+  /** Ordered array position; legacy manifests without it mean element zero. */
+  readonly elementIndex?: number;
   readonly bucket: string;
   readonly key: string;
   readonly versionId: string;
@@ -127,7 +129,7 @@ interface CloudFormationAssetReference {
 }
 
 interface CloudFormationAssetManifest {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 1 | 2;
   readonly references: readonly CloudFormationAssetReference[];
 }
 
@@ -1527,9 +1529,9 @@ export class CloudFormationService {
     }
     const executionPrincipal = await this.operationPrincipal(artifact.RoleARN, artifactId.slice(0, 32), principal);
     const manifest = await this.journal.readJsonArtifact<CloudFormationAssetManifest>("assets", `${artifactId}.json`);
-    if (!manifest || manifest.schemaVersion !== 1 || !Array.isArray(manifest.references)) throw new AwsError("ValidationError", `Change set ${value.changeSetName} is missing its immutable asset manifest`, 400);
+    if (!manifest || ![1, 2].includes(manifest.schemaVersion) || !Array.isArray(manifest.references)) throw new AwsError("ValidationError", `Change set ${value.changeSetName} is missing its immutable asset manifest`, 400);
     for (const expected of manifest.references) {
-      const actual = await this.readAssetReference(expected.logicalId, expected.resourceType, expected.propertyPath, expected.bucket, expected.key, executionPrincipal, expected.versionId);
+      const actual = await this.readAssetReference(expected.logicalId, expected.resourceType, expected.propertyPath, expected.bucket, expected.key, executionPrincipal, expected.versionId, false, expected.elementIndex ?? 0);
       if (!actual) throw new AwsError("ValidationError", `${expected.logicalId}.${expected.propertyPath} asset is missing`, 400);
       if (actual.versionId !== expected.versionId || actual.sha256 !== expected.sha256 || actual.etag !== expected.etag || actual.size !== expected.size) {
         throw new AwsError("ValidationError", `${expected.logicalId}.${expected.propertyPath} asset changed after change set ${value.changeSetName} was created`, 400);
@@ -1701,6 +1703,7 @@ export class CloudFormationService {
     principal: PrincipalContext,
     versionId?: string,
     allowMissing = false,
+    elementIndex = 0,
   ): Promise<CloudFormationAssetReference | undefined> {
     const maximumBytes = resourceType === "AWS::Lambda::Function" || resourceType === "AWS::Lambda::LayerVersion"
       ? Number(process.env.STACKSIM_LAMBDA_ZIP_LIMIT ?? 50 * 1024 * 1024)
@@ -1719,7 +1722,7 @@ export class CloudFormationService {
       const message = error instanceof Error ? error.message : String(error);
       throw new AwsError("ValidationError", `${logicalId}.${propertyPath} cannot read local S3 asset s3://${bucket}/${key}${versionId ? `?versionId=${versionId}` : ""}: ${message}`, 400);
     }
-    return { logicalId, resourceType, propertyPath, bucket, key, versionId: object.versionId, sha256: object.sha256, etag: object.etag, size: object.size };
+    return { logicalId, resourceType, propertyPath, ...(propertyPath === "SourceObjectKeys" ? { elementIndex } : {}), bucket, key, versionId: object.versionId, sha256: object.sha256, etag: object.etag, size: object.size };
   }
 
   /**
@@ -1753,14 +1756,16 @@ export class CloudFormationService {
           sourceBuckets = evaluateIntrinsicValue(definition.Properties?.SourceBucketNames, evaluation as any, `$.Resources.${logicalId}.Properties.SourceBucketNames`);
           sourceKeys = evaluateIntrinsicValue(definition.Properties?.SourceObjectKeys, evaluation as any, `$.Resources.${logicalId}.Properties.SourceObjectKeys`);
         } catch { continue; } // Resource-dependent addresses are pinned when the provider becomes dependency-ready.
-        if (!Array.isArray(sourceBuckets) || sourceBuckets.length !== 1 || typeof sourceBuckets[0] !== "string" || !sourceBuckets[0]
-          || !Array.isArray(sourceKeys) || sourceKeys.length !== 1 || typeof sourceKeys[0] !== "string" || !sourceKeys[0]) continue;
-        const accepted = acceptedManifest?.references.find(candidate => candidate.logicalId === logicalId && candidate.propertyPath === propertyPath);
-        const reference = await this.readAssetReference(logicalId, definition.Type, propertyPath, sourceBuckets[0], sourceKeys[0], principal, accepted?.versionId, allowMissing);
-        if (accepted && reference && (accepted.bucket !== reference.bucket || accepted.key !== reference.key || accepted.versionId !== reference.versionId || accepted.sha256 !== reference.sha256 || accepted.etag !== reference.etag || accepted.size !== reference.size)) {
-          throw new AwsError("ValidationError", `${logicalId}.${propertyPath} local S3 asset changed after the change set accepted it`, 400);
+        if (!Array.isArray(sourceBuckets) || !sourceBuckets.length || sourceBuckets.some(value => typeof value !== "string" || !value)
+          || !Array.isArray(sourceKeys) || sourceKeys.length !== sourceBuckets.length || sourceKeys.some(value => typeof value !== "string" || !value)) continue;
+        for (let elementIndex = 0; elementIndex < sourceKeys.length; elementIndex += 1) {
+          const accepted = acceptedManifest?.references.find(candidate => candidate.logicalId === logicalId && candidate.propertyPath === propertyPath && (candidate.elementIndex ?? 0) === elementIndex);
+          const reference = await this.readAssetReference(logicalId, definition.Type, propertyPath, sourceBuckets[elementIndex], sourceKeys[elementIndex], principal, accepted?.versionId, allowMissing, elementIndex);
+          if (accepted && reference && (accepted.bucket !== reference.bucket || accepted.key !== reference.key || accepted.versionId !== reference.versionId || accepted.sha256 !== reference.sha256 || accepted.etag !== reference.etag || accepted.size !== reference.size)) {
+            throw new AwsError("ValidationError", `${logicalId}.${propertyPath}[${elementIndex}] local S3 asset changed after the change set accepted it`, 400);
+          }
+          if (reference) references.push(reference);
         }
-        if (reference) references.push(reference);
         continue;
       }
       const raw = definition.Properties?.[propertyPath];
@@ -1793,7 +1798,7 @@ export class CloudFormationService {
       if (propertyPath === "Code" || propertyPath === "Content") target.S3ObjectVersion = reference.versionId;
       else target.Version = reference.versionId;
     }
-    const manifest: CloudFormationAssetManifest = { schemaVersion: 1, references: references.sort((left, right) => left.logicalId.localeCompare(right.logicalId) || left.propertyPath.localeCompare(right.propertyPath)) };
+    const manifest: CloudFormationAssetManifest = { schemaVersion: 2, references: references.sort((left, right) => left.logicalId.localeCompare(right.logicalId) || left.propertyPath.localeCompare(right.propertyPath) || (left.elementIndex ?? 0) - (right.elementIndex ?? 0)) };
     await this.journal.replaceJsonArtifact("assets", `${artifactId}.json`, manifest);
     return processed;
   }
@@ -2077,13 +2082,15 @@ export class CloudFormationService {
     if (propertyPath === "SourceObjectKeys") {
       const sourceBuckets = properties.SourceBucketNames;
       const sourceKeys = properties.SourceObjectKeys;
-      if (!Array.isArray(sourceBuckets) || sourceBuckets.length !== 1 || typeof sourceBuckets[0] !== "string" || !sourceBuckets[0]
-        || !Array.isArray(sourceKeys) || sourceKeys.length !== 1 || typeof sourceKeys[0] !== "string" || !sourceKeys[0]) return properties;
+      if (!Array.isArray(sourceBuckets) || !sourceBuckets.length || sourceBuckets.some(value => typeof value !== "string" || !value)
+        || !Array.isArray(sourceKeys) || sourceKeys.length !== sourceBuckets.length || sourceKeys.some(value => typeof value !== "string" || !value)) return properties;
       const templateManifest = await this.journal.readJsonArtifact<CloudFormationAssetManifest>("assets", `${templateArtifactId}.json`);
-      const accepted = templateManifest?.references?.find(candidate => candidate.logicalId === logicalId && candidate.propertyPath === propertyPath);
-      const reference = await this.readAssetReference(logicalId, resourceType, propertyPath, sourceBuckets[0], sourceKeys[0], principal, accepted?.versionId);
-      if (!reference) throw new AwsError("ValidationError", `${logicalId}.${propertyPath} local S3 asset is missing`, 400);
-      await this.assertAndCheckpointAssetReference(reference, templateArtifactId, operationId);
+      for (let elementIndex = 0; elementIndex < sourceKeys.length; elementIndex += 1) {
+        const accepted = templateManifest?.references?.find(candidate => candidate.logicalId === logicalId && candidate.propertyPath === propertyPath && (candidate.elementIndex ?? 0) === elementIndex);
+        const reference = await this.readAssetReference(logicalId, resourceType, propertyPath, sourceBuckets[elementIndex], sourceKeys[elementIndex], principal, accepted?.versionId, false, elementIndex);
+        if (!reference) throw new AwsError("ValidationError", `${logicalId}.${propertyPath}[${elementIndex}] local S3 asset is missing`, 400);
+        await this.assertAndCheckpointAssetReference(reference, templateArtifactId, operationId);
+      }
       return properties;
     }
     const location = properties[propertyPath];
@@ -2109,11 +2116,11 @@ export class CloudFormationService {
     operationId: string,
   ): Promise<void> {
     const templateManifest = await this.journal.readJsonArtifact<CloudFormationAssetManifest>("assets", `${templateArtifactId}.json`);
-    const expected = templateManifest?.references?.find(candidate => candidate.logicalId === reference.logicalId && candidate.propertyPath === reference.propertyPath);
+    const expected = templateManifest?.references?.find(candidate => candidate.logicalId === reference.logicalId && candidate.propertyPath === reference.propertyPath && (candidate.elementIndex ?? 0) === (reference.elementIndex ?? 0));
     if (expected && (expected.bucket !== reference.bucket || expected.key !== reference.key || expected.versionId !== reference.versionId || expected.sha256 !== reference.sha256 || expected.size !== reference.size || expected.etag !== reference.etag)) {
       throw new AwsError("ValidationError", `${reference.logicalId}.${reference.propertyPath} local S3 asset changed after the stack operation accepted it`, 400);
     }
-    const operationArtifact = `${operationId}.${reference.logicalId}.${reference.propertyPath}.json`;
+    const operationArtifact = `${operationId}.${reference.logicalId}.${reference.propertyPath}${reference.propertyPath === "SourceObjectKeys" ? `.${reference.elementIndex ?? 0}` : ""}.json`;
     const durable = await this.journal.readJsonArtifact<CloudFormationAssetReference>("assets", operationArtifact);
     if (durable && (durable.bucket !== reference.bucket || durable.key !== reference.key || durable.versionId !== reference.versionId || durable.sha256 !== reference.sha256 || durable.size !== reference.size || durable.etag !== reference.etag)) {
       throw new AwsError("ValidationError", `${reference.logicalId}.${reference.propertyPath} local S3 asset no longer matches its durable operation checkpoint`, 400);
@@ -2210,7 +2217,7 @@ export class CloudFormationService {
     }
     for (const artifactId of templateArtifacts) {
       const manifest = await this.journal.readJsonArtifact<CloudFormationAssetManifest>("assets", `${artifactId}.json`);
-      if (manifest !== undefined && (manifest.schemaVersion !== 1 || !Array.isArray(manifest.references))) return;
+      if (manifest !== undefined && (![1, 2].includes(manifest.schemaVersion) || !Array.isArray(manifest.references))) return;
       for (const reference of manifest?.references ?? []) addReference(reference.bucket, reference.key, reference.versionId);
       const templateSource = await this.journal.readJsonArtifact<TemplateSourceArtifact>("plans", `${artifactId}.template-source.json`);
       if (templateSource !== undefined) {
@@ -3444,10 +3451,11 @@ export class CloudFormationService {
     } else if (typeName === SECRETS_MANAGER_SECRET_TARGET_ATTACHMENT_TYPE) {
       add(...SECRETS_MANAGER_SECRET_TARGET_ATTACHMENT_AUTHORIZATION_MATRIX[operation]);
     } else if (typeName === "AWS::S3::Bucket") {
-      add("s3:HeadBucket", "s3:GetBucketLocation", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketTagging", "s3:GetPublicAccessBlock", "s3:GetBucketWebsite");
+      add("s3:HeadBucket", "s3:GetBucketLocation", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketTagging", "s3:GetBucketPublicAccessBlock", "s3:GetBucketOwnershipControls", "s3:GetBucketWebsite");
       if (create) add("s3:CreateBucket", "s3:PutBucketEncryption", "s3:PutBucketTagging", "s3:PutBucketVersioning");
-      if (update) add("s3:PutBucketEncryption", "s3:PutBucketTagging", "s3:DeleteBucketTagging", "s3:PutBucketVersioning", "s3:PutPublicAccessBlock", "s3:DeletePublicAccessBlock", "s3:PutBucketWebsite", "s3:DeleteBucketWebsite");
-      if (create && properties.PublicAccessBlockConfiguration !== undefined) add("s3:PutPublicAccessBlock");
+      if (update) add("s3:PutBucketEncryption", "s3:PutBucketTagging", "s3:DeleteBucketTagging", "s3:PutBucketVersioning", "s3:PutBucketPublicAccessBlock", "s3:PutBucketOwnershipControls", "s3:PutBucketWebsite", "s3:DeleteBucketWebsite");
+      if (create && properties.PublicAccessBlockConfiguration !== undefined) add("s3:PutBucketPublicAccessBlock");
+      if (create && properties.OwnershipControls !== undefined) add("s3:PutBucketOwnershipControls");
       if (create && properties.WebsiteConfiguration !== undefined) add("s3:PutBucketWebsite");
       if (properties.CorsConfiguration !== undefined) {
         add("s3:GetBucketCORS");
@@ -3459,6 +3467,29 @@ export class CloudFormationService {
       add("s3:GetBucketPolicy");
       if (create || update) add("s3:PutBucketPolicy");
       if (operation === "DELETE") add("s3:DeleteBucketPolicy");
+    } else if (typeName === "AWS::CloudFront::OriginAccessControl") {
+      if (create) add("cloudfront:CreateOriginAccessControl", "cloudfront:GetOriginAccessControl");
+      if (read) add("cloudfront:GetOriginAccessControl");
+      if (update) add("cloudfront:GetOriginAccessControlConfig", "cloudfront:UpdateOriginAccessControl");
+      if (operation === "DELETE") add("cloudfront:GetOriginAccessControl", "cloudfront:DeleteOriginAccessControl");
+    } else if (typeName === "AWS::CloudFront::ResponseHeadersPolicy") {
+      if (create) add("cloudfront:CreateResponseHeadersPolicy", "cloudfront:GetResponseHeadersPolicy");
+      if (read) add("cloudfront:GetResponseHeadersPolicy");
+      if (update) add("cloudfront:GetResponseHeadersPolicyConfig", "cloudfront:UpdateResponseHeadersPolicy");
+      if (operation === "DELETE") add("cloudfront:GetResponseHeadersPolicy", "cloudfront:DeleteResponseHeadersPolicy");
+    } else if (typeName === "AWS::CloudFront::Function") {
+      if (create) add("cloudfront:CreateFunction", "cloudfront:DescribeFunction");
+      if (read) add("cloudfront:DescribeFunction");
+      if (update) add("cloudfront:DescribeFunction", "cloudfront:UpdateFunction");
+      if (operation === "DELETE") add("cloudfront:DescribeFunction", "cloudfront:DeleteFunction");
+      if ((create || update) && properties.AutoPublish === true) add("cloudfront:PublishFunction");
+      if (Array.isArray(properties.Tags) && properties.Tags.length) add("cloudfront:ListTagsForResource", "cloudfront:TagResource", "cloudfront:UntagResource");
+    } else if (typeName === "AWS::CloudFront::Distribution") {
+      if (create) add("cloudfront:CreateDistribution", "cloudfront:GetDistribution");
+      if (read) add("cloudfront:GetDistribution");
+      if (update) add("cloudfront:GetDistributionConfig", "cloudfront:UpdateDistribution");
+      if (operation === "DELETE") add("cloudfront:GetDistributionConfig", "cloudfront:UpdateDistribution", "cloudfront:DeleteDistribution");
+      if (Array.isArray(properties.Tags) && properties.Tags.length) add("cloudfront:ListTagsForResource", "cloudfront:TagResource", "cloudfront:UntagResource");
     } else if (typeName === "AWS::SQS::Queue") {
       add("sqs:GetQueueUrl", "sqs:GetQueueAttributes", "sqs:ListQueueTags");
       if (create) add("sqs:CreateQueue", "sqs:SetQueueAttributes", "sqs:TagQueue", "sqs:UntagQueue");
@@ -3840,6 +3871,22 @@ export class CloudFormationService {
       } else if (typeName === "AWS::S3::Bucket" || typeName === "AWS::S3::BucketPolicy") {
         const bucketName = typeName === "AWS::S3::Bucket" ? properties.BucketName ?? physicalId : properties.Bucket ?? physicalId;
         if (typeof bucketName === "string" && bucketName) resources.push(`arn:aws:s3:::${bucketName}`);
+      } else if (typeName.startsWith("AWS::CloudFront::")) {
+        const requestedTags = tags(properties.Tags);
+        context = {
+          "aws:TagKeys": requestedTags.map(tag => tag.Key),
+          ...Object.fromEntries(requestedTags.map(tag => [`aws:RequestTag/${tag.Key}`, tag.Value])),
+        };
+        if (create || action === "cloudfront:TagResource" && !physicalId) resources.push("*");
+        else if (typeName === "AWS::CloudFront::Function") {
+          const name = typeof properties.Name === "string" ? properties.Name : typeof physicalId === "string" ? physicalId.split("/").at(-1) : undefined;
+          if (name) resources.push(`arn:aws:cloudfront::${accountId}:function/${name}`);
+        } else {
+          const kind = typeName === "AWS::CloudFront::Distribution" ? "distribution"
+            : typeName === "AWS::CloudFront::OriginAccessControl" ? "origin-access-control"
+              : "response-headers-policy";
+          if (typeof physicalId === "string" && physicalId) resources.push(physicalId.startsWith("arn:") ? physicalId : `arn:aws:cloudfront::${accountId}:${kind}/${physicalId}`);
+        }
       } else if (typeName === "AWS::SQS::Queue") {
         const queueName = properties.QueueName ?? physicalId;
         if (typeof queueName === "string" && queueName) resources.push(`arn:aws:sqs:${this.region}:${accountId}:${queueName}`);

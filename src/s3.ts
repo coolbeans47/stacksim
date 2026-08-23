@@ -19,6 +19,7 @@ import { checksumHeaderName, providedChecksumAlgorithms, requestedChecksumAlgori
 import { S3Storage, type S3BucketIndex, type S3MultipartUploadState, type S3ObjectPartState, type S3ObjectVersionState, type StagedS3Object } from "./s3/storage.js";
 import { aclAllows, aclFromRequest, aclIsPublic, aclXml, canonicalOwnerId, effectivePublicAccessBlock, LOCAL_OWNER_DISPLAY_NAME, objectAcl, policyIsPublic, privateAcl, type S3PublicAccessBlockState } from "./s3/access.js";
 import { DYNAMODB_S3_SERVICE_PRINCIPAL, type S3AdmittedBucket, type S3PinnedObject, type S3TransferCaller, type S3TransferPort, type S3TransferWriteOptions } from "./s3/transfer-port.js";
+import { CLOUDFRONT_S3_SERVICE_PRINCIPAL, type CloudFrontS3OriginPort, type CloudFrontS3OriginRequest, type CloudFrontS3OriginResponse } from "./s3/cloudfront-origin-port.js";
 
 const S3_NAMESPACE = "http://s3.amazonaws.com/doc/2006-03-01/";
 const MIN_MULTIPART_PART_SIZE = 5 * 1024 * 1024;
@@ -63,6 +64,7 @@ export interface S3BucketConfigurationInput {
   name: string;
   versioning: "unversioned" | "enabled" | "suspended";
   encryption: "AES256" | "aws:kms" | "aws:kms:dsse";
+  objectOwnership?: "BucketOwnerEnforced";
   tags?: Record<string, string>;
   publicAccessBlock?: Partial<S3BucketPublicAccessBlock>;
   website?: S3BucketWebsiteConfiguration;
@@ -293,6 +295,11 @@ function parseXmlBoolean(xml: string, name: string): boolean {
 interface CanonicalBucketConfiguration {
   versioning: "unversioned" | "enabled" | "suspended";
   encryption: "AES256";
+  objectOwnership: "BucketOwnerEnforced";
+  cloudFormationConfiguration: {
+    ownershipControls: boolean;
+    publicAccessBlock: boolean;
+  };
   tags: Record<string, string>;
   publicAccessBlock: S3BucketPublicAccessBlock;
   website?: S3BucketWebsiteConfiguration;
@@ -302,9 +309,15 @@ interface CanonicalBucketConfiguration {
 function canonicalBucketConfiguration(input: S3BucketConfigurationUpdate): CanonicalBucketConfiguration {
   if (!new Set(["unversioned", "enabled", "suspended"]).has(input.versioning)) throw new AwsError("InvalidArgument", "Unsupported bucket versioning state", 400);
   if (input.encryption !== "AES256") throw new AwsError("InvalidEncryptionAlgorithmError", "Only SSE-S3 AES256 encryption is supported", 400);
+  if (input.objectOwnership !== undefined && input.objectOwnership !== "BucketOwnerEnforced") throw new AwsError("InvalidRequest", "The bounded CloudFormation bucket profile supports only BucketOwnerEnforced ownership", 400);
   return {
     versioning: input.versioning,
     encryption: "AES256",
+    objectOwnership: "BucketOwnerEnforced",
+    cloudFormationConfiguration: {
+      ownershipControls: input.objectOwnership !== undefined,
+      publicAccessBlock: input.publicAccessBlock !== undefined,
+    },
     tags: validateTags(input.tags),
     publicAccessBlock: canonicalPublicAccessBlock(input.publicAccessBlock),
     website: validateWebsiteConfiguration(input.website),
@@ -317,6 +330,8 @@ function sameBucketConfiguration(bucket: S3BucketState, desired: CanonicalBucket
   const canonical = desired;
   return current.versioning === canonical.versioning
     && current.encryption === canonical.encryption
+    && current.objectOwnership === canonical.objectOwnership
+    && JSON.stringify(current.cloudFormationConfiguration ?? { ownershipControls: false, publicAccessBlock: false }) === JSON.stringify(canonical.cloudFormationConfiguration)
     && JSON.stringify(current.tags) === JSON.stringify(canonical.tags)
     && JSON.stringify(current.publicAccessBlock) === JSON.stringify(canonical.publicAccessBlock)
     && JSON.stringify(current.website) === JSON.stringify(canonical.website)
@@ -664,7 +679,6 @@ export class S3Service {
         ownerId: ownerId(this.store.accountId),
         createdAt: this.clock.now(),
         ...desired,
-        objectOwnership: "BucketOwnerEnforced",
         acl: privateAcl(this.store.accountId),
         requestPayment: "BucketOwner",
         abacStatus: "Disabled",
@@ -689,6 +703,8 @@ export class S3Service {
     if (!sameBucketConfiguration(located.bucket, desired)) {
       located.bucket.versioning = desired.versioning;
       located.bucket.encryption = desired.encryption;
+      located.bucket.objectOwnership = desired.objectOwnership;
+      located.bucket.cloudFormationConfiguration = desired.cloudFormationConfiguration;
       located.bucket.tags = desired.tags;
       located.bucket.publicAccessBlock = desired.publicAccessBlock;
       located.bucket.website = desired.website;
@@ -958,6 +974,70 @@ export class S3Service {
       async writeObject(bucket, key, body, caller, options) { return service.writeTransferObject(bucket, key, body, caller, options); },
       async releasePins(pins, caller) { return service.releaseTransferPins(pins, caller); },
     };
+  }
+
+  /**
+   * CloudFront's private origin path. S3 remains the sole owner of bucket
+   * lookup, Region/account checks, resource-policy evaluation, CORS and bytes.
+   */
+  createCloudFrontOriginPort(): CloudFrontS3OriginPort {
+    return { request: input => this.requestCloudFrontOrigin(input) };
+  }
+
+  private async requestCloudFrontOrigin(input: CloudFrontS3OriginRequest): Promise<CloudFrontS3OriginResponse> {
+    await this.start();
+    if (input.accountId !== this.store.accountId || input.bucketRegion !== this.region) throw new AwsError("AccessDenied", "Access Denied", 403);
+    if (input.maximumBytes < 0 || !Number.isSafeInteger(input.maximumBytes)) throw new AwsError("InvalidArgument", "The origin response limit is invalid", 400);
+    const located = this.findBucket(input.bucketName);
+    if (!located) throw new AwsError("NoSuchBucket", "The specified bucket does not exist", 404);
+    if (located.accountId !== input.accountId) throw new AwsError("AccessDenied", "Access Denied", 403);
+    if (located.region !== input.bucketRegion) throw new AwsError("PermanentRedirect", "The bucket must be addressed using its regional endpoint", 301, { region: located.region });
+    const distribution = input.distributionArn.match(/^arn:aws:cloudfront::(\d{12}):distribution\/([A-Z0-9]+)$/);
+    if (!distribution || distribution[1] !== input.accountId) throw new AwsError("AccessDenied", "Access Denied", 403);
+
+    if (input.method === "OPTIONS") {
+      const origin = input.headers.origin ?? "";
+      const requestedMethod = input.headers["access-control-request-method"] ?? "";
+      const rule = this.matchingCorsRule(located.bucket, origin, requestedMethod);
+      if (!origin || !requestedMethod || !rule) throw new AwsError("AccessForbidden", "CORSResponse: This CORS request is not allowed", 403);
+      const maxAgeSeconds = (rule as S3BucketCorsRule & { maxAgeSeconds?: number }).maxAgeSeconds;
+      return { status: 200, headers: { "access-control-allow-origin": origin, "access-control-allow-methods": rule.allowedMethods.join(", "), ...(maxAgeSeconds === undefined ? {} : { "access-control-max-age": String(maxAgeSeconds) }) }, body: Buffer.alloc(0) };
+    }
+
+    const resource = objectArn(input.bucketName, input.key);
+    const context: AuthorizationContext = {
+      "aws:PrincipalArn": CLOUDFRONT_S3_SERVICE_PRINCIPAL,
+      "aws:PrincipalAccount": input.accountId,
+      "aws:PrincipalServiceName": CLOUDFRONT_S3_SERVICE_PRINCIPAL,
+      "aws:SourceArn": input.distributionArn,
+      "aws:SourceAccount": input.accountId,
+      "aws:RequestedRegion": input.bucketRegion,
+      "aws:SecureTransport": true,
+      "aws:CurrentTime": new Date(this.clock.now()).toISOString(),
+    };
+    const policy = located.bucket.policyDocument
+      ? evaluateResourcePolicy(located.bucket.policyDocument, CLOUDFRONT_S3_SERVICE_PRINCIPAL, "s3:GetObject", resource, context)
+      : { decision: "implicitDeny" as const, reason: "The bucket has no policy authorizing CloudFront", matchedStatements: [] };
+    const authorization = combineIdentityAndResourceAuthorization(undefined, policy, "service");
+    if (authorization.decision !== "allowed") throw new AwsError("AccessDenied", "Access Denied", 403);
+
+    const index = await this.bucketIndex(located);
+    const selected = selectObject(index, input.key).version;
+    if (selected.size > input.maximumBytes) throw new AwsError("EntityTooLarge", "The origin object exceeds the local CloudFront response limit", 400);
+    const headers: Record<string, string> = {
+      etag: quotedEtag(selected.etag),
+      "last-modified": httpDate(selected.lastModified),
+      "content-length": String(selected.size),
+      "content-type": selected.contentType ?? "application/octet-stream",
+      ...(selected.cacheControl ? { "cache-control": selected.cacheControl } : {}),
+      ...(selected.contentEncoding ? { "content-encoding": selected.contentEncoding } : {}),
+    };
+    if (input.method === "HEAD") return { status: 200, headers, body: Buffer.alloc(0), etag: selected.etag, lastModified: selected.lastModified };
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of this.storage.readBlob(selected.blobId!)) { size += chunk.length; if (size > input.maximumBytes || size > selected.size) throw new AwsError("InvalidObjectState", "Origin object size is inconsistent", 500); chunks.push(Buffer.from(chunk)); }
+    if (size !== selected.size) throw new AwsError("InvalidObjectState", "Origin object is incomplete", 500);
+    return { status: 200, headers, body: Buffer.concat(chunks, size), etag: selected.etag, lastModified: selected.lastModified };
   }
 
   private transferCallerContext(caller: S3TransferCaller): AuthorizationContext {
@@ -2080,11 +2160,15 @@ export class S3Service {
     if (ownership === "BucketOwnerEnforced" && (located.bucket.acl ?? privateAcl(located.accountId)).grants.some(grant => !(grant.permission === "FULL_CONTROL" && grant.grantee.type === "CanonicalUser" && grant.grantee.id === ownerId(located.accountId)))) {
       throw new AwsError("InvalidBucketAclWithObjectOwnership", "Bucket cannot have ACLs set with ObjectOwnership's BucketOwnerEnforced setting", 400);
     }
-    located.bucket.objectOwnership = ownership as S3BucketState["objectOwnership"]; await this.store.save(); res.statusCode = 200; res.end();
+    located.bucket.objectOwnership = ownership as S3BucketState["objectOwnership"];
+    if (located.bucket.cloudFormationConfiguration) located.bucket.cloudFormationConfiguration.ownershipControls = true;
+    await this.store.save(); res.statusCode = 200; res.end();
   }
 
   private async deleteBucketOwnershipControls(res: ServerResponse, name: string): Promise<void> {
-    const located = this.requireBucket(name); delete located.bucket.objectOwnership; await this.store.save(); res.statusCode = 204; res.end();
+    const located = this.requireBucket(name); delete located.bucket.objectOwnership;
+    if (located.bucket.cloudFormationConfiguration) located.bucket.cloudFormationConfiguration.ownershipControls = false;
+    await this.store.save(); res.statusCode = 204; res.end();
   }
 
   private async getBucketAbac(res: ServerResponse, name: string): Promise<void> {
@@ -2130,13 +2214,17 @@ export class S3Service {
       blockPublicPolicy: parseXmlBoolean(xml, "BlockPublicPolicy"),
       restrictPublicBuckets: parseXmlBoolean(xml, "RestrictPublicBuckets"),
     };
-    located.bucket.publicAccessBlock = value; await this.store.save(); res.statusCode = 200; res.end();
+    located.bucket.publicAccessBlock = value;
+    if (located.bucket.cloudFormationConfiguration) located.bucket.cloudFormationConfiguration.publicAccessBlock = true;
+    await this.store.save(); res.statusCode = 200; res.end();
   }
 
   private async deleteBucketPublicAccessBlock(res: ServerResponse, name: string): Promise<void> {
     const located = this.requireBucket(name);
     if (located.bucket.managedBy) throw new AwsError("AccessDenied", "Simulator-managed bootstrap buckets cannot be configured as public application buckets", 403);
-    delete located.bucket.publicAccessBlock; await this.store.save(); res.statusCode = 204; res.end();
+    delete located.bucket.publicAccessBlock;
+    if (located.bucket.cloudFormationConfiguration) located.bucket.cloudFormationConfiguration.publicAccessBlock = false;
+    await this.store.save(); res.statusCode = 204; res.end();
   }
 
   private async getBucketWebsite(res: ServerResponse, name: string): Promise<void> {

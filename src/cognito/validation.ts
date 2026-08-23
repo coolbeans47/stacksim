@@ -1,6 +1,7 @@
 import { AwsError } from "../errors.js";
 import { parseDeviceConfiguration } from "./devices.js";
 import { throwCog07Boundary } from "./cog07-boundaries.js";
+import { STANDARD_CLIENT_ATTRIBUTES, STANDARD_USER_ATTRIBUTES } from "./attributes.js";
 import { parseMailboxAddress } from "../ses/validation.js";
 import type {
   CognitoAppClientState,
@@ -333,13 +334,13 @@ function schema(value: unknown): CognitoUserPoolConfigurationState["schemaAttrib
     ) {
       throw new AwsError("InvalidParameterException", `Schema[${index}].Name is invalid.`);
     }
-    const standard = input.Name === "email";
+    const standard = STANDARD_USER_ATTRIBUTES.has(input.Name);
     const attributeDataType = input.AttributeDataType ?? "String";
     if (!["String", "Number", "Boolean", "DateTime"].includes(attributeDataType)) {
       throw new AwsError("InvalidParameterException", `Schema[${index}].AttributeDataType is invalid.`);
     }
     if (standard && attributeDataType !== "String") {
-      throw new AwsError("InvalidParameterException", "The standard email attribute must be a String.");
+      throw new AwsError("InvalidParameterException", `The standard ${input.Name} attribute must be a String.`);
     }
     const required = input.Required === undefined ? false : boolean(input.Required, `Schema[${index}].Required`);
     if (!standard && required) {
@@ -442,24 +443,46 @@ function verificationTemplate(
   const template = input.VerificationMessageTemplate === undefined
     ? {}
     : object(input.VerificationMessageTemplate, "VerificationMessageTemplate");
-  rejectUnknown(template, ["DefaultEmailOption", "EmailSubject", "EmailMessage"], "VerificationMessageTemplate");
+  rejectUnknown(template, ["DefaultEmailOption", "EmailSubject", "EmailMessage", "SmsMessage"], "VerificationMessageTemplate");
   if ((template.DefaultEmailOption ?? "CONFIRM_WITH_CODE") !== "CONFIRM_WITH_CODE") {
     throw new AwsError("InvalidParameterException", "Only code-based email confirmation is available in COG-01.");
   }
   const emailSubject = template.EmailSubject ?? input.EmailVerificationSubject ?? "Your verification code";
   const emailMessage = template.EmailMessage ?? input.EmailVerificationMessage ?? "Your verification code is {####}.";
+  const legacySmsMessage = input.SmsVerificationMessage;
+  const nestedSmsMessage = template.SmsMessage;
+  if (legacySmsMessage !== undefined && nestedSmsMessage !== undefined && legacySmsMessage !== nestedSmsMessage) {
+    throw new AwsError(
+      "InvalidParameterException",
+      "SmsVerificationMessage and VerificationMessageTemplate.SmsMessage must match when both are supplied.",
+    );
+  }
+  const smsMessage = nestedSmsMessage ?? legacySmsMessage;
   if (typeof emailSubject !== "string" || emailSubject.length < 1 || emailSubject.length > 140) {
     throw new AwsError("InvalidParameterException", "Email verification subject must be 1-140 characters.");
   }
   if (typeof emailMessage !== "string" || emailMessage.length < 6 || emailMessage.length > 20_000 || !emailMessage.includes("{####}")) {
     throw new AwsError("InvalidParameterException", "Email verification message must contain {####}.");
   }
-  return { defaultEmailOption: "CONFIRM_WITH_CODE", emailSubject, emailMessage };
+  if (smsMessage !== undefined && (
+    typeof smsMessage !== "string"
+    || smsMessage.length < 6
+    || smsMessage.length > 140
+    || !smsMessage.includes("{####}")
+  )) {
+    throw new AwsError("InvalidParameterException", "SMS verification message must be 6-140 characters and contain {####}.");
+  }
+  return {
+    defaultEmailOption: "CONFIRM_WITH_CODE",
+    emailSubject,
+    emailMessage,
+    ...(smsMessage === undefined ? {} : { smsMessage }),
+  };
 }
 
 const CREATE_POOL_FIELDS = [
   "PoolName", "Policies", "DeletionProtection", "AutoVerifiedAttributes", "AliasAttributes",
-  "UsernameAttributes", "EmailVerificationMessage", "EmailVerificationSubject", "VerificationMessageTemplate",
+  "UsernameAttributes", "EmailVerificationMessage", "EmailVerificationSubject", "SmsVerificationMessage", "VerificationMessageTemplate",
   "EmailConfiguration", "AdminCreateUserConfig", "Schema", "UsernameConfiguration",
   "AccountRecoverySetting", "UserPoolTier", "MfaConfiguration", "EnabledMfas", "LambdaConfig",
   "UserPoolTags", "DeviceConfiguration",
@@ -467,7 +490,7 @@ const CREATE_POOL_FIELDS = [
 
 const UPDATE_POOL_FIELDS = [
   "UserPoolId", "PoolName", "Policies", "DeletionProtection", "AutoVerifiedAttributes",
-  "EmailVerificationMessage", "EmailVerificationSubject", "VerificationMessageTemplate",
+  "EmailVerificationMessage", "EmailVerificationSubject", "SmsVerificationMessage", "VerificationMessageTemplate",
   "EmailConfiguration", "AdminCreateUserConfig", "AccountRecoverySetting", "UserPoolTier",
   "MfaConfiguration", "EnabledMfas", "LambdaConfig", "DeviceConfiguration",
 ] as const;
@@ -698,7 +721,7 @@ function clientAttributes(value: unknown, field: string): string[] {
   if (value === undefined) return ["email"];
   const selected = strings(value, field);
   if (selected.some(item =>
-    !["email", "email_verified"].includes(item)
+    !STANDARD_CLIENT_ATTRIBUTES.has(item)
     && !/^custom:[A-Za-z][A-Za-z0-9_]{0,19}$/.test(item)
   )) {
     throw new AwsError("InvalidParameterException", `${field} contains an invalid user attribute.`);
@@ -754,13 +777,17 @@ function oauthUrls(value: unknown, field: string): string[] {
       && /^[a-z][a-z0-9+.-]*:$/.test(parsed.protocol)
       && !["data:", "file:", "javascript:", "vbscript:"].includes(parsed.protocol)
       && parsed.hostname.length > 0;
+    const omittedRootSlash = item === parsed.origin
+      && parsed.pathname === "/"
+      && !parsed.search
+      && !parsed.hash;
     if (
       !httpScheme && !customScheme
       || parsed.username
       || parsed.password
       || parsed.hash
       || parsed.protocol === "http:" && !loopback
-      || parsed.href !== item
+      || (parsed.href !== item && !omittedRootSlash)
     ) {
       throw new AwsError("InvalidParameterException", `${field} contains an invalid or unsafe URL.`);
     }

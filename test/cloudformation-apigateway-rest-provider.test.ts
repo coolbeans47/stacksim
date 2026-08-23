@@ -729,7 +729,7 @@ test("API Gateway common REST child providers use authoritative CRUD and depende
   } finally { client?.destroy(); await simulator.stop().catch(() => undefined); await rm(dataDir, { recursive: true, force: true }); }
 });
 
-test("API Gateway Account provider enforces its regional singleton and deletion is a documented no-op", async () => {
+test("API Gateway Account provider reconciles its regional singleton on create and deletion is a documented no-op", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "stacksim-cfn-apig-account-")); const simulator = new StackSim({ port: 0, invokePort: 0, dataDir, accountId, region, authMode: "off"}); let apiClient: APIGatewayClient | undefined; let iam: IAMClient | undefined;
   try {
     await simulator.start(); const endpoint = `http://127.0.0.1:${simulator.port}`; apiClient = new APIGatewayClient({ endpoint, region, credentials }); iam = new IAMClient({ endpoint, region, credentials });
@@ -737,9 +737,9 @@ test("API Gateway Account provider enforces its regional singleton and deletion 
     const firstRole = (await iam.send(new CreateRoleCommand({ RoleName: "api-logs-one", AssumeRolePolicyDocument: trust }))).Role!.Arn!; const secondRole = (await iam.send(new CreateRoleCommand({ RoleName: "api-logs-two", AssumeRolePolicyDocument: trust }))).Role!.Arn!;
     const provider = providerByType(simulator)[API_GATEWAY_ACCOUNT_TYPE]; const first = provider.canonicalize({ CloudWatchRoleArn: firstRole }, context("Account")); const created = requireSuccess(await provider.create(first, context("Account")));
     const accountRef = provider.ref(created.model); assert.match(accountRef, /^[a-f0-9]{16}$/); assert.notEqual(accountRef, created.physicalId); assert.equal(provider.getAtt(created.model, "Id"), accountRef); assert.equal((await apiClient.send(new GetAccountCommand({}))).cloudwatchRoleArn, firstRole);
-    const second = provider.canonicalize({ CloudWatchRoleArn: secondRole }, context("Account")); requireSuccess(await provider.update(created.physicalId, first, second, context("Account"))); assert.equal((await apiClient.send(new GetAccountCommand({}))).cloudwatchRoleArn, secondRole);
-    assert.equal((await provider.create(first, context("AnotherAccount"))).status, "FAILED", "a second stack must not overwrite the regional singleton during create");
+    const second = provider.canonicalize({ CloudWatchRoleArn: secondRole }, context("AnotherAccount")); const overwritten = requireSuccess(await provider.create(second, context("AnotherAccount"))); assert.equal(overwritten.physicalId, created.physicalId); assert.equal((await apiClient.send(new GetAccountCommand({}))).cloudwatchRoleArn, secondRole, "a later Account create overwrites the regional setting as CloudFormation documents");
+    requireSuccess(await provider.update(overwritten.physicalId, second, first, context("AnotherAccount"))); assert.equal((await apiClient.send(new GetAccountCommand({}))).cloudwatchRoleArn, firstRole);
     const reread = requireSuccess(await provider.read(created.physicalId, context("Account"))); assert.equal(provider.ref(reread.model), accountRef); assert.equal(provider.getAtt(reread.model, "Id"), accountRef);
-    requireSuccess(await provider.delete(created.physicalId, second, context("Account"))); assert.equal((await apiClient.send(new GetAccountCommand({}))).cloudwatchRoleArn, secondRole); assert.equal((await provider.read("wrong-region", context("Account"))).status, "NOT_FOUND");
+    requireSuccess(await provider.delete(created.physicalId, first, context("Account"))); assert.equal((await apiClient.send(new GetAccountCommand({}))).cloudwatchRoleArn, firstRole); assert.equal((await provider.read("wrong-region", context("Account"))).status, "NOT_FOUND");
   } finally { apiClient?.destroy(); iam?.destroy(); await simulator.stop().catch(() => undefined); await rm(dataDir, { recursive: true, force: true }); }
 });

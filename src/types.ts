@@ -1901,6 +1901,11 @@ export interface S3BucketState {
   policyDocument?: PolicyDocument;
   /** S3 Object Ownership mode. New buckets default to BucketOwnerEnforced. */
   objectOwnership?: "BucketOwnerEnforced" | "BucketOwnerPreferred" | "ObjectWriter";
+  /** Presence bits for optional properties projected by the bounded CloudFormation provider. */
+  cloudFormationConfiguration?: {
+    ownershipControls: boolean;
+    publicAccessBlock: boolean;
+  };
   /** Bucket ACL, retained even when BucketOwnerEnforced makes ACLs inactive. */
   acl?: S3AccessControlListState;
   /** Requester Pays is an authorization/header model only; no billing is simulated. */
@@ -2843,6 +2848,7 @@ export interface CognitoUserPoolConfigurationState {
     defaultEmailOption: "CONFIRM_WITH_CODE";
     emailSubject: string;
     emailMessage: string;
+    smsMessage?: string;
   };
   adminCreateUserConfig: {
     allowAdminCreateUserOnly: boolean;
@@ -3683,12 +3689,18 @@ export interface StepFunctionsRegionState {
   activityNames: Record<string, string>;
 }
 
+export interface XRayRegionState {
+  /** XRY-01 control-plane marker. High-volume trace documents live in the private SQLite repository. */
+  revision: 1;
+}
+
 export interface RegionState {
   cloudformation: CloudFormationRegionState;
   parameterStore: ParameterStoreRegionState;
   secretsManager: SecretsManagerRegionState;
   appsync: AppSyncRegionState;
   stepFunctions: StepFunctionsRegionState;
+  xray: XRayRegionState;
   ses: SesRegionState;
   cognito: CognitoRegionState;
   sns: SnsRegionState;
@@ -3844,9 +3856,103 @@ export interface RdsInstanceLease {
   port: number;
 }
 
+export interface CloudFrontResourceOwnerState {
+  stackId: string;
+  logicalId: string;
+  createOperationId: string;
+}
+
+export interface CloudFrontFunctionRevisionState {
+  etag: string;
+  code: string;
+  runtime: "cloudfront-js-1.0";
+  comment: string;
+  createdAt: number;
+  lastModifiedAt: number;
+  version: number;
+}
+
+export interface CloudFrontFunctionState {
+  name: string;
+  arn: string;
+  development: CloudFrontFunctionRevisionState;
+  live?: CloudFrontFunctionRevisionState;
+  tags: Record<string, string>;
+  cloudFormationOwner?: CloudFrontResourceOwnerState;
+}
+
+export interface CloudFrontOriginAccessControlState {
+  id: string;
+  arn: string;
+  etag: string;
+  name: string;
+  description: string;
+  originType: "s3";
+  signingBehavior: "always";
+  signingProtocol: "sigv4";
+  createdAt: number;
+  lastModifiedAt: number;
+  cloudFormationOwner?: CloudFrontResourceOwnerState;
+}
+
+export interface CloudFrontResponseHeadersPolicyState {
+  id: string;
+  arn: string;
+  etag: string;
+  name: string;
+  comment: string;
+  securityHeadersConfig: Record<string, unknown>;
+  createdAt: number;
+  lastModifiedAt: number;
+  cloudFormationOwner?: CloudFrontResourceOwnerState;
+}
+
+export interface CloudFrontDistributionState {
+  id: string;
+  arn: string;
+  domainName: string;
+  localViewerPort: number;
+  callerReference: string;
+  etag: string;
+  status: "InProgress" | "Deployed";
+  configRevision: number;
+  deployedRevision?: number;
+  config: Record<string, unknown>;
+  deployedConfig?: Record<string, unknown>;
+  tags: Record<string, string>;
+  createdAt: number;
+  lastModifiedAt: number;
+  cloudFormationOwner?: CloudFrontResourceOwnerState;
+}
+
+export interface CloudFrontInvalidationState {
+  id: string;
+  distributionId: string;
+  callerReference: string;
+  paths: string[];
+  status: "InProgress" | "Completed";
+  createTime: number;
+}
+
+export interface CloudFrontAccountState {
+  schemaVersion: 1;
+  revision: number;
+  distributions: Record<string, CloudFrontDistributionState>;
+  distributionCallerReferences: Record<string, string>;
+  functions: Record<string, CloudFrontFunctionState>;
+  originAccessControls: Record<string, CloudFrontOriginAccessControlState>;
+  originAccessControlNames: Record<string, string>;
+  responseHeadersPolicies: Record<string, CloudFrontResponseHeadersPolicyState>;
+  responseHeadersPolicyNames: Record<string, string>;
+  invalidations: Record<string, Record<string, CloudFrontInvalidationState>>;
+  invalidationCallerReferences: Record<string, Record<string, string>>;
+}
+
 export interface AccountState {
   iam: IamState;
   cloudwatchDashboards: Record<string, CloudWatchDashboardState>;
+  /** Account-global CloudFront control state. Edge cache bytes remain derived and process-local. */
+  cloudfront: CloudFrontAccountState;
   /** Account-level S3 Block Public Access configuration exposed through S3 Control. */
   s3PublicAccessBlock?: {
     blockPublicAcls: boolean;

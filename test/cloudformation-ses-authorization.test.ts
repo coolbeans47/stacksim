@@ -114,7 +114,7 @@ test("current bootstrap revision retains SES, SNS, AppSync, Cognito, and Step Fu
     const policy = executionRole.inlinePolicies[CDK_BOOTSTRAP_POLICY_NAME];
     const allStatements = statements(policy);
 
-    assert.equal(CDK_BOOTSTRAP_POLICY_REVISION, 17);
+    assert.equal(CDK_BOOTSTRAP_POLICY_REVISION, 18);
     assert.equal(bootstrap.policyRevision, CDK_BOOTSTRAP_POLICY_REVISION);
     assert.equal(executionRole.tags["stacksim:policy-revision"], String(CDK_BOOTSTRAP_POLICY_REVISION));
     const cognitoPolicyArn = `arn:aws:iam::${accountId}:policy/${CDK_BOOTSTRAP_COGNITO_POLICY_NAME}`;

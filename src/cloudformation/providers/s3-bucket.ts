@@ -38,6 +38,12 @@ export interface S3BucketEncryptionModel {
 export interface S3PublicAccessBlockModel {
   readonly BlockPublicAcls: boolean;
   readonly IgnorePublicAcls: boolean;
+  readonly BlockPublicPolicy: boolean;
+  readonly RestrictPublicBuckets: boolean;
+}
+
+export interface S3OwnershipControlsModel {
+  readonly Rules: readonly [{ readonly ObjectOwnership: "BucketOwnerEnforced" }];
 }
 
 export interface S3WebsiteConfigurationModel {
@@ -66,6 +72,7 @@ export interface S3BucketModel {
   readonly BucketName: string;
   readonly BucketEncryption: S3BucketEncryptionModel;
   readonly VersioningConfiguration?: { readonly Status: "Enabled" | "Suspended" };
+  readonly OwnershipControls?: S3OwnershipControlsModel;
   readonly PublicAccessBlockConfiguration?: S3PublicAccessBlockModel;
   readonly Tags: readonly { readonly Key: string; readonly Value: string }[];
   readonly WebsiteConfiguration?: S3WebsiteConfigurationModel;
@@ -86,6 +93,7 @@ export const S3_BUCKET_SCHEMA: ProviderSchema = Object.freeze({
     BucketName: Object.freeze({ valueType: "string", updateBehavior: "REPLACEMENT" }),
     BucketEncryption: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
     VersioningConfiguration: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
+    OwnershipControls: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
     PublicAccessBlockConfiguration: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
     Tags: Object.freeze({ valueType: "array", updateBehavior: "MUTABLE" }),
     WebsiteConfiguration: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
@@ -96,6 +104,7 @@ export const S3_BUCKET_SCHEMA: ProviderSchema = Object.freeze({
   attributes: Object.freeze({
     Arn: Object.freeze({ valueType: "string", description: "S3 bucket ARN" }),
     WebsiteURL: Object.freeze({ valueType: "string", description: "Simulator-backed S3 website endpoint" }),
+    RegionalDomainName: Object.freeze({ valueType: "string", description: "Regional virtual-hosted S3 domain name" }),
   }),
   replacement: Object.freeze({ defaultOrder: "CREATE_BEFORE_DELETE" }),
   retention: Object.freeze({
@@ -143,7 +152,21 @@ function validateVersioning(value: unknown, issues: ProviderValidationIssue[]): 
   }
 }
 
-const PUBLIC_ACCESS_FIELDS = ["BlockPublicAcls", "IgnorePublicAcls"] as const;
+function validateOwnershipControls(value: unknown, issues: ProviderValidationIssue[]): void {
+  const path = "Properties.OwnershipControls";
+  if (!isRecord(value)) return;
+  exactKeys(value, ["Rules"], path, issues);
+  if (!Array.isArray(value.Rules) || value.Rules.length !== 1 || !isRecord(value.Rules[0])) {
+    issue(issues, `${path}.Rules`, "OwnershipControls requires exactly one rule");
+    return;
+  }
+  exactKeys(value.Rules[0], ["ObjectOwnership"], `${path}.Rules.0`, issues);
+  if (value.Rules[0].ObjectOwnership !== "BucketOwnerEnforced") {
+    issue(issues, `${path}.Rules.0.ObjectOwnership`, "Only BucketOwnerEnforced is supported");
+  }
+}
+
+const PUBLIC_ACCESS_FIELDS = ["BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets"] as const;
 
 function validatePublicAccessBlock(value: unknown, issues: ProviderValidationIssue[]): void {
   if (!isRecord(value)) return;
@@ -251,6 +274,7 @@ function validateBucketProperties(properties: unknown): ProviderValidationIssue[
   }
   if (properties.BucketEncryption !== undefined) validateEncryption(properties.BucketEncryption, issues);
   if (properties.VersioningConfiguration !== undefined) validateVersioning(properties.VersioningConfiguration, issues);
+  if (properties.OwnershipControls !== undefined) validateOwnershipControls(properties.OwnershipControls, issues);
   if (properties.PublicAccessBlockConfiguration !== undefined) validatePublicAccessBlock(properties.PublicAccessBlockConfiguration, issues);
   if (properties.Tags !== undefined) validateTags(properties.Tags, issues);
   if (properties.WebsiteConfiguration !== undefined) validateWebsite(properties.WebsiteConfiguration, issues);
@@ -264,8 +288,15 @@ function publicAccessBlock(value: unknown): S3PublicAccessBlockModel | undefined
   const model = {
     BlockPublicAcls: Boolean(value.BlockPublicAcls),
     IgnorePublicAcls: Boolean(value.IgnorePublicAcls),
+    BlockPublicPolicy: Boolean(value.BlockPublicPolicy),
+    RestrictPublicBuckets: Boolean(value.RestrictPublicBuckets),
   };
-  return Object.values(model).some(Boolean) ? model : undefined;
+  return model;
+}
+
+function ownershipControls(value: unknown): S3OwnershipControlsModel | undefined {
+  if (!isRecord(value)) return undefined;
+  return { Rules: [{ ObjectOwnership: "BucketOwnerEnforced" }] };
 }
 
 function canonicalTags(value: unknown): S3BucketModel["Tags"] {
@@ -305,6 +336,7 @@ function canonicalBucket(properties: Record<string, unknown>, context: ProviderC
     ? { Status: String(properties.VersioningConfiguration.Status) as "Enabled" | "Suspended" }
     : undefined;
   const pab = publicAccessBlock(properties.PublicAccessBlockConfiguration);
+  const ownership = ownershipControls(properties.OwnershipControls);
   const website = canonicalWebsite(properties.WebsiteConfiguration);
   const cors = canonicalCors(properties.CorsConfiguration);
   const notification = canonicalNotification(properties.NotificationConfiguration);
@@ -312,6 +344,7 @@ function canonicalBucket(properties: Record<string, unknown>, context: ProviderC
     BucketName: String(properties.BucketName ?? generatedS3BucketName(context)),
     BucketEncryption: AES256_ENCRYPTION,
     ...(versioning ? { VersioningConfiguration: versioning } : {}),
+    ...(ownership ? { OwnershipControls: ownership } : {}),
     ...(pab ? { PublicAccessBlockConfiguration: pab } : {}),
     Tags: canonicalTags(properties.Tags),
     ...(website ? { WebsiteConfiguration: website } : {}),
@@ -339,6 +372,7 @@ function inputFor(model: S3BucketModel, context: ProviderContext): S3BucketConfi
       ? "enabled"
       : model.VersioningConfiguration?.Status === "Suspended" ? "suspended" : "unversioned",
     encryption: "AES256",
+    ...(model.OwnershipControls ? { objectOwnership: "BucketOwnerEnforced" as const } : {}),
     tags: {
       ...Object.fromEntries(model.Tags.map(tag => [tag.Key, tag.Value])),
       [S3_CLOUDFORMATION_OWNER_TAG]: s3OwnerValue(context),
@@ -347,8 +381,8 @@ function inputFor(model: S3BucketModel, context: ProviderContext): S3BucketConfi
       publicAccessBlock: {
         blockPublicAcls: model.PublicAccessBlockConfiguration.BlockPublicAcls,
         ignorePublicAcls: model.PublicAccessBlockConfiguration.IgnorePublicAcls,
-        blockPublicPolicy: false,
-        restrictPublicBuckets: false,
+        blockPublicPolicy: model.PublicAccessBlockConfiguration.BlockPublicPolicy,
+        restrictPublicBuckets: model.PublicAccessBlockConfiguration.RestrictPublicBuckets,
       },
     } : {}),
     ...(model.WebsiteConfiguration ? {
@@ -374,7 +408,14 @@ function modelFromState(state: S3BucketState): S3BucketModel {
   const pab = extended.publicAccessBlock && publicAccessBlock({
     BlockPublicAcls: extended.publicAccessBlock.blockPublicAcls,
     IgnorePublicAcls: extended.publicAccessBlock.ignorePublicAcls,
+    BlockPublicPolicy: extended.publicAccessBlock.blockPublicPolicy,
+    RestrictPublicBuckets: extended.publicAccessBlock.restrictPublicBuckets,
   });
+  const publicAccessBlockConfigured = state.cloudFormationConfiguration?.publicAccessBlock
+    ?? Boolean(pab && Object.values(pab).some(Boolean));
+  if (state.cloudFormationConfiguration?.ownershipControls && state.objectOwnership !== "BucketOwnerEnforced") {
+    throw new AwsError("InvalidBucketState", `Bucket ${state.name} has ownership controls outside the supported BucketOwnerEnforced profile`, 409);
+  }
   const tags = tagsFromState(state);
   delete tags[S3_CLOUDFORMATION_OWNER_TAG];
   const lambdaConfigurations = (state.notificationConfiguration?.lambda ?? []).flatMap(item => item.events.map(event => ({
@@ -386,7 +427,8 @@ function modelFromState(state: S3BucketState): S3BucketModel {
     BucketEncryption: AES256_ENCRYPTION,
     ...(state.versioning === "enabled" ? { VersioningConfiguration: { Status: "Enabled" as const } }
       : state.versioning === "suspended" ? { VersioningConfiguration: { Status: "Suspended" as const } } : {}),
-    ...(pab ? { PublicAccessBlockConfiguration: pab } : {}),
+    ...(state.cloudFormationConfiguration?.ownershipControls ? { OwnershipControls: { Rules: [{ ObjectOwnership: "BucketOwnerEnforced" as const }] } } : {}),
+    ...(publicAccessBlockConfigured && pab ? { PublicAccessBlockConfiguration: pab } : {}),
     Tags: Object.entries(tags).map(([Key, Value]) => ({ Key, Value })).sort((left, right) => left.Key.localeCompare(right.Key)),
     ...(extended.website ? { WebsiteConfiguration: { IndexDocument: extended.website.indexDocument, ...(extended.website.errorDocument ? { ErrorDocument: extended.website.errorDocument } : {}) } } : {}),
     ...(extended.corsConfiguration ? { CorsConfiguration: { CorsRules: extended.corsConfiguration.map(rule => ({ AllowedHeaders: rule.allowedHeaders, AllowedMethods: rule.allowedMethods, AllowedOrigins: rule.allowedOrigins })) } } : {}),
@@ -404,6 +446,7 @@ function success(s3: S3Service, state: S3BucketState): ProviderSuccess<S3BucketM
       properties: model,
       attributes: {
         Arn: state.arn,
+        RegionalDomainName: `${state.name}.s3.${state.region}.amazonaws.com`,
         ...(model.WebsiteConfiguration ? { WebsiteURL: s3.websiteUrl(state.name) } : {}),
       },
     },
@@ -448,7 +491,7 @@ export function createS3BucketProvider(s3: S3Service): ProductionResourceProvide
 
     plan(previous: S3BucketModel | undefined, desired: S3BucketModel): ProviderPlan<S3BucketModel> {
       if (!previous) return { action: "CREATE", desired, changedProperties: Object.keys(desired).sort(), replacementProperties: [] };
-      const fields = ["BucketName", "BucketEncryption", "VersioningConfiguration", "PublicAccessBlockConfiguration", "Tags", "WebsiteConfiguration", "CorsConfiguration", "NotificationConfiguration"] as const;
+      const fields = ["BucketName", "BucketEncryption", "VersioningConfiguration", "OwnershipControls", "PublicAccessBlockConfiguration", "Tags", "WebsiteConfiguration", "CorsConfiguration", "NotificationConfiguration"] as const;
       const changed = fields.filter(field => !same(previous[field], desired[field]));
       if (!changed.length) return { action: "NO_OP", desired, changedProperties: [], replacementProperties: [] };
       if (changed.includes("BucketName")) {
@@ -529,6 +572,7 @@ export function createS3BucketProvider(s3: S3Service): ProductionResourceProvide
 
     getAtt(model: ProviderReadModel<S3BucketModel>, attribute: string): unknown {
       if (attribute === "Arn") return model.attributes.Arn;
+      if (attribute === "RegionalDomainName") return model.attributes.RegionalDomainName;
       if (attribute === "WebsiteURL" && model.attributes.WebsiteURL) return model.attributes.WebsiteURL;
       throw new ProviderReferenceError(S3_BUCKET_TYPE, `Fn::GetAtt ${attribute}`);
     },

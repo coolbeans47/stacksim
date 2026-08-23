@@ -15,6 +15,7 @@ function inferService(path, headers) {
   if (target.startsWith("AmazonSSM.")) return "ssm";
   if (target.startsWith("secretsmanager.")) return "secretsmanager";
   const pathname = new URL(path, location.origin).pathname;
+  if (pathname.startsWith("/_stacksim/api/cloudfront")) return "cloudfront";
   if (pathname.startsWith("/_stacksim/api/cloudformation/")) return "cloudformation";
   if (pathname.startsWith("/_stacksim/api/iam/")) return "iam";
   if (pathname.startsWith("/_stacksim/api/cognito/")) return "cognito-idp";

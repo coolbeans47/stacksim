@@ -75,6 +75,10 @@ test("COG-06 providers register the exact user-pool set and share authoritative 
     const byType = new Map(providers.map(provider => [provider.typeName, provider]));
 
     const poolProvider = byType.get("AWS::Cognito::UserPool")!;
+    assert.throws(() => poolProvider.canonicalize({
+      SmsVerificationMessage: "Legacy code {####}",
+      VerificationMessageTemplate: { SmsMessage: "Different code {####}" },
+    }, context("ConflictingSmsPool")), /must match/);
     const poolDesired = poolProvider.canonicalize({
       UserPoolName: "cfn-cognito-pool",
       UsernameAttributes: ["email"],

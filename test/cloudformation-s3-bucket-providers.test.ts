@@ -8,6 +8,8 @@ import {
   GetBucketEncryptionCommand,
   GetBucketCorsCommand,
   GetBucketNotificationConfigurationCommand,
+  GetBucketOwnershipControlsCommand,
+  GetPublicAccessBlockCommand,
   GetBucketVersioningCommand,
   PutObjectCommand,
   S3Client,
@@ -57,9 +59,12 @@ function bucketProperties(name = "provider-react-site"): Record<string, unknown>
     BucketEncryption: {
       ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" } }],
     },
+    OwnershipControls: { Rules: [{ ObjectOwnership: "BucketOwnerEnforced" }] },
     PublicAccessBlockConfiguration: {
       BlockPublicAcls: true,
       IgnorePublicAcls: true,
+      BlockPublicPolicy: false,
+      RestrictPublicBuckets: false,
     },
     Tags: [{ Key: "aws-cdk:cr-owned:fixture", Value: "true" }, { Key: "application", Value: "react" }],
     VersioningConfiguration: { Status: "Enabled" },
@@ -113,12 +118,20 @@ test("S3 bucket and bucket-policy providers drive the durable public website lif
     if (created.status !== "SUCCESS") assert.fail(JSON.stringify(created));
     assert.equal(bucketProvider.ref(created.model), initial.BucketName);
     assert.equal(bucketProvider.getAtt(created.model, "Arn"), `arn:aws:s3:::${initial.BucketName}`);
+    assert.equal(bucketProvider.getAtt(created.model, "RegionalDomainName"), `${initial.BucketName}.s3.${region}.amazonaws.com`);
     const websiteUrl = String(bucketProvider.getAtt(created.model, "WebsiteURL"));
     assert.equal(websiteUrl, `http://127.0.0.1:${simulator.port}/_stacksim/s3-website/${initial.BucketName}/`);
     assert.equal((await bucketProvider.create(initial, context())).status, "SUCCESS", "a lost create response must converge on the owned bucket");
 
     assert.equal((await sdk.send(new GetBucketVersioningCommand({ Bucket: initial.BucketName }))).Status, "Enabled");
     assert.equal((await sdk.send(new GetBucketEncryptionCommand({ Bucket: initial.BucketName }))).ServerSideEncryptionConfiguration?.Rules?.[0].ApplyServerSideEncryptionByDefault?.SSEAlgorithm, "AES256");
+    assert.equal((await sdk.send(new GetBucketOwnershipControlsCommand({ Bucket: initial.BucketName }))).OwnershipControls?.Rules?.[0].ObjectOwnership, "BucketOwnerEnforced");
+    assert.deepEqual((await sdk.send(new GetPublicAccessBlockCommand({ Bucket: initial.BucketName }))).PublicAccessBlockConfiguration, {
+      BlockPublicAcls: true,
+      BlockPublicPolicy: false,
+      IgnorePublicAcls: true,
+      RestrictPublicBuckets: false,
+    });
     assert.deepEqual((await sdk.send(new GetBucketCorsCommand({ Bucket: initial.BucketName }))).CORSRules?.[0].AllowedMethods, ["GET", "HEAD"]);
     const html = Buffer.from("<!doctype html><main>provider fixture</main>\n", "utf8");
     await sdk.send(new PutObjectCommand({ Bucket: initial.BucketName, Key: "index.html", Body: html, ContentType: "text/html; charset=utf-8" }));
@@ -156,6 +169,12 @@ test("S3 bucket and bucket-policy providers drive the durable public website lif
 
     const updatedProperties = bucketProperties();
     updatedProperties.VersioningConfiguration = { Status: "Suspended" };
+    updatedProperties.PublicAccessBlockConfiguration = {
+      BlockPublicAcls: false,
+      BlockPublicPolicy: false,
+      IgnorePublicAcls: false,
+      RestrictPublicBuckets: false,
+    };
     updatedProperties.Tags = [{ Key: "application", Value: "react-v2" }];
     updatedProperties.WebsiteConfiguration = { IndexDocument: "index.html", ErrorDocument: "error.html" };
     const updated = bucketProvider.canonicalize(updatedProperties, context());
@@ -248,12 +267,13 @@ test("S3 CloudFormation providers freeze the CDK subset and replacement/retentio
     const driftedCors = structuredClone(bucketProperties());
     (driftedCors.CorsConfiguration as any).CorsRules[0].AllowedMethods = ["GET", "HEAD", "PUT"];
     assert.ok(bucketProvider.validate(driftedCors, context()).some(item => item.path.endsWith("AllowedMethods")));
-    const unpinnedPublicBlock = structuredClone(bucketProperties());
-    (unpinnedPublicBlock.PublicAccessBlockConfiguration as any).BlockPublicPolicy = false;
-    (unpinnedPublicBlock.PublicAccessBlockConfiguration as any).RestrictPublicBuckets = false;
-    const publicBlockIssues = bucketProvider.validate(unpinnedPublicBlock, context());
-    assert.ok(publicBlockIssues.some(item => item.path === "Properties.PublicAccessBlockConfiguration.BlockPublicPolicy"));
-    assert.ok(publicBlockIssues.some(item => item.path === "Properties.PublicAccessBlockConfiguration.RestrictPublicBuckets"));
+    assert.equal(bucketProvider.validate(bucketProperties(), context()).length, 0, "all four public-access-block fields and exact ownership controls must be admitted");
+    const invalidOwnership = structuredClone(bucketProperties());
+    (invalidOwnership.OwnershipControls as any).Rules[0].ObjectOwnership = "ObjectWriter";
+    assert.ok(bucketProvider.validate(invalidOwnership, context()).some(item => item.path === "Properties.OwnershipControls.Rules.0.ObjectOwnership"));
+    const extraOwnership = structuredClone(bucketProperties());
+    (extraOwnership.OwnershipControls as any).Rules[0].Unknown = true;
+    assert.ok(bucketProvider.validate(extraOwnership, context()).some(item => item.path === "Properties.OwnershipControls.Rules.0.Unknown"));
     const kms = structuredClone(bucketProperties());
     (kms.BucketEncryption as any).ServerSideEncryptionConfiguration[0].ServerSideEncryptionByDefault = { SSEAlgorithm: "aws:kms", KMSMasterKeyID: "alias/aws/s3" };
     assert.ok(bucketProvider.validate(kms, context()).some(item => item.path.includes("SSEAlgorithm") && /KMS/.test(item.message)));
@@ -272,6 +292,92 @@ test("S3 CloudFormation providers freeze the CDK subset and replacement/retentio
     assert.deepEqual(S3_BUCKET_POLICY_SCHEMA.retention.deletionPolicies, ["Delete", "Retain", "RetainExceptOnCreate"]);
     assert.equal(S3_BUCKET_SCHEMA.retention.snapshotSupported, false);
     assert.equal(S3_BUCKET_POLICY_SCHEMA.retention.snapshotSupported, false);
+  } finally {
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("S3 bucket-policy provider recognizes the exact semantic CloudFront OAC and auto-delete profiles", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-s3-oac-policy-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "off" });
+  try {
+    await simulator.start();
+    const bucketProvider = createS3BucketProvider(simulator.s3);
+    const policyProvider = createS3BucketPolicyProvider(simulator.s3);
+    const bucketInput = bucketProperties("provider-private-cloudfront");
+    delete bucketInput.WebsiteConfiguration;
+    delete bucketInput.CorsConfiguration;
+    bucketInput.PublicAccessBlockConfiguration = {
+      BlockPublicAcls: true,
+      BlockPublicPolicy: true,
+      IgnorePublicAcls: true,
+      RestrictPublicBuckets: true,
+    };
+    const bucket = bucketProvider.canonicalize(bucketInput, context("WebBucket"));
+    const bucketCreated = await bucketProvider.create(bucket, context("WebBucket"));
+    assert.equal(bucketCreated.status, "SUCCESS");
+    const bucketArn = `arn:aws:s3:::${bucket.BucketName}`;
+    const objectArn = `${bucketArn}/*`;
+    const distributionArn = `arn:aws:cloudfront::${accountId}:distribution/E123ABC456DEF`;
+    const tls = {
+      Resource: [objectArn, bucketArn],
+      Principal: { AWS: "*" },
+      Effect: "Deny",
+      Condition: { Bool: { "aws:SecureTransport": "false" } },
+      Action: "s3:*",
+    };
+    const autoDelete = {
+      Resource: [objectArn, bucketArn],
+      Principal: { AWS: `arn:aws:iam::${accountId}:role/CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092` },
+      Effect: "Allow",
+      Action: ["s3:PutBucketPolicy", "s3:List*", "s3:DeleteObject*", "s3:GetBucket*"],
+    };
+    const oac = {
+      Resource: objectArn,
+      Principal: { Service: "cloudfront.amazonaws.com" },
+      Effect: "Allow",
+      Condition: { StringEquals: { "AWS:SourceArn": distributionArn } },
+      Action: "s3:GetObject",
+    };
+    const legacyAutoDeleteOnly = { Bucket: bucket.BucketName, PolicyDocument: { Version: "2012-10-17", Statement: [autoDelete] } };
+    assert.equal(policyProvider.validate(legacyAutoDeleteOnly, context("WebBucketPolicy")).length, 0, "the existing exact generated auto-delete-only profile remains supported");
+    const supplied = { Bucket: bucket.BucketName, PolicyDocument: { Version: "2012-10-17", Statement: [oac, autoDelete, tls] } };
+    assert.equal(policyProvider.validate(supplied, context("WebBucketPolicy")).length, 0);
+    const policy = policyProvider.canonicalize(supplied, context("WebBucketPolicy"));
+    assert.deepEqual((policy.PolicyDocument.Statement as any[]).map(statement => statement.Principal), [
+      { AWS: "*" },
+      { AWS: `arn:aws:iam::${accountId}:role/CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092` },
+      { Service: "cloudfront.amazonaws.com" },
+    ], "canonical policy order must be stable and independent of synthesized statement order");
+    assert.deepEqual((policy.PolicyDocument.Statement as any[])[1].Action, ["s3:DeleteObject*", "s3:GetBucket*", "s3:List*", "s3:PutBucketPolicy"]);
+    assert.equal((await policyProvider.create(policy, context("WebBucketPolicy"))).status, "SUCCESS");
+    assert.equal((await policyProvider.read(bucket.BucketName, context("WebBucketPolicy"))).status, "SUCCESS");
+
+    const reordered = structuredClone(supplied);
+    (reordered.PolicyDocument as any).Statement = [tls, oac, { ...autoDelete, Action: [...autoDelete.Action].reverse(), Resource: [...autoDelete.Resource].reverse() }];
+    assert.deepEqual(policyProvider.canonicalize(reordered, context("WebBucketPolicy")), policy, "statement/action/resource ordering is not semantic");
+
+    const wrongAccount = structuredClone(supplied);
+    (wrongAccount.PolicyDocument as any).Statement[0].Condition.StringEquals["AWS:SourceArn"] = "arn:aws:cloudfront::111111111111:distribution/E123ABC456DEF";
+    assert.ok(policyProvider.validate(wrongAccount, context("WebBucketPolicy")).some(item => item.path.endsWith(".Condition")));
+    const extraAction = structuredClone(supplied);
+    (extraAction.PolicyDocument as any).Statement[1].Action.push("s3:PutObject");
+    assert.ok(policyProvider.validate(extraAction, context("WebBucketPolicy")).some(item => item.path.endsWith(".Action")));
+    const unsupportedFourth = structuredClone(supplied);
+    (unsupportedFourth.PolicyDocument as any).Statement.push({ Effect: "Deny", Principal: "*", Action: ["s3:DeleteObject"], Resource: [objectArn] });
+    assert.ok(policyProvider.validate(unsupportedFourth, context("WebBucketPolicy")).some(item => item.path === "Properties.PolicyDocument.Statement"));
+
+    const cleanup = structuredClone(policy.PolicyDocument) as any;
+    cleanup.Statement = [
+      { Principal: "*", Effect: "Deny", Action: ["s3:PutObject"], Resource: [objectArn] },
+      ...cleanup.Statement.reverse(),
+    ];
+    await simulator.s3.putBucketPolicyInternal(bucket.BucketName, cleanup);
+    const cleanupRead = await policyProvider.read(bucket.BucketName, context("WebBucketPolicy"));
+    assert.equal(cleanupRead.status, "FAILED", "the temporary cleanup profile must not become a steady-state read model");
+    assert.equal((await policyProvider.delete(bucket.BucketName, policy, context("WebBucketPolicy"))).status, "SUCCESS", "delete recovery must recognize the exact temporary cleanup statement");
+    assert.equal((await bucketProvider.delete(bucket.BucketName, bucket, context("WebBucket"))).status, "SUCCESS");
   } finally {
     await simulator.stop().catch(() => undefined);
     await rm(root, { recursive: true, force: true });

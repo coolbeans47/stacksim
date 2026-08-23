@@ -267,7 +267,7 @@ export const API_GATEWAY_STAGE_SCHEMA: ProviderSchema = Object.freeze({
     CanarySetting: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
     ClientCertificateId: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
     DocumentationVersion: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
-    TracingEnabled: Object.freeze({ valueType: "boolean", updateBehavior: "NOT_SUPPORTED", description: "X-Ray is not available; false is accepted for CDK compatibility." }),
+    TracingEnabled: Object.freeze({ valueType: "boolean", updateBehavior: "MUTABLE", description: "Enables API Gateway REST stage active tracing through the XRY-01 X-Ray service." }),
     Tags: Object.freeze({ valueType: "array", updateBehavior: "MUTABLE" }),
   }),
   ref: Object.freeze({ supported: true, valueType: "string", description: "Stage name." }),
@@ -1393,7 +1393,6 @@ function stageIssues(properties: unknown): ProviderValidationIssue[] {
   if (typeof properties.StageName === "string" && !/^[A-Za-z0-9_-]{1,128}$/.test(properties.StageName)) issues.push(issue("Properties.StageName", "StageName must contain 1 to 128 letters, digits, underscores, or hyphens"));
   validateStringMap(properties.Variables, "Properties.Variables", issues);
   if (isObject(properties.Variables)) for (const [key, value] of Object.entries(properties.Variables)) if (!/^[A-Za-z0-9_]+$/.test(key) || typeof value === "string" && !/^[A-Za-z0-9\-._~:/?#&=,]+$/.test(value)) issues.push(issue(`Properties.Variables.${key}`, "Stage variable name or value is invalid"));
-  if (properties.TracingEnabled === true) issues.push(issue("Properties.TracingEnabled", "TracingEnabled true requires X-Ray, which is not available in this simulator", "UnsupportedProperty"));
   if (properties.CacheClusterSize !== undefined && !["0.5", "1.6", "6.1", "13.5", "28.4", "58.2", "118", "237"].includes(properties.CacheClusterSize)) issues.push(issue("Properties.CacheClusterSize", "CacheClusterSize is invalid"));
   if (isObject(properties.AccessLogSetting)) {
     for (const key of Object.keys(properties.AccessLogSetting)) if (!["DestinationArn", "Format"].includes(key)) issues.push(issue(`Properties.AccessLogSetting.${key}`, `AccessLogSetting does not support ${key}`, "UnsupportedProperty"));
@@ -1591,7 +1590,7 @@ export function createApiGatewayAccountProvider(service: ApiGatewayService): Pro
     typeName: API_GATEWAY_ACCOUNT_TYPE, providerVersion: 1, visibility: "production", schema: API_GATEWAY_ACCOUNT_SCHEMA,
     validate(properties) { return accountIssues(properties); }, canonicalize(properties) { return canonicalAccount(properties); },
     plan(previous, desired) { return plan(previous, desired, names, []); },
-    async create(desired, context) { try { const current = await accountReadModel(service, context); if (current.properties.CloudWatchRoleArn && current.properties.CloudWatchRoleArn !== desired.CloudWatchRoleArn) return { status: "FAILED", errorCode: "ResourceConflict", message: "This region already has a different API Gateway CloudWatch role; AWS::ApiGateway::Account is a singleton" }; if (!current.properties.CloudWatchRoleArn && desired.CloudWatchRoleArn) await patchAccount(service, desired); const model = await accountReadModel(service, context); return { status: "SUCCESS", physicalId: model.physicalId, model }; } catch (error) { return providerFailure(error); } },
+    async create(desired, context) { try { const current = await accountReadModel(service, context); /* The resource is a regional setting: CloudFormation warns that another Account resource overwrites it, and retained settings must not block stack recreation. */ if (desired.CloudWatchRoleArn && current.properties.CloudWatchRoleArn !== desired.CloudWatchRoleArn) await patchAccount(service, desired); const model = await accountReadModel(service, context); return { status: "SUCCESS", physicalId: model.physicalId, model }; } catch (error) { return providerFailure(error); } },
     async read(physicalId, context): Promise<ProviderReadResult<ApiGatewayAccountModel>> { try { const model = await accountReadModel(service, context); if (physicalId !== model.physicalId) return { status: "NOT_FOUND", physicalId }; return { status: "SUCCESS", physicalId, model }; } catch (error) { return providerFailure(error); } },
     async update(physicalId, _previous, desired, context): Promise<ProviderUpdateResult<ApiGatewayAccountModel>> { try { const expected = `${context.accountId}:${context.region}`; if (physicalId !== expected) throw new AwsError("InvalidPhysicalResourceId", "API Gateway Account physical identifier does not match this region", 400); await patchAccount(service, desired); const model = await accountReadModel(service, context); return { status: "SUCCESS", physicalId, model }; } catch (error) { return providerFailure(error); } },
     async delete(physicalId) { return { status: "SUCCESS", physicalId }; },

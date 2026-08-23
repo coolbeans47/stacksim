@@ -168,12 +168,14 @@ export class CustomResourceCallbackBroker {
   private endpointPort = 0;
   private readonly pkiDirectory: string;
   readonly caCertificatePath: string;
+  readonly caPrivateKeyPath: string;
   readonly serverCertificatePath: string;
   readonly serverPrivateKeyPath: string;
 
   constructor(private readonly store: StateStore, private readonly clock: Clock) {
     this.pkiDirectory = resolve(store.root, "data", "cloudformation", "custom-resource-pki");
     this.caCertificatePath = resolve(this.pkiDirectory, "ca.pem");
+    this.caPrivateKeyPath = resolve(this.pkiDirectory, "ca-key.pem");
     this.serverCertificatePath = resolve(this.pkiDirectory, "localhost.pem");
     this.serverPrivateKeyPath = resolve(this.pkiDirectory, "localhost-key.pem");
   }
@@ -186,29 +188,32 @@ export class CustomResourceCallbackBroker {
 
   private artifactId(resourceOperationId: string): string { return `${resourceOperationId}.json`; }
 
-  async initializePki(): Promise<{ ca: string; certificate: string; privateKey: string }> {
+  async initializePki(): Promise<{ ca: string; caPrivateKey: string; certificate: string; privateKey: string }> {
     await mkdir(this.pkiDirectory, { recursive: true, mode: 0o700 });
     try {
-      const [ca, certificate, privateKey] = await Promise.all([
+      const [ca, caPrivateKey, certificate, privateKey] = await Promise.all([
         readFile(this.caCertificatePath, "utf8"),
+        readFile(this.caPrivateKeyPath, "utf8"),
         readFile(this.serverCertificatePath, "utf8"),
         readFile(this.serverPrivateKeyPath, "utf8"),
       ]);
       const parsed = new X509Certificate(certificate);
       const caCertificate = new X509Certificate(ca);
+      const caKey = createPrivateKey(caPrivateKey);
       const key = createPrivateKey(privateKey);
       // TLS peers validate certificate dates against host wall time, even when
       // the simulator uses an injected clock for modeled AWS timestamps.
-      if (!parsed.verify(caCertificate.publicKey) || !parsed.checkPrivateKey(key) || !parsed.checkHost("localhost") || !parsed.checkIP("127.0.0.1") || Date.parse(parsed.validFrom) > Date.now() || Date.parse(parsed.validTo) <= Date.now() + 24 * 60 * 60_000) throw new Error("Callback certificate is invalid, mismatched, not yet valid, or expiring");
-      return { ca, certificate, privateKey };
+      if (!caCertificate.checkPrivateKey(caKey) || !parsed.verify(caCertificate.publicKey) || !parsed.checkPrivateKey(key) || !parsed.checkHost("localhost") || !parsed.checkIP("127.0.0.1") || Date.parse(parsed.validFrom) > Date.now() || Date.parse(parsed.validTo) <= Date.now() + 24 * 60 * 60_000) throw new Error("Callback certificate is invalid, mismatched, not yet valid, or expiring");
+      return { ca, caPrivateKey, certificate, privateKey };
     } catch {
       const generated = createLoopbackServerCertificate(Date.now());
       await replacePkiBundle(this.pkiDirectory, [
         [this.caCertificatePath, generated.caCertificate],
+        [this.caPrivateKeyPath, generated.caPrivateKey],
         [this.serverCertificatePath, generated.certificate],
         [this.serverPrivateKeyPath, generated.privateKey],
       ]);
-      return { ca: generated.caCertificate, certificate: generated.certificate, privateKey: generated.privateKey };
+      return { ca: generated.caCertificate, caPrivateKey: generated.caPrivateKey, certificate: generated.certificate, privateKey: generated.privateKey };
     }
   }
 

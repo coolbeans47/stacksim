@@ -75,6 +75,7 @@ export const COGNITO_USER_POOL_SCHEMA: ProviderSchema = Object.freeze({
     EmailConfiguration: objectProperty("MUTABLE"),
     EmailVerificationMessage: stringProperty("MUTABLE"),
     EmailVerificationSubject: stringProperty("MUTABLE"),
+    SmsVerificationMessage: stringProperty("MUTABLE"),
     VerificationMessageTemplate: objectProperty("MUTABLE"),
     MfaConfiguration: stringProperty("MUTABLE"),
     EnabledMfas: arrayProperty("MUTABLE"),
@@ -321,7 +322,18 @@ function userPoolIssues(properties: unknown): ProviderValidationIssue[] {
   }
   exactObject(properties.AdminCreateUserConfig, ["AllowAdminCreateUserOnly", "UnusedAccountValidityDays", "InviteMessageTemplate"], "Properties.AdminCreateUserConfig", issues);
   exactObject(properties.EmailConfiguration, ["EmailSendingAccount", "SourceArn", "From", "ReplyToEmailAddress", "ConfigurationSet"], "Properties.EmailConfiguration", issues);
-  exactObject(properties.VerificationMessageTemplate, ["DefaultEmailOption", "EmailMessage", "EmailSubject"], "Properties.VerificationMessageTemplate", issues);
+  exactObject(properties.VerificationMessageTemplate, ["DefaultEmailOption", "EmailMessage", "EmailSubject", "SmsMessage"], "Properties.VerificationMessageTemplate", issues);
+  if (
+    typeof properties.SmsVerificationMessage === "string"
+    && record(properties.VerificationMessageTemplate)
+    && typeof properties.VerificationMessageTemplate.SmsMessage === "string"
+    && properties.SmsVerificationMessage !== properties.VerificationMessageTemplate.SmsMessage
+  ) {
+    issues.push(issue(
+      "Properties.VerificationMessageTemplate.SmsMessage",
+      "SmsVerificationMessage and VerificationMessageTemplate.SmsMessage must match when both are supplied",
+    ));
+  }
   exactObject(properties.AccountRecoverySetting, ["RecoveryMechanisms"], "Properties.AccountRecoverySetting", issues);
   exactObject(properties.LambdaConfig, ["PreSignUp", "CustomMessage", "PostConfirmation", "PreAuthentication", "PostAuthentication", "PreTokenGeneration", "PreTokenGenerationConfig"], "Properties.LambdaConfig", issues);
   if (properties.UserPoolTags !== undefined) {
@@ -409,6 +421,8 @@ function canonicalUserPool(properties: unknown, context: ProviderContext): Model
   cfn10ThrowIssues(issues);
   const input = properties as Json;
   const password = record(input.Policies?.PasswordPolicy) ? input.Policies.PasswordPolicy : {};
+  const verification = record(input.VerificationMessageTemplate) ? input.VerificationMessageTemplate : {};
+  const smsMessage = verification.SmsMessage ?? input.SmsVerificationMessage;
   return Object.freeze(cfn10Stable({
     UserPoolName: input.UserPoolName ?? cfn10GeneratedName(context, "pool-", 128, /[^\w\s+=,.@-]/gu),
     Policies: { PasswordPolicy: { ...passwordPolicyDefaults, ...password } },
@@ -428,10 +442,11 @@ function canonicalUserPool(properties: unknown, context: ProviderContext): Model
     Schema: cfn10Stable(input.Schema ?? []),
     AccountRecoverySetting: cfn10Stable(input.AccountRecoverySetting ?? { RecoveryMechanisms: [{ Name: "verified_email", Priority: 1 }] }),
     EmailConfiguration: cfn10Stable(input.EmailConfiguration ?? { EmailSendingAccount: "COGNITO_DEFAULT" }),
-    VerificationMessageTemplate: cfn10Stable(input.VerificationMessageTemplate ?? {
-      DefaultEmailOption: "CONFIRM_WITH_CODE",
-      EmailSubject: input.EmailVerificationSubject ?? "Your verification code",
-      EmailMessage: input.EmailVerificationMessage ?? "Your verification code is {####}.",
+    VerificationMessageTemplate: cfn10Stable({
+      DefaultEmailOption: verification.DefaultEmailOption ?? "CONFIRM_WITH_CODE",
+      EmailSubject: verification.EmailSubject ?? input.EmailVerificationSubject ?? "Your verification code",
+      EmailMessage: verification.EmailMessage ?? input.EmailVerificationMessage ?? "Your verification code is {####}.",
+      ...(smsMessage === undefined ? {} : { SmsMessage: smsMessage }),
     }),
     MfaConfiguration: input.MfaConfiguration ?? "OFF",
     EnabledMfas: [...(input.EnabledMfas ?? [])].sort(),

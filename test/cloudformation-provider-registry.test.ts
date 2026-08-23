@@ -108,7 +108,7 @@ test("default production registry exposes only the CDK metadata provider", () =>
   );
 });
 
-test("all 98 statically exported production schemas declare the complete retention contract", () => {
+test("all 102 statically exported production schemas declare the complete retention contract", () => {
   const schemas = Object.values(productionProviderExports).filter((value): value is ProviderSchema => {
     if (!value || typeof value !== "object") return false;
     const candidate = value as Partial<ProviderSchema>;
@@ -122,7 +122,7 @@ test("all 98 statically exported production schemas declare the complete retenti
     "AWS::ApiGateway::Stage", "AWS::ApiGateway::UsagePlan", "AWS::ApiGateway::UsagePlanKey", "AWS::ApiGateway::VpcLink",
     "AWS::ApiGatewayV2::Api", "AWS::ApiGatewayV2::ApiMapping", "AWS::ApiGatewayV2::Authorizer", "AWS::ApiGatewayV2::Deployment", "AWS::ApiGatewayV2::DomainName",
     "AWS::ApiGatewayV2::Integration", "AWS::ApiGatewayV2::IntegrationResponse", "AWS::ApiGatewayV2::Model", "AWS::ApiGatewayV2::Route", "AWS::ApiGatewayV2::RouteResponse", "AWS::ApiGatewayV2::Stage",
-    "AWS::CDK::Metadata", "AWS::CloudFormation::Stack", "AWS::CloudWatch::Alarm", "AWS::CloudWatch::AnomalyDetector", "AWS::CloudWatch::CompositeAlarm", "AWS::CloudWatch::Dashboard", "AWS::CloudWatch::InsightRule", "AWS::CloudWatch::MetricStream",
+    "AWS::CDK::Metadata", "AWS::CloudFormation::Stack", "AWS::CloudFront::Distribution", "AWS::CloudFront::Function", "AWS::CloudFront::OriginAccessControl", "AWS::CloudFront::ResponseHeadersPolicy", "AWS::CloudWatch::Alarm", "AWS::CloudWatch::AnomalyDetector", "AWS::CloudWatch::CompositeAlarm", "AWS::CloudWatch::Dashboard", "AWS::CloudWatch::InsightRule", "AWS::CloudWatch::MetricStream",
     "AWS::Cognito::UserPool", "AWS::Cognito::UserPoolClient", "AWS::Cognito::UserPoolDomain", "AWS::Cognito::UserPoolGroup",
     "AWS::Cognito::UserPoolIdentityProvider", "AWS::Cognito::UserPoolResourceServer", "AWS::Cognito::UserPoolUser", "AWS::Cognito::UserPoolUserToGroupAttachment",
     "AWS::DynamoDB::GlobalTable", "AWS::DynamoDB::Table", "AWS::Events::EventBus", "AWS::Events::Rule", "AWS::IAM::ManagedPolicy", "AWS::IAM::Policy", "AWS::IAM::Role",

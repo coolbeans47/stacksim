@@ -274,6 +274,7 @@ test("DBParameterGroup replacement CREATE authorizes the generated new ARN inste
     const document = policyDocument((await iam.send(new GetRolePolicyCommand({ RoleName: executionRoleName, PolicyName: CDK_BOOTSTRAP_POLICY_NAME }))).PolicyDocument);
     const generatedArnScope = `arn:aws:rds:${region}:000000000000:pg:rds-replacement-auth-parametergroup-*`;
     for (const statement of document.Statement ?? []) if (statement.Sid === "ManageRdsResources") statement.Resource = generatedArnScope;
+    document.Statement = (document.Statement ?? []).filter((statement: any) => statement.Sid === "ManageRdsResources");
     document.Statement.push({
       Sid: "DenyParameterGroupCreateAgainstOldPhysicalId",
       Effect: "Deny",
@@ -467,6 +468,7 @@ test("resource-scoped execution-role policies authorize only the exact CFN-06 th
       ManageDynamoDbTables: tableArn,
     };
     for (const statement of document.Statement ?? []) if (statement.Sid && resourcesBySid[statement.Sid]) statement.Resource = resourcesBySid[statement.Sid];
+    document.Statement = (document.Statement ?? []).filter((statement: any) => statement.Sid && resourcesBySid[statement.Sid]);
     await iam.send(new PutRolePolicyCommand({ RoleName: executionRoleName, PolicyName: CDK_BOOTSTRAP_POLICY_NAME, PolicyDocument: JSON.stringify(document) }));
 
     const trust = { Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { Service: "lambda.amazonaws.com" }, Action: "sts:AssumeRole" }] };

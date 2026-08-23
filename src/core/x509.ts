@@ -1,4 +1,6 @@
-import { generateKeyPairSync, randomBytes, sign, type KeyObject } from "node:crypto";
+import { createPrivateKey, generateKeyPairSync, randomBytes, sign, type KeyObject } from "node:crypto";
+
+const LOOPBACK_CA_NAME = "stacksim CloudFormation development CA";
 
 function length(value: number): Buffer {
   if (value < 0x80) return Buffer.from([value]);
@@ -100,8 +102,8 @@ export function createSelfSignedSigningCertificate(
 export function createLoopbackServerCertificate(
   createdAt: number,
   lifetimeMs = 365 * 24 * 60 * 60_000,
-): { caCertificate: string; certificate: string; privateKey: string; expirationDate: number } {
-  const caName = "stacksim CloudFormation development CA";
+): { caCertificate: string; caPrivateKey: string; certificate: string; privateKey: string; expirationDate: number } {
+  const caName = LOOPBACK_CA_NAME;
   const caKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const caExtensions = der(0xa3, der(0x30,
     der(0x30, oid("2.5.29.19"), der(0x01, Buffer.from([0xff])), der(0x04, der(0x30, der(0x01, Buffer.from([0xff]))))),
@@ -122,8 +124,32 @@ export function createLoopbackServerCertificate(
   const leaf = certificate("localhost", caName, leafKeys.publicKey, caKeys.privateKey, createdAt, lifetimeMs, leafExtensions);
   return {
     caCertificate: ca.certificate,
+    caPrivateKey: caKeys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
     certificate: leaf.certificate,
     privateKey: leafKeys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
     expirationDate: leaf.expirationDate,
+  };
+}
+
+/** Issue one exact-host viewer leaf under the persisted installation-local CA. */
+export function createLoopbackHostCertificate(
+  host: string,
+  caPrivateKey: string,
+  createdAt: number,
+  lifetimeMs = 365 * 24 * 60 * 60_000,
+): { certificate: string; privateKey: string; expirationDate: number } {
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.localhost$/.test(host)) throw new TypeError("Loopback certificate host must be one exact lowercase .localhost name");
+  const signingKey = createPrivateKey(caPrivateKey);
+  const leafKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const leafExtensions = der(0xa3, der(0x30,
+    der(0x30, oid("2.5.29.19"), der(0x01, Buffer.from([0xff])), der(0x04, der(0x30))),
+    der(0x30, oid("2.5.29.15"), der(0x01, Buffer.from([0xff])), der(0x04, der(0x03, Buffer.from([0x05, 0xa0])))),
+    der(0x30, oid("2.5.29.37"), der(0x04, der(0x30, oid("1.3.6.1.5.5.7.3.1")))),
+    der(0x30, oid("2.5.29.17"), der(0x04, der(0x30, der(0x82, Buffer.from(host, "ascii"))))),
+  ));
+  const leaf = certificate(host, LOOPBACK_CA_NAME, leafKeys.publicKey, signingKey, createdAt, lifetimeMs, leafExtensions);
+  return {
+    ...leaf,
+    privateKey: leafKeys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
   };
 }
