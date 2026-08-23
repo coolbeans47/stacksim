@@ -142,7 +142,7 @@ test("management console assets and environment summary are served", async () =>
   assert.equal(serviceIcon.status, 200);
   assert.match(serviceIcon.headers.get("content-type")!, /image\/svg\+xml/);
   assert.match(await serviceIcon.text(), /AWS-Lambda_Icon/);
-  const modules = await Promise.all(["home", "lambda", "dynamodb", "s3", "sqs", "apigateway", "cloudwatch", "iam", "rds", "cognito", "sns", "parameter-store", "step-functions"].map(async service => {
+  const modules = await Promise.all(["home", "lambda", "dynamodb", "s3", "sqs", "apigateway", "cloudwatch", "iam", "rds", "cognito", "sns", "parameter-store", "step-functions", "xray"].map(async service => {
     const response = await fetch(`${base}/_stacksim/console/services/${service}.js`);
     assert.equal(response.status, 200);
     return response.text();
@@ -158,8 +158,9 @@ test("management console assets and environment summary are served", async () =>
   assert.match(modules[11], /Create parameter/);
   assert.match(modules[0], /Step Functions/);
   assert.match(modules[12], /State machines/);
+  assert.match(modules[13], /Service map/);
   const summary = await (await fetch(`${base}/_stacksim/api/summary`)).json() as any;
-  assert.deepEqual(summary.counts, { stacks: 0, stateMachines: 0, parameters: 1, secrets: 0, functions: 1, capacityProviders: 0, durableExecutions: 0, tables: 2, rdsInstances: 0, buckets: 1, queues: 0, topics: 0, subscriptions: 0, eventBuses: 1, eventRules: 0, apis: 1, httpApis: 0, webSocketApis: 0, customDomains: 0, logGroups: 1, users: 1, groups: 0, roles: 6, policies: 8, sesIdentities: 0, sesTemplates: 0, sesConfigurationSets: 0, sesMessages: 0, cognitoUserPools: 0, cognitoAppClients: 0 });
+  assert.deepEqual(summary.counts, { stacks: 0, stateMachines: 0, parameters: 1, secrets: 0, functions: 1, capacityProviders: 0, durableExecutions: 0, tables: 2, rdsInstances: 0, buckets: 1, queues: 0, topics: 0, subscriptions: 0, eventBuses: 1, eventRules: 0, apis: 1, httpApis: 0, webSocketApis: 0, customDomains: 0, logGroups: 1, users: 1, groups: 0, roles: 7, policies: 9, sesIdentities: 0, sesTemplates: 0, sesConfigurationSets: 0, sesMessages: 0, cognitoUserPools: 0, cognitoAppClients: 0 });
   assert.equal(summary.invokeEndpoint, `http://127.0.0.1:${simulator.invokePort}`);
 });
 

@@ -165,8 +165,8 @@ test.describe("FND-02 console foundation", () => {
     await page.goto(`${consoleUrl}#/home`);
     const serviceNames = page.locator("[data-service-dashboard] > .service-card h2");
     const alphabetical = [
-      "API Gateway", "AppSync", "CloudFormation", "CloudWatch", "Cognito", "DynamoDB", "EventBridge", "IAM", "Lambda",
-      "Parameter Store", "RDS", "S3", "Secrets Manager", "SES", "SNS", "SQS", "Step Functions",
+      "API Gateway", "AppSync", "CloudFormation", "CloudFront", "CloudWatch", "Cognito", "DynamoDB", "EventBridge", "IAM", "Lambda",
+      "Parameter Store", "RDS", "S3", "Secrets Manager", "SES", "SNS", "SQS", "Step Functions", "X-Ray",
     ];
     await expect(serviceNames).toHaveText(alphabetical);
 

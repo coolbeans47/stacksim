@@ -27,6 +27,7 @@ import type {
   CognitoUserState,
 } from "./types.js";
 import { cognitoTargetOperation } from "./cognito/action-inventory.js";
+import { STANDARD_CLIENT_ATTRIBUTES, STANDARD_USER_ATTRIBUTES } from "./cognito/attributes.js";
 import { cog07BoundaryMessage, throwCog07BoundaryForOperation } from "./cognito/cog07-boundaries.js";
 import {
   assignClientSecrets,
@@ -152,26 +153,6 @@ const STANDARD_OAUTH_SCOPES = new Set([
   "profile",
   COGNITO_USER_ADMIN_SCOPE,
 ]);
-const STANDARD_USER_ATTRIBUTES = new Set([
-  "address",
-  "birthdate",
-  "email",
-  "family_name",
-  "gender",
-  "given_name",
-  "locale",
-  "middle_name",
-  "name",
-  "nickname",
-  "phone_number",
-  "picture",
-  "preferred_username",
-  "profile",
-  "updated_at",
-  "website",
-  "zoneinfo",
-]);
-
 interface CognitoAccessContext {
   pool: CognitoUserPoolState;
   client: CognitoAppClientState;
@@ -521,9 +502,15 @@ function poolConfigurationView(configuration: CognitoUserPoolConfigurationState)
       DefaultEmailOption: configuration.verificationMessageTemplate.defaultEmailOption,
       EmailSubject: configuration.verificationMessageTemplate.emailSubject,
       EmailMessage: configuration.verificationMessageTemplate.emailMessage,
+      ...(configuration.verificationMessageTemplate.smsMessage
+        ? { SmsMessage: configuration.verificationMessageTemplate.smsMessage }
+        : {}),
     },
     EmailVerificationSubject: configuration.verificationMessageTemplate.emailSubject,
     EmailVerificationMessage: configuration.verificationMessageTemplate.emailMessage,
+    ...(configuration.verificationMessageTemplate.smsMessage
+      ? { SmsVerificationMessage: configuration.verificationMessageTemplate.smsMessage }
+      : {}),
     MfaConfiguration: configuration.mfaConfiguration,
     EnabledMfas: [...configuration.enabledMfas],
     LambdaConfig: {
@@ -3396,7 +3383,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
 
   private validateClientAttributes(pool: CognitoUserPoolState, attributes: string[], field: string): void {
     for (const attribute of attributes) {
-      if (["email", "email_verified"].includes(attribute)) continue;
+      if (STANDARD_CLIENT_ATTRIBUTES.has(attribute)) continue;
       const name = attribute.startsWith("custom:") ? attribute.slice(7) : attribute;
       if (!pool.configuration.schemaAttributes.some(candidate => candidate.name === name)) {
         throw new AwsError("InvalidParameterException", `${field} contains unknown attribute ${attribute}.`);
@@ -3487,17 +3474,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       throw new AwsError("InvalidParameterException", "AttributeMapping is invalid.");
     }
     const mapping: Record<string, string> = {};
-    const standard = new Set([
-      "email", "email_verified", "name", "given_name", "family_name",
-      "preferred_username", "picture", "locale",
-    ]);
     for (const [target, source] of Object.entries(value)) {
       const schemaName = target.startsWith("custom:") ? target.slice(7) : target;
       const schema = pool.configuration.schemaAttributes.find(candidate => candidate.name === schemaName);
       if (
         target === "sub"
         || target.startsWith("dev:")
-        || !standard.has(target) && !target.startsWith("custom:")
+        || !STANDARD_CLIENT_ATTRIBUTES.has(target) && !target.startsWith("custom:")
         || target.startsWith("custom:") && (!schema || schema.developerOnlyAttribute || !schema.mutable)
         || typeof source !== "string"
         || source.length < 1

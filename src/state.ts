@@ -10,6 +10,7 @@ import { emptySesRegionState } from "./migrations/v51-to-v52.js";
 import { emptyCognitoRegionState } from "./migrations/v52-to-v53.js";
 import { emptySes04State } from "./migrations/v67-to-v68.js";
 import type { IamCredentialStore } from "./iam/credentials.js";
+import { emptyCloudFrontAccountState } from "./migrations/v87-to-v88.js";
 
 export class StateStore {
   readonly root: string;
@@ -70,7 +71,7 @@ export class StateStore {
       if (!this.state.installation.defaultAdministrators) { this.state.installation.defaultAdministrators = {}; normalized = true; }
       this.ensureAccount(this.accountId);
       this.regionState(this.defaultRegion, this.accountId);
-      for (const [accountId, account] of Object.entries(this.state.accounts)) { const iam = normalizeIamState(account.iam, Date.now(), accountId); if (JSON.stringify(iam) !== JSON.stringify(account.iam)) { account.iam = iam; normalized = true; } if (!account.cloudwatchDashboards) { account.cloudwatchDashboards = {}; normalized = true; } }
+      for (const [accountId, account] of Object.entries(this.state.accounts)) { const iam = normalizeIamState(account.iam, Date.now(), accountId); if (JSON.stringify(iam) !== JSON.stringify(account.iam)) { account.iam = iam; normalized = true; } if (!account.cloudwatchDashboards) { account.cloudwatchDashboards = {}; normalized = true; } if (!account.cloudfront) { account.cloudfront = emptyCloudFrontAccountState(); normalized = true; } }
       for (const account of Object.values(this.state.accounts)) for (const region of Object.values(account.regions)) {
         if (!region.cloudformation) { region.cloudformation = { stacks: {}, stackNames: {}, changeSets: {}, changeSetNames: {}, exports: {}, clientTokens: {} }; normalized = true; }
         if (region.cloudformation.deploymentGeneration === undefined) { region.cloudformation.deploymentGeneration = 0; normalized = true; }
@@ -201,7 +202,7 @@ export class StateStore {
   }
 
   ensureAccount(accountId = this.accountId): AccountState {
-    return this.state.accounts[accountId] ??= { iam: normalizeIamState(undefined, Date.now(), accountId), cloudwatchDashboards: {}, regions: {} };
+    return this.state.accounts[accountId] ??= { iam: normalizeIamState(undefined, Date.now(), accountId), cloudwatchDashboards: {}, cloudfront: emptyCloudFrontAccountState(), regions: {} };
   }
 
   regionState(region = this.defaultRegion, accountId = this.accountId): RegionState {

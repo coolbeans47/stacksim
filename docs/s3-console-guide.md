@@ -162,7 +162,7 @@ Public visitors still need permission to read objects (bucket policy or CloudFro
 
 ##### How it works in StackSim
 
-Website configuration, index and error resolution, redirects, and policy-based public access are active on a local endpoint. StackSim does not provide AWS DNS names, TLS certificates, CloudFront, or internet hosting.
+Website configuration, index and error resolution, redirects, and policy-based public access are active on a local endpoint. Separately, the bounded CloudFront CFR-01 profile serves a private simulator-owned regional bucket through an OAC-authorized per-distribution local HTTPS viewer. StackSim does not publish AWS DNS names, install system trust, or provide internet hosting.
 
 ##### Common AWS use cases
 

@@ -88,6 +88,7 @@ async function seedPinnedHelper(
         Statement: [
           { Effect: "Allow", Action: ["s3:GetObject*", "s3:GetBucket*", "s3:List*"], Resource: [sourceArn, `${sourceArn}/*`] },
           { Effect: "Allow", Action: ["s3:GetObject*", "s3:GetBucket*", "s3:List*", "s3:DeleteObject*", "s3:PutObject"], Resource: [destinationArn, `${destinationArn}/*`] },
+          { Effect: "Allow", Action: ["cloudfront:CreateInvalidation", "cloudfront:GetInvalidation"], Resource: "*" },
         ],
       },
     },
@@ -379,7 +380,7 @@ test("native BucketDeployment rejects schema drift and unsafe assets before dest
     const drift = provider.validate({ ...properties(key, destination), Extract: false }, context());
     assert.ok(drift.some(item => item.code === "UnsupportedProperty" && item.path === "Properties.Extract"));
     assert.ok(provider.validate({ ...properties(key, destination), SourceBucketNames: [destination] }, context()).length);
-    assert.ok(provider.validate({ ...properties(key, destination), Prune: false }, context()).length);
+    assert.equal(provider.validate({ ...properties(key, destination), Prune: false }, context()).length, 0);
     const replacement = provider.canonicalize({ ...properties(key, destination), ServiceToken: `arn:aws:lambda:${region}:${accountId}:function:replacement-helper` }, context());
     assert.equal(provider.plan(desired, replacement, context()).action, "REPLACE");
 
@@ -391,6 +392,127 @@ test("native BucketDeployment rejects schema drift and unsafe assets before dest
     assert.equal(unauthorized.status, "FAILED");
     assert.equal((unauthorized as any).errorCode, "AccessDenied");
     await assert.rejects(s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/index.html" })), (error: any) => error.name === "NoSuchKey");
+  } finally {
+    s3?.destroy();
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("CFR-01 BucketDeployment overlays ordered sources, substitutes exact markers, applies metadata, preserves prune=false objects, and durably waits for invalidation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cdk-bucket-cloudfront-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "off" });
+  let s3: S3Client | undefined;
+  try {
+    await simulator.start();
+    s3 = new S3Client({ endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials, forcePathStyle: true });
+    const destination = "provider-cloudfront-application";
+    const bootstrap = cdkBootstrapNames(accountId, region).bucketName;
+    await simulator.s3.ensureManagedBucket(bootstrap, CDK_BOOTSTRAP_POLICY_REVISION);
+    await s3.send(new CreateBucketCommand({ Bucket: destination }));
+    await s3.send(new PutObjectCommand({ Bucket: destination, Key: "site/stale.txt", Body: "prune me" }));
+    await seedPinnedHelper(simulator, destination, s3);
+
+    const firstKey = `${"7".repeat(64)}.zip`;
+    const secondKey = `${"8".repeat(64)}.zip`;
+    const token = "<<marker:0xbaba:0>>";
+    await s3.send(new PutObjectCommand({ Bucket: bootstrap, Key: firstKey, Body: createZip([
+      { name: "index.html", content: "<main>multi-source</main>" },
+      { name: "shared.txt", content: "from-first" },
+    ]) }));
+    await s3.send(new PutObjectCommand({ Bucket: bootstrap, Key: secondKey, Body: createZip([
+      { name: "runtime-config.json", content: Buffer.from(`{\"pool\":${token}}`, "utf8") },
+      { name: "shared.txt", content: "from-second" },
+    ]) }));
+
+    const createCalls: Array<{ distributionId: string; paths: string[]; callerReference: string }> = [];
+    const getCalls: string[] = [];
+    const polls = new Map<string, number>();
+    const invalidations = {
+      async createInvalidation(distributionId: string, paths: string[], callerReference: string) {
+        createCalls.push({ distributionId, paths: [...paths], callerReference });
+        const id = `I${createCalls.length}`;
+        polls.set(id, 0);
+        return { id, status: "InProgress" };
+      },
+      getInvalidation(_distributionId: string, invalidationId: string) {
+        getCalls.push(invalidationId);
+        const count = (polls.get(invalidationId) ?? 0) + 1;
+        polls.set(invalidationId, count);
+        return { id: invalidationId, status: count >= 2 ? "Completed" : "InProgress" };
+      },
+    };
+    const provider = createCdkBucketDeploymentProvider(simulator.s3, simulator.store, invalidations);
+    const desired = provider.canonicalize({
+      ...properties(firstKey, destination),
+      SourceBucketNames: [bootstrap, bootstrap],
+      SourceObjectKeys: [firstKey, secondKey],
+      SourceMarkers: [{}, { [token]: "\"pool-$&-value\"" }],
+      SourceMarkersConfig: [{}, {}],
+      SystemMetadata: { "cache-control": "no-cache" },
+      DistributionId: "E123456789",
+      DistributionPaths: ["/*"],
+    }, context());
+    const created = await settle(current => provider.create(desired, current));
+    assert.equal(created.status, "SUCCESS");
+    assert.deepEqual(created.model.attributes.SourceObjectKeys, [firstKey, secondKey]);
+    assert.equal(Object.hasOwn(created.model.attributes, "DestinationBucketArn"), false);
+    assert.equal((await body(await s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/shared.txt" })))).toString(), "from-second");
+    const runtime = await s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/runtime-config.json" }));
+    assert.equal((await body(runtime)).toString(), "{\"pool\":\"pool-$&-value\"}");
+    assert.equal(runtime.CacheControl, "no-cache");
+    await assert.rejects(s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/stale.txt" })), (error: any) => error.name === "NoSuchKey");
+    assert.equal(createCalls.length, 1);
+    assert.deepEqual(createCalls[0], { distributionId: "E123456789", paths: ["/*"], callerReference: createCalls[0].callerReference });
+    assert.match(createCalls[0].callerReference, /^stacksim-create-[a-f0-9]{64}$/);
+    assert.deepEqual(getCalls, ["I1", "I1"]);
+
+    const configuredUpdate = provider.canonicalize({
+      ...properties(firstKey, destination),
+      SourceBucketNames: [bootstrap, bootstrap],
+      SourceObjectKeys: [firstKey, secondKey],
+      SourceMarkers: [{}, { [token]: "\"pool-$&-value\"" }],
+      SourceMarkersConfig: [{}, {}],
+      SystemMetadata: { "cache-control": "no-store" },
+      DistributionId: "E123456789",
+      DistributionPaths: ["/*"],
+    }, context());
+    assert.equal((await settle(current => provider.update(created.physicalId, desired, configuredUpdate, current))).status, "SUCCESS");
+    assert.equal(createCalls.length, 2);
+    assert.match(createCalls[1].callerReference, /^stacksim-update-[a-f0-9]{64}$/);
+    assert.equal((await s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/runtime-config.json" }))).CacheControl, "no-cache", "metadata-only update rewrote an unchanged app object");
+
+    const thirdKey = `${"9".repeat(64)}.zip`;
+    await s3.send(new PutObjectCommand({ Bucket: bootstrap, Key: thirdKey, Body: createZip([{ name: "new.txt", content: "immutable" }]) }));
+    const nonPruning = provider.canonicalize({
+      ...properties(thirdKey, destination),
+      Prune: false,
+      SystemMetadata: { "cache-control": "public,max-age=31536000,immutable" },
+    }, context());
+    const updated = await settle(current => provider.update(created.physicalId, configuredUpdate, nonPruning, current));
+    assert.equal(updated.status, "SUCCESS");
+    assert.equal((await body(await s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/index.html" })))).toString(), "<main>multi-source</main>", "Prune=false removed an omitted object");
+    const immutable = await s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/new.txt" }));
+    assert.equal(immutable.CacheControl, "public,max-age=31536000,immutable");
+
+    const metadataOnly = provider.canonicalize({ ...properties(thirdKey, destination), Prune: false, SystemMetadata: { "cache-control": "no-cache" } }, context());
+    assert.equal((await settle(current => provider.update(created.physicalId, nonPruning, metadataOnly, current))).status, "SUCCESS");
+    assert.equal((await s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/new.txt" }))).CacheControl, "public,max-age=31536000,immutable", "metadata-only update rewrote an unchanged object");
+
+    const badMarker = provider.canonicalize({
+      ...properties(firstKey, destination),
+      SourceMarkers: [{ "<<marker:0xbaba:9>>": "unused" }],
+      SourceMarkersConfig: [{}],
+    }, context());
+    const rejected = await provider.create(badMarker, context());
+    assert.equal(rejected.status, "FAILED");
+    assert.equal((rejected as any).errorCode, "InvalidAsset");
+
+    const deleted = await settle(current => provider.delete(created.physicalId, desired, current));
+    assert.equal(deleted.status, "SUCCESS");
+    assert.equal((await body(await s3.send(new GetObjectCommand({ Bucket: destination, Key: "site/index.html" })))).toString(), "<main>multi-source</main>");
+    assert.equal(createCalls.length, 3);
+    assert.match(createCalls[2].callerReference, /^stacksim-delete-[a-f0-9]{64}$/);
   } finally {
     s3?.destroy();
     await simulator.stop().catch(() => undefined);

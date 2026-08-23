@@ -38,6 +38,7 @@ import {
   createApiGatewayRestCloudFormationProviders,
   createCfn09CloudFormationProviders,
   createCdkBucketDeploymentProvider,
+  createCloudFrontCloudFormationProviders,
   createCloudWatchMetricStreamProvider,
   createCognitoCloudFormationProviders,
   createDynamoDbGlobalTableProvider,
@@ -90,6 +91,9 @@ import { IamCredentialStore } from "./iam/credentials.js";
 import { initializeDefaultAdministrator } from "./iam/default-admin.js";
 import { AppSyncService } from "./appsync.js";
 import { policyValidationReport } from "./iam/policy-validation.js";
+import { XRayService } from "./xray.js";
+import { CloudFrontService } from "./cloudfront.js";
+import { CloudFrontError, sendCloudFrontError } from "./cloudfront/protocol.js";
 
 function booleanEnvironment(name: string): boolean | undefined {
   const value = process.env[name];
@@ -189,6 +193,7 @@ interface RegionalServices {
   cognito: CognitoService;
   appsync: AppSyncService;
   stepfunctions: StepFunctionsService;
+  xray: XRayService;
 }
 
 export class StackSim {
@@ -218,6 +223,8 @@ export class StackSim {
   readonly cognito: CognitoService;
   readonly appsync: AppSyncService;
   readonly stepfunctions: StepFunctionsService;
+  readonly xray: XRayService;
+  readonly cloudfront: CloudFrontService;
   readonly authMode: "off" | "validate" | "enforce";
   readonly seedDefaultAdmin: boolean;
   readonly defaultUserName: string;
@@ -397,6 +404,13 @@ export class StackSim {
     this.rdsManager = new RdsManager(this.store, rdsProvider, this.clock, { startupTimeoutMs: rdsStartupTimeoutMs, legacyDestroyProvider });
     this.iam = new IamService(this.store, this.clock);
     this.sts = new StsService(this.store, this.clock, this.scheduler);
+    this.cloudfront = new CloudFrontService(this.store, this.clock, ({ accountId, region, bucketName }) => {
+      const registration = this.store.state.installation.s3BucketNames[bucketName];
+      if (!registration || registration.accountId !== accountId || registration.region !== region) {
+        throw new AwsError("AccessDenied", "The CloudFront origin is not a simulator-owned same-account bucket", 403);
+      }
+      return this.services(region).s3.createCloudFrontOriginPort();
+    });
     const services = this.services(this.region);
     this.lambda = services.lambda;
     this.dynamodb = services.dynamodb;
@@ -418,6 +432,7 @@ export class StackSim {
     this.cognito = services.cognito;
     this.stepfunctions = services.stepfunctions;
     this.appsync = services.appsync;
+    this.xray = services.xray;
   }
 
   async start(): Promise<void> {
@@ -444,6 +459,13 @@ export class StackSim {
     ));
     await this.rdsManager.start();
     const callbackPki = await this.customResourceCallbacks.initializePki();
+    this.cloudfront.configureTls({
+      certificate: callbackPki.certificate,
+      privateKey: callbackPki.privateKey,
+      caPrivateKey: callbackPki.caPrivateKey,
+      caCertificatePath: this.customResourceCallbacks.caCertificatePath,
+    });
+    await this.cloudfront.start();
     this.customResourceCallbackServer = createSecureServer({ cert: callbackPki.certificate, key: callbackPki.privateKey }, (req, res) => {
       const pathname = new URL(req.url ?? "/", `https://${req.headers.host ?? "localhost"}`).pathname;
       if (pathname.startsWith("/_stacksim/cloudformation/custom-resource-response/")) {
@@ -532,7 +554,7 @@ export class StackSim {
         res.setHeader("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
         return res.end(`<!doctype html><html><head><meta charset="utf-8"><title>SNS unsubscribe</title></head><body><main><h1>${completed ? "Subscription removed" : "Invalid unsubscribe link"}</h1><p>${completed ? "The local SNS subscription was removed." : "This unsubscribe link is invalid, expired, or already used."}</p></main></body></html>`);
       }
-      if (req.method === "GET" && url.pathname === "/_stacksim/health") return json(res, { status: "ok", services: ["cloudformation", "lambda", "stepfunctions", "apigateway", "appsync", "dynamodb", "rds", "s3", "sqs", "sns", "ssm", "secretsmanager", "eventbridge", "scheduler", "logs", "cloudwatch", "iam", "sts", "ses", "cognito-idp"], rds: this.rdsManager.metadata(), region, requestId: currentRequestId });
+      if (req.method === "GET" && url.pathname === "/_stacksim/health") return json(res, { status: "ok", services: ["cloudformation", "cloudfront", "lambda", "stepfunctions", "apigateway", "appsync", "dynamodb", "rds", "s3", "sqs", "sns", "ssm", "secretsmanager", "eventbridge", "scheduler", "logs", "cloudwatch", "iam", "sts", "ses", "cognito-idp", "xray"], cloudfront: { status: "available", distributions: this.cloudfront.consoleSnapshot().distributions.length, viewers: this.cloudfront.listLocalViewers() }, xray: services.xray.health(), rds: this.rdsManager.metadata(), region, requestId: currentRequestId });
       if (req.method === "GET" && url.pathname === "/_stacksim/api/console-config") return json(res, { authMode: this.authMode, region, bootId: this.bootId });
       if (url.pathname.startsWith("/_stacksim/api/")) {
         try {
@@ -556,6 +578,7 @@ export class StackSim {
         accountId: this.store.accountId,
         endpoint: `http://${this.host}:${this.port}`,
         invokeEndpoint: `${this.invokeProtocol}://${this.host}:${this.invokePort}`,
+        cloudfrontDistributionCount: this.cloudfront.consoleSnapshot().distributions.length,
         lambdaImageSource: process.env.STACKSIM_LAMBDA_OCI_ROOT ? "oci" : process.env.STACKSIM_LAMBDA_DOCKER_SOCKET ? "docker" : undefined,
         counts: { stacks: Object.values(this.store.regionState(region).cloudformation.stacks).filter(stack => stack.stackStatus !== "DELETE_COMPLETE").length, stateMachines: Object.keys(this.store.regionState(region).stepFunctions.stateMachines).length, parameters: Object.keys(this.store.regionState(region).parameterStore.parameters).length, secrets: Object.keys(this.store.regionState(region).secretsManager.secrets).length, functions: Object.keys(this.store.regionState(region).functions).length, capacityProviders: Object.keys(this.store.regionState(region).lambdaCapacityProviders).length, durableExecutions: Object.keys(this.store.regionState(region).lambdaDurableExecutions).length, tables: Object.keys(this.store.regionState(region).tables).length, rdsInstances: Object.keys(this.store.regionState(region).rdsDbInstances).length, buckets: Object.keys(this.store.regionState(region).s3Buckets).length, queues: Object.keys(this.store.regionState(region).sqsQueues).length, topics: Object.keys(this.store.regionState(region).sns.topics).length, subscriptions: Object.keys(this.store.regionState(region).sns.subscriptions).length, eventBuses: Object.keys(this.store.regionState(region).eventBuses).length, eventRules: Object.keys(this.store.regionState(region).eventRules).length, apis: Object.keys(this.store.regionState(region).apis).length, httpApis: Object.keys(this.store.regionState(region).httpApis).length, webSocketApis: Object.keys(this.store.regionState(region).webSocketApis).length, customDomains: Object.keys(this.store.regionState(region).apiGatewayDomainNames).length + Object.keys(this.store.regionState(region).apiGatewayV2DomainNames).length, logGroups: Object.keys(this.store.regionState(region).logs).length, users: Object.keys(this.store.ensureAccount().iam.users).length, groups: Object.keys(this.store.ensureAccount().iam.groups).length, roles: Object.keys(this.store.ensureAccount().iam.roles).length, policies: Object.keys(this.store.ensureAccount().iam.policies).length, sesIdentities: Object.keys(this.store.regionState(region).ses.identities).length, sesTemplates: Object.keys(this.store.regionState(region).ses.templates).length, sesConfigurationSets: Object.keys(this.store.regionState(region).ses.configurationSets).length, sesMessages: services.ses.summary().messageCount, cognitoUserPools: services.cognito.summary().poolCount, cognitoAppClients: services.cognito.summary().clientCount },
         rds: this.rdsManager.metadata(),
@@ -571,7 +594,8 @@ export class StackSim {
         authMode: this.authMode,
         statePath: this.store.file,
         schemaVersion: this.store.state.schemaVersion,
-        services: { cloudformation: "available", lambda: "available", apigateway: "available", appsync: "available", dynamodb: "available", rds: "available", s3: "available", sqs: "available", sns: services.sns.admissionStatus(), ssm: "available", secretsmanager: services.secretsmanager.admissionStatus(), eventbridge: "available", scheduler: "available", logs: "available", cloudwatch: "available", iam: "available", sts: "available", ses: services.ses.admissionStatus(), "cognito-idp": "available" },
+        services: { cloudformation: "available", cloudfront: "available", lambda: "available", apigateway: "available", appsync: "available", dynamodb: "available", rds: "available", s3: "available", sqs: "available", sns: services.sns.admissionStatus(), ssm: "available", secretsmanager: services.secretsmanager.admissionStatus(), eventbridge: "available", scheduler: "available", logs: "available", cloudwatch: "available", iam: "available", sts: "available", ses: services.ses.admissionStatus(), "cognito-idp": "available", xray: services.xray.health().status },
+        cloudfront: { distributions: this.cloudfront.consoleSnapshot().distributions.length, viewers: this.cloudfront.listLocalViewers(), caCertificatePath: this.cloudfront.caCertificatePath },
         rds: this.rdsManager.metadata(),
         requestPrincipalType: requestPrincipal?.principalType ?? null,
         requestPrincipalArn: requestPrincipal && requestPrincipal.principalType !== "anonymous" && requestPrincipal.principalType !== "service" ? requestPrincipal.principalArn : null,
@@ -590,6 +614,10 @@ export class StackSim {
       if (req.method === "GET" && url.pathname === "/_stacksim/api/dynamodb/resource-policy") { const resourceArn = url.searchParams.get("resourceArn") ?? ""; const policy = this.store.regionState(region).dynamodbResourcePolicies[resourceArn]; return json(res, policy ? { Policy: policy.policy, RevisionId: policy.revisionId } : {}); }
       if (req.method === "GET" && url.pathname === "/_stacksim/api/ssm/parameters") return json(res, { parameters: services.ssm.localMetadata() });
       if (req.method === "GET" && url.pathname === "/_stacksim/api/appsync/realtime") return json(res, { realtime: services.appsync.realtimeDiagnostics() });
+      if (req.method === "GET" && url.pathname === "/_stacksim/api/xray/health") return json(res, services.xray.health());
+      if (req.method === "GET" && url.pathname === "/_stacksim/api/xray/traces") return json(res, { traces: services.xray.consoleTraces(Number(url.searchParams.get("start") ?? 0), Number(url.searchParams.get("end") ?? this.clock.now() / 1000)) });
+      const xrayTraceMatch = url.pathname.match(/^\/_stacksim\/api\/xray\/traces\/(1-[0-9a-f]{8}-[0-9a-f]{24})$/); if (req.method === "GET" && xrayTraceMatch) { const trace = services.xray.consoleTraceSafe(xrayTraceMatch[1]); return trace ? json(res, trace) : json(res, { code: "TraceNotFound", message: "The trace is unavailable or expired." }, 404); }
+      if (req.method === "GET" && url.pathname === "/_stacksim/api/xray/service-graph") return json(res, services.xray.GetServiceGraph({ StartTime: Number(url.searchParams.get("start") ?? 0), EndTime: Number(url.searchParams.get("end") ?? this.clock.now() / 1000) }));
       if (req.method === "GET" && url.pathname === "/_stacksim/api/secrets-manager/secrets") return json(res, { secrets: services.secretsmanager.localMetadata() });
       if (req.method === "GET" && url.pathname === "/_stacksim/api/lambda/async") {
         const functionName = url.searchParams.get("functionName") ?? undefined; const now = this.clock.now(); const events = Object.values(this.store.regionState(region).lambdaAsyncInvocations).filter(event => !functionName || event.functionName === functionName).sort((left, right) => left.enqueuedAt - right.enqueuedAt || left.eventId.localeCompare(right.eventId));
@@ -597,6 +625,14 @@ export class StackSim {
       }
       if (req.method === "GET" && url.pathname === "/_stacksim/api/eventbridge/deliveries") return json(res, services.eventbridge.deliveryDiagnostics());
       if (req.method === "GET" && url.pathname === "/_stacksim/api/eventbridge/schedules") return json(res, services.eventscheduler.diagnostics());
+      if (req.method === "GET" && url.pathname === "/_stacksim/api/cloudfront") return json(res, this.cloudfront.consoleSnapshot());
+      const cloudFrontDistributionDetail = url.pathname.match(/^\/_stacksim\/api\/cloudfront\/distributions\/([^/]+)$/);
+      if (req.method === "GET" && cloudFrontDistributionDetail) {
+        let id: string;
+        try { id = decodeURIComponent(cloudFrontDistributionDetail[1]); } catch { return json(res, { message: "Invalid distribution ID" }, 400); }
+        const detail = this.cloudfront.consoleDistribution(id);
+        return detail ? json(res, detail) : json(res, { message: "Distribution not found" }, 404);
+      }
       if (req.method === "GET" && url.pathname === "/_stacksim/api/sns/deliveries") {
         try { return json(res, await services.sns.deliveryDiagnostics()); }
         catch { return json(res, { code: "SnsDeliveryStorageUnavailable", message: "SNS delivery diagnostics are unavailable for this account and Region." }, 503); }
@@ -639,6 +675,11 @@ export class StackSim {
             : routedSes.handleLocalCallback(req, res, url, sesCallbackMatch![2]);
       }
       if (req.method === "GET" && (url.pathname === "/_stacksim/console" || url.pathname.startsWith("/_stacksim/console/"))) return this.serveConsole(res, url.pathname);
+      const cloudFrontViewer = url.pathname.match(/^\/_stacksim\/cloudfront\/([^/]+)(\/.*)?$/);
+      if (cloudFrontViewer) {
+        req.url = `${cloudFrontViewer[2] ?? "/"}${url.search}`;
+        return this.cloudfront.handleViewer(decodeURIComponent(cloudFrontViewer[1]), req, res, false);
+      }
       const signingService = this.requestSigningService(req, url); let routedService = url.pathname === "/v20180820/configuration/publicAccessBlock" && req.headers["x-amz-account-id"] ? "s3-control" : signingService ?? this.routeService(req, url); if (routedService === "unknown") routedService = await this.queryProtocolService(req, url);
       let principal: PrincipalContext;
       try {
@@ -651,6 +692,7 @@ export class StackSim {
       if (routedService === "iam") return this.iam.handle(req, res, currentRequestId, principal);
       if (routedService === "sts") return this.sts.handle(req, res, currentRequestId, principal);
       if (routedService === "cloudformation") return services.cloudformation.handle(req, res, url, currentRequestId, principal);
+      if (routedService === "cloudfront") return this.cloudfront.handle(req, res, url, currentRequestId);
       if (routedService === "ssm") return services.ssm.handle(req, res);
       if (routedService === "secretsmanager") return services.secretsmanager.handle(req, res);
       if (routedService === "s3") return services.s3.handle(req, res, url, currentRequestId, principal);
@@ -670,6 +712,7 @@ export class StackSim {
         return services.cognito.handle(req, res, currentRequestId);
       }
       if (routedService === "appsync") return services.appsync.handleControl(req, res, url);
+      if (routedService === "xray") return services.xray.handle(req, res, url.pathname);
       if (/^DynamoDB(?:Streams)?_/.test(req.headers["x-amz-target"]?.toString() ?? "")) return services.dynamodb.handle(req, res);
       if (req.headers["x-amz-target"]?.toString().startsWith("Logs_20140328")) return services.logs.handle(req, res);
       if (url.pathname.startsWith("/2014-11-13/functions") || url.pathname.startsWith("/2015-03-31/functions") || url.pathname.startsWith("/2015-03-31/event-source-mappings") || url.pathname.startsWith("/2016-08-19/account-settings") || url.pathname.startsWith("/2017-03-31/tags/") || url.pathname.startsWith("/2017-10-31/functions") || url.pathname.startsWith("/2018-10-31/layers") || url.pathname.startsWith("/2019-09-25/functions") || url.pathname.startsWith("/2019-09-30/functions") || url.pathname.startsWith("/2020-04-22/code-signing-configs") || url.pathname.startsWith("/2020-06-30/functions") || url.pathname.startsWith("/2021-07-20/functions") || url.pathname.startsWith("/2021-10-31/functions") || url.pathname.startsWith("/2021-11-15/functions") || url.pathname.startsWith("/2024-08-31/functions") || url.pathname.startsWith("/2025-11-30/") || url.pathname.startsWith("/2025-12-01/")) return services.lambda.handle(req, res, url.pathname, url, principal);
@@ -808,8 +851,9 @@ export class StackSim {
         lambda,
         this.cognitoIdentityProviderNetwork,
       );
+      const xray = new XRayService(this.store, region, this.clock, this.random);
       const apigatewaywebsocket = new ApiGatewayWebSocketService(this.store, lambda, () => this.invokePort, region, this.clock, this.authMode, telemetry, logs, this.invokeProtocol, { idleTimeoutMs: this.apiGatewayWebSocketIdleTimeoutMs, lifetimeMs: this.apiGatewayWebSocketLifetimeMs });
-      const apigateway = new ApiGatewayService(this.store, lambda, dynamodb, this.invokePort, region, this.clock, this.authMode, telemetry, logs, this.apiGatewayRateLimit, this.apiGatewayBurstLimit, this.invokeProtocol, this.apiGatewayVpcLinkOrigins, this.apiGatewayAllowClientCertificates, sqs, cognito);
+      const apigateway = new ApiGatewayService(this.store, lambda, dynamodb, this.invokePort, region, this.clock, this.authMode, telemetry, logs, this.apiGatewayRateLimit, this.apiGatewayBurstLimit, this.invokeProtocol, this.apiGatewayVpcLinkOrigins, this.apiGatewayAllowClientCertificates, sqs, cognito, xray, async () => { await this.iam.ensureApiGatewayServiceLinkedRole(); });
       const apigatewayv2 = new ApiGatewayV2Service(this.store, lambda, () => this.invokePort, region, this.clock, this.authMode, telemetry, logs, this.apiGatewayRateLimit, this.apiGatewayBurstLimit, this.invokeProtocol, this.apiGatewayJwtJwks, this.apiGatewayAllowRemoteJwtJwks, this.apiGatewayAllowPrivateJwtJwks, apigatewaywebsocket, sqs, cognito);
       eventbridge.setTargetServices({ sqs, sns, logs, apiGateway: apigateway });
       const eventscheduler = new EventBridgeSchedulerService(this.store, region, this.clock, this.scheduler, lambda, sqs, logs, eventbridge);
@@ -911,7 +955,8 @@ export class StackSim {
         createSecretsManagerRotationScheduleProvider(secretsmanager),
         createSecretsManagerSecretTargetAttachmentProvider(secretsmanager),
         createS3BucketPolicyProvider(s3),
-        createCdkBucketDeploymentProvider(s3, this.store),
+        createCdkBucketDeploymentProvider(s3, this.store, this.cloudfront),
+        ...createCloudFrontCloudFormationProviders(this.cloudfront),
         createLambdaFunctionProvider(lambda, s3),
         createLambdaLayerVersionProvider(lambda, s3),
         ...createLambdaCompanionProviders(lambda),
@@ -954,7 +999,7 @@ export class StackSim {
       services = { cloudformation: new CloudFormationService(this.store, region, this.clock, s3, (roleArn, sessionName) => this.sts.assumeServiceRole(roleArn, sessionName, "cloudformation.amazonaws.com"), cloudFormationProviders, this.authMode === "enforce" ? async (principal, targets) => {
         const providerRequestId = requestId();
         for (const target of targets) await this.authorize(principal, { action: target.action, resource: target.resource, operation: "CloudFormationProvider", input: {}, context: { "aws:PrincipalArn": principal.principalArn, "aws:PrincipalAccount": principal.accountId, "aws:RequestedRegion": region, "aws:CurrentTime": new Date(this.clock.now()).toISOString(), "aws:SecureTransport": true, "aws:CalledVia": ["cloudformation.amazonaws.com"], ...(target.context ?? {}) } }, providerRequestId);
-      } : undefined, {}, generalCustomResourcesEnabled ? typeName => createLambdaCustomResourceProvider(typeName, this.store, lambda, this.customResourceCallbacks) : undefined, this.customResourceCallbacks), ssm, secretsmanager, lambda, stepfunctions, eventbridge, eventscheduler, dynamodb, rds: new RdsService(this.rdsManager, region), s3, sqs, sns, apigateway, apigatewayv2, apigatewaywebsocket, logs, metrics, telemetry, ses, cognito, appsync };
+      } : undefined, {}, generalCustomResourcesEnabled ? typeName => createLambdaCustomResourceProvider(typeName, this.store, lambda, this.customResourceCallbacks) : undefined, this.customResourceCallbacks), ssm, secretsmanager, lambda, stepfunctions, eventbridge, eventscheduler, dynamodb, rds: new RdsService(this.rdsManager, region), s3, sqs, sns, apigateway, apigatewayv2, apigatewaywebsocket, logs, metrics, telemetry, ses, cognito, appsync, xray };
       services.cloudformation.setSnsNotificationPublisher((topicArn, message, stackId) => sns.publishAuthorized({ TopicArn: topicArn, Message: message }, {
         principal: "cloudformation.amazonaws.com",
         sourceArn: stackId,
@@ -990,7 +1035,7 @@ export class StackSim {
     const existing = this.regionalStartup.get(region); if (existing) return existing;
     const startup = (async () => {
       services.logs.start(); await services.dynamodb.start(); await services.lambda.start();
-      await services.apigateway.start();
+      await services.xray.start(); await services.apigateway.start();
       await services.ssm.start();
       await services.secretsmanager.start();
       await services.sns.start();
@@ -1109,6 +1154,7 @@ export class StackSim {
   }
 
   private localConsoleService(url: URL): string {
+    if (url.pathname.startsWith("/_stacksim/api/cloudfront")) return "cloudfront";
     if (url.pathname.startsWith("/_stacksim/api/cloudformation/")) return "cloudformation";
     if (url.pathname.startsWith("/_stacksim/api/iam/")) return "iam";
     if (url.pathname.startsWith("/_stacksim/api/rds/")) return "rds";
@@ -1119,6 +1165,7 @@ export class StackSim {
     if (url.pathname.startsWith("/_stacksim/api/dynamodb/")) return "dynamodb";
     if (url.pathname.startsWith("/_stacksim/api/lambda/")) return "lambda";
     if (url.pathname.startsWith("/_stacksim/api/eventbridge/")) return "events";
+    if (url.pathname.startsWith("/_stacksim/api/xray/")) return "xray";
     return "sts";
   }
 
@@ -1216,7 +1263,8 @@ export class StackSim {
   }
 
   private routeService(req: import("node:http").IncomingMessage, url: URL): string {
-    const target = String(req.headers["x-amz-target"] ?? ""); const explicit = String(req.headers["x-stacksim-service"] ?? ""); const host = String(req.headers.host ?? "").replace(/:\d+$/, ""); if (explicit === "appsync" || explicit === "iam" || explicit === "sts") return explicit; if (explicit === "states" || target.startsWith("AWSStepFunctions.")) return "states"; if (explicit === "cognito-idp" || cognitoTargetOperation(target)) return "cognito-idp"; if (explicit === "sns") return "sns"; if (explicit === "ses" || url.pathname.startsWith("/v2/email/")) return "ses"; if (explicit === "cloudformation") return "cloudformation"; if (explicit === "ssm" || target.startsWith("AmazonSSM.")) return "ssm"; if (explicit === "secretsmanager" || target.startsWith("secretsmanager.")) return "secretsmanager"; if (explicit === "rds") return "rds"; if (explicit === "events" || target.startsWith("AWSEvents.")) return "events"; if (explicit === "scheduler") return "scheduler"; if (explicit === "sqs" || target.startsWith("AmazonSQS.")) return "sqs"; if (explicit === "s3" || /(?:^|\.)s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com$/i.test(host) || /.+\.(?:localhost|127\.0\.0\.1)$/i.test(host)) return "s3"; if (/^DynamoDB(?:Streams)?_/.test(target)) return "dynamodb"; if (target.startsWith("Logs_20140328")) return "logs"; if (target.startsWith("GraniteServiceVersion20100801.")) return "monitoring"; if (url.pathname.startsWith("/2014-11-13") || url.pathname.startsWith("/2015-03-31") || url.pathname.startsWith("/2016-08-19") || url.pathname.startsWith("/2017-03-31/tags/") || url.pathname.startsWith("/2017-10-31") || url.pathname.startsWith("/2018-10-31") || url.pathname.startsWith("/2019-09-25") || url.pathname.startsWith("/2019-09-30") || url.pathname.startsWith("/2020-04-22") || url.pathname.startsWith("/2020-06-30") || url.pathname.startsWith("/2021-07-20") || url.pathname.startsWith("/2021-10-31") || url.pathname.startsWith("/2021-11-15") || url.pathname.startsWith("/2024-08-31") || url.pathname.startsWith("/2025-11-30") || url.pathname.startsWith("/2025-12-01")) return "lambda"; if (url.pathname.startsWith("/v2") || url.pathname.startsWith("/restapis") || url.pathname === "/account" || url.pathname.startsWith("/tags/") || url.pathname.startsWith("/apikeys") || url.pathname.startsWith("/usageplans") || url.pathname.startsWith("/domainnames") || url.pathname.startsWith("/domainnameaccessassociations") || url.pathname === "/rejectdomainnameaccessassociations" || url.pathname.startsWith("/vpclinks") || url.pathname.startsWith("/clientcertificates") || url.pathname.startsWith("/sdktypes")) return "apigateway"; return "unknown";
+    if (req.headers["x-stacksim-service"] === "cloudfront" || url.pathname.startsWith("/2020-05-31/")) return "cloudfront";
+    const target = String(req.headers["x-amz-target"] ?? ""); const explicit = String(req.headers["x-stacksim-service"] ?? ""); const host = String(req.headers.host ?? "").replace(/:\d+$/, ""); if (explicit === "appsync" || explicit === "iam" || explicit === "sts" || explicit === "xray") return explicit; if (new Set(["/TraceSegments", "/TraceSummaries", "/Traces", "/ServiceGraph", "/TraceGraph"]).has(url.pathname)) return "xray"; if (explicit === "states" || target.startsWith("AWSStepFunctions.")) return "states"; if (explicit === "cognito-idp" || cognitoTargetOperation(target)) return "cognito-idp"; if (explicit === "sns") return "sns"; if (explicit === "ses" || url.pathname.startsWith("/v2/email/")) return "ses"; if (explicit === "cloudformation") return "cloudformation"; if (explicit === "ssm" || target.startsWith("AmazonSSM.")) return "ssm"; if (explicit === "secretsmanager" || target.startsWith("secretsmanager.")) return "secretsmanager"; if (explicit === "rds") return "rds"; if (explicit === "events" || target.startsWith("AWSEvents.")) return "events"; if (explicit === "scheduler") return "scheduler"; if (explicit === "sqs" || target.startsWith("AmazonSQS.")) return "sqs"; if (explicit === "s3" || /(?:^|\.)s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com$/i.test(host) || /.+\.(?:localhost|127\.0\.0\.1)$/i.test(host)) return "s3"; if (/^DynamoDB(?:Streams)?_/.test(target)) return "dynamodb"; if (target.startsWith("Logs_20140328")) return "logs"; if (target.startsWith("GraniteServiceVersion20100801.")) return "monitoring"; if (url.pathname.startsWith("/2014-11-13") || url.pathname.startsWith("/2015-03-31") || url.pathname.startsWith("/2016-08-19") || url.pathname.startsWith("/2017-03-31/tags/") || url.pathname.startsWith("/2017-10-31") || url.pathname.startsWith("/2018-10-31") || url.pathname.startsWith("/2019-09-25") || url.pathname.startsWith("/2019-09-30") || url.pathname.startsWith("/2020-04-22") || url.pathname.startsWith("/2020-06-30") || url.pathname.startsWith("/2021-07-20") || url.pathname.startsWith("/2021-10-31") || url.pathname.startsWith("/2021-11-15") || url.pathname.startsWith("/2024-08-31") || url.pathname.startsWith("/2025-11-30") || url.pathname.startsWith("/2025-12-01")) return "lambda"; if (url.pathname.startsWith("/v2") || url.pathname.startsWith("/restapis") || url.pathname === "/account" || url.pathname.startsWith("/tags/") || url.pathname.startsWith("/apikeys") || url.pathname.startsWith("/usageplans") || url.pathname.startsWith("/domainnames") || url.pathname.startsWith("/domainnameaccessassociations") || url.pathname === "/rejectdomainnameaccessassociations" || url.pathname.startsWith("/vpclinks") || url.pathname.startsWith("/clientcertificates") || url.pathname.startsWith("/sdktypes")) return "apigateway"; return "unknown";
   }
 
   private async queryProtocolService(req: import("node:http").IncomingMessage, url: URL): Promise<string> {
@@ -1246,6 +1294,13 @@ export class StackSim {
     if (service === "s3" && req.method === "OPTIONS") return principal;
     if (this.authMode !== "enforce" && !unsignedS3) return principal;
     const target = await authorizationTarget(req, url, service, region, this.store.accountId, principal, this.clock.now(), service === "iam" ? this.store.ensureAccount().iam : undefined);
+    if (service === "cloudfront" && target.resource.startsWith("arn:")) {
+      try {
+        for (const [key, value] of Object.entries(this.cloudfront.listTags(target.resource))) target.context[`aws:ResourceTag/${key}`] = value;
+      } catch {
+        // OACs, response policies and managed policies are intentionally not taggable.
+      }
+    }
     if (service === "s3") {
       await this.services(region).s3.enrichAuthorizationContext(target.resource, target.context);
       for (const additional of target.additionalTargets ?? []) await this.services(region).s3.enrichAuthorizationContext(additional.resource, additional.context);
@@ -1504,6 +1559,7 @@ export class StackSim {
 
   private sendAuthorizationError(res: import("node:http").ServerResponse, error: unknown, service: string, currentRequestId: string, req?: import("node:http").IncomingMessage): void {
     const aws = error instanceof AwsError ? error : new AwsError("InternalFailure", error instanceof Error ? error.message : String(error), 500);
+    if (service === "cloudfront") return sendCloudFrontError(res, currentRequestId, new CloudFrontError(aws.code.replace(/Exception$/, ""), aws.message, aws.status));
     if (service === "s3") { const hostId = createHash("sha256").update(`${this.store.state.installation.id}:${currentRequestId}`).digest("base64"); res.setHeader("x-amz-id-2", hostId); return sendS3Error(res, aws, String(req?.url ?? "/").split("?", 1)[0], currentRequestId, hostId); }
     if (service === "cognito-idp") return sendCognitoError(res, aws);
     if (service === "ses") return String(req?.url ?? "").startsWith("/v2/email/") ? sendSesV2Error(res, aws, currentRequestId) : sendSesV1Error(res, aws, currentRequestId);
@@ -2317,6 +2373,7 @@ export class StackSim {
 
   async stop(): Promise<void> {
     this.started = false;
+    this.cloudfront.beginShutdown();
     // Mark Lambda invocations interrupted before the callback/control listeners
     // stop accepting connections.  A provider that loses that race remains a
     // replayable CFN callback INTENT instead of becoming a permanent failure.
@@ -2330,7 +2387,7 @@ export class StackSim {
     await Promise.all([...this.regionalServices.values()].flatMap(services => [services.sqs.stop(), services.eventbridge.stop(), services.eventscheduler.stop()]));
     this.scheduler.stop();
     const close = (server?: HttpServer | HttpsServer) => server?.listening ? new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())) : Promise.resolve();
-    const drained = Promise.all([close(this.control), close(this.data), close(this.customResourceCallbackServer)]);
+    const drained = Promise.all([close(this.control), close(this.data), close(this.customResourceCallbackServer), this.cloudfront.stop()]);
     // Terminate Lambda children while listeners drain. A provider can otherwise
     // hold a callback PUT body open, making server.close() wait for the child
     // that was previously stopped only after the drain completed.
@@ -2342,6 +2399,7 @@ export class StackSim {
     await Promise.all([...this.regionalServices.values()].map(services => services.cloudformation.stop()));
     await Promise.all([...this.regionalServices.values()].map(services => services.stepfunctions.stop()));
     await Promise.all([...this.regionalServices.values()].map(services => services.ses.stop()));
+    await Promise.all([...this.regionalServices.values()].map(services => services.xray.stop()));
     await this.rdsManager.stop();
     await this.customResourceCallbacks.flush();
     await Promise.all([...this.regionalServices.values()].map(services => services.metrics.flush()));

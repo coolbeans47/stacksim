@@ -1326,7 +1326,13 @@ That authorizer test path validates ID tokens. For method-level checks, prefer t
 
 Confirm the app client sets `ExplicitAuthFlows`. stacksim rejects Cognito clients that omit it.
 
-If you switch to the CDK L2 `UserPool` construct and deploy fails on `SmsVerificationMessage` or `VerificationMessageTemplate.SmsMessage`, keep the L1 `CfnUserPool` shape from this tutorial. Those SMS fields are outside the local Cognito CloudFormation property surface today.
+The CDK L2 `UserPool` construct emits matching `SmsVerificationMessage` and `VerificationMessageTemplate.SmsMessage` defaults even for an email-only pool. stacksim accepts and round-trips those values as inert compatibility metadata. Configuration that actually enables SMS delivery, phone recovery, or SMS MFA remains unavailable and fails before mutation.
+
+The L2 app-client construct also enables OAuth defaults unless `disableOAuth: true` is set. stacksim accepts CDK's safe absolute `https://example.com` placeholder spelling without requiring a trailing slash; the registered callback remains an exact string and stacksim does not contact it.
+
+Required standard attributes such as `given_name` and `family_name` are supported, including in app-client read/write attribute lists. Custom attributes remain optional: an omitted `Required` value is treated as `false`, while an explicit required custom attribute is rejected as Cognito does.
+
+For supported Cognito Lambda triggers, the L2-generated `AWS::Lambda::Permission` for `cognito-idp.amazonaws.com` is installed as a real pool-scoped Lambda resource-policy statement. Trigger execution supplies the same user-pool ARN and account context, so removing or narrowing that permission can cause the corresponding Cognito operation to fail closed.
 
 #### Sign-up succeeds but no inbox message appears
 

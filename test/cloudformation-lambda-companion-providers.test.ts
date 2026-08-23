@@ -236,7 +236,7 @@ test("Lambda Version provider adopts the authoritative version after PublishVers
   } finally { iam?.destroy(); lambdaClient?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
 });
 
-test("Lambda companion schemas accept the CFN-15 closure plus SNS and Secrets Manager invocation principals", async () => {
+test("Lambda companion schemas accept the CFN-15 closure and locally backed service principals", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-lambda-composite-boundary-")); const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "off"});
   try {
     await simulator.start();
@@ -271,6 +271,13 @@ test("Lambda companion schemas accept the CFN-15 closure plus SNS and Secrets Ma
       SourceArn: `arn:aws:secretsmanager:${region}:${accountId}:secret:example-abcdef`,
       SourceAccount: accountId,
     }, context("SecretsManagerPermission")), []);
+    assert.deepEqual(permission.validate({
+      FunctionName: "example",
+      Action: "lambda:InvokeFunction",
+      Principal: "cognito-idp.amazonaws.com",
+      SourceArn: `arn:aws:cognito-idp:${region}:${accountId}:userpool/eu-west-1_example`,
+      SourceAccount: accountId,
+    }, context("CognitoPermission")), []);
   }
   finally { await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
 });

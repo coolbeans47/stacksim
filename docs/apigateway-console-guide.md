@@ -423,7 +423,7 @@ Stages are how AWS separates environments on one API definition. The same `/orde
 
 #### How it works in StackSim
 
-Stage lifecycle, deployments, invoke URLs, logs, metrics, throttling, variables, canaries, and cache are active locally.
+Stage lifecycle, deployments, invoke URLs, logs, metrics, throttling, variables, canaries, cache, and REST-stage X-Ray tracing are active locally.
 
 ---
 
@@ -443,7 +443,11 @@ Stage lifecycle, deployments, invoke URLs, logs, metrics, throttling, variables,
 - **Access logs** — one line per request with `$context` variables for SIEM and auditing.
 - **X-Ray** — trace latency through API Gateway and downstream services.
 
-Requires a regional **CloudWatch logs role** in Account settings.
+Execution and access logs require a regional **CloudWatch logs role** in Account settings. X-Ray tracing automatically establishes and reuses the separate account-global `AWSServiceRoleForAPIGateway`; consuming CDK stacks do not declare it.
+
+When X-Ray tracing is enabled, the stage honors upstream sampling decisions and otherwise applies the local Default reservoir-plus-five-percent sampler. Sampled requests create a durable API Gateway stage segment. A Lambda backend receives the correlated `_X_AMZN_TRACE_ID`; an integration subsegment appears only after a backend attempt starts. `$context.xrayTraceId` is available in access-log formats, and **View X-Ray traces** opens the stage-filtered trace list. Disabling active tracing stops local sampling while continuing to honor a valid upstream `Sampled=1` decision.
+
+The standalone `AWS::ApiGateway::Stage.TracingEnabled` property is mutable through CloudFormation and normal CDK `deployOptions.tracingEnabled`. The legacy inline `AWS::ApiGateway::Deployment.StageDescription.TracingEnabled` shape remains explicitly unsupported until API Gateway and CloudFormation own a complete inline-stage lifecycle bridge.
 
 **Common AWS use cases:** Enable `INFO` execution logging in `dev` only; ship access logs to a dedicated log group for compliance.
 

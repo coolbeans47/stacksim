@@ -23,7 +23,11 @@ import {
   Metric,
   TreatMissingData,
 } from "aws-cdk-lib/aws-cloudwatch";
-import { CfnUserPool, CfnUserPoolClient } from "aws-cdk-lib/aws-cognito";
+import {
+  AccountRecovery,
+  ClientAttributes,
+  UserPool,
+} from "aws-cdk-lib/aws-cognito";
 import {
   AttributeType,
   BillingMode,
@@ -178,43 +182,42 @@ class SprintPlannerAppStack extends Stack {
   constructor(scope: Construct, id: string, props: AppStackProps) {
     super(scope, id, props);
 
-    const userPool = new CfnUserPool(this, "UserPool", {
+    const userPool = new UserPool(this, "UserPool", {
       userPoolName: "sprint-planner-users",
-      usernameAttributes: ["email"],
-      autoVerifiedAttributes: ["email"],
-      usernameConfiguration: { caseSensitive: false },
-      adminCreateUserConfig: { allowAdminCreateUserOnly: false },
-      policies: {
-        passwordPolicy: {
-          minimumLength: 8,
-          requireLowercase: true,
-          requireNumbers: true,
-          requireSymbols: true,
-          requireUppercase: true,
-          temporaryPasswordValidityDays: 7,
-        },
+      selfSignUpEnabled: true,
+      signInAliases: { email: true },
+      autoVerify: { email: true },
+      signInCaseSensitive: false,
+      accountRecovery: AccountRecovery.EMAIL_ONLY,
+      passwordPolicy: {
+        minLength: 8,
+        requireLowercase: true,
+        requireDigits: true,
+        requireSymbols: true,
+        requireUppercase: true,
+        tempPasswordValidity: Duration.days(7),
       },
-      userPoolTags: { application: "sprint-planner", workspace: workspaceId },
+      removalPolicy: RemovalPolicy.DESTROY,
     });
-    userPool.applyRemovalPolicy(RemovalPolicy.DESTROY);
-    const appClient = new CfnUserPoolClient(this, "UserPoolClient", {
-      userPoolId: userPool.ref,
-      clientName: "sprint-planner-browser",
+    Tags.of(userPool).add("application", "sprint-planner");
+    Tags.of(userPool).add("workspace", workspaceId);
+    const appClient = userPool.addClient("UserPoolClient", {
+      userPoolClientName: "sprint-planner-browser",
       generateSecret: false,
-      explicitAuthFlows: [
-        "ALLOW_REFRESH_TOKEN_AUTH",
-        "ALLOW_USER_PASSWORD_AUTH",
-        "ALLOW_USER_SRP_AUTH",
-      ],
-      preventUserExistenceErrors: "ENABLED",
+      disableOAuth: true,
+      authFlows: { userPassword: true, userSrp: true },
+      preventUserExistenceErrors: true,
       enableTokenRevocation: true,
-      readAttributes: ["email", "email_verified"],
-      writeAttributes: ["email"],
+      readAttributes: new ClientAttributes().withStandardAttributes({
+        email: true,
+        emailVerified: true,
+      }),
+      writeAttributes: new ClientAttributes().withStandardAttributes({ email: true }),
     });
     appClient.applyRemovalPolicy(RemovalPolicy.DESTROY);
     const cognitoIssuer = Fn.join("", [
       `https://cognito-idp.${this.region}.amazonaws.com/`,
-      userPool.ref,
+      userPool.userPoolId,
     ]);
 
     const queue = (logicalId: string, settings: Omit<CfnQueueProps, "queueName"> = {}) =>
@@ -323,7 +326,7 @@ class SprintPlannerAppStack extends Stack {
       APPLICATION_TABLE: props.applicationTable.tableName,
       CONNECTION_TABLE: props.connectionTable.tableName,
       WORKSPACE_ID: workspaceId,
-      APP_CLIENT_ID: appClient.ref,
+      APP_CLIENT_ID: appClient.userPoolClientId,
       BOOTSTRAP_EMAIL: config.bootstrapAdmin.email,
       WEBSITE_URL: props.websiteUrl,
       FROM_ADDRESS: config.email.fromAddress,
@@ -387,7 +390,7 @@ class SprintPlannerAppStack extends Stack {
       identitySource: ["$request.header.Authorization"],
       jwtConfiguration: {
         issuer: cognitoIssuer,
-        audience: [appClient.ref],
+        audience: [appClient.userPoolClientId],
       },
     });
     const routes: Array<[string, boolean]> = [
@@ -738,8 +741,8 @@ class SprintPlannerAppStack extends Stack {
       StreamFailureQueueUrl: streamFailureQueue.ref,
       EventConsumerFailureQueueUrl: eventConsumerFailureQueue.ref,
       DashboardName: dashboard.dashboardName,
-      CognitoUserPoolId: userPool.ref,
-      CognitoAppClientId: appClient.ref,
+      CognitoUserPoolId: userPool.userPoolId,
+      CognitoAppClientId: appClient.userPoolClientId,
       CognitoIssuer: cognitoIssuer,
     };
     for (const [key, value] of Object.entries(outputs)) {

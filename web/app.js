@@ -24,6 +24,8 @@ import { metadata as parameterStoreMetadata, routeParameterStore } from "./servi
 import { metadata as secretsManagerMetadata, routeSecretsManager } from "./services/secrets-manager.js";
 import { metadata as appsyncMetadata, routeAppSync } from "./services/appsync.js";
 import { metadata as stepFunctionsMetadata, routeStepFunctions } from "./services/step-functions.js";
+import { metadata as xrayMetadata, routeXRay } from "./services/xray.js";
+import { metadata as cloudFrontMetadata, routeCloudFront } from "./services/cloudfront.js";
 
 const main = document.querySelector("#main");
 const sidebar = document.querySelector("#sidebar");
@@ -51,6 +53,8 @@ const serviceMeta = {
   "secrets-manager": secretsManagerMetadata,
   appsync: appsyncMetadata,
   "step-functions": stepFunctionsMetadata,
+  xray: xrayMetadata,
+  cloudfront: cloudFrontMetadata,
 };
 let acceptedHash = normalizeHash(location.hash);
 let pendingNavigation = null;
@@ -209,6 +213,8 @@ async function route(focus = true) {
     else if (parts[0] === "secrets-manager") await routeSecretsManager(parts, serviceContext);
     else if (parts[0] === "appsync") await routeAppSync(parts, serviceContext);
     else if (parts[0] === "step-functions") await routeStepFunctions(parts, serviceContext);
+    else if (parts[0] === "xray") await routeXRay(parts, serviceContext);
+    else if (parts[0] === "cloudfront") await routeCloudFront(parts, serviceContext);
     else notFound(parts);
     associateFormLabels(main);
     enhanceArnComboboxes(main);

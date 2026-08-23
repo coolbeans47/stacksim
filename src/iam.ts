@@ -52,6 +52,26 @@ export class IamService {
   private policy(arn: string): IamPolicyState { const policy = this.iam.policies[arn]; if (!policy) throw new AwsError("NoSuchEntity", `Policy ${arn} was not found.`, 404); return policy; }
   private mutablePolicy(arn: string): IamPolicyState { const policy = this.policy(arn); if (policy.awsManaged) throw new AwsError("AccessDenied", "AWS managed policies are immutable", 403); return policy; }
 
+  /** XRY-01's one deliberately narrow internal service-linked-role creation seam. */
+  readonly ensureApiGatewayServiceLinkedRole = async (): Promise<IamRoleState> => {
+    const roleName = "AWSServiceRoleForAPIGateway";
+    const path = "/aws-service-role/ops.apigateway.amazonaws.com/";
+    const policyArn = "arn:aws:iam::aws:policy/aws-service-role/AmazonAPIGatewayServiceRolePolicy";
+    const trust: PolicyDocument = { Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { Service: "ops.apigateway.amazonaws.com" }, Action: "sts:AssumeRole" }] };
+    const existing = this.iam.roles[roleName];
+    if (existing) {
+      if (existing.path !== path || existing.assumeRolePolicyCanonical !== canonicalPolicyDocument(trust)) throw new AwsError("InvalidInput", `${roleName} exists but does not match the API Gateway service-linked-role contract`, 409);
+      if (!existing.attachedPolicyArns.includes(policyArn)) existing.attachedPolicyArns.push(policyArn);
+      await this.store.save();
+      return existing;
+    }
+    this.policy(policyArn);
+    const role: IamRoleState = { roleName, roleId: identifier("AROA"), arn: `arn:aws:iam::${this.store.accountId}:role${path}${roleName}`, path, createDate: this.clock.now(), description: "Allows API Gateway to call AWS services on your behalf.", maxSessionDuration: 3600, assumeRolePolicyDocument: trust, assumeRolePolicyCanonical: canonicalPolicyDocument(trust), tags: {}, attachedPolicyArns: [policyArn], inlinePolicies: {}, inlinePolicyCanonicalDocuments: {} };
+    this.iam.roles[roleName] = role;
+    await this.store.save();
+    return role;
+  };
+
   async handle(req: IncomingMessage, res: ServerResponse, requestId: string, principal?: PrincipalContext): Promise<void> {
     try {
       const input = parseAwsQuery((await readBody(req)).toString("utf8")) as any; const action = String(input.Action ?? ""); if (!action || typeof (this as any)[action] !== "function") throw new AwsError("InvalidAction", `The action ${action} is not valid for this service`, 400);

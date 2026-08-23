@@ -8,6 +8,8 @@ import { secretsManagerArn } from "../secrets-manager.js";
 import { resolveSesV2Operation } from "../ses/protocol-v2.js";
 import type { IamState } from "../types.js";
 import { resolveIamAuthorizationTarget } from "./iam-target.js";
+import { xrayOperation } from "../xray/action-inventory.js";
+import { AwsError } from "../errors.js";
 
 export interface AuthorizationTarget { action: string; resource: string; operation: string; input: any; context: Record<string, unknown>; additionalTargets?: AuthorizationTarget[] }
 
@@ -57,12 +59,88 @@ function putEventContext(entry: any): Record<string, unknown> {
   return context;
 }
 
+function cloudFrontRequestTags(source: string): Record<string, string> {
+  const decode = (value: string) => value.replace(/&(?:amp|lt|gt|quot|apos);/g, entity => ({ "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&apos;": "'" })[entity]!);
+  return Object.fromEntries([...source.matchAll(/<Tag(?:\s[^>]*)?>([\s\S]*?)<\/Tag>/gi)].flatMap(match => {
+    const key = match[1].match(/<Key(?:\s[^>]*)?>([\s\S]*?)<\/Key>/i)?.[1];
+    const value = match[1].match(/<Value(?:\s[^>]*)?>([\s\S]*?)<\/Value>/i)?.[1];
+    return key === undefined || value === undefined ? [] : [[decode(key.trim()), decode(value.trim())]];
+  }));
+}
+
+function cloudFrontTagKeys(source: string): string[] {
+  const decode = (value: string) => value.replace(/&(?:amp|lt|gt|quot|apos);/g, entity => ({ "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&apos;": "'" })[entity]!);
+  const container = source.match(/<TagKeys(?:\s[^>]*)?>([\s\S]*?)<\/TagKeys>/i)?.[1] ?? "";
+  return [...container.matchAll(/<Key(?:\s[^>]*)?>([\s\S]*?)<\/Key>/gi)].map(match => decode(match[1].trim()));
+}
+
+function decodeCloudFrontPathPart(value: string): string {
+  try { return decodeURIComponent(value); }
+  catch { throw new AwsError("InvalidArgument", "The CloudFront resource path is not valid percent-encoding", 400); }
+}
+
+function cloudFrontAuthorizationTarget(req: IncomingMessage, url: URL, accountId: string, body: Buffer): AuthorizationTarget {
+  const method = req.method ?? "GET";
+  const path = url.pathname;
+  const arn = (kind: string, id: string) => `arn:aws:cloudfront::${accountId}:${kind}/${id}`;
+  let operation: string | undefined;
+  let resource = "*";
+
+  const collection = [
+    [/^\/2020-05-31\/origin-access-control$/, "CreateOriginAccessControl", "ListOriginAccessControls"],
+    [/^\/2020-05-31\/response-headers-policy$/, "CreateResponseHeadersPolicy", "ListResponseHeadersPolicies"],
+    [/^\/2020-05-31\/function$/, "CreateFunction", "ListFunctions"],
+    [/^\/2020-05-31\/distribution$/, "CreateDistribution", "ListDistributions"],
+  ] as const;
+  for (const [pattern, create, list] of collection) if (pattern.test(path)) operation = method === "POST" ? create : method === "GET" ? list : undefined;
+
+  let match = path.match(/^\/2020-05-31\/origin-access-control\/([^/]+)(\/config)?$/);
+  if (match) { resource = arn("origin-access-control", match[1]); operation = method === "DELETE" && !match[2] ? "DeleteOriginAccessControl" : method === "GET" ? (match[2] ? "GetOriginAccessControlConfig" : "GetOriginAccessControl") : method === "PUT" && match[2] ? "UpdateOriginAccessControl" : undefined; }
+  match = path.match(/^\/2020-05-31\/response-headers-policy\/([^/]+)(\/config)?$/);
+  if (match) { resource = arn("response-headers-policy", match[1]); operation = method === "DELETE" && !match[2] ? "DeleteResponseHeadersPolicy" : method === "GET" ? (match[2] ? "GetResponseHeadersPolicyConfig" : "GetResponseHeadersPolicy") : method === "PUT" && match[2] ? "UpdateResponseHeadersPolicy" : undefined; }
+  match = path.match(/^\/2020-05-31\/function\/([^/]+)(?:\/(describe|publish|test))?$/);
+  if (match) {
+    const name = decodeCloudFrontPathPart(match[1]); resource = arn("function", name);
+    operation = method === "DELETE" && !match[2] ? "DeleteFunction" : method === "PUT" && !match[2] ? "UpdateFunction" : method === "GET" && !match[2] ? "GetFunction" : method === "GET" && match[2] === "describe" ? "DescribeFunction" : method === "POST" && match[2] === "publish" ? "PublishFunction" : method === "POST" && match[2] === "test" ? "TestFunction" : undefined;
+  }
+  match = path.match(/^\/2020-05-31\/distribution\/([^/]+)(\/config)?$/);
+  if (match) { resource = arn("distribution", match[1]); operation = method === "DELETE" && !match[2] ? "DeleteDistribution" : method === "GET" ? (match[2] ? "GetDistributionConfig" : "GetDistribution") : method === "PUT" && match[2] ? "UpdateDistribution" : undefined; }
+  match = path.match(/^\/2020-05-31\/distribution\/([^/]+)\/invalidation(?:\/([^/]+))?$/);
+  if (match) { resource = arn("distribution", match[1]); operation = method === "POST" && !match[2] ? "CreateInvalidation" : method === "GET" ? (match[2] ? "GetInvalidation" : "ListInvalidations") : undefined; }
+  match = path.match(/^\/2020-05-31\/cache-policy(?:\/([^/]+)(\/config)?)?$/);
+  if (match && method === "GET") { operation = match[1] ? (match[2] ? "GetCachePolicyConfig" : "GetCachePolicy") : "ListCachePolicies"; resource = match[1] ? `arn:aws:cloudfront::aws:cache-policy/${match[1]}` : "*"; }
+  if (path === "/2020-05-31/tagging") { resource = url.searchParams.get("Resource") ?? "*"; operation = method === "GET" ? "ListTagsForResource" : method === "POST" && url.searchParams.get("Operation") === "Tag" ? "TagResource" : method === "POST" && url.searchParams.get("Operation") === "Untag" ? "UntagResource" : undefined; }
+  if (!operation) throw new AwsError("UnsupportedOperation", `Unsupported CloudFront method/path: ${method} ${path}`, 400);
+
+  const requestedTags = cloudFrontRequestTags(body.toString("utf8"));
+  const tagKeys = operation === "UntagResource" ? cloudFrontTagKeys(body.toString("utf8")) : Object.keys(requestedTags);
+  const context: Record<string, unknown> = { "aws:TagKeys": tagKeys };
+  for (const [key, value] of Object.entries(requestedTags)) context[`aws:RequestTag/${key}`] = value;
+  const additionalTargets = operation === "CreateDistribution" && Object.keys(requestedTags).length
+    ? [{ action: "cloudfront:TagResource", resource: "*", operation: "TagResource", input: {}, context }]
+    : undefined;
+  return { action: `cloudfront:${operation}`, resource, operation, input: {}, context, ...(additionalTargets ? { additionalTargets } : {}) };
+}
+
 export async function authorizationTarget(req: IncomingMessage, url: URL, service: string, region: string, accountId: string, principal: PrincipalContext, now: number, iam?: IamState): Promise<AuthorizationTarget> {
   let input: any = {};
+  let requestBody: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   const additionalTargets: Array<{ action: string; resource: string; operation: string; context?: Record<string, unknown> }> = [];
-  if (service !== "s3") { const body = await readBody(req); if (body.length) { if (String(req.headers["content-type"] ?? "").includes("application/x-www-form-urlencoded")) input = parseAwsQuery(body.toString("utf8"), { coerceTimestamps: service !== "cloudformation" }); else { try { input = JSON.parse(body.toString("utf8")); } catch {} } } }
+  if (service !== "s3") { requestBody = await readBody(req); if (service === "cloudfront" && requestBody.length > 1024 * 1024) throw new AwsError("InvalidArgument", "The CloudFront request body exceeds the 1 MiB authorization limit", 413); if (requestBody.length) { if (String(req.headers["content-type"] ?? "").includes("application/x-www-form-urlencoded")) input = parseAwsQuery(requestBody.toString("utf8"), { coerceTimestamps: service !== "cloudformation" }); else { try { input = JSON.parse(requestBody.toString("utf8")); } catch {} } } }
+  if (service === "cloudfront") {
+    const resolved = cloudFrontAuthorizationTarget(req, url, accountId, requestBody);
+    const common = { "aws:PrincipalArn": principal.principalArn, "aws:PrincipalAccount": principal.accountId, "aws:RequestedRegion": region, "aws:CurrentTime": new Date(now).toISOString(), "aws:SecureTransport": Boolean((req.socket as any).encrypted) };
+    resolved.context = { ...common, ...resolved.context };
+    for (const additional of resolved.additionalTargets ?? []) additional.context = { ...common, ...(additional.context ?? {}) };
+    return resolved;
+  }
   const target = String(req.headers["x-amz-target"] ?? "").split(".").pop(); let operation = target ?? String(input.Action ?? req.method ?? "Unknown"); let action = `${service}:${operation}`; let resource = "*"; let operationContext: Record<string, unknown> = {};
-  if (service === "states") {
+  if (service === "xray") {
+    operation = xrayOperation(url.pathname, req.method) ?? "Unknown";
+    action = `xray:${operation}`;
+    resource = "*";
+  }
+  else if (service === "states") {
     action = `states:${operation}`;
     resource = input.stateMachineArn ?? input.executionArn ?? input.activityArn ?? input.resourceArn
       ?? (operation === "CreateStateMachine" && input.name ? `arn:aws:states:${region}:${accountId}:stateMachine:${input.name}`

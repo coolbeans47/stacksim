@@ -680,7 +680,7 @@ test("AMX-08 shutdown closes sockets and restart reconnects without replay", asy
     await harness.simulator.stop();
     assert.deepEqual(await closed, { code: 1012, reason: "Service restart" });
 
-    harness.simulator = new StackSim({ port, invokePort: 0, dataDir: harness.root, region, clock: harness.clock, authMode: "enforce", cdkBootstrap: false });
+    harness.simulator = new StackSim({ port, invokePort: 0, cloudFormationCustomResourceCallbackPort: 0, dataDir: harness.root, region, clock: harness.clock, authMode: "enforce", cdkBootstrap: false });
     await harness.simulator.start();
     await graphql(harness, `mutation { createTodo(input: { title: "missed-during-restart" }) { id title createdAt updatedAt } }`);
     replacement = new RealtimeClient(harness.realtimeEndpoint, apiKeyHeaders(harness));

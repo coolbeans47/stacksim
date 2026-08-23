@@ -50,6 +50,14 @@ interface AliasModel {
 }
 
 const retention = Object.freeze({ deletionPolicies: Object.freeze(["Delete", "Retain", "RetainExceptOnCreate"] as const), updateReplacePolicies: Object.freeze(["Delete", "Retain", "RetainExceptOnCreate"] as const), snapshotSupported: false });
+const SUPPORTED_LOCAL_INVOCATION_PRINCIPALS: ReadonlySet<string> = new Set([
+  "apigateway.amazonaws.com",
+  "cognito-idp.amazonaws.com",
+  "events.amazonaws.com",
+  "s3.amazonaws.com",
+  "secretsmanager.amazonaws.com",
+  "sns.amazonaws.com",
+]);
 export const LAMBDA_PERMISSION_SCHEMA: ProviderSchema = Object.freeze({
   typeName: LAMBDA_PERMISSION_TYPE, unknownProperties: "REJECT",
   properties: Object.freeze({
@@ -244,7 +252,7 @@ export function createLambdaPermissionProvider(lambda: LambdaService): Productio
       if (typeof properties.FunctionUrlAuthType === "string" && !["AWS_IAM", "NONE"].includes(properties.FunctionUrlAuthType)) issues.push({ code: "InvalidProperty", path: "Properties.FunctionUrlAuthType", pathSegments: providerValidationPathSegments("Properties.FunctionUrlAuthType"), message: "FunctionUrlAuthType must be AWS_IAM or NONE" });
       if (properties.FunctionUrlAuthType !== undefined && properties.Action !== "lambda:InvokeFunctionUrl") issues.push({ code: "InvalidProperty", path: "Properties.FunctionUrlAuthType", pathSegments: providerValidationPathSegments("Properties.FunctionUrlAuthType"), message: "FunctionUrlAuthType requires Action lambda:InvokeFunctionUrl" });
       if (properties.InvokedViaFunctionUrl !== undefined && properties.Action !== "lambda:InvokeFunction") issues.push({ code: "InvalidProperty", path: "Properties.InvokedViaFunctionUrl", pathSegments: providerValidationPathSegments("Properties.InvokedViaFunctionUrl"), message: "InvokedViaFunctionUrl requires Action lambda:InvokeFunction" });
-      if (typeof properties.Principal === "string" && properties.Principal.endsWith(".amazonaws.com") && !new Set(["apigateway.amazonaws.com", "events.amazonaws.com", "s3.amazonaws.com", "secretsmanager.amazonaws.com", "sns.amazonaws.com"]).has(properties.Principal)) issues.push({ code: "InvalidProperty", path: "Properties.Principal", pathSegments: providerValidationPathSegments("Properties.Principal"), message: `Service principal ${properties.Principal} is not backed by a supported local invocation source` });
+      if (typeof properties.Principal === "string" && properties.Principal.endsWith(".amazonaws.com") && !SUPPORTED_LOCAL_INVOCATION_PRINCIPALS.has(properties.Principal)) issues.push({ code: "InvalidProperty", path: "Properties.Principal", pathSegments: providerValidationPathSegments("Properties.Principal"), message: `Service principal ${properties.Principal} is not backed by a supported local invocation source` });
       return issues;
     },
     canonicalize(properties: unknown, context: ProviderContext): PermissionModel {
