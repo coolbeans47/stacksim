@@ -102,6 +102,82 @@ function booleanEnvironment(name: string): boolean | undefined {
   return value === "true";
 }
 
+const COGNITO_SDK_ENDPOINT_PATH = /^\/_stacksim\/cognito-idp\/([a-z]{2}(?:-gov)?-[a-z]+-\d)\/sdk\/?$/;
+const COGNITO_SDK_CORS_ALLOW_HEADERS = [
+  "content-type",
+  "x-amz-target",
+  "x-amz-user-agent",
+  "amz-sdk-invocation-id",
+  "amz-sdk-request",
+  "authorization",
+  "x-amz-date",
+  "x-amz-security-token",
+  "x-amz-content-sha256",
+] as const;
+const COGNITO_SDK_CORS_EXPOSE_HEADERS = [
+  "x-amzn-errortype",
+  "x-amzn-requestid",
+  "x-amz-request-id",
+] as const;
+
+function cognitoSdkEndpointRegion(pathname: string): string | undefined {
+  return COGNITO_SDK_ENDPOINT_PATH.exec(pathname)?.[1];
+}
+
+function exactHttpOrigin(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0 || value === "null" || value === "*") {
+    throw new Error(`${label} must be an exact normalized HTTP(S) origin`);
+  }
+  let parsed: URL;
+  try { parsed = new URL(value); }
+  catch { throw new Error(`${label} must be an exact normalized HTTP(S) origin`); }
+  if (
+    !new Set(["http:", "https:"]).has(parsed.protocol)
+    || parsed.username
+    || parsed.password
+    || parsed.pathname !== "/"
+    || parsed.search
+    || parsed.hash
+    || parsed.origin !== value
+  ) {
+    throw new Error(`${label} must be an exact normalized HTTP(S) origin`);
+  }
+  return parsed.origin;
+}
+
+function defaultCognitoSdkCorsOrigin(value: string): boolean {
+  let parsed: URL;
+  try { parsed = new URL(value); }
+  catch { return false; }
+  if (
+    !["http:", "https:"].includes(parsed.protocol)
+    || parsed.username
+    || parsed.password
+    || parsed.origin !== value
+  ) return false;
+  const hostname = parsed.hostname.toLowerCase();
+  return hostname === "localhost"
+    || hostname === "[::1]"
+    || hostname === "::1"
+    || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+}
+
+function configuredCognitoSdkCorsOrigins(option: readonly string[] | undefined): ReadonlySet<string> {
+  let value: unknown = option;
+  let label = "cognitoSdkCorsOrigins";
+  if (value === undefined) {
+    const environment = process.env.STACKSIM_COGNITO_SDK_CORS_ORIGINS;
+    if (environment === undefined) return new Set();
+    label = "STACKSIM_COGNITO_SDK_CORS_ORIGINS";
+    try { value = JSON.parse(environment); }
+    catch { throw new Error(`${label} must be a JSON array of exact normalized HTTP(S) origins`); }
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be ${label.startsWith("STACKSIM_") ? "a JSON array" : "an array"} of exact normalized HTTP(S) origins`);
+  }
+  return new Set(Array.from(value, (origin, index) => exactHttpOrigin(origin, `${label}[${index}]`)));
+}
+
 export interface SimulatorOptions {
   port?: number;
   invokePort?: number;
@@ -167,6 +243,8 @@ export interface SimulatorOptions {
   stepFunctionsExecutionRetentionMs?: number;
   /** Stable loopback origin used for Cognito managed-login and OIDC tooling routes. */
   cognitoPublicUrl?: string;
+  /** Additional exact browser origins permitted alongside default HTTP(S) loopback origins. */
+  cognitoSdkCorsOrigins?: readonly string[];
   /** Permit Cognito federation calls to public HTTPS identity providers. */
   cognitoAllowPublicIdentityProviders?: boolean;
 }
@@ -282,6 +360,7 @@ export class StackSim {
   };
   private sesEffectivePublicUrl?: string;
   private readonly cognitoConfiguredPublicUrl?: string;
+  private readonly cognitoSdkCorsOrigins: ReadonlySet<string>;
   private readonly cognitoIdentityProviderNetwork: { allowPublic: boolean };
   private cognitoEffectivePublicUrl?: string;
   private readonly regionalServices = new Map<string, RegionalServices>();
@@ -375,6 +454,7 @@ export class StackSim {
     this.sesOptions = { max24HourSend: sesMax24HourSend, maxSendRate: sesMaxSendRate, maximumMailboxMessages: sesMaximumMailboxMessages, maximumMailboxBytes: sesMaximumMailboxBytes, ...(sesPublicUrl ? { publicUrl: SesService.validatePublicUrl(sesPublicUrl) } : {}) };
     const cognitoPublicUrl = options.cognitoPublicUrl ?? process.env.STACKSIM_COGNITO_PUBLIC_URL;
     this.cognitoConfiguredPublicUrl = cognitoPublicUrl ? CognitoService.validatePublicUrl(cognitoPublicUrl) : undefined;
+    this.cognitoSdkCorsOrigins = configuredCognitoSdkCorsOrigins(options.cognitoSdkCorsOrigins);
     this.cognitoIdentityProviderNetwork = {
       allowPublic: options.cognitoAllowPublicIdentityProviders
         ?? process.env.STACKSIM_COGNITO_ALLOW_PUBLIC_IDP === "true",
@@ -489,6 +569,17 @@ export class StackSim {
       const currentRequestId = requestId();
       res.setHeader("x-amzn-requestid", currentRequestId);
       res.setHeader("x-amz-request-id", currentRequestId);
+      if (cognitoSdkEndpointRegion(url.pathname)) {
+        const preflight = req.method === "OPTIONS";
+        if (preflight) {
+          this.applyCognitoSdkCors(req, res, true);
+          res.statusCode = 204;
+          res.setHeader("allow", "POST, OPTIONS");
+          res.end();
+          return;
+        }
+        if (req.method === "POST") this.applyCognitoSdkCors(req, res, false);
+      }
       const graphqlPath = url.pathname.match(/^\/graphql\/([^/]+)\/([^/]+)$/);
       let graphqlRegion: string | undefined;
       let graphqlApiId: string | undefined;
@@ -706,7 +797,7 @@ export class StackSim {
       if (routedService === "monitoring") return services.metrics.handle(req, res, currentRequestId, principal);
       if (routedService === "ses") return services.ses.handle(req, res, url, currentRequestId, principal);
       if (routedService === "cognito-idp") {
-        if (/^\/_stacksim\/cognito-idp\/[a-z]{2}(?:-gov)?-[a-z]+-\d\/sdk\/?$/.test(url.pathname)) {
+        if (cognitoSdkEndpointRegion(url.pathname)) {
           req.url = "/";
         }
         return services.cognito.handle(req, res, currentRequestId);
@@ -1129,23 +1220,37 @@ export class StackSim {
   }
 
   private requestRegion(req: import("node:http").IncomingMessage, url: URL): string {
+    const regionalCognitoEndpoint = cognitoSdkEndpointRegion(url.pathname);
+    if (regionalCognitoEndpoint) return regionalCognitoEndpoint;
     const explicit = req.headers["x-stacksim-region"];
     if (typeof explicit === "string" && /^[a-z]{2}(?:-gov)?-[a-z]+-\d$/.test(explicit)) return explicit;
-    const regionalCognitoEndpoint = url.pathname.match(/^\/_stacksim\/cognito-idp\/([^/]+)\/sdk\/?$/);
-    if (regionalCognitoEndpoint) {
-      try {
-        const region = decodeURIComponent(regionalCognitoEndpoint[1]);
-        if (/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/.test(region)) return region;
-      } catch {
-        // Invalid endpoint segments fall through to the ordinary request context.
-      }
-    }
     const authorization = String(req.headers.authorization ?? "");
     const headerMatch = authorization.match(/Credential=[^,\s]+\/\d{8}\/([^/]+)\/[^/]+\/aws4_request/);
     if (headerMatch) return headerMatch[1];
     const credential = url.searchParams.get("X-Amz-Credential") ?? url.searchParams.get("x-amz-credential");
     const queryMatch = credential?.match(/^[^/]+\/\d{8}\/([^/]+)\/[^/]+\/aws4_request$/);
     return queryMatch?.[1] ?? this.region;
+  }
+
+  private applyCognitoSdkCors(
+    req: import("node:http").IncomingMessage,
+    res: import("node:http").ServerResponse,
+    preflight: boolean,
+  ): void {
+    if (typeof req.headers.origin !== "string") return;
+    res.setHeader("vary", "Origin");
+    if (
+      !defaultCognitoSdkCorsOrigin(req.headers.origin)
+      && !this.cognitoSdkCorsOrigins.has(req.headers.origin)
+    ) return;
+    res.setHeader("access-control-allow-origin", req.headers.origin);
+    if (preflight) {
+      res.setHeader("access-control-allow-methods", "POST, OPTIONS");
+      res.setHeader("access-control-allow-headers", COGNITO_SDK_CORS_ALLOW_HEADERS.join(", "));
+      res.setHeader("access-control-max-age", "600");
+    } else {
+      res.setHeader("access-control-expose-headers", COGNITO_SDK_CORS_EXPOSE_HEADERS.join(", "));
+    }
   }
 
   private requestSigningService(req: import("node:http").IncomingMessage, url: URL): string | undefined {

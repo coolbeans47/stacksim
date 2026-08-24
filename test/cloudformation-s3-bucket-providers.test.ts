@@ -384,6 +384,149 @@ test("S3 bucket-policy provider recognizes the exact semantic CloudFront OAC and
   }
 });
 
+test("S3 bucket-policy provider preserves Sid for direct public object hosting and recovers cleanup policies", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-s3-direct-policy-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "off" });
+  try {
+    await simulator.start();
+    const bucketProvider = createS3BucketProvider(simulator.s3);
+    const policyProvider = createS3BucketPolicyProvider(simulator.s3);
+    const providerRoleArn = `arn:aws:iam::${accountId}:role/CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092`;
+
+    const createBucket = async (bucketName: string, logicalId: string) => {
+      const input = bucketProperties(bucketName);
+      input.PublicAccessBlockConfiguration = {
+        BlockPublicAcls: true,
+        IgnorePublicAcls: true,
+        BlockPublicPolicy: false,
+        RestrictPublicBuckets: false,
+      };
+      const bucket = bucketProvider.canonicalize(input, context(logicalId));
+      assert.equal((await bucketProvider.create(bucket, context(logicalId))).status, "SUCCESS");
+      return bucket;
+    };
+
+    const statementsFor = (bucketName: string) => {
+      const bucketArn = `arn:aws:s3:::${bucketName}`;
+      const objectArn = `${bucketArn}/*`;
+      return {
+        bucketArn,
+        objectArn,
+        tls: {
+          Action: "s3:*",
+          Condition: { Bool: { "aws:SecureTransport": "false" } },
+          Effect: "Deny",
+          Principal: { AWS: "*" },
+          Resource: [bucketArn, objectArn],
+        },
+        autoDelete: {
+          Action: ["s3:DeleteObject*", "s3:GetBucket*", "s3:List*", "s3:PutBucketPolicy"],
+          Effect: "Allow",
+          Principal: { AWS: providerRoleArn },
+          Resource: [bucketArn, objectArn],
+        },
+        publicRead: {
+          Action: "s3:GetObject",
+          Effect: "Allow",
+          Principal: { AWS: "*" },
+          Resource: objectArn,
+          Sid: "AllowPublicReadOfWebAssets",
+        },
+        cleanup: {
+          Action: "s3:PutObject",
+          Effect: "Deny",
+          Principal: "*",
+          Resource: objectArn,
+        },
+      };
+    };
+
+    const bucket = await createBucket("provider-direct-public-assets", "WebBucket");
+    const exact = statementsFor(bucket.BucketName);
+    const supplied = {
+      Bucket: bucket.BucketName,
+      PolicyDocument: {
+        Statement: [exact.tls, exact.autoDelete, exact.publicRead],
+        Version: "2012-10-17",
+      },
+    };
+    const policyContext = context("WebBucketPolicy");
+    assert.equal(policyProvider.validate(supplied, policyContext).length, 0, "the exact synthesized Shipments profile must be accepted");
+    const policy = policyProvider.canonicalize(supplied, policyContext);
+    const canonicalStatements = policy.PolicyDocument.Statement as any[];
+    assert.deepEqual(canonicalStatements.map(statement => statement.Sid), [undefined, undefined, "AllowPublicReadOfWebAssets"]);
+    assert.equal((await policyProvider.create(policy, policyContext)).status, "SUCCESS");
+    const read = await policyProvider.read(bucket.BucketName, policyContext);
+    assert.equal(read.status, "SUCCESS");
+    if (read.status === "SUCCESS") assert.deepEqual(read.model.properties, policy, "read must preserve the public-read statement Sid");
+
+    const reordered = structuredClone(supplied);
+    (reordered.PolicyDocument as any).Statement = [
+      exact.publicRead,
+      { ...exact.autoDelete, Action: [...exact.autoDelete.Action].reverse(), Resource: [...exact.autoDelete.Resource].reverse() },
+      { ...exact.tls, Resource: [...exact.tls.Resource].reverse() },
+    ];
+    assert.deepEqual(policyProvider.canonicalize(reordered, policyContext), policy, "statement/action/resource ordering is not semantic");
+
+    const punctuatedSid = structuredClone(supplied);
+    (punctuatedSid.PolicyDocument as any).Statement[2].Sid = "Allow-public-read";
+    assert.equal(policyProvider.validate(punctuatedSid, policyContext).length, 0, "S3 resource-policy Sids may contain punctuation such as hyphens");
+
+    for (const [label, sid] of [
+      ["object", { value: "not-a-string" }],
+      ["number", 7],
+      ["empty", ""],
+      ["control character", "AllowPublicRead\nOfWebAssets"],
+    ] as const) {
+      const malformed = structuredClone(supplied);
+      (malformed.PolicyDocument as any).Statement[2].Sid = sid;
+      const issues = policyProvider.validate(malformed, policyContext);
+      assert.ok(issues.some(item => item.path === "Properties.PolicyDocument.Statement.2.Sid"), `${label} Sid must be rejected`);
+      assert.throws(() => policyProvider.canonicalize(malformed, policyContext), /\.Sid/);
+    }
+
+    const duplicateSid = structuredClone(supplied);
+    (duplicateSid.PolicyDocument as any).Statement[0].Sid = "AllowPublicReadOfWebAssets";
+    const duplicateIssues = policyProvider.validate(duplicateSid, policyContext);
+    assert.ok(duplicateIssues.some(item => item.path.endsWith(".Sid") && /duplicate|unique/i.test(item.message)), "duplicate Sid values must be rejected");
+    assert.throws(() => policyProvider.canonicalize(duplicateSid, policyContext), /duplicate|unique/i);
+
+    const cleanupPolicy = structuredClone(policy.PolicyDocument) as any;
+    cleanupPolicy.Statement = [exact.cleanup, ...cleanupPolicy.Statement.reverse()];
+    await simulator.s3.putBucketPolicyInternal(bucket.BucketName, cleanupPolicy);
+    assert.equal((await policyProvider.read(bucket.BucketName, policyContext)).status, "FAILED", "cleanup state must not be exposed as a steady-state model");
+    assert.equal((await policyProvider.delete(bucket.BucketName, policy, policyContext)).status, "SUCCESS", "delete recovery must retain and compare the public-read statement");
+    assert.equal((await bucketProvider.delete(bucket.BucketName, bucket, context("WebBucket"))).status, "SUCCESS");
+
+    const httpBucket = await createBucket("provider-direct-http-assets", "HttpWebBucket");
+    const httpStatements = statementsFor(httpBucket.BucketName);
+    const httpSupplied = {
+      Bucket: httpBucket.BucketName,
+      PolicyDocument: {
+        Statement: [httpStatements.publicRead, httpStatements.autoDelete],
+        Version: "2012-10-17",
+      },
+    };
+    const httpPolicyContext = context("HttpWebBucketPolicy");
+    assert.equal(policyProvider.validate(httpSupplied, httpPolicyContext).length, 0, "the direct HTTP profile omits only the TLS deny statement");
+    const httpPolicy = policyProvider.canonicalize(httpSupplied, httpPolicyContext);
+    assert.deepEqual((httpPolicy.PolicyDocument.Statement as any[]).map(statement => statement.Sid), [undefined, "AllowPublicReadOfWebAssets"]);
+    assert.equal((await policyProvider.create(httpPolicy, httpPolicyContext)).status, "SUCCESS");
+    const httpRead = await policyProvider.read(httpBucket.BucketName, httpPolicyContext);
+    assert.equal(httpRead.status, "SUCCESS");
+    if (httpRead.status === "SUCCESS") assert.deepEqual(httpRead.model.properties, httpPolicy);
+
+    const httpCleanupPolicy = structuredClone(httpPolicy.PolicyDocument) as any;
+    httpCleanupPolicy.Statement = [httpStatements.cleanup, ...httpCleanupPolicy.Statement.reverse()];
+    await simulator.s3.putBucketPolicyInternal(httpBucket.BucketName, httpCleanupPolicy);
+    assert.equal((await policyProvider.delete(httpBucket.BucketName, httpPolicy, httpPolicyContext)).status, "SUCCESS", "HTTP-profile cleanup recovery must include public read without TLS deny");
+    assert.equal((await bucketProvider.delete(httpBucket.BucketName, httpBucket, context("HttpWebBucket"))).status, "SUCCESS");
+  } finally {
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("S3 bucket provider applies and removes native direct Lambda notifications", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-s3-notification-"));
   const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "off" });

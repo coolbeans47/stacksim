@@ -70,6 +70,7 @@ import {
   maskEmail,
   modeledUsername,
   parseSignUp,
+  parseUserAttributes,
 } from "./cognito/users.js";
 import {
   clientConfiguration,
@@ -1198,129 +1199,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     return user;
   }
 
-  private parsedAttributes(
-    pool: CognitoUserPoolState,
-    value: unknown,
-    options: { username?: string; allowVerified: boolean; requireEmail: boolean },
-  ): Record<string, import("./types.js").CognitoUserAttributeState> {
-    if (value === undefined) {
-      if (options.username && pool.configuration.usernameAttributes.includes("email")) {
-        const email = cognitoEmail(options.username);
-        return { email: { value: email.value, verified: false } };
-      }
-      if (options.requireEmail) {
-        throw new AwsError("InvalidParameterException", "The email attribute is required.");
-      }
-      return {};
-    }
-    if (!Array.isArray(value)) {
-      throw new AwsError("InvalidParameterException", "UserAttributes must be an array.");
-    }
-    const attributes: Record<string, import("./types.js").CognitoUserAttributeState> = {};
-    const verified: Record<string, boolean> = {};
-    for (const raw of value) {
-      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-        throw new AwsError("InvalidParameterException", "UserAttributes contains an invalid attribute.");
-      }
-      const keys = Object.keys(raw);
-      if (keys.some(key => !["Name", "Value"].includes(key))) {
-        throw new AwsError("InvalidParameterException", "UserAttributes contains an unsupported field.");
-      }
-      if (typeof raw.Name !== "string" || typeof raw.Value !== "string") {
-        throw new AwsError("InvalidParameterException", "UserAttributes contains an invalid attribute.");
-      }
-      if (raw.Name === "sub") {
-        throw new AwsError("InvalidParameterException", "The sub attribute is immutable.");
-      }
-      if (raw.Name.endsWith("_verified")) {
-        const name = raw.Name.slice(0, -"_verified".length);
-        if (!options.allowVerified || !["email", "phone_number"].includes(name) || !["true", "false"].includes(raw.Value)) {
-          throw new AwsError("InvalidParameterException", `${raw.Name} cannot be set.`);
-        }
-        verified[name] = raw.Value === "true";
-        continue;
-      }
-      const schemaName = raw.Name.startsWith("custom:") ? raw.Name.slice(7) : raw.Name;
-      const schema = pool.configuration.schemaAttributes.find(candidate => candidate.name === schemaName);
-      if (raw.Name !== "email" && !schema) {
-        throw new AwsError("InvalidParameterException", `User attribute ${raw.Name} is not in the schema.`);
-      }
-      if (attributes[raw.Name]) {
-        throw new AwsError("InvalidParameterException", `User attribute ${raw.Name} is duplicated.`);
-      }
-      const attributeValue = raw.Name === "email" ? cognitoEmail(raw.Value).value : raw.Value;
-      if (Buffer.byteLength(attributeValue, "utf8") > 2_048) {
-        throw new AwsError("InvalidParameterException", `User attribute ${raw.Name} is too long.`);
-      }
-      if (schema) {
-        if (schema.attributeDataType === "String") {
-          const length = [...attributeValue].length;
-          const minimum = schema.stringAttributeConstraints?.minLength === undefined
-            ? undefined
-            : Number(schema.stringAttributeConstraints.minLength);
-          const maximum = schema.stringAttributeConstraints?.maxLength === undefined
-            ? undefined
-            : Number(schema.stringAttributeConstraints.maxLength);
-          if (minimum !== undefined && length < minimum || maximum !== undefined && length > maximum) {
-            throw new AwsError("InvalidParameterException", `User attribute ${raw.Name} violates its length constraints.`);
-          }
-        } else if (schema.attributeDataType === "Number") {
-          const numeric = Number(attributeValue);
-          const minimum = schema.numberAttributeConstraints?.minValue === undefined
-            ? undefined
-            : Number(schema.numberAttributeConstraints.minValue);
-          const maximum = schema.numberAttributeConstraints?.maxValue === undefined
-            ? undefined
-            : Number(schema.numberAttributeConstraints.maxValue);
-          if (
-            !Number.isFinite(numeric)
-            || minimum !== undefined && numeric < minimum
-            || maximum !== undefined && numeric > maximum
-          ) {
-            throw new AwsError("InvalidParameterException", `User attribute ${raw.Name} violates its number constraints.`);
-          }
-        } else if (schema.attributeDataType === "Boolean" && !["true", "false"].includes(attributeValue)) {
-          throw new AwsError("InvalidParameterException", `User attribute ${raw.Name} must be boolean.`);
-        } else if (schema.attributeDataType === "DateTime" && !Number.isFinite(Date.parse(attributeValue))) {
-          throw new AwsError("InvalidParameterException", `User attribute ${raw.Name} must be a date-time.`);
-        }
-      }
-      attributes[raw.Name] = { value: attributeValue, verified: false };
-    }
-    if (options.username && pool.configuration.usernameAttributes.includes("email")) {
-      const usernameEmail = cognitoEmail(options.username);
-      if (attributes.email && cognitoEmail(attributes.email.value).canonical !== usernameEmail.canonical) {
-        throw new AwsError("InvalidParameterException", "Username and email attribute must match.");
-      }
-      attributes.email ??= { value: usernameEmail.value, verified: false };
-    }
-    for (const [name, isVerified] of Object.entries(verified)) {
-      if (!attributes[name]) {
-        throw new AwsError("InvalidParameterException", `${name}_verified requires ${name}.`);
-      }
-      attributes[name].verified = isVerified;
-    }
-    if (options.requireEmail && !attributes.email) {
-      throw new AwsError("InvalidParameterException", "The email attribute is required.");
-    }
-    if (options.requireEmail) {
-      for (const schema of pool.configuration.schemaAttributes) {
-        const attributeName = schema.name === "email" ? "email" : `custom:${schema.name}`;
-        if (schema.required && !attributes[attributeName]) {
-          throw new AwsError("InvalidParameterException", `The ${attributeName} attribute is required.`);
-        }
-      }
-    }
-    return attributes;
-  }
-
   private missingNewPasswordRequiredAttributes(
     pool: CognitoUserPoolState,
     client: CognitoAppClientState,
     user: CognitoUserState,
   ): string[] {
     return pool.configuration.schemaAttributes.flatMap(schema => {
-      const name = schema.name === "email" ? "email" : `custom:${schema.name}`;
+      const name = STANDARD_USER_ATTRIBUTES.has(schema.name) ? schema.name : `custom:${schema.name}`;
       return schema.required
         && schema.mutable
         && client.writeAttributes.includes(name)
@@ -1784,7 +1669,15 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         this.validateSecretHash(pool, client, input.Username, input.SecretHash);
         const parsed = parseSignUp(input, pool, client);
         await this.reconcilePendingPool(pool.id);
-        await this.admit("SIGN_UP", pool, client, parsed.email?.canonical ?? parsed.usernameIndexKey, 10);
+        await this.admit(
+          "SIGN_UP",
+          pool,
+          client,
+          parsed.attributes.email
+            ? cognitoEmail(parsed.attributes.email.value).canonical
+            : parsed.usernameIndexKey,
+          10,
+        );
         return;
       }
       case "ConfirmSignUp": {
@@ -3384,8 +3277,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
   private validateClientAttributes(pool: CognitoUserPoolState, attributes: string[], field: string): void {
     for (const attribute of attributes) {
       if (STANDARD_CLIENT_ATTRIBUTES.has(attribute)) continue;
-      const name = attribute.startsWith("custom:") ? attribute.slice(7) : attribute;
-      if (!pool.configuration.schemaAttributes.some(candidate => candidate.name === name)) {
+      const custom = attribute.startsWith("custom:");
+      const name = custom ? attribute.slice(7) : attribute;
+      const schema = pool.configuration.schemaAttributes.find(candidate => candidate.name === name);
+      if (!custom || STANDARD_USER_ATTRIBUTES.has(name) || !schema || schema.developerOnlyAttribute) {
         throw new AwsError("InvalidParameterException", `${field} contains unknown attribute ${attribute}.`);
       }
     }
@@ -4662,10 +4557,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
     if (existing) throw new AwsError("UsernameExistsException", "User account already exists.");
 
-    const attributes = this.parsedAttributes(pool, input.UserAttributes, {
+    const attributes = parseUserAttributes(pool, input.UserAttributes, {
       username: submittedUsername,
       allowVerified: true,
-      requireEmail: false,
+      requireSchemaAttributes: false,
     });
     await this.invokeTrigger(
       pool,
@@ -5356,11 +5251,12 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
     const parsed = parseSignUp(input, pool, client);
     validatePasswordPolicy(parsed.password, pool.configuration.policies.passwordPolicy);
+    const email = parsed.attributes.email;
     const provisionalUser: { username: string; attributes: Record<string, CognitoUserAttributeState> } = {
       username: pool.configuration.usernameAttributes.includes("email")
-        ? parsed.email!.value
+        ? email!.value
         : parsed.submittedUsername,
-      attributes: parsed.email ? { email: { value: parsed.email.value, verified: false } } : {},
+      attributes: structuredClone(parsed.attributes),
     };
     const preSignUp = await this.invokeTrigger(pool, client, provisionalUser, "preSignUp", "PreSignUp_SignUp", {
       validationData: Object.fromEntries(
@@ -5385,12 +5281,15 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       status: preSignUp?.autoConfirmUser === true ? "CONFIRMED" : "UNCONFIRMED",
       createdAt: now,
       updatedAt: now,
-      attributes: parsed.email ? {
-        email: {
-          value: parsed.email.value,
-          verified: preSignUp?.autoVerifyEmail === true,
-        },
-      } : {},
+      attributes: Object.fromEntries(
+        Object.entries(parsed.attributes).map(([name, attribute]) => [
+          name,
+          {
+            ...attribute,
+            verified: name === "email" && preSignUp?.autoVerifyEmail === true,
+          },
+        ]),
+      ),
       password,
       srp: srpCredential(
         pool,
@@ -5457,7 +5356,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       UserSub: sub,
       ...(intentId ? {
         CodeDeliveryDetails: {
-          Destination: maskEmail(parsed.email!.value),
+          Destination: maskEmail(email!.value),
           DeliveryMedium: "EMAIL",
           AttributeName: "email",
         },
@@ -6399,9 +6298,9 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         Value: responses[key],
       })),
     ];
-    const validatedAttributes = this.parsedAttributes(context.pool, mergedAttributeInput, {
+    const validatedAttributes = parseUserAttributes(context.pool, mergedAttributeInput, {
       allowVerified: false,
-      requireEmail: context.pool.configuration.schemaAttributes.some(attribute => attribute.required),
+      requireSchemaAttributes: true,
     });
     const password = responses.NEW_PASSWORD;
     validatePasswordPolicy(password, context.pool.configuration.policies.passwordPolicy);
@@ -7024,9 +6923,9 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           }),
         ]
       : rawAttributes;
-    const attributes = this.parsedAttributes(pool, prepared, {
+    const attributes = parseUserAttributes(pool, prepared, {
       allowVerified,
-      requireEmail: false,
+      requireSchemaAttributes: false,
     });
     let emailChanged = false;
     for (const [name, attribute] of Object.entries(attributes)) {

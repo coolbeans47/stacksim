@@ -93,6 +93,30 @@ aws dynamodb list-tables
 
 After running the seed, the response includes the `LearningNotes` table. The same environment works with ordinary CDK v2 applications and AWS SDK clients.
 
+## Use Cognito sign-up from a local browser app
+
+Configure the browser's Cognito SDK client with StackSim's regional SDK alias instead of the AWS endpoint:
+
+```text
+http://127.0.0.1:4566/_stacksim/cognito-idp/eu-west-1/sdk
+```
+
+HTTP and HTTPS browser apps served from `localhost`, `127.0.0.0/8`, or `[::1]` are allowed by default on any port, so an ordinary local development server needs no additional StackSim setting.
+
+For a non-loopback development hostname, add its exact origin when starting StackSim. The setting is a JSON array, and origins must not include a trailing slash or path:
+
+```bash
+export STACKSIM_COGNITO_SDK_CORS_ORIGINS='["https://app.dev.example"]'
+npm start
+```
+
+```powershell
+$env:STACKSIM_COGNITO_SDK_CORS_ORIGINS = '["https://app.dev.example"]'
+npm start
+```
+
+The default does not include `*.localhost`, hostnames that merely contain `localhost`, or private-LAN addresses. This policy applies only to the regional Cognito SDK alias and does not weaken Cognito's operation-specific authentication. It also cannot make an HTTPS page call the HTTP endpoint; use a same-origin HTTPS proxy in that case.
+
 ## Supported services
 
 StackSim focuses on useful learning workflows rather than complete AWS parity. Unsupported actions fail with AWS-style errors instead of silently pretending to work.

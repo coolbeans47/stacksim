@@ -97,6 +97,32 @@ exports.handler = async event => {
   console.log(JSON.stringify(event));
   const metadata = event.request.clientMetadata || {};
   const identity = event.request.userAttributes.email || event.userName;
+  if (
+    metadata.assertSignupAttributes === "true"
+    && ["PreSignUp_SignUp", "PostConfirmation_ConfirmSignUp"].includes(event.triggerSource)
+  ) {
+    const expected = {
+      email: identity,
+      given_name: "Ada",
+      family_name: "Lovelace",
+      "custom:company_name": "Example Terminal",
+      "custom:company_type": "TERMINAL",
+    };
+    for (const [name, value] of Object.entries(expected)) {
+      if (event.request.userAttributes[name] !== value) {
+        throw new Error("signup attribute " + name + " was not propagated");
+      }
+    }
+    if (
+      event.triggerSource === "PostConfirmation_ConfirmSignUp"
+      && (!event.request.userAttributes.sub || event.request.userAttributes.email_verified !== "true")
+    ) {
+      throw new Error("confirmed signup identity attributes were not propagated");
+    }
+    if (metadata.rejectAfterAttributes === "true") {
+      throw new Error("attribute-complete signup rejected");
+    }
+  }
   if (identity.includes("function-error")) {
     throw new Error("validation denied");
   }
@@ -145,7 +171,23 @@ exports.handler = async event => {
       PoolName: "lambda-users",
       UsernameAttributes: ["email"],
       AutoVerifiedAttributes: ["email"],
-      Schema: [{ Name: "email", Required: true, Mutable: true }],
+      Schema: [
+        { Name: "email", Required: true, Mutable: true },
+        { Name: "given_name", Required: false, Mutable: true },
+        { Name: "family_name", Required: false, Mutable: true },
+        {
+          Name: "company_name",
+          AttributeDataType: "String",
+          Mutable: false,
+          StringAttributeConstraints: { MinLength: "1", MaxLength: "160" },
+        },
+        {
+          Name: "company_type",
+          AttributeDataType: "String",
+          Mutable: false,
+          StringAttributeConstraints: { MinLength: "6", MaxLength: "9" },
+        },
+      ],
       LambdaConfig: {
         PreSignUp: functionArn,
         CustomMessage: functionArn,
@@ -161,6 +203,13 @@ exports.handler = async event => {
       UserPoolId: poolId,
       ClientName: "lambda-client",
       ExplicitAuthFlows: ["ALLOW_USER_PASSWORD_AUTH"],
+      WriteAttributes: [
+        "email",
+        "given_name",
+        "family_name",
+        "custom:company_name",
+        "custom:company_type",
+      ],
     }));
     const clientId = app.UserPoolClient!.ClientId!;
     await assert.rejects(
@@ -201,6 +250,30 @@ exports.handler = async event => {
       0,
       "failed pre-sign-up/custom-message invocations roll back all user mutation",
     );
+    const rejectedAttributeEmail = "attribute-rejected@example.test";
+    await assert.rejects(
+      cognito.send(new SignUpCommand({
+        ClientId: clientId,
+        Username: rejectedAttributeEmail,
+        Password: "Valid-password-1!",
+        UserAttributes: [
+          { Name: "email", Value: rejectedAttributeEmail },
+          { Name: "given_name", Value: "Ada" },
+          { Name: "family_name", Value: "Lovelace" },
+          { Name: "custom:company_name", Value: "Example Terminal" },
+          { Name: "custom:company_type", Value: "TERMINAL" },
+        ],
+        ClientMetadata: {
+          assertSignupAttributes: "true",
+          rejectAfterAttributes: "true",
+        },
+      })),
+      (error: any) => error?.name === "UserLambdaValidationException",
+    );
+    const rejectedState = simulator.store.regionState(region).cognito;
+    assert.deepEqual(rejectedState.pools[poolId].usersBySub, {});
+    assert.deepEqual(rejectedState.pools[poolId].usernameIndex, {});
+    assert.deepEqual(rejectedState.deliveryIntents, {});
     const signup = await cognito.send(new SignUpCommand({
       ClientId: clientId,
       Username: "triggered@example.test",
@@ -213,7 +286,14 @@ exports.handler = async event => {
       ClientId: clientId,
       Username: manualEmail,
       Password: "Valid-password-1!",
-      ClientMetadata: { manual: "true" },
+      UserAttributes: [
+        { Name: "email", Value: manualEmail },
+        { Name: "given_name", Value: "Ada" },
+        { Name: "family_name", Value: "Lovelace" },
+        { Name: "custom:company_name", Value: "Example Terminal" },
+        { Name: "custom:company_type", Value: "TERMINAL" },
+      ],
+      ClientMetadata: { manual: "true", assertSignupAttributes: "true" },
     }));
     assert.equal(manual.UserConfirmed, false);
     const inbox = await signedFetch(
@@ -232,7 +312,7 @@ exports.handler = async event => {
       ClientId: clientId,
       Username: manualEmail,
       ConfirmationCode: confirmationCode,
-      ClientMetadata: { confirmTrace: "confirm-signup" },
+      ClientMetadata: { confirmTrace: "confirm-signup", assertSignupAttributes: "true" },
     }));
 
     const adminEmail = "admin-trigger@example.test";

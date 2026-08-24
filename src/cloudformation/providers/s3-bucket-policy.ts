@@ -63,6 +63,12 @@ function exactSet(value: unknown, wanted: readonly string[]): boolean {
   return actual !== undefined && same(actual, [...wanted].sort());
 }
 
+function validSid(value: unknown): value is string {
+  // S3 resource-policy examples use punctuation such as hyphens in Sid values,
+  // so this is deliberately broader than the IAM identity-policy alphabet.
+  return typeof value === "string" && value.length > 0 && !/[^\x20-\x7e]/.test(value);
+}
+
 function autoDeleteRoleArn(value: unknown, context?: ProviderContext): boolean {
   if (typeof value !== "string") return false;
   const match = value.match(/^arn:([a-z0-9-]+):iam::(\d{12}):role\/(?:[A-Za-z0-9+=,.@_-]*CustomS3AutoDelete[A-Za-z0-9+=,.@_-]*|amplify-stacksimamplifygen2datafixture-[A-Za-z0-9-]+-[a-f0-9]{12})$/);
@@ -85,7 +91,7 @@ function validateStatement(
   context: ProviderContext | undefined,
   issues: ProviderValidationIssue[],
 ): void {
-  exactKeys(statement, role === "tls-deny" || role === "cloudfront-oac" ? ["Action", "Condition", "Effect", "Principal", "Resource"] : ["Action", "Effect", "Principal", "Resource"], statementPath, issues);
+  exactKeys(statement, role === "tls-deny" || role === "cloudfront-oac" ? ["Action", "Condition", "Effect", "Principal", "Resource", "Sid"] : ["Action", "Effect", "Principal", "Resource", "Sid"], statementPath, issues);
   const bucketArn = `arn:aws:s3:::${bucket}`;
   const objectArn = `${bucketArn}/*`;
   if (role === "tls-deny") {
@@ -138,16 +144,26 @@ function validateSupportedPolicy(bucket: unknown, value: unknown, context: Provi
   exactKeys(value, ["Version", "Statement"], path, issues);
   if (value.Version !== "2012-10-17") issue(issues, `${path}.Version`, "Only IAM policy language version 2012-10-17 is supported");
   if (!Array.isArray(value.Statement) || ![1, 2, 3, ...(allowCleanup ? [4] : [])].includes(value.Statement.length)) {
-    issue(issues, `${path}.Statement`, allowCleanup ? "Only the exact supported steady-state profiles or generated four-statement cleanup profile are allowed" : "Only the exact public-read, TLS/auto-delete, or TLS/auto-delete/CloudFront OAC profiles are allowed");
+    issue(issues, `${path}.Statement`, allowCleanup ? "Only the exact supported steady-state profiles or generated four-statement cleanup profile are allowed" : "Only exact public-read, generated auto-delete/TLS, direct-S3 public-read, or CloudFront OAC profiles are allowed");
     return;
   }
   if (typeof bucket !== "string" || !bucket) return;
   const roles: PolicyRole[] = [];
+  const sids = new Set<string>();
   for (const [index, statement] of value.Statement.entries()) {
     const statementPath = `${path}.Statement.${index}`;
     if (!isRecord(statement)) {
       issue(issues, statementPath, "Each policy statement must be an object");
       continue;
+    }
+    if (statement.Sid !== undefined) {
+      if (!validSid(statement.Sid)) {
+        issue(issues, `${statementPath}.Sid`, "Sid must be a non-empty printable string");
+      } else if (sids.has(statement.Sid)) {
+        issue(issues, `${statementPath}.Sid`, "Sid must be unique within PolicyDocument.Statement");
+      } else {
+        sids.add(statement.Sid);
+      }
     }
     const role = likelyRole(statement);
     roles.push(role);
@@ -157,9 +173,13 @@ function validateSupportedPolicy(bucket: unknown, value: unknown, context: Provi
   const profile = same(roleSet, ["public-read"])
     || same(roleSet, ["auto-delete"])
     || same(roleSet, ["auto-delete", "tls-deny"])
+    || same(roleSet, ["auto-delete", "public-read"])
+    || same(roleSet, ["auto-delete", "public-read", "tls-deny"])
     || same(roleSet, ["auto-delete", "cloudfront-oac", "tls-deny"])
     || allowCleanup && same(roleSet, ["auto-delete", "cleanup-deny"])
     || allowCleanup && same(roleSet, ["auto-delete", "cleanup-deny", "tls-deny"])
+    || allowCleanup && same(roleSet, ["auto-delete", "cleanup-deny", "public-read"])
+    || allowCleanup && same(roleSet, ["auto-delete", "cleanup-deny", "public-read", "tls-deny"])
     || allowCleanup && same(roleSet, ["auto-delete", "cleanup-deny", "cloudfront-oac", "tls-deny"]);
   if (!profile || new Set(roles).size !== roles.length) issue(issues, `${path}.Statement`, "The policy statements do not form one exact supported generated profile");
   if (Buffer.byteLength(JSON.stringify(value), "utf8") > 20 * 1024) {
@@ -280,7 +300,7 @@ export function createS3BucketPolicyProvider(s3: S3Service): ProductionResourceP
         const document = await s3.readBucketPolicyInternal(physicalId);
         if (document === undefined) return { status: "NOT_FOUND", physicalId };
         const model = modelFromService(physicalId, document, context);
-        if (!model) return { status: "FAILED", errorCode: "InvalidBucketPolicyState", message: `Bucket ${physicalId} has a policy outside the supported public-read contract` };
+        if (!model) return { status: "FAILED", errorCode: "InvalidBucketPolicyState", message: `Bucket ${physicalId} has a policy outside the supported generated profiles` };
         return success(model);
       } catch (error) {
         return notFound(error) ? { status: "NOT_FOUND", physicalId } : failed(error) as ProviderReadResult<S3BucketPolicyModel>;

@@ -193,6 +193,299 @@ test("raw Cognito protocol returns bounded AWS JSON 1.1 errors and request IDs",
   }
 });
 
+test("regional Cognito SDK alias allows loopback origins with no configured allow-list", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cognito-default-browser-cors-"));
+  const simulator = new StackSim({
+    port: 0,
+    invokePort: 0,
+    dataDir: root,
+    region,
+    authMode: "validate",
+    cognitoSdkCorsOrigins: [],
+  });
+  try {
+    await simulator.start();
+    const regionalEndpoint = `${endpoint(simulator)}/_stacksim/cognito-idp/${region}/sdk`;
+    for (const loopbackOrigin of [
+      "http://localhost:5173",
+      "http://127.0.0.1:4173",
+      "http://127.42.7.9:3000",
+      "https://[::1]:4443",
+    ]) {
+      const preflight = await fetch(regionalEndpoint, {
+        method: "OPTIONS",
+        headers: { origin: loopbackOrigin, "access-control-request-method": "POST" },
+      });
+      assert.equal(preflight.status, 204);
+      assert.equal(preflight.headers.get("access-control-allow-origin"), loopbackOrigin);
+    }
+  } finally {
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("regional Cognito SDK alias scopes configured origins without replacing loopback defaults", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cognito-browser-cors-"));
+  const allowedOrigin = "http://localhost:5173";
+  const configuredOrigin = "https://app.dev.example";
+  const deniedOrigin = "https://untrusted.example";
+  const simulator = new StackSim({
+    port: 0,
+    invokePort: 0,
+    dataDir: root,
+    region,
+    authMode: "validate",
+    cognitoSdkCorsOrigins: [configuredOrigin],
+  });
+  let cognito = client(simulator);
+  let browserSdk: CognitoIdentityProviderClient | undefined;
+  try {
+    await simulator.start();
+    cognito.destroy();
+    cognito = client(simulator);
+
+    const pool = await cognito.send(new CreateUserPoolCommand({
+      PoolName: "browser-cors",
+      UsernameAttributes: ["email"],
+      Schema: [{ Name: "email", Required: true, Mutable: true }],
+    }));
+    const app = await cognito.send(new CreateUserPoolClientCommand({
+      UserPoolId: pool.UserPool!.Id!,
+      ClientName: "browser-cors-client",
+      ExplicitAuthFlows: ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
+    }));
+    const clientId = app.UserPoolClient!.ClientId!;
+    const regionalEndpoint = `${endpoint(simulator)}/_stacksim/cognito-idp/${region}/sdk`;
+    browserSdk = new CognitoIdentityProviderClient({
+      endpoint: regionalEndpoint,
+      region,
+      credentials: undefined,
+      maxAttempts: 1,
+    });
+
+    const officialSignUp = await browserSdk.send(new SignUpCommand({
+      ClientId: clientId,
+      Username: "official-browser-sdk@example.com",
+      Password: "Valid-password-1!",
+      UserAttributes: [{ Name: "email", Value: "official-browser-sdk@example.com" }],
+    }));
+    assert.equal(officialSignUp.UserConfirmed, false);
+    assert.match(officialSignUp.UserSub ?? "", /^[0-9a-f-]{36}$/);
+
+    const preflight = await fetch(regionalEndpoint, {
+      method: "OPTIONS",
+      headers: {
+        origin: allowedOrigin,
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type,x-amz-target,x-amz-user-agent,amz-sdk-invocation-id,amz-sdk-request",
+      },
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(await preflight.text(), "");
+    assert.equal(preflight.headers.get("access-control-allow-origin"), allowedOrigin);
+    assert.equal(preflight.headers.get("access-control-allow-methods"), "POST, OPTIONS");
+    assert.equal(preflight.headers.get("access-control-max-age"), "600");
+    assert.equal(preflight.headers.get("access-control-allow-credentials"), null);
+    assert.equal(preflight.headers.get("vary"), "Origin");
+    const allowedHeaders = new Set((preflight.headers.get("access-control-allow-headers") ?? "")
+      .split(",")
+      .map(value => value.trim().toLowerCase())
+      .filter(Boolean));
+    assert.deepEqual(allowedHeaders, new Set([
+      "content-type",
+      "x-amz-target",
+      "x-amz-user-agent",
+      "amz-sdk-invocation-id",
+      "amz-sdk-request",
+      "authorization",
+      "x-amz-date",
+      "x-amz-security-token",
+      "x-amz-content-sha256",
+    ]));
+
+    const configuredPreflight = await fetch(regionalEndpoint, {
+      method: "OPTIONS",
+      headers: { origin: configuredOrigin, "access-control-request-method": "POST" },
+    });
+    assert.equal(configuredPreflight.headers.get("access-control-allow-origin"), configuredOrigin);
+
+    const success = await fetch(regionalEndpoint, {
+      method: "POST",
+      headers: {
+        origin: allowedOrigin,
+        "content-type": "application/x-amz-json-1.1",
+        "x-amz-target": "AWSCognitoIdentityProviderService.SignUp",
+      },
+      body: JSON.stringify({
+        ClientId: clientId,
+        Username: "browser@example.com",
+        Password: "Valid-password-1!",
+        UserAttributes: [{ Name: "email", Value: "browser@example.com" }],
+      }),
+    });
+    assert.equal(success.status, 200);
+    assert.equal(success.headers.get("access-control-allow-origin"), allowedOrigin);
+    assert.equal(success.headers.get("access-control-allow-credentials"), null);
+    assert.equal(success.headers.get("vary"), "Origin");
+    assert.deepEqual(
+      new Set((success.headers.get("access-control-expose-headers") ?? "").split(",").map(value => value.trim())),
+      new Set(["x-amzn-errortype", "x-amzn-requestid", "x-amz-request-id"]),
+    );
+    assert(success.headers.get("x-amzn-requestid"));
+    assert.match(String((await success.json() as any).UserSub), /^[0-9a-f-]{36}$/);
+
+    const modeledError = await fetch(`${regionalEndpoint}/`, {
+      method: "POST",
+      headers: {
+        origin: allowedOrigin,
+        "content-type": "application/x-amz-json-1.1",
+        "x-amz-target": "AWSCognitoIdentityProviderService.SignUp",
+      },
+      body: JSON.stringify({
+        ClientId: clientId,
+        Username: "weak-password@example.com",
+        Password: "weak",
+        UserAttributes: [{ Name: "email", Value: "weak-password@example.com" }],
+      }),
+    });
+    assert.equal(modeledError.status, 400);
+    assert.equal(modeledError.headers.get("access-control-allow-origin"), allowedOrigin);
+    assert.equal(modeledError.headers.get("x-amzn-errortype"), "InvalidPasswordException");
+    assert.equal((await modeledError.json() as any).__type, "InvalidPasswordException");
+
+    const authorizationError = await fetch(regionalEndpoint, {
+      method: "POST",
+      headers: {
+        origin: allowedOrigin,
+        "content-type": "application/x-amz-json-1.1",
+        "x-amz-target": "AWSCognitoIdentityProviderService.CreateUserPool",
+      },
+      body: JSON.stringify({ PoolName: "unsigned-browser-control" }),
+    });
+    assert.equal(authorizationError.status, 403);
+    assert.equal(authorizationError.headers.get("access-control-allow-origin"), allowedOrigin);
+    assert.equal(authorizationError.headers.get("x-amzn-errortype"), "MissingAuthenticationToken");
+
+    const deniedPreflight = await fetch(regionalEndpoint, {
+      method: "OPTIONS",
+      headers: {
+        origin: deniedOrigin,
+        "access-control-request-method": "POST",
+      },
+    });
+    assert.equal(deniedPreflight.status, 204);
+    assert.equal(deniedPreflight.headers.get("access-control-allow-origin"), null);
+    assert.equal(deniedPreflight.headers.get("access-control-allow-methods"), null);
+    assert.equal(deniedPreflight.headers.get("vary"), "Origin");
+
+    for (const nonLoopbackOrigin of [
+      "http://app.localhost:5173",
+      "http://localhost.example:5173",
+      "http://192.168.1.20:5173",
+      "null",
+    ]) {
+      const deniedDefault = await fetch(regionalEndpoint, {
+        method: "OPTIONS",
+        headers: { origin: nonLoopbackOrigin, "access-control-request-method": "POST" },
+      });
+      assert.equal(deniedDefault.headers.get("access-control-allow-origin"), null);
+      assert.equal(deniedDefault.headers.get("vary"), "Origin");
+    }
+
+    const unsupportedPreflight = await fetch(regionalEndpoint, {
+      method: "OPTIONS",
+      headers: {
+        origin: allowedOrigin,
+        "access-control-request-method": "DELETE",
+        "access-control-request-headers": "x-arbitrary",
+      },
+    });
+    assert.equal(unsupportedPreflight.status, 204);
+    assert.equal(unsupportedPreflight.headers.get("access-control-allow-origin"), allowedOrigin);
+    assert.equal(unsupportedPreflight.headers.get("access-control-allow-methods")?.includes("DELETE"), false);
+    assert.equal(unsupportedPreflight.headers.get("access-control-allow-headers")?.includes("x-arbitrary"), false);
+
+    const wrongMethod = await fetch(regionalEndpoint, { headers: { origin: allowedOrigin } });
+    assert.equal(wrongMethod.headers.get("access-control-allow-origin"), null);
+    assert.equal(wrongMethod.headers.get("vary"), null);
+
+    const rootPreflight = await fetch(endpoint(simulator), {
+      method: "OPTIONS",
+      headers: { origin: allowedOrigin, "access-control-request-method": "POST" },
+    });
+    assert.equal(rootPreflight.headers.get("access-control-allow-origin"), null);
+    assert.equal(rootPreflight.headers.get("vary"), null);
+
+    const malformedAliasPreflight = await fetch(
+      `${endpoint(simulator)}/_stacksim/cognito-idp/not-a-region/sdk`,
+      {
+        method: "OPTIONS",
+        headers: { origin: allowedOrigin, "access-control-request-method": "POST" },
+      },
+    );
+    assert.equal(malformedAliasPreflight.headers.get("access-control-allow-origin"), null);
+    assert.equal(malformedAliasPreflight.headers.get("vary"), null);
+
+    const jwks = await fetch(
+      `${endpoint(simulator)}/_stacksim/cognito-idp/${region}/${pool.UserPool!.Id!}/.well-known/jwks.json`,
+      { headers: { origin: allowedOrigin } },
+    );
+    assert.equal(jwks.status, 200);
+    assert.equal(jwks.headers.get("access-control-allow-origin"), null);
+    assert.equal(jwks.headers.get("vary"), null);
+  } finally {
+    browserSdk?.destroy();
+    cognito.destroy();
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Cognito SDK CORS configuration rejects malformed and non-normalized origins", () => {
+  const base = { port: 0, invokePort: 0, authMode: "off" as const };
+  for (const origin of [
+    "*",
+    "null",
+    "ftp://localhost:5173",
+    "http://user@localhost:5173",
+    "http://localhost:5173/",
+    "http://localhost:5173/path",
+    "http://localhost:5173?query=true",
+    "http://localhost:5173#fragment",
+    "HTTP://localhost:5173",
+  ]) {
+    assert.throws(
+      () => new StackSim({ ...base, cognitoSdkCorsOrigins: [origin] }),
+      /exact normalized HTTP\(S\) origin/,
+      origin,
+    );
+  }
+  assert.throws(
+    () => new StackSim({ ...base, cognitoSdkCorsOrigins: {} as any }),
+    /cognitoSdkCorsOrigins must be an array/,
+  );
+
+  const previous = process.env.STACKSIM_COGNITO_SDK_CORS_ORIGINS;
+  try {
+    process.env.STACKSIM_COGNITO_SDK_CORS_ORIGINS = "not-json";
+    assert.throws(
+      () => new StackSim(base),
+      /STACKSIM_COGNITO_SDK_CORS_ORIGINS must be a JSON array/,
+    );
+    process.env.STACKSIM_COGNITO_SDK_CORS_ORIGINS = JSON.stringify({ origin: "http://localhost:5173" });
+    assert.throws(
+      () => new StackSim(base),
+      /STACKSIM_COGNITO_SDK_CORS_ORIGINS must be a JSON array/,
+    );
+    process.env.STACKSIM_COGNITO_SDK_CORS_ORIGINS = JSON.stringify(["http://localhost:5173"]);
+    assert.doesNotThrow(() => new StackSim(base));
+  } finally {
+    if (previous === undefined) delete process.env.STACKSIM_COGNITO_SDK_CORS_ORIGINS;
+    else process.env.STACKSIM_COGNITO_SDK_CORS_ORIGINS = previous;
+  }
+});
+
 test("Cognito target classification requires SigV4 only for IAM-class operations", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-cognito-auth-class-"));
   const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "validate" });

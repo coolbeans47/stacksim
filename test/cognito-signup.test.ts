@@ -94,6 +94,179 @@ async function createEmailPool(
   return { poolId, clientId: app.UserPoolClient!.ClientId! };
 }
 
+test("self-sign-up validates, stores, and confirms schema-defined standard and custom attributes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cognito-signup-attributes-"));
+  const clock = new TestClock(Date.parse("2026-07-24T09:00:00Z"));
+  const email = "schema-user@example.com";
+  let active: Awaited<ReturnType<typeof start>> | undefined;
+  try {
+    active = await start(root, clock);
+    const pool = await active.client.send(new CreateUserPoolCommand({
+      PoolName: "schema-signup-pool",
+      UsernameAttributes: ["email"],
+      AutoVerifiedAttributes: ["email"],
+      Schema: [
+        { Name: "email", Required: true, Mutable: true },
+        {
+          Name: "given_name",
+          Required: true,
+          Mutable: true,
+          StringAttributeConstraints: { MinLength: "1", MaxLength: "100" },
+        },
+        {
+          Name: "family_name",
+          Required: true,
+          Mutable: true,
+          StringAttributeConstraints: { MinLength: "1", MaxLength: "100" },
+        },
+        {
+          Name: "company_name",
+          AttributeDataType: "String",
+          Mutable: false,
+          StringAttributeConstraints: { MinLength: "1", MaxLength: "160" },
+        },
+        {
+          Name: "company_type",
+          AttributeDataType: "String",
+          Mutable: false,
+          StringAttributeConstraints: { MinLength: "6", MaxLength: "9" },
+        },
+        {
+          Name: "server_note",
+          AttributeDataType: "String",
+          DeveloperOnlyAttribute: true,
+          Mutable: true,
+        },
+      ],
+    }));
+    const poolId = pool.UserPool!.Id!;
+    const writableAttributes = [
+      "email",
+      "given_name",
+      "family_name",
+      "custom:company_name",
+      "custom:company_type",
+    ];
+    for (const invalidAttribute of ["custom:email", "custom:server_note"]) {
+      await assert.rejects(
+        active.client.send(new CreateUserPoolClientCommand({
+          UserPoolId: poolId,
+          ClientName: `invalid-${invalidAttribute.replace(":", "-")}`,
+          ExplicitAuthFlows: ["ALLOW_USER_PASSWORD_AUTH"],
+          WriteAttributes: ["email", invalidAttribute],
+        })),
+        (error: any) => error?.name === "InvalidParameterException",
+      );
+    }
+    const app = await active.client.send(new CreateUserPoolClientCommand({
+      UserPoolId: poolId,
+      ClientName: "schema-public-client",
+      ExplicitAuthFlows: ["ALLOW_USER_PASSWORD_AUTH"],
+      ReadAttributes: writableAttributes,
+      WriteAttributes: writableAttributes,
+    }));
+    const clientId = app.UserPoolClient!.ClientId!;
+    const validAttributes = [
+      { Name: "email", Value: email },
+      { Name: "given_name", Value: "Ada" },
+      { Name: "family_name", Value: "Lovelace" },
+      { Name: "custom:company_name", Value: "Example Terminal" },
+      { Name: "custom:company_type", Value: "TERMINAL" },
+    ];
+
+    const rejectedAttributes: Array<Array<{ Name: string; Value: string }>> = [
+      validAttributes.filter(attribute => attribute.Name !== "given_name"),
+      validAttributes.map(attribute => attribute.Name === "custom:company_type"
+        ? { ...attribute, Value: "PORT" }
+        : attribute),
+      [...validAttributes, { Name: "given_name", Value: "Grace" }],
+      [...validAttributes, { Name: "custom:unknown", Value: "value" }],
+      validAttributes.map(attribute => attribute.Name === "custom:company_name"
+        ? { Name: "company_name", Value: attribute.Value }
+        : attribute),
+      [...validAttributes, { Name: "sub", Value: "caller-selected-sub" }],
+      [...validAttributes, { Name: "email_verified", Value: "true" }],
+      [...validAttributes, { Name: "dev:server_note", Value: "private" }],
+      [...validAttributes, { Name: "custom:server_note", Value: "private" }],
+    ];
+    for (let index = 0; index < rejectedAttributes.length; index += 1) {
+      await assert.rejects(
+        active.client.send(new SignUpCommand({
+          ClientId: clientId,
+          Username: `rejected-${index}@example.com`,
+          Password: password,
+          UserAttributes: rejectedAttributes[index].map(attribute =>
+            attribute.Name === "email"
+              ? { ...attribute, Value: `rejected-${index}@example.com` }
+              : attribute
+          ),
+        })),
+        (error: any) => error?.name === "InvalidParameterException",
+      );
+    }
+
+    const restrictedApp = await active.client.send(new CreateUserPoolClientCommand({
+      UserPoolId: poolId,
+      ClientName: "restricted-schema-client",
+      ExplicitAuthFlows: ["ALLOW_USER_PASSWORD_AUTH"],
+      ReadAttributes: writableAttributes,
+      WriteAttributes: writableAttributes.filter(attribute => attribute !== "custom:company_name"),
+    }));
+    await assert.rejects(
+      active.client.send(new SignUpCommand({
+        ClientId: restrictedApp.UserPoolClient!.ClientId!,
+        Username: "write-denied@example.com",
+        Password: password,
+        UserAttributes: validAttributes.map(attribute => attribute.Name === "email"
+          ? { ...attribute, Value: "write-denied@example.com" }
+          : attribute),
+      })),
+      (error: any) => error?.name === "NotAuthorizedException",
+    );
+    assert.equal(
+      Object.keys(active.simulator.store.regionState(region).cognito.pools[poolId].usersBySub).length,
+      0,
+      "attribute validation failures do not create partial users",
+    );
+
+    const signedUp = await active.client.send(new SignUpCommand({
+      ClientId: clientId,
+      Username: email,
+      Password: password,
+      UserAttributes: validAttributes,
+    }));
+    const state = active.simulator.store.regionState(region).cognito;
+    const user = state.pools[poolId].usersBySub[signedUp.UserSub!];
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(user.attributes).map(([name, attribute]) => [name, attribute.value])),
+      {
+        email,
+        given_name: "Ada",
+        family_name: "Lovelace",
+        "custom:company_name": "Example Terminal",
+        "custom:company_type": "TERMINAL",
+      },
+    );
+    assert.equal(user.attributes.email.verified, false);
+
+    const messages = await inbox(active.simulator, email);
+    assert.equal(messages.length, 1);
+    await active.client.send(new ConfirmSignUpCommand({
+      ClientId: clientId,
+      Username: email,
+      ConfirmationCode: confirmationCode(await messageText(active.simulator, messages[0].messageId)),
+    }));
+    assert.equal(user.status, "CONFIRMED");
+    assert.equal(user.attributes.email.verified, true);
+    assert.equal(user.attributes["custom:company_name"].value, "Example Terminal");
+    assert.equal(user.attributes["custom:company_type"].value, "TERMINAL");
+  } finally {
+    active?.client.destroy();
+    await active?.simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Cognito sign-up, resend, confirmation, and secrecy survive restart through the SES Inbox", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-cognito-signup-"));
   const clock = new TestClock(Date.parse("2026-07-24T10:00:00Z"));
