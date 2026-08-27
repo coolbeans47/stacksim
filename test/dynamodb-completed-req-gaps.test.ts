@@ -146,7 +146,7 @@ test("DDBGAP-02 DescribeTable.Replicas reports per-Region status after policy de
     assert.equal(afterRestart.Table?.Replicas?.find(replica => replica.RegionName === eastRegion)?.ReplicaStatus, "REGION_DISABLED");
     assert.equal(afterRestart.Table?.Replicas?.find(replica => replica.RegionName === westRegion)?.ReplicaStatus, "ACTIVE");
   } finally {
-    west?.destroy(); east?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true });
+    west?.destroy(); east?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
 });
 

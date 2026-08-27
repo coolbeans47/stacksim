@@ -18,7 +18,7 @@
     "seed:rds-stream": "npm run package:sample && node dist/examples/rds-stream/deploy.js",
     "test": "npm run test:node && npm run test:browser",
     "pretest:node": "npm ci --prefix test/fixtures/amplify-gen2-data --no-audit --no-fund",
-    "test:node": "npm run build && tsc -p tsconfig.lambda.json && node scripts/package-lambda.mjs && node --test --test-concurrency=4 dist/test/*.test.js",
+    "test:node": "npm run build && tsc -p tsconfig.lambda.json && node scripts/package-lambda.mjs && node --test --test-concurrency=2 dist/test/*.test.js",
     "pretest:browser": "tsc -p tsconfig.lambda.json && node scripts/package-lambda.mjs",
     "test:browser": "playwright test"
   },

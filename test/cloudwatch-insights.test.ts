@@ -15,7 +15,11 @@ function connect(simulator: StackSim) { return new CloudWatchLogsClient({ endpoi
 async function settle() { await new Promise<void>(resolve => setImmediate(resolve)); }
 
 async function waitForStatus(client: CloudWatchLogsClient, queryId: string, status: string) {
-  for (let attempt = 0; attempt < 50; attempt++) { const result = await client.send(new GetQueryResultsCommand({ queryId })); if (result.status === status && (status !== "Running" || Number(result.statistics?.recordsScanned) > 0)) return result; await settle(); }
+  for (let attempt = 0; attempt < 500; attempt++) {
+    const result = await client.send(new GetQueryResultsCommand({ queryId }));
+    if (result.status === status && (status !== "Running" || Number(result.statistics?.recordsScanned) > 0)) return result;
+    await new Promise<void>(resolve => setTimeout(resolve, 1));
+  }
   throw new Error(`Query ${queryId} did not reach ${status}`);
 }
 
