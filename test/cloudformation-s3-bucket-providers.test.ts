@@ -5,17 +5,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+  AbortMultipartUploadCommand,
+  CreateMultipartUploadCommand,
+  DeleteBucketLifecycleCommand,
   GetBucketEncryptionCommand,
   GetBucketCorsCommand,
+  GetBucketLifecycleConfigurationCommand,
   GetBucketNotificationConfigurationCommand,
   GetBucketOwnershipControlsCommand,
   GetPublicAccessBlockCommand,
   GetBucketVersioningCommand,
+  HeadObjectCommand,
+  ListMultipartUploadsCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import { CreateFunctionCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import type { PrincipalContext } from "../src/auth/sigv4.js";
+import { TestClock } from "../src/core/clock.js";
 import { createZip } from "../src/core/zip-create.js";
 import type { ProviderContext } from "../src/cloudformation/providers/contract.js";
 import {
@@ -70,6 +77,7 @@ function bucketProperties(name = "provider-react-site"): Record<string, unknown>
     VersioningConfiguration: { Status: "Enabled" },
     WebsiteConfiguration: { IndexDocument: "index.html" },
     CorsConfiguration: { CorsRules: [{ AllowedHeaders: ["*"], AllowedMethods: ["GET", "HEAD"], AllowedOrigins: [`https://${region}.console.aws.amazon.com/amplify`] }] },
+    LifecycleConfiguration: { Rules: [{ AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 }, Status: "Enabled" }] },
   };
 }
 
@@ -82,6 +90,24 @@ function policyProperties(bucket: string): Record<string, unknown> {
         Effect: "Allow",
         Principal: { AWS: "*" },
         Resource: `arn:aws:s3:::${bucket}/*`,
+      }],
+      Version: "2012-10-17",
+    },
+  };
+}
+
+function tlsOnlyPolicyProperties(bucket: string, sid?: string): Record<string, unknown> {
+  const bucketArn = `arn:aws:s3:::${bucket}`;
+  return {
+    Bucket: bucket,
+    PolicyDocument: {
+      Statement: [{
+        Action: "s3:*",
+        Condition: { Bool: { "aws:SecureTransport": "false" } },
+        Effect: "Deny",
+        Principal: { AWS: "*" },
+        Resource: [bucketArn, `${bucketArn}/*`],
+        ...(sid ? { Sid: sid } : {}),
       }],
       Version: "2012-10-17",
     },
@@ -133,6 +159,7 @@ test("S3 bucket and bucket-policy providers drive the durable public website lif
       RestrictPublicBuckets: false,
     });
     assert.deepEqual((await sdk.send(new GetBucketCorsCommand({ Bucket: initial.BucketName }))).CORSRules?.[0].AllowedMethods, ["GET", "HEAD"]);
+    assert.equal((await sdk.send(new GetBucketLifecycleConfigurationCommand({ Bucket: initial.BucketName }))).Rules?.[0].AbortIncompleteMultipartUpload?.DaysAfterInitiation, 7);
     const html = Buffer.from("<!doctype html><main>provider fixture</main>\n", "utf8");
     await sdk.send(new PutObjectCommand({ Bucket: initial.BucketName, Key: "index.html", Body: html, ContentType: "text/html; charset=utf-8" }));
     const corsOrigin = `https://${region}.console.aws.amazon.com/amplify`;
@@ -144,8 +171,13 @@ test("S3 bucket and bucket-policy providers drive the durable public website lif
     assert.equal(preflight.headers["access-control-allow-methods"], "GET, HEAD");
     assert.equal((await fetch(websiteUrl)).status, 403, "website reads require the real public bucket policy");
 
+    const tlsPolicy = policyProvider.canonicalize(tlsOnlyPolicyProperties(initial.BucketName), context("FrontendBucketPolicy"));
+    assert.equal((await policyProvider.create(tlsPolicy, context("FrontendBucketPolicy"))).status, "SUCCESS");
+    assert.equal((await policyProvider.create(tlsPolicy, context("FrontendBucketPolicy"))).status, "SUCCESS", "a lost TLS-policy create response must converge");
+    assert.equal((await policyProvider.read(initial.BucketName, context("FrontendBucketPolicy"))).status, "SUCCESS");
+
     const policy = policyProvider.canonicalize(policyProperties(initial.BucketName), context("FrontendBucketPolicy"));
-    const policyCreated = await policyProvider.create(policy, context("FrontendBucketPolicy"));
+    const policyCreated = await policyProvider.update(initial.BucketName, tlsPolicy, policy, context("FrontendBucketPolicy"));
     assert.equal(policyCreated.status, "SUCCESS");
     if (policyCreated.status !== "SUCCESS") assert.fail(JSON.stringify(policyCreated));
     assert.equal(policyProvider.ref(policyCreated.model), initial.BucketName);
@@ -177,6 +209,7 @@ test("S3 bucket and bucket-policy providers drive the durable public website lif
     };
     updatedProperties.Tags = [{ Key: "application", Value: "react-v2" }];
     updatedProperties.WebsiteConfiguration = { IndexDocument: "index.html", ErrorDocument: "error.html" };
+    updatedProperties.LifecycleConfiguration = { Rules: [{ AbortIncompleteMultipartUpload: { DaysAfterInitiation: 8 }, Status: "Disabled" }] };
     const updated = bucketProvider.canonicalize(updatedProperties, context());
     assert.equal(bucketProvider.plan(initial, updated, context()).action, "UPDATE");
     const update = await bucketProvider.update(initial.BucketName, initial, updated, context());
@@ -184,6 +217,16 @@ test("S3 bucket and bucket-policy providers drive the durable public website lif
     const read = await bucketProvider.read(initial.BucketName, context());
     assert.equal(read.status, "SUCCESS");
     if (read.status === "SUCCESS") assert.deepEqual(read.model.properties, updated);
+    assert.deepEqual((await sdk.send(new GetBucketLifecycleConfigurationCommand({ Bucket: initial.BucketName }))).Rules?.[0], {
+      AbortIncompleteMultipartUpload: { DaysAfterInitiation: 8 },
+      Status: "Disabled",
+    });
+    assert.equal((await bucketProvider.update(initial.BucketName, updated, initial, context())).status, "SUCCESS", "rollback must restore the prior lifecycle configuration");
+    assert.deepEqual((await sdk.send(new GetBucketLifecycleConfigurationCommand({ Bucket: initial.BucketName }))).Rules?.[0], {
+      AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 },
+      Status: "Enabled",
+    });
+    assert.equal((await bucketProvider.update(initial.BucketName, initial, updated, context())).status, "SUCCESS", "the intended update must remain replayable after rollback");
 
     sdk.destroy(); sdk = undefined;
     await simulator.stop();
@@ -195,12 +238,22 @@ test("S3 bucket and bucket-policy providers drive the durable public website lif
     assert.equal((await bucketProvider.read(initial.BucketName, context())).status, "SUCCESS", "bucket ownership/configuration must survive restart");
     assert.equal((await policyProvider.read(initial.BucketName, context("FrontendBucketPolicy"))).status, "SUCCESS", "bucket policy must survive restart");
 
+    await sdk.send(new DeleteBucketLifecycleCommand({ Bucket: initial.BucketName }));
+    const drifted = await bucketProvider.read(initial.BucketName, context());
+    assert.equal(drifted.status, "SUCCESS");
+    if (drifted.status === "SUCCESS") assert.equal(drifted.model.properties.LifecycleConfiguration, undefined, "direct lifecycle deletion must be visible to CloudFormation read");
+    const withoutLifecycleProperties = structuredClone(updatedProperties);
+    delete withoutLifecycleProperties.LifecycleConfiguration;
+    const withoutLifecycle = bucketProvider.canonicalize(withoutLifecycleProperties, context());
+    assert.equal((await bucketProvider.update(initial.BucketName, updated, withoutLifecycle, context())).status, "SUCCESS");
+    await assert.rejects(sdk.send(new GetBucketLifecycleConfigurationCommand({ Bucket: initial.BucketName })), error => (error as any).name === "NoSuchLifecycleConfiguration");
+
     assert.equal((await policyProvider.delete(initial.BucketName, policy, context("FrontendBucketPolicy"))).status, "SUCCESS");
     assert.equal((await fetch(String((await bucketProvider.read(initial.BucketName, context()) as any).model.attributes.WebsiteURL))).status, 403);
     for (const version of await simulator.s3.listObjectVersionsInternal(initial.BucketName)) {
       await simulator.s3.deleteObjectVersionInternal(initial.BucketName, version.key, version.versionId);
     }
-    assert.equal((await bucketProvider.delete(initial.BucketName, updated, context())).status, "SUCCESS");
+    assert.equal((await bucketProvider.delete(initial.BucketName, withoutLifecycle, context())).status, "SUCCESS");
     assert.equal((await bucketProvider.read(initial.BucketName, context())).status, "NOT_FOUND");
 
     const recreated = await bucketProvider.create(initial, context());
@@ -210,6 +263,39 @@ test("S3 bucket and bucket-policy providers drive the durable public website lif
     sdk?.destroy();
     await simulator.stop().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("S3 TLS-only bucket-policy profile is enforced for direct HTTP requests", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-s3-tls-only-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "enforce" });
+  let sdk: S3Client | undefined;
+  const bucketName = "provider-tls-only-bucket";
+  try {
+    await simulator.start();
+    sdk = new S3Client({ endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials, forcePathStyle: true, maxAttempts: 1 });
+    const bucketProvider = createS3BucketProvider(simulator.s3);
+    const policyProvider = createS3BucketPolicyProvider(simulator.s3);
+    const properties = bucketProperties(bucketName);
+    delete properties.WebsiteConfiguration;
+    delete properties.CorsConfiguration;
+    delete properties.LifecycleConfiguration;
+    properties.PublicAccessBlockConfiguration = { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true };
+    const bucket = bucketProvider.canonicalize(properties, context("TlsBucket"));
+    assert.equal((await bucketProvider.create(bucket, context("TlsBucket"))).status, "SUCCESS");
+    await sdk.send(new PutObjectCommand({ Bucket: bucketName, Key: "private.txt", Body: "private" }));
+
+    const policy = policyProvider.canonicalize(tlsOnlyPolicyProperties(bucketName), context("TlsBucketPolicy"));
+    assert.equal((await policyProvider.create(policy, context("TlsBucketPolicy"))).status, "SUCCESS");
+    assert.equal((await policyProvider.read(bucketName, context("TlsBucketPolicy"))).status, "SUCCESS");
+    await assert.rejects(sdk.send(new HeadObjectCommand({ Bucket: bucketName, Key: "private.txt" })), error => (error as any).$metadata?.httpStatusCode === 403);
+
+    assert.equal((await policyProvider.delete(bucketName, policy, context("TlsBucketPolicy"))).status, "SUCCESS");
+    assert.equal((await sdk.send(new HeadObjectCommand({ Bucket: bucketName, Key: "private.txt" }))).ContentLength, 7);
+    for (const version of await simulator.s3.listObjectVersionsInternal(bucketName)) await simulator.s3.deleteObjectVersionInternal(bucketName, version.key, version.versionId);
+    assert.equal((await bucketProvider.delete(bucketName, bucket, context("TlsBucket"))).status, "SUCCESS");
+  } finally {
+    sdk?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -240,13 +326,29 @@ test("S3 CloudFormation providers freeze the CDK subset and replacement/retentio
 
     const blocked = bucketProvider.validate({
       ...bucketProperties(),
-      LifecycleConfiguration: { Rules: [] },
       ReplicationConfiguration: {},
       ObjectLockEnabled: true,
       LoggingConfiguration: {},
     }, context());
-    for (const property of ["LifecycleConfiguration", "ReplicationConfiguration", "ObjectLockEnabled", "LoggingConfiguration"]) {
+    for (const property of ["ReplicationConfiguration", "ObjectLockEnabled", "LoggingConfiguration"]) {
       assert.ok(blocked.some(item => item.code === "UnsupportedProperty" && item.path === `Properties.${property}`));
+    }
+    const disabledLifecycle = structuredClone(bucketProperties());
+    (disabledLifecycle.LifecycleConfiguration as any).Rules[0].Status = "Disabled";
+    assert.equal(bucketProvider.validate(disabledLifecycle, context()).length, 0);
+    for (const [label, lifecycle, expectedPath] of [
+      ["zero days", { Rules: [{ AbortIncompleteMultipartUpload: { DaysAfterInitiation: 0 }, Status: "Enabled" }] }, "DaysAfterInitiation"],
+      ["negative days", { Rules: [{ AbortIncompleteMultipartUpload: { DaysAfterInitiation: -1 }, Status: "Enabled" }] }, "DaysAfterInitiation"],
+      ["fractional days", { Rules: [{ AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1.5 }, Status: "Enabled" }] }, "DaysAfterInitiation"],
+      ["missing abort action", { Rules: [{ Status: "Enabled" }] }, "AbortIncompleteMultipartUpload"],
+      ["unknown abort member", { Rules: [{ AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7, Extra: true }, Status: "Enabled" }] }, "Extra"],
+      ["multiple rules", { Rules: [{ AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 }, Status: "Enabled" }, { AbortIncompleteMultipartUpload: { DaysAfterInitiation: 8 }, Status: "Disabled" }] }, "Rules"],
+      ["transition default", { Rules: [{ AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 }, Status: "Enabled" }], TransitionDefaultMinimumObjectSize: "all_storage_classes_128K" }, "TransitionDefaultMinimumObjectSize"],
+      ["expiration", { Rules: [{ AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 }, ExpirationInDays: 30, Status: "Enabled" }] }, "ExpirationInDays"],
+    ] as const) {
+      const properties = structuredClone(bucketProperties());
+      properties.LifecycleConfiguration = lifecycle as any;
+      assert.ok(bucketProvider.validate(properties, context()).some(item => item.path.endsWith(expectedPath)), `${label} must be rejected`);
     }
     const notificationProperties = bucketProperties("provider-notification-bucket");
     notificationProperties.NotificationConfiguration = {
@@ -287,6 +389,18 @@ test("S3 CloudFormation providers freeze the CDK subset and replacement/retentio
     assert.ok(policyIssues.some(item => item.path.endsWith(".Condition")));
     assert.throws(() => policyProvider.canonicalize(broadPolicy, context("FrontendBucketPolicy")), /s3:GetObject|Condition/);
 
+    const tlsOnly = tlsOnlyPolicyProperties("provider-react-site", "DenyInsecureTransport");
+    assert.equal(policyProvider.validate(tlsOnly, context("FrontendBucketPolicy")).length, 0);
+    const arrayAction = structuredClone(tlsOnly);
+    (arrayAction.PolicyDocument as any).Statement[0].Action = ["s3:*"];
+    assert.equal(policyProvider.validate(arrayAction, context("FrontendBucketPolicy")).length, 0, "singleton action arrays normalize to the exact set");
+    const booleanCondition = structuredClone(tlsOnly);
+    (booleanCondition.PolicyDocument as any).Statement[0].Condition.Bool["aws:SecureTransport"] = false;
+    assert.ok(policyProvider.validate(booleanCondition, context("FrontendBucketPolicy")).some(item => item.path.endsWith(".Condition")));
+    const duplicateTls = structuredClone(tlsOnly);
+    (duplicateTls.PolicyDocument as any).Statement.push(structuredClone((duplicateTls.PolicyDocument as any).Statement[0]));
+    assert.ok(policyProvider.validate(duplicateTls, context("FrontendBucketPolicy")).some(item => item.path.endsWith(".Statement")), "duplicate TLS roles must not form a supported profile");
+
     assert.deepEqual(S3_BUCKET_SCHEMA.retention.deletionPolicies, ["Delete", "Retain", "RetainExceptOnCreate"]);
     assert.deepEqual(S3_BUCKET_SCHEMA.retention.updateReplacePolicies, ["Delete", "Retain", "RetainExceptOnCreate"]);
     assert.deepEqual(S3_BUCKET_POLICY_SCHEMA.retention.deletionPolicies, ["Delete", "Retain", "RetainExceptOnCreate"]);
@@ -295,6 +409,53 @@ test("S3 CloudFormation providers freeze the CDK subset and replacement/retentio
   } finally {
     await simulator.stop().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("S3 bucket lifecycle provider aborts only eligible incomplete multipart uploads and honors disabled rules after restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-s3-lifecycle-"));
+  const clock = new TestClock(Date.parse("2026-08-01T00:00:00Z"));
+  const options = { port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "off" as const, clock };
+  let simulator = new StackSim(options);
+  let sdk: S3Client | undefined;
+  const bucketName = "provider-lifecycle-bucket";
+  try {
+    await simulator.start();
+    sdk = new S3Client({ endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials, forcePathStyle: true });
+    let provider = createS3BucketProvider(simulator.s3);
+    const properties = bucketProperties(bucketName);
+    delete properties.WebsiteConfiguration;
+    delete properties.CorsConfiguration;
+    const enabled = provider.canonicalize(properties, context("LifecycleBucket"));
+    assert.equal((await provider.create(enabled, context("LifecycleBucket"))).status, "SUCCESS");
+    await sdk.send(new PutObjectCommand({ Bucket: bucketName, Key: "complete.txt", Body: "complete" }));
+    const first = await sdk.send(new CreateMultipartUploadCommand({ Bucket: bucketName, Key: "incomplete.bin" }));
+    clock.advance(6 * 86_400_000);
+    await simulator.s3.runLifecycleNow();
+    assert.deepEqual((await sdk.send(new ListMultipartUploadsCommand({ Bucket: bucketName }))).Uploads?.map(upload => upload.UploadId), [first.UploadId]);
+
+    sdk.destroy(); sdk = undefined; await simulator.stop();
+    simulator = new StackSim(options); await simulator.start();
+    sdk = new S3Client({ endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials, forcePathStyle: true });
+    provider = createS3BucketProvider(simulator.s3);
+    clock.advance(86_400_000);
+    await simulator.s3.runLifecycleNow();
+    assert.equal((await sdk.send(new ListMultipartUploadsCommand({ Bucket: bucketName }))).Uploads?.length ?? 0, 0);
+    assert.equal((await sdk.send(new HeadObjectCommand({ Bucket: bucketName, Key: "complete.txt" }))).ContentLength, 8, "completed objects must be unaffected");
+
+    const disabledProperties = structuredClone(properties);
+    (disabledProperties.LifecycleConfiguration as any).Rules[0].Status = "Disabled";
+    const disabled = provider.canonicalize(disabledProperties, context("LifecycleBucket"));
+    assert.equal((await provider.update(bucketName, enabled, disabled, context("LifecycleBucket"))).status, "SUCCESS");
+    const second = await sdk.send(new CreateMultipartUploadCommand({ Bucket: bucketName, Key: "disabled.bin" }));
+    clock.advance(30 * 86_400_000);
+    await simulator.s3.runLifecycleNow();
+    assert.deepEqual((await sdk.send(new ListMultipartUploadsCommand({ Bucket: bucketName }))).Uploads?.map(upload => upload.UploadId), [second.UploadId]);
+    await sdk.send(new AbortMultipartUploadCommand({ Bucket: bucketName, Key: "disabled.bin", UploadId: second.UploadId }));
+    for (const version of await simulator.s3.listObjectVersionsInternal(bucketName)) await simulator.s3.deleteObjectVersionInternal(bucketName, version.key, version.versionId);
+    assert.equal((await provider.delete(bucketName, disabled, context("LifecycleBucket"))).status, "SUCCESS");
+  } finally {
+    sdk?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true });
   }
 });
 

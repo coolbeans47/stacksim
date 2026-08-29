@@ -36,7 +36,7 @@ import {
 } from "@aws-sdk/client-iam";
 import { GetFunctionCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { DescribeDBParameterGroupsCommand, RDSClient } from "@aws-sdk/client-rds";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { ListBucketsCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import {
   CDK_BOOTSTRAP_POLICY_NAME,
   cdkBootstrapNames,
@@ -189,6 +189,43 @@ test("CFN-18 rich GlobalTable create preauthorizes every recovery and settings a
       const events = await cloudformation.send(new DescribeStackEventsCommand({ StackName: created.StackId }));
       assert.ok(events.StackEvents?.some(event => event.LogicalResourceId === "RichTable" && event.ResourceStatus === "CREATE_FAILED" && (event.ResourceStatusReason ?? "").includes(missing)), `missing ${missing} was not reported`);
       await assert.rejects(dynamodb.send(new DescribeTableCommand({ TableName: tableName })), error => (error as any).name === "ResourceNotFoundException");
+      await iam.send(new PutRolePolicyCommand({ RoleName: roleName, PolicyName: CDK_BOOTSTRAP_POLICY_NAME, PolicyDocument: JSON.stringify(original) }));
+    }
+  } finally { clients.forEach(client => client.destroy()); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
+});
+
+test("CFN-19 S3 lifecycle create preauthorizes get and put lifecycle actions before bucket mutation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn19-s3-lifecycle-auth-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "enforce", cdkBootstrap: true });
+  const clients: Array<{ destroy(): void }> = [];
+  try {
+    await simulator.start(); const endpoint = `http://127.0.0.1:${simulator.port}`; const options = { endpoint, region, credentials, maxAttempts: 1 };
+    const cloudformation = new CloudFormationClient(options); const iam = new IAMClient(options); const s3 = new S3Client({ ...options, forcePathStyle: true }); clients.push(cloudformation, iam, s3);
+    const names = cdkBootstrapNames("000000000000", region); const roleName = names.roleNames.cloudFormationExecution;
+    const original = policyDocument((await iam.send(new GetRolePolicyCommand({ RoleName: roleName, PolicyName: CDK_BOOTSTRAP_POLICY_NAME }))).PolicyDocument);
+    for (const [position, missing] of ["s3:GetLifecycleConfiguration", "s3:PutLifecycleConfiguration"].entries()) {
+      const restricted = structuredClone(original);
+      for (const statement of restricted.Statement ?? []) {
+        const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+        statement.Action = actions.flatMap((action: unknown) => action === "s3:*LifecycleConfiguration"
+          ? [missing === "s3:GetLifecycleConfiguration" ? "s3:PutLifecycleConfiguration" : "s3:GetLifecycleConfiguration"]
+          : action === missing ? [] : [action]);
+      }
+      await iam.send(new PutRolePolicyCommand({ RoleName: roleName, PolicyName: CDK_BOOTSTRAP_POLICY_NAME, PolicyDocument: JSON.stringify(restricted) }));
+      const bucketName = `cfn19-denied-${position}`;
+      const template = JSON.stringify({ Resources: { FilesBucket: { Type: "AWS::S3::Bucket", Properties: {
+        BucketName: bucketName,
+        BucketEncryption: { ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" } }] },
+        LifecycleConfiguration: { Rules: [{ AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 }, Status: "Enabled" }] },
+        OwnershipControls: { Rules: [{ ObjectOwnership: "BucketOwnerEnforced" }] },
+        PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true },
+        VersioningConfiguration: { Status: "Enabled" },
+      } } } });
+      const created = await cloudformation.send(new CreateStackCommand({ StackName: `cfn19-denied-${position}`, TemplateBody: template, RoleARN: names.roleArns.cloudFormationExecution }));
+      await waitForStack(cloudformation, created.StackId!, "ROLLBACK_COMPLETE");
+      const events = await cloudformation.send(new DescribeStackEventsCommand({ StackName: created.StackId }));
+      assert.ok(events.StackEvents?.some(event => event.LogicalResourceId === "FilesBucket" && event.ResourceStatus === "CREATE_FAILED" && (event.ResourceStatusReason ?? "").includes(missing)), `missing ${missing} was not reported`);
+      assert.ok(!(await s3.send(new ListBucketsCommand({}))).Buckets?.some(bucket => bucket.Name === bucketName), `missing ${missing} must prevent bucket creation`);
       await iam.send(new PutRolePolicyCommand({ RoleName: roleName, PolicyName: CDK_BOOTSTRAP_POLICY_NAME, PolicyDocument: JSON.stringify(original) }));
     }
   } finally { clients.forEach(client => client.destroy()); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }

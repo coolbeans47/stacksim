@@ -171,6 +171,7 @@ function validateSupportedPolicy(bucket: unknown, value: unknown, context: Provi
   }
   const roleSet = [...roles].sort();
   const profile = same(roleSet, ["public-read"])
+    || same(roleSet, ["tls-deny"])
     || same(roleSet, ["auto-delete"])
     || same(roleSet, ["auto-delete", "tls-deny"])
     || same(roleSet, ["auto-delete", "public-read"])

@@ -127,7 +127,7 @@ test("bootstrap manager creates the reduced CDK contract durably and idempotentl
     ].sort());
     assert.deepEqual(actions(executionDocument, "ManageApplicationBuckets"), [
       "s3:CreateBucket", "s3:DeleteBucket", "s3:DeleteBucketPolicy", "s3:DeleteBucketTagging", "s3:DeleteBucketWebsite",
-      "s3:GetBucketLocation", "s3:GetBucketOwnershipControls", "s3:GetBucketPolicy", "s3:GetBucketPublicAccessBlock", "s3:GetBucketTagging", "s3:GetBucketVersioning", "s3:GetBucketWebsite", "s3:GetEncryptionConfiguration", "s3:HeadBucket",
+      "s3:*LifecycleConfiguration", "s3:GetBucketLocation", "s3:GetBucketOwnershipControls", "s3:GetBucketPolicy", "s3:GetBucketPublicAccessBlock", "s3:GetBucketTagging", "s3:GetBucketVersioning", "s3:GetBucketWebsite", "s3:GetEncryptionConfiguration", "s3:HeadBucket",
       "s3:PutBucketEncryption", "s3:PutBucketOwnershipControls", "s3:PutBucketPolicy", "s3:PutBucketPublicAccessBlock", "s3:PutBucketTagging", "s3:PutBucketVersioning", "s3:PutBucketWebsite",
     ].sort());
     assert.deepEqual(actions(executionDocument, "ManageLogGroups"), [

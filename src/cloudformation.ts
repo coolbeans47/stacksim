@@ -3451,12 +3451,13 @@ export class CloudFormationService {
     } else if (typeName === SECRETS_MANAGER_SECRET_TARGET_ATTACHMENT_TYPE) {
       add(...SECRETS_MANAGER_SECRET_TARGET_ATTACHMENT_AUTHORIZATION_MATRIX[operation]);
     } else if (typeName === "AWS::S3::Bucket") {
-      add("s3:HeadBucket", "s3:GetBucketLocation", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketTagging", "s3:GetBucketPublicAccessBlock", "s3:GetBucketOwnershipControls", "s3:GetBucketWebsite");
+      add("s3:HeadBucket", "s3:GetBucketLocation", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketTagging", "s3:GetBucketPublicAccessBlock", "s3:GetBucketOwnershipControls", "s3:GetBucketWebsite", "s3:GetLifecycleConfiguration");
       if (create) add("s3:CreateBucket", "s3:PutBucketEncryption", "s3:PutBucketTagging", "s3:PutBucketVersioning");
       if (update) add("s3:PutBucketEncryption", "s3:PutBucketTagging", "s3:DeleteBucketTagging", "s3:PutBucketVersioning", "s3:PutBucketPublicAccessBlock", "s3:PutBucketOwnershipControls", "s3:PutBucketWebsite", "s3:DeleteBucketWebsite");
       if (create && properties.PublicAccessBlockConfiguration !== undefined) add("s3:PutBucketPublicAccessBlock");
       if (create && properties.OwnershipControls !== undefined) add("s3:PutBucketOwnershipControls");
       if (create && properties.WebsiteConfiguration !== undefined) add("s3:PutBucketWebsite");
+      if (update || create && properties.LifecycleConfiguration !== undefined) add("s3:PutLifecycleConfiguration");
       if (properties.CorsConfiguration !== undefined) {
         add("s3:GetBucketCORS");
         if (create || update) add("s3:PutBucketCORS");

@@ -1,0 +1,47 @@
+{
+  "Type": "AWS::S3::BucketPolicy",
+  "Properties": {
+    "Bucket": {
+      "Ref": "FilesBucket759C181F"
+    },
+    "PolicyDocument": {
+      "Statement": [
+        {
+          "Action": "s3:*",
+          "Condition": {
+            "Bool": {
+              "aws:SecureTransport": "false"
+            }
+          },
+          "Effect": "Deny",
+          "Principal": {
+            "AWS": "*"
+          },
+          "Resource": [
+            {
+              "Fn::GetAtt": [
+                "FilesBucket759C181F",
+                "Arn"
+              ]
+            },
+            {
+              "Fn::Join": [
+                "",
+                [
+                  {
+                    "Fn::GetAtt": [
+                      "FilesBucket759C181F",
+                      "Arn"
+                    ]
+                  },
+                  "/*"
+                ]
+              ]
+            }
+          ]
+        }
+      ],
+      "Version": "2012-10-17"
+    }
+  }
+}

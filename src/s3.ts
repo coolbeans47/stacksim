@@ -726,6 +726,30 @@ export class S3Service {
     return canonicalBucketState(located.bucket);
   }
 
+  /** Replace a bucket's lifecycle configuration through the authoritative S3 parser and scheduler. */
+  async putBucketLifecycleInternal(name: string, xml: string): Promise<S3BucketState> {
+    await this.start();
+    if (Buffer.byteLength(xml, "utf8") > 1024 * 1024) throw new AwsError("MalformedXML", "The lifecycle document is too large", 400);
+    const located = this.requireBucket(name);
+    if (located.bucket.managedBy) throw new AwsError("AccessDenied", "Simulator-managed bootstrap buckets cannot have application lifecycle configuration", 403);
+    located.bucket.lifecycleConfiguration = this.parseLifecycle(xml);
+    await this.store.save();
+    await this.runLifecycleBucket(located);
+    return canonicalBucketState(located.bucket);
+  }
+
+  /** Remove a bucket's lifecycle configuration, converging when it is already absent. */
+  async deleteBucketLifecycleInternal(name: string): Promise<S3BucketState> {
+    await this.start();
+    const located = this.requireBucket(name);
+    if (located.bucket.managedBy) throw new AwsError("AccessDenied", "Simulator-managed bootstrap buckets cannot have application lifecycle configuration", 403);
+    if (located.bucket.lifecycleConfiguration !== undefined) {
+      delete located.bucket.lifecycleConfiguration;
+      await this.store.save();
+    }
+    return canonicalBucketState(located.bucket);
+  }
+
   /** Delete an empty application bucket; versions and uploads truthfully conflict. */
   async deleteBucketInternal(name: string): Promise<void> {
     await this.start();

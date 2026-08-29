@@ -68,6 +68,13 @@ export interface S3NotificationConfigurationModel {
   readonly LambdaConfigurations: readonly S3LambdaNotificationModel[];
 }
 
+export interface S3LifecycleConfigurationModel {
+  readonly Rules: readonly [{
+    readonly AbortIncompleteMultipartUpload: { readonly DaysAfterInitiation: number };
+    readonly Status: "Enabled" | "Disabled";
+  }];
+}
+
 export interface S3BucketModel {
   readonly BucketName: string;
   readonly BucketEncryption: S3BucketEncryptionModel;
@@ -78,6 +85,7 @@ export interface S3BucketModel {
   readonly WebsiteConfiguration?: S3WebsiteConfigurationModel;
   readonly CorsConfiguration?: S3CorsConfigurationModel;
   readonly NotificationConfiguration?: S3NotificationConfigurationModel;
+  readonly LifecycleConfiguration?: S3LifecycleConfigurationModel;
 }
 
 const AES256_ENCRYPTION: S3BucketEncryptionModel = Object.freeze({
@@ -99,6 +107,7 @@ export const S3_BUCKET_SCHEMA: ProviderSchema = Object.freeze({
     WebsiteConfiguration: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
     CorsConfiguration: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
     NotificationConfiguration: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
+    LifecycleConfiguration: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
   }),
   ref: Object.freeze({ supported: true, valueType: "string", description: "Bucket name" }),
   attributes: Object.freeze({
@@ -266,6 +275,32 @@ function validateNotification(value: unknown, issues: ProviderValidationIssue[])
   }
 }
 
+function validateLifecycle(value: unknown, issues: ProviderValidationIssue[]): void {
+  const path = "Properties.LifecycleConfiguration";
+  if (!isRecord(value)) return;
+  exactKeys(value, ["Rules"], path, issues);
+  if (!Array.isArray(value.Rules) || value.Rules.length !== 1 || !isRecord(value.Rules[0])) {
+    issue(issues, `${path}.Rules`, "Exactly one abort-incomplete-multipart-upload lifecycle rule is required");
+    return;
+  }
+  const rule = value.Rules[0];
+  const rulePath = `${path}.Rules.0`;
+  exactKeys(rule, ["AbortIncompleteMultipartUpload", "Status"], rulePath, issues);
+  if (rule.Status !== "Enabled" && rule.Status !== "Disabled") {
+    issue(issues, `${rulePath}.Status`, "Status must be Enabled or Disabled");
+  }
+  const abortPath = `${rulePath}.AbortIncompleteMultipartUpload`;
+  if (!isRecord(rule.AbortIncompleteMultipartUpload)) {
+    issue(issues, abortPath, "AbortIncompleteMultipartUpload must be an object");
+    return;
+  }
+  exactKeys(rule.AbortIncompleteMultipartUpload, ["DaysAfterInitiation"], abortPath, issues);
+  const days = rule.AbortIncompleteMultipartUpload.DaysAfterInitiation;
+  if (!Number.isSafeInteger(days) || (days as number) < 1) {
+    issue(issues, `${abortPath}.DaysAfterInitiation`, "DaysAfterInitiation must be a positive safe integer");
+  }
+}
+
 function validateBucketProperties(properties: unknown): ProviderValidationIssue[] {
   const issues = validateDeclaredProperties(properties ?? {}, S3_BUCKET_SCHEMA);
   if (!isRecord(properties)) return issues;
@@ -280,6 +315,7 @@ function validateBucketProperties(properties: unknown): ProviderValidationIssue[
   if (properties.WebsiteConfiguration !== undefined) validateWebsite(properties.WebsiteConfiguration, issues);
   if (properties.CorsConfiguration !== undefined) validateCors(properties.CorsConfiguration, issues);
   if (properties.NotificationConfiguration !== undefined) validateNotification(properties.NotificationConfiguration, issues);
+  if (properties.LifecycleConfiguration !== undefined) validateLifecycle(properties.LifecycleConfiguration, issues);
   return issues;
 }
 
@@ -331,6 +367,16 @@ function canonicalNotification(value: unknown): S3NotificationConfigurationModel
   };
 }
 
+function canonicalLifecycle(value: unknown): S3LifecycleConfigurationModel | undefined {
+  if (!isRecord(value) || !Array.isArray(value.Rules) || !isRecord(value.Rules[0]) || !isRecord(value.Rules[0].AbortIncompleteMultipartUpload)) return undefined;
+  return {
+    Rules: [{
+      AbortIncompleteMultipartUpload: { DaysAfterInitiation: Number(value.Rules[0].AbortIncompleteMultipartUpload.DaysAfterInitiation) },
+      Status: String(value.Rules[0].Status) as "Enabled" | "Disabled",
+    }],
+  };
+}
+
 function canonicalBucket(properties: Record<string, unknown>, context: ProviderContext): S3BucketModel {
   const versioning = isRecord(properties.VersioningConfiguration)
     ? { Status: String(properties.VersioningConfiguration.Status) as "Enabled" | "Suspended" }
@@ -340,6 +386,7 @@ function canonicalBucket(properties: Record<string, unknown>, context: ProviderC
   const website = canonicalWebsite(properties.WebsiteConfiguration);
   const cors = canonicalCors(properties.CorsConfiguration);
   const notification = canonicalNotification(properties.NotificationConfiguration);
+  const lifecycle = canonicalLifecycle(properties.LifecycleConfiguration);
   return {
     BucketName: String(properties.BucketName ?? generatedS3BucketName(context)),
     BucketEncryption: AES256_ENCRYPTION,
@@ -350,7 +397,19 @@ function canonicalBucket(properties: Record<string, unknown>, context: ProviderC
     ...(website ? { WebsiteConfiguration: website } : {}),
     ...(cors ? { CorsConfiguration: cors } : {}),
     ...(notification ? { NotificationConfiguration: notification } : {}),
+    ...(lifecycle ? { LifecycleConfiguration: lifecycle } : {}),
   };
+}
+
+function lifecycleXml(model: S3LifecycleConfigurationModel): string {
+  const rule = model.Rules[0];
+  return `<LifecycleConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><Status>${rule.Status}</Status><AbortIncompleteMultipartUpload><DaysAfterInitiation>${rule.AbortIncompleteMultipartUpload.DaysAfterInitiation}</DaysAfterInitiation></AbortIncompleteMultipartUpload></Rule></LifecycleConfiguration>`;
+}
+
+async function applyLifecycle(s3: S3Service, bucketName: string, model: S3LifecycleConfigurationModel | undefined): Promise<S3BucketState> {
+  return model
+    ? s3.putBucketLifecycleInternal(bucketName, lifecycleXml(model))
+    : s3.deleteBucketLifecycleInternal(bucketName);
 }
 
 function notificationState(model: S3BucketModel): NonNullable<S3BucketState["notificationConfiguration"]> {
@@ -422,6 +481,27 @@ function modelFromState(state: S3BucketState): S3BucketModel {
     Event: event,
     Function: item.arn,
   })));
+  let lifecycle: S3LifecycleConfigurationModel | undefined;
+  if (state.lifecycleConfiguration) {
+    const rules = state.lifecycleConfiguration.rules;
+    const rule = rules[0];
+    const exactAbortProfile = rules.length === 1 && rule !== undefined
+      && rule.id === undefined && rule.prefix === "" && Object.keys(rule.tags).length === 0
+      && rule.objectSizeGreaterThan === undefined && rule.objectSizeLessThan === undefined
+      && rule.expirationDays === undefined && rule.expirationDate === undefined && rule.expiredObjectDeleteMarker === undefined
+      && rule.transitions.length === 0 && rule.noncurrentExpirationDays === undefined && rule.newerNoncurrentVersions === undefined
+      && rule.noncurrentTransitions.length === 0 && Number.isSafeInteger(rule.abortIncompleteMultipartUploadDays)
+      && (rule.abortIncompleteMultipartUploadDays ?? 0) >= 1;
+    if (!exactAbortProfile) {
+      throw new AwsError("InvalidBucketState", `Bucket ${state.name} has lifecycle configuration outside the supported CloudFormation abort-incomplete-multipart-upload profile`, 409);
+    }
+    lifecycle = {
+      Rules: [{
+        AbortIncompleteMultipartUpload: { DaysAfterInitiation: rule.abortIncompleteMultipartUploadDays! },
+        Status: rule.status,
+      }],
+    };
+  }
   return {
     BucketName: state.name,
     BucketEncryption: AES256_ENCRYPTION,
@@ -433,6 +513,7 @@ function modelFromState(state: S3BucketState): S3BucketModel {
     ...(extended.website ? { WebsiteConfiguration: { IndexDocument: extended.website.indexDocument, ...(extended.website.errorDocument ? { ErrorDocument: extended.website.errorDocument } : {}) } } : {}),
     ...(extended.corsConfiguration ? { CorsConfiguration: { CorsRules: extended.corsConfiguration.map(rule => ({ AllowedHeaders: rule.allowedHeaders, AllowedMethods: rule.allowedMethods, AllowedOrigins: rule.allowedOrigins })) } } : {}),
     ...(lambdaConfigurations.length ? { NotificationConfiguration: { LambdaConfigurations: lambdaConfigurations } } : {}),
+    ...(lifecycle ? { LifecycleConfiguration: lifecycle } : {}),
   };
 }
 
@@ -491,7 +572,7 @@ export function createS3BucketProvider(s3: S3Service): ProductionResourceProvide
 
     plan(previous: S3BucketModel | undefined, desired: S3BucketModel): ProviderPlan<S3BucketModel> {
       if (!previous) return { action: "CREATE", desired, changedProperties: Object.keys(desired).sort(), replacementProperties: [] };
-      const fields = ["BucketName", "BucketEncryption", "VersioningConfiguration", "OwnershipControls", "PublicAccessBlockConfiguration", "Tags", "WebsiteConfiguration", "CorsConfiguration", "NotificationConfiguration"] as const;
+      const fields = ["BucketName", "BucketEncryption", "VersioningConfiguration", "OwnershipControls", "PublicAccessBlockConfiguration", "Tags", "WebsiteConfiguration", "CorsConfiguration", "NotificationConfiguration", "LifecycleConfiguration"] as const;
       const changed = fields.filter(field => !same(previous[field], desired[field]));
       if (!changed.length) return { action: "NO_OP", desired, changedProperties: [], replacementProperties: [] };
       if (changed.includes("BucketName")) {
@@ -511,15 +592,21 @@ export function createS3BucketProvider(s3: S3Service): ProductionResourceProvide
           // drifted same-name bucket, this lets the backing service repair an
           // interrupted state-first creation whose empty index was not yet
           // durably written.
-          const created = await s3.createBucketInternal(inputFor(desired, context));
-          return success(s3, desired.NotificationConfiguration
+          await s3.createBucketInternal(inputFor(desired, context));
+          await applyLifecycle(s3, desired.BucketName, desired.LifecycleConfiguration);
+          const created = desired.NotificationConfiguration
             ? await s3.putBucketNotificationInternal(desired.BucketName, notificationState(desired))
-            : created);
+            : await s3.readBucketInternal(desired.BucketName);
+          if (!created) throw new AwsError("NoSuchBucket", `Bucket ${desired.BucketName} no longer exists`, 404);
+          return success(s3, created);
         }
-        const created = await s3.createBucketInternal(inputFor(desired, context));
-        return success(s3, desired.NotificationConfiguration
+        await s3.createBucketInternal(inputFor(desired, context));
+        await applyLifecycle(s3, desired.BucketName, desired.LifecycleConfiguration);
+        const created = desired.NotificationConfiguration
           ? await s3.putBucketNotificationInternal(desired.BucketName, notificationState(desired))
-          : created);
+          : await s3.readBucketInternal(desired.BucketName);
+        if (!created) throw new AwsError("NoSuchBucket", `Bucket ${desired.BucketName} no longer exists`, 404);
+        return success(s3, created);
       } catch (error) {
         return failed(error);
       }
@@ -545,10 +632,13 @@ export function createS3BucketProvider(s3: S3Service): ProductionResourceProvide
         if (!state) return { status: "FAILED", errorCode: "NoSuchBucket", message: `Bucket ${physicalId} no longer exists` };
         if (!owned(state, context)) return ownershipFailure(physicalId);
         const { name: _name, ...configuration } = inputFor(desired, context);
-        const updated = await s3.updateBucketInternal(physicalId, configuration);
-        return success(s3, desired.NotificationConfiguration || previous.NotificationConfiguration
+        await s3.updateBucketInternal(physicalId, configuration);
+        await applyLifecycle(s3, physicalId, desired.LifecycleConfiguration);
+        const updated = desired.NotificationConfiguration || previous.NotificationConfiguration
           ? await s3.putBucketNotificationInternal(physicalId, notificationState(desired))
-          : updated);
+          : await s3.readBucketInternal(physicalId);
+        if (!updated) throw new AwsError("NoSuchBucket", `Bucket ${physicalId} no longer exists`, 404);
+        return success(s3, updated);
       } catch (error) {
         return failed(error);
       }

@@ -169,6 +169,7 @@ Each showcase deploys through ordinary tools and is intended to be read, changed
 | --- | --- |
 | [AWS CLI cookbook](docs/aws-cli-cookbook.md) | Installation and local profile setup, followed by practical AWS CLI recipes for every StackSim-supported service family. |
 | [Developer guide](docs/developer-guide.md) | A hands-on TypeScript walkthrough for creating, deploying, and testing a CDK notes API backed by Lambda and DynamoDB. |
+| [AWS-first CDK guide](docs/cdk-guide.md) | A beginner-friendly explanation of CDK bootstrap plus a reusable pattern for keeping CDK projects AWS-compatible while enabling an explicit StackSim local mode. |
 | [Amplify Todo guide](examples/amplify-todo/README.md) | End-to-end setup for the pinned Amplify Gen 2 Data example, including deployment, watch mode, deletion, local TLS, inspection, and troubleshooting. |
 | [Amplify compatibility design](docs/designs/amplify-design.md) | Evidence-backed requirements, implemented boundaries, verification gates, and planned Amplify Gen 2 capability slices. |
 | [Detailed implementation reference](docs/reference.md) | Complete implementation notes, service examples, SDK usage, endpoints, persistence, authentication, configuration, scope, and project layout. |

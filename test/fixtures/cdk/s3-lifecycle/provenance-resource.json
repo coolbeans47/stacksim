@@ -1,0 +1,58 @@
+{
+  "Type": "AWS::S3::Bucket",
+  "Properties": {
+    "BucketEncryption": {
+      "ServerSideEncryptionConfiguration": [
+        {
+          "ServerSideEncryptionByDefault": {
+            "SSEAlgorithm": "AES256"
+          }
+        }
+      ]
+    },
+    "LifecycleConfiguration": {
+      "Rules": [
+        {
+          "AbortIncompleteMultipartUpload": {
+            "DaysAfterInitiation": 7
+          },
+          "Status": "Enabled"
+        }
+      ]
+    },
+    "OwnershipControls": {
+      "Rules": [
+        {
+          "ObjectOwnership": "BucketOwnerEnforced"
+        }
+      ]
+    },
+    "PublicAccessBlockConfiguration": {
+      "BlockPublicAcls": true,
+      "BlockPublicPolicy": true,
+      "IgnorePublicAcls": true,
+      "RestrictPublicBuckets": true
+    },
+    "Tags": [
+      {
+        "Key": "Application",
+        "Value": "StackSimShipments"
+      },
+      {
+        "Key": "DataClassification",
+        "Value": "Confidential"
+      },
+      {
+        "Key": "Environment",
+        "Value": "dev"
+      },
+      {
+        "Key": "ManagedBy",
+        "Value": "CDK"
+      }
+    ],
+    "VersioningConfiguration": {
+      "Status": "Enabled"
+    }
+  }
+}

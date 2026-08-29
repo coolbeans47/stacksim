@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CloudFormationClient, DeleteStackCommand, ListExportsCommand, ListImportsCommand, ListStacksCommand } from "@aws-sdk/client-cloudformation";
 import { DescribeContinuousBackupsCommand, DescribeTableCommand, DynamoDBClient, PutItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
-import { HeadObjectCommand, ListObjectVersionsCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetBucketLifecycleConfigurationCommand, HeadObjectCommand, ListBucketsCommand, ListObjectVersionsCommand, S3Client } from "@aws-sdk/client-s3";
 import { StackSim } from "../src/server.js";
 import { CLOUDFORMATION_SUPPORTED_ACTIONS } from "../src/cloudformation.js";
 import { semanticCdkAssemblyDigests } from "./support/artifact-snapshots.js";
@@ -37,6 +37,7 @@ const sourceRoot = process.cwd();
 const fixture = join(sourceRoot, "test", "fixtures", "cdk", "empty-stack");
 const multiStackFixture = join(sourceRoot, "test", "fixtures", "cdk", "multi-stack");
 const tableV2Fixture = join(sourceRoot, "test", "fixtures", "cdk", "table-v2");
+const s3LifecycleFixture = join(sourceRoot, "test", "fixtures", "cdk", "s3-lifecycle");
 const cfn17InvalidFixture = join(sourceRoot, "test", "fixtures", "cdk", "cfn17-invalid-table");
 const tripwire = join(sourceRoot, "test", "fixtures", "cdk", "network-tripwire.cjs");
 const region = "eu-west-1";
@@ -508,6 +509,41 @@ test("CFN-18 unmodified default CDK deploys, restarts, no-ops, queries, and dest
     await assert.rejects(dynamodb!.send(new DescribeTableCommand({ TableName: "stacksim-shipments-dev-auth" })), error => (error as any).name === "ResourceNotFoundException");
     assert.ok(!calls.some(call => !["127.0.0.1", "localhost"].some(host => call.host.startsWith(host))), "all CDK traffic must remain local");
   } finally { dynamodb?.destroy(); await proxy?.close().catch(() => undefined); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
+});
+
+test("CFN-19/20 unmodified default CDK deploys, enforces TLS policy, restarts, no-ops, and destroys the portable S3 fixture", { timeout: 900_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cdk-s3-lifecycle-deploy-"));
+  let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: join(root, "data"), region, authMode: "enforce", cdkBootstrap: true });
+  let proxy: Awaited<ReturnType<typeof tracingProxy>> | undefined; let s3: S3Client | undefined; let command = "startup"; const calls: AwsCall[] = [];
+  let env: NodeJS.ProcessEnv; let bucketName: string;
+  const connect = async () => {
+    await simulator.start(); proxy = await tracingProxy(simulator.port, calls, () => command); env = { ...localCdkEnvironment(proxy.endpoint, root), CDK_DEFAULT_ACCOUNT: "000000000000", CDK_DEFAULT_REGION: region };
+    s3 = new S3Client({ endpoint: proxy.endpoint, region, credentials: { accessKeyId: "admin", secretAccessKey: "password" }, forcePathStyle: true, maxAttempts: 1 });
+  };
+  try {
+    await connect();
+    command = "s3-lifecycle-create";
+    const created = await runCdk(["--output", join(root, "create.out"), "deploy", "S3LifecycleFixture", "--require-approval", "never"], env!, cdkCommandTimeoutMs, s3LifecycleFixture);
+    assert.equal(created.code, 0, `${created.stdout}\n${created.stderr}\ntrace=${JSON.stringify(calls.filter(call => call.command === command), null, 2)}`);
+    bucketName = (await s3!.send(new ListBucketsCommand({}))).Buckets?.map(bucket => bucket.Name!).find(name => !name.startsWith("cdk-hnb659fds-assets-"))!;
+    assert.ok(bucketName);
+    await assert.rejects(s3!.send(new GetBucketLifecycleConfigurationCommand({ Bucket: bucketName })), error => (error as any).$metadata?.httpStatusCode === 403, "TLS-only policy must deny direct HTTP S3 calls");
+    assert.equal((await simulator.s3.readBucketInternal(bucketName))?.lifecycleConfiguration?.rules[0].abortIncompleteMultipartUploadDays, 7);
+    assert.deepEqual((await simulator.s3.readBucketPolicyInternal(bucketName) as any)?.Statement?.[0]?.Condition, { Bool: { "aws:SecureTransport": "false" } });
+
+    s3!.destroy(); s3 = undefined; await proxy!.close(); proxy = undefined; await simulator.stop();
+    simulator = new StackSim({ port: 0, invokePort: 0, dataDir: join(root, "data"), region, authMode: "enforce", cdkBootstrap: true }); await connect();
+    command = "s3-lifecycle-noop-after-restart";
+    const noOp = await runCdk(["--output", join(root, "noop.out"), "deploy", "S3LifecycleFixture", "--require-approval", "never"], env!, cdkCommandTimeoutMs, s3LifecycleFixture);
+    assert.equal(noOp.code, 0, `${noOp.stdout}\n${noOp.stderr}\ntrace=${JSON.stringify(calls.filter(call => call.command === command), null, 2)}`); assert.match(`${noOp.stdout}\n${noOp.stderr}`, /no changes/i);
+    assert.equal((await simulator.s3.readBucketInternal(bucketName!))?.lifecycleConfiguration?.rules[0].status, "Enabled");
+
+    command = "s3-lifecycle-destroy";
+    const destroyed = await runCdk(["--output", join(root, "destroy.out"), "destroy", "S3LifecycleFixture", "--force"], env!, cdkCommandTimeoutMs, s3LifecycleFixture);
+    assert.equal(destroyed.code, 0, `${destroyed.stdout}\n${destroyed.stderr}\ntrace=${JSON.stringify(calls.filter(call => call.command === command), null, 2)}`);
+    await assert.rejects(s3!.send(new GetBucketLifecycleConfigurationCommand({ Bucket: bucketName! })), error => (error as any).name === "NoSuchBucket");
+    assert.ok(!calls.some(call => !["127.0.0.1", "localhost"].some(host => call.host.startsWith(host))), "all CDK traffic must remain local");
+  } finally { s3?.destroy(); await proxy?.close().catch(() => undefined); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
 });
 
 test("CFN-17 unmodified CDK renders both production-provider validation events without bootstrap advice", { timeout: 600_000 }, async () => {
