@@ -8,6 +8,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { normalizeIamState } from "./iam/model.js";
 import { emptySesRegionState } from "./migrations/v51-to-v52.js";
 import { emptyCognitoRegionState } from "./migrations/v52-to-v53.js";
+import { emptyCognitoIdentityRegionState } from "./migrations/v88-to-v89.js";
 import { emptySes04State } from "./migrations/v67-to-v68.js";
 import type { IamCredentialStore } from "./iam/credentials.js";
 import { emptyCloudFrontAccountState } from "./migrations/v87-to-v88.js";
@@ -112,6 +113,13 @@ export class StateStore {
           if (!region.cognito.admissions) { region.cognito.admissions = {}; normalized = true; }
           if (!Array.isArray(region.cognito.audit)) { region.cognito.audit = []; normalized = true; }
           if (!region.cognito.domainIndex) { region.cognito.domainIndex = {}; normalized = true; }
+        }
+        if (!region.cognitoIdentity) { region.cognitoIdentity = emptyCognitoIdentityRegionState(); normalized = true; }
+        else {
+          const identityDefaults = emptyCognitoIdentityRegionState();
+          if (region.cognitoIdentity.revision === undefined) { region.cognitoIdentity.revision = identityDefaults.revision; normalized = true; }
+          if (!region.cognitoIdentity.pools) { region.cognitoIdentity.pools = {}; normalized = true; }
+          if (!region.cognitoIdentity.rateBuckets) { region.cognitoIdentity.rateBuckets = {}; normalized = true; }
         }
         if (!region.sns) { region.sns = { revision: 0, topics: {}, subscriptions: {} }; normalized = true; }
         if (!region.rdsDbInstances) { region.rdsDbInstances = {}; normalized = true; }

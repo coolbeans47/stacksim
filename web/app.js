@@ -20,6 +20,7 @@ import { metadata as eventbridgeMetadata, routeEventBridge } from "./services/ev
 import { metadata as cloudformationMetadata, routeCloudFormation } from "./services/cloudformation.js";
 import { metadata as sesMetadata, routeSes } from "./services/ses.js";
 import { metadata as cognitoMetadata, routeCognito } from "./services/cognito.js";
+import { metadata as cognitoIdentityMetadata, routeCognitoIdentity } from "./services/cognito-identity.js";
 import { metadata as parameterStoreMetadata, routeParameterStore } from "./services/parameter-store.js";
 import { metadata as secretsManagerMetadata, routeSecretsManager } from "./services/secrets-manager.js";
 import { metadata as appsyncMetadata, routeAppSync } from "./services/appsync.js";
@@ -49,6 +50,7 @@ const serviceMeta = {
   cloudformation: cloudformationMetadata,
   ses: sesMetadata,
   cognito: cognitoMetadata,
+  "cognito-identity": cognitoIdentityMetadata,
   "systems-manager": parameterStoreMetadata,
   "secrets-manager": secretsManagerMetadata,
   appsync: appsyncMetadata,
@@ -208,6 +210,7 @@ async function route(focus = true) {
     else if (parts[0] === "eventbridge") await routeEventBridge(parts, serviceContext);
     else if (parts[0] === "cloudformation") await routeCloudFormation(parts, serviceContext);
     else if (parts[0] === "ses") await routeSes(parts, serviceContext);
+    else if (parts[0] === "cognito-identity") await routeCognitoIdentity(parts, serviceContext);
     else if (parts[0] === "cognito") await routeCognito(parts, serviceContext);
     else if (parts[0] === "systems-manager") await routeParameterStore(parts, serviceContext);
     else if (parts[0] === "secrets-manager") await routeSecretsManager(parts, serviceContext);

@@ -1562,6 +1562,19 @@ export interface LocalCredentialState {
   /** Present on normalized/new sessions; optional only for legacy in-memory fixtures. */
   transitiveTagKeys?: string[];
   lambdaLineage?: string[];
+  /**
+   * Independent session-policy documents evaluated as AND layers.
+   * Guest Cognito Identity credentials store the two frozen unauthenticated
+   * session policies here so they are not merged into one Allow-union document.
+   */
+  sessionPolicies?: PolicyDocument[];
+  cognitoIdentity?: {
+    identityPoolId: string;
+    identityId: string;
+    authClass: "authenticated" | "unauthenticated";
+    provider: string;
+    roleArn: string;
+  };
 }
 
 export interface AuthorizationDecisionState { time: number; requestId: string; principalArn: string; action: string; resource: string; decision: "allowed" | "implicitDeny" | "explicitDeny"; reason: string }
@@ -3179,6 +3192,50 @@ export interface CognitoRegionState {
   domainIndex: Record<string, string>;
 }
 
+export interface CognitoIdentityProviderBindingState {
+  providerName: string;
+  clientId: string;
+  serverSideTokenCheck: boolean;
+}
+
+export interface CognitoIdentityRecordState {
+  identityId: string;
+  identityPoolId: string;
+  createdAt: number;
+  updatedAt: number;
+  /** Provider name → provider subject. Tokens are never persisted. */
+  logins: Record<string, string>;
+  authClass: "authenticated" | "unauthenticated";
+}
+
+export interface CognitoIdentityPoolState {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  allowUnauthenticatedIdentities: boolean;
+  allowClassicFlow: false;
+  cognitoIdentityProviders: CognitoIdentityProviderBindingState[];
+  roles?: {
+    authenticated?: string;
+    unauthenticated?: string;
+  };
+  tags: Record<string, string>;
+  identities: Record<string, CognitoIdentityRecordState>;
+  /** `${providerName}\0${subject}` → Identity ID */
+  loginIndex: Record<string, string>;
+}
+
+export interface CognitoIdentityRateBucketState {
+  timestamps: number[];
+}
+
+export interface CognitoIdentityRegionState {
+  revision: number;
+  pools: Record<string, CognitoIdentityPoolState>;
+  rateBuckets: Record<string, CognitoIdentityRateBucketState>;
+}
+
 export interface SnsMessageAttributeState {
   dataType: string;
   stringValue?: string;
@@ -3703,6 +3760,7 @@ export interface RegionState {
   xray: XRayRegionState;
   ses: SesRegionState;
   cognito: CognitoRegionState;
+  cognitoIdentity: CognitoIdentityRegionState;
   sns: SnsRegionState;
   rdsDbInstances: Record<string, RdsDbInstanceState>;
   rdsDbParameterGroups: Record<string, RdsDbParameterGroupState>;

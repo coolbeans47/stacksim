@@ -412,6 +412,31 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
         ? `arn:${partition}:cognito-idp:${region}:${accountId}:userpool/${userPoolId}`
         : "*";
   }
+  else if (service === "cognito-identity") {
+    action = `cognito-identity:${operation}`;
+    const partition = region.startsWith("cn-") ? "aws-cn" : region.startsWith("us-gov-") ? "aws-us-gov" : "aws";
+    const resourceArn = input.ResourceArn;
+    const identityPoolId = input.IdentityPoolId;
+    resource = typeof resourceArn === "string"
+      ? resourceArn
+      : ["CreateIdentityPool", "ListIdentityPools"].includes(operation)
+        ? "*"
+        : typeof identityPoolId === "string"
+          ? `arn:${partition}:cognito-identity:${region}:${accountId}:identitypool/${identityPoolId}`
+          : "*";
+    if (operation === "SetIdentityPoolRoles" && input.Roles && typeof input.Roles === "object") {
+      for (const roleArn of [input.Roles.authenticated, input.Roles.unauthenticated]) {
+        if (typeof roleArn === "string" && roleArn) {
+          additionalTargets.push({
+            action: "iam:PassRole",
+            resource: roleArn,
+            operation: "PassRole",
+            context: { "iam:PassedToService": "cognito-identity.amazonaws.com" },
+          });
+        }
+      }
+    }
+  }
   else if (service === "logs") { action = `logs:${operation}`; if (input.logGroupName) resource = `arn:aws:logs:${region}:${accountId}:log-group:${input.logGroupName}${input.logStreamName ? `:log-stream:${input.logStreamName}` : ":*"}`; else if (input.resourceArn) resource = input.resourceArn; else if (input.destinationName) resource = `arn:aws:logs:${region}:${accountId}:destination:${input.destinationName}`; }
   else if (service === "lambda") {
     const tagArn = url.pathname.match(/^\/2017-03-31\/tags\/(.+)$/)?.[1]; const accountSettings = url.pathname === "/2016-08-19/account-settings"; const layerMatch = url.pathname.match(/^\/2018-10-31\/layers(?:\/([^/]+)\/versions(?:\/(\d+)(?:\/policy(?:\/([^/]+))?)?)?)?$/); const codeSigningMatch = url.pathname.match(/^\/2020-04-22\/code-signing-configs(?:\/(.+?)(\/functions)?)?$/); const capacityMatch = url.pathname.match(/^\/2025-11-30\/capacity-providers(?:\/([^/]+)(\/function-versions)?)?$/); const durableExecutionMatch = url.pathname.match(/^\/2025-12-01\/durable-executions\/([^/]+)(?:\/(history|state|checkpoint|stop))?$/); const durableListMatch = url.pathname.match(/^\/2025-12-01\/functions\/([^/]+)\/durable-executions$/); const durableCallbackMatch = url.pathname.match(/^\/2025-12-01\/durable-execution-callbacks\/([^/]+)\/(succeed|fail|heartbeat)$/); const functionMatch = url.pathname.match(/^\/(?:2014-11-13|2015-03-31|2017-10-31|2019-09-25|2019-09-30|2020-06-30|2021-07-20|2021-10-31|2021-11-15|2024-08-31|2025-11-30)\/functions\/([^/]+)/); const name = functionMatch?.[1]; const suffix = name ? url.pathname.slice(url.pathname.indexOf(`/${name}`) + name.length + 1) : "";
@@ -711,6 +736,22 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
     && new Set(["CreateUserPool", "TagResource", "UntagResource"]).has(operation)
   ) {
     const suppliedTags = operation === "CreateUserPool" ? input.UserPoolTags : input.Tags;
+    const requestTags = suppliedTags && typeof suppliedTags === "object" && !Array.isArray(suppliedTags)
+      ? suppliedTags as Record<string, unknown>
+      : {};
+    const tagKeys = operation === "UntagResource"
+      ? Array.isArray(input.TagKeys) ? input.TagKeys.map(String) : []
+      : Object.keys(requestTags);
+    context["aws:TagKeys"] = tagKeys;
+    for (const [key, value] of Object.entries(requestTags)) {
+      context[`aws:RequestTag/${key}`] = String(value);
+    }
+  }
+  if (
+    service === "cognito-identity"
+    && new Set(["CreateIdentityPool", "TagResource", "UntagResource"]).has(operation)
+  ) {
+    const suppliedTags = operation === "CreateIdentityPool" ? input.IdentityPoolTags : input.Tags;
     const requestTags = suppliedTags && typeof suppliedTags === "object" && !Array.isArray(suppliedTags)
       ? suppliedTags as Record<string, unknown>
       : {};

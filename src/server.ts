@@ -41,6 +41,7 @@ import {
   createCloudFrontCloudFormationProviders,
   createCloudWatchMetricStreamProvider,
   createCognitoCloudFormationProviders,
+  createCognitoIdentityCloudFormationProviders,
   createDynamoDbGlobalTableProvider,
   createDynamoDbTableProvider,
   createIamCloudFormationProviders,
@@ -83,7 +84,9 @@ import { SES_V1_PHASE_01_02_ACTIONS, sendSesV1Error } from "./ses/protocol-v1.js
 import { sendSesV2Error } from "./ses/protocol-v2.js";
 import { verifyVerificationToken } from "./ses/verification-links.js";
 import { CognitoService } from "./cognito.js";
+import { CognitoIdentityService } from "./cognito-identity.js";
 import { cognitoTargetOperation, isCognitoNonIamTarget } from "./cognito/action-inventory.js";
+import { isCognitoIdentityNonIamTarget, isCognitoIdentityTarget } from "./cognito-identity/action-inventory.js";
 import { sendCognitoError } from "./cognito/protocol.js";
 import { CognitoSecrets } from "./cognito/secrets.js";
 import { CognitoPasswordHasher } from "./cognito/passwords.js";
@@ -103,6 +106,7 @@ function booleanEnvironment(name: string): boolean | undefined {
 }
 
 const COGNITO_SDK_ENDPOINT_PATH = /^\/_stacksim\/cognito-idp\/([a-z]{2}(?:-gov)?-[a-z]+-\d)\/sdk\/?$/;
+const COGNITO_IDENTITY_SDK_ENDPOINT_PATH = /^\/_stacksim\/cognito-identity\/([a-z]{2}(?:-gov)?-[a-z]+-\d)\/sdk\/?$/;
 const COGNITO_SDK_CORS_ALLOW_HEADERS = [
   "content-type",
   "x-amz-target",
@@ -122,6 +126,14 @@ const COGNITO_SDK_CORS_EXPOSE_HEADERS = [
 
 function cognitoSdkEndpointRegion(pathname: string): string | undefined {
   return COGNITO_SDK_ENDPOINT_PATH.exec(pathname)?.[1];
+}
+
+function cognitoIdentitySdkEndpointRegion(pathname: string): string | undefined {
+  return COGNITO_IDENTITY_SDK_ENDPOINT_PATH.exec(pathname)?.[1];
+}
+
+function regionalCognitoSdkEndpointRegion(pathname: string): string | undefined {
+  return cognitoSdkEndpointRegion(pathname) ?? cognitoIdentitySdkEndpointRegion(pathname);
 }
 
 function exactHttpOrigin(value: unknown, label: string): string {
@@ -162,13 +174,17 @@ function defaultCognitoSdkCorsOrigin(value: string): boolean {
     || /^127(?:\.\d{1,3}){3}$/.test(hostname);
 }
 
-function configuredCognitoSdkCorsOrigins(option: readonly string[] | undefined): ReadonlySet<string> {
+function configuredSdkCorsOrigins(
+  option: readonly string[] | undefined,
+  optionLabel: string,
+  environmentName: string,
+): ReadonlySet<string> {
   let value: unknown = option;
-  let label = "cognitoSdkCorsOrigins";
+  let label = optionLabel;
   if (value === undefined) {
-    const environment = process.env.STACKSIM_COGNITO_SDK_CORS_ORIGINS;
+    const environment = process.env[environmentName];
     if (environment === undefined) return new Set();
-    label = "STACKSIM_COGNITO_SDK_CORS_ORIGINS";
+    label = environmentName;
     try { value = JSON.parse(environment); }
     catch { throw new Error(`${label} must be a JSON array of exact normalized HTTP(S) origins`); }
   }
@@ -176,6 +192,14 @@ function configuredCognitoSdkCorsOrigins(option: readonly string[] | undefined):
     throw new Error(`${label} must be ${label.startsWith("STACKSIM_") ? "a JSON array" : "an array"} of exact normalized HTTP(S) origins`);
   }
   return new Set(Array.from(value, (origin, index) => exactHttpOrigin(origin, `${label}[${index}]`)));
+}
+
+function configuredCognitoSdkCorsOrigins(option: readonly string[] | undefined): ReadonlySet<string> {
+  return configuredSdkCorsOrigins(option, "cognitoSdkCorsOrigins", "STACKSIM_COGNITO_SDK_CORS_ORIGINS");
+}
+
+function configuredCognitoIdentitySdkCorsOrigins(option: readonly string[] | undefined): ReadonlySet<string> {
+  return configuredSdkCorsOrigins(option, "cognitoIdentitySdkCorsOrigins", "STACKSIM_COGNITO_IDENTITY_SDK_CORS_ORIGINS");
 }
 
 export interface SimulatorOptions {
@@ -245,6 +269,8 @@ export interface SimulatorOptions {
   cognitoPublicUrl?: string;
   /** Additional exact browser origins permitted alongside default HTTP(S) loopback origins. */
   cognitoSdkCorsOrigins?: readonly string[];
+  /** Additional exact browser origins permitted on the Identity Pools regional SDK alias. */
+  cognitoIdentitySdkCorsOrigins?: readonly string[];
   /** Permit Cognito federation calls to public HTTPS identity providers. */
   cognitoAllowPublicIdentityProviders?: boolean;
 }
@@ -269,6 +295,7 @@ interface RegionalServices {
   rds: RdsService;
   ses: SesService;
   cognito: CognitoService;
+  cognitoIdentity: CognitoIdentityService;
   appsync: AppSyncService;
   stepfunctions: StepFunctionsService;
   xray: XRayService;
@@ -299,6 +326,7 @@ export class StackSim {
   readonly secretsmanager: SecretsManagerService;
   readonly ses: SesService;
   readonly cognito: CognitoService;
+  readonly cognitoIdentity: CognitoIdentityService;
   readonly appsync: AppSyncService;
   readonly stepfunctions: StepFunctionsService;
   readonly xray: XRayService;
@@ -361,6 +389,7 @@ export class StackSim {
   private sesEffectivePublicUrl?: string;
   private readonly cognitoConfiguredPublicUrl?: string;
   private readonly cognitoSdkCorsOrigins: ReadonlySet<string>;
+  private readonly cognitoIdentitySdkCorsOrigins: ReadonlySet<string>;
   private readonly cognitoIdentityProviderNetwork: { allowPublic: boolean };
   private cognitoEffectivePublicUrl?: string;
   private readonly regionalServices = new Map<string, RegionalServices>();
@@ -455,6 +484,7 @@ export class StackSim {
     const cognitoPublicUrl = options.cognitoPublicUrl ?? process.env.STACKSIM_COGNITO_PUBLIC_URL;
     this.cognitoConfiguredPublicUrl = cognitoPublicUrl ? CognitoService.validatePublicUrl(cognitoPublicUrl) : undefined;
     this.cognitoSdkCorsOrigins = configuredCognitoSdkCorsOrigins(options.cognitoSdkCorsOrigins);
+    this.cognitoIdentitySdkCorsOrigins = configuredCognitoIdentitySdkCorsOrigins(options.cognitoIdentitySdkCorsOrigins);
     this.cognitoIdentityProviderNetwork = {
       allowPublic: options.cognitoAllowPublicIdentityProviders
         ?? process.env.STACKSIM_COGNITO_ALLOW_PUBLIC_IDP === "true",
@@ -510,6 +540,7 @@ export class StackSim {
     this.secretsmanager = services.secretsmanager;
     this.ses = services.ses;
     this.cognito = services.cognito;
+    this.cognitoIdentity = services.cognitoIdentity;
     this.stepfunctions = services.stepfunctions;
     this.appsync = services.appsync;
     this.xray = services.xray;
@@ -569,16 +600,16 @@ export class StackSim {
       const currentRequestId = requestId();
       res.setHeader("x-amzn-requestid", currentRequestId);
       res.setHeader("x-amz-request-id", currentRequestId);
-      if (cognitoSdkEndpointRegion(url.pathname)) {
+      if (regionalCognitoSdkEndpointRegion(url.pathname)) {
         const preflight = req.method === "OPTIONS";
         if (preflight) {
-          this.applyCognitoSdkCors(req, res, true);
+          this.applyCognitoSdkCors(req, res, true, url.pathname);
           res.statusCode = 204;
           res.setHeader("allow", "POST, OPTIONS");
           res.end();
           return;
         }
-        if (req.method === "POST") this.applyCognitoSdkCors(req, res, false);
+        if (req.method === "POST") this.applyCognitoSdkCors(req, res, false, url.pathname);
       }
       const graphqlPath = url.pathname.match(/^\/graphql\/([^/]+)\/([^/]+)$/);
       let graphqlRegion: string | undefined;
@@ -645,7 +676,7 @@ export class StackSim {
         res.setHeader("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
         return res.end(`<!doctype html><html><head><meta charset="utf-8"><title>SNS unsubscribe</title></head><body><main><h1>${completed ? "Subscription removed" : "Invalid unsubscribe link"}</h1><p>${completed ? "The local SNS subscription was removed." : "This unsubscribe link is invalid, expired, or already used."}</p></main></body></html>`);
       }
-      if (req.method === "GET" && url.pathname === "/_stacksim/health") return json(res, { status: "ok", services: ["cloudformation", "cloudfront", "lambda", "stepfunctions", "apigateway", "appsync", "dynamodb", "rds", "s3", "sqs", "sns", "ssm", "secretsmanager", "eventbridge", "scheduler", "logs", "cloudwatch", "iam", "sts", "ses", "cognito-idp", "xray"], cloudfront: { status: "available", distributions: this.cloudfront.consoleSnapshot().distributions.length, viewers: this.cloudfront.listLocalViewers() }, xray: services.xray.health(), rds: this.rdsManager.metadata(), region, requestId: currentRequestId });
+      if (req.method === "GET" && url.pathname === "/_stacksim/health") return json(res, { status: "ok", services: ["cloudformation", "cloudfront", "lambda", "stepfunctions", "apigateway", "appsync", "dynamodb", "rds", "s3", "sqs", "sns", "ssm", "secretsmanager", "eventbridge", "scheduler", "logs", "cloudwatch", "iam", "sts", "ses", "cognito-idp", "cognito-identity", "xray"], cloudfront: { status: "available", distributions: this.cloudfront.consoleSnapshot().distributions.length, viewers: this.cloudfront.listLocalViewers() }, xray: services.xray.health(), rds: this.rdsManager.metadata(), region, requestId: currentRequestId });
       if (req.method === "GET" && url.pathname === "/_stacksim/api/console-config") return json(res, { authMode: this.authMode, region, bootId: this.bootId });
       if (url.pathname.startsWith("/_stacksim/api/")) {
         try {
@@ -671,7 +702,7 @@ export class StackSim {
         invokeEndpoint: `${this.invokeProtocol}://${this.host}:${this.invokePort}`,
         cloudfrontDistributionCount: this.cloudfront.consoleSnapshot().distributions.length,
         lambdaImageSource: process.env.STACKSIM_LAMBDA_OCI_ROOT ? "oci" : process.env.STACKSIM_LAMBDA_DOCKER_SOCKET ? "docker" : undefined,
-        counts: { stacks: Object.values(this.store.regionState(region).cloudformation.stacks).filter(stack => stack.stackStatus !== "DELETE_COMPLETE").length, stateMachines: Object.keys(this.store.regionState(region).stepFunctions.stateMachines).length, parameters: Object.keys(this.store.regionState(region).parameterStore.parameters).length, secrets: Object.keys(this.store.regionState(region).secretsManager.secrets).length, functions: Object.keys(this.store.regionState(region).functions).length, capacityProviders: Object.keys(this.store.regionState(region).lambdaCapacityProviders).length, durableExecutions: Object.keys(this.store.regionState(region).lambdaDurableExecutions).length, tables: Object.keys(this.store.regionState(region).tables).length, rdsInstances: Object.keys(this.store.regionState(region).rdsDbInstances).length, buckets: Object.keys(this.store.regionState(region).s3Buckets).length, queues: Object.keys(this.store.regionState(region).sqsQueues).length, topics: Object.keys(this.store.regionState(region).sns.topics).length, subscriptions: Object.keys(this.store.regionState(region).sns.subscriptions).length, eventBuses: Object.keys(this.store.regionState(region).eventBuses).length, eventRules: Object.keys(this.store.regionState(region).eventRules).length, apis: Object.keys(this.store.regionState(region).apis).length, httpApis: Object.keys(this.store.regionState(region).httpApis).length, webSocketApis: Object.keys(this.store.regionState(region).webSocketApis).length, customDomains: Object.keys(this.store.regionState(region).apiGatewayDomainNames).length + Object.keys(this.store.regionState(region).apiGatewayV2DomainNames).length, logGroups: Object.keys(this.store.regionState(region).logs).length, users: Object.keys(this.store.ensureAccount().iam.users).length, groups: Object.keys(this.store.ensureAccount().iam.groups).length, roles: Object.keys(this.store.ensureAccount().iam.roles).length, policies: Object.keys(this.store.ensureAccount().iam.policies).length, sesIdentities: Object.keys(this.store.regionState(region).ses.identities).length, sesTemplates: Object.keys(this.store.regionState(region).ses.templates).length, sesConfigurationSets: Object.keys(this.store.regionState(region).ses.configurationSets).length, sesMessages: services.ses.summary().messageCount, cognitoUserPools: services.cognito.summary().poolCount, cognitoAppClients: services.cognito.summary().clientCount },
+        counts: { stacks: Object.values(this.store.regionState(region).cloudformation.stacks).filter(stack => stack.stackStatus !== "DELETE_COMPLETE").length, stateMachines: Object.keys(this.store.regionState(region).stepFunctions.stateMachines).length, parameters: Object.keys(this.store.regionState(region).parameterStore.parameters).length, secrets: Object.keys(this.store.regionState(region).secretsManager.secrets).length, functions: Object.keys(this.store.regionState(region).functions).length, capacityProviders: Object.keys(this.store.regionState(region).lambdaCapacityProviders).length, durableExecutions: Object.keys(this.store.regionState(region).lambdaDurableExecutions).length, tables: Object.keys(this.store.regionState(region).tables).length, rdsInstances: Object.keys(this.store.regionState(region).rdsDbInstances).length, buckets: Object.keys(this.store.regionState(region).s3Buckets).length, queues: Object.keys(this.store.regionState(region).sqsQueues).length, topics: Object.keys(this.store.regionState(region).sns.topics).length, subscriptions: Object.keys(this.store.regionState(region).sns.subscriptions).length, eventBuses: Object.keys(this.store.regionState(region).eventBuses).length, eventRules: Object.keys(this.store.regionState(region).eventRules).length, apis: Object.keys(this.store.regionState(region).apis).length, httpApis: Object.keys(this.store.regionState(region).httpApis).length, webSocketApis: Object.keys(this.store.regionState(region).webSocketApis).length, customDomains: Object.keys(this.store.regionState(region).apiGatewayDomainNames).length + Object.keys(this.store.regionState(region).apiGatewayV2DomainNames).length, logGroups: Object.keys(this.store.regionState(region).logs).length, users: Object.keys(this.store.ensureAccount().iam.users).length, groups: Object.keys(this.store.ensureAccount().iam.groups).length, roles: Object.keys(this.store.ensureAccount().iam.roles).length, policies: Object.keys(this.store.ensureAccount().iam.policies).length, sesIdentities: Object.keys(this.store.regionState(region).ses.identities).length, sesTemplates: Object.keys(this.store.regionState(region).ses.templates).length, sesConfigurationSets: Object.keys(this.store.regionState(region).ses.configurationSets).length, sesMessages: services.ses.summary().messageCount, cognitoUserPools: services.cognito.summary().poolCount, cognitoAppClients: services.cognito.summary().clientCount, cognitoIdentityPools: services.cognitoIdentity.summary().poolCount },
         rds: this.rdsManager.metadata(),
       });
       if (req.method === "GET" && url.pathname === "/_stacksim/api/environment") {
@@ -685,7 +716,7 @@ export class StackSim {
         authMode: this.authMode,
         statePath: this.store.file,
         schemaVersion: this.store.state.schemaVersion,
-        services: { cloudformation: "available", cloudfront: "available", lambda: "available", apigateway: "available", appsync: "available", dynamodb: "available", rds: "available", s3: "available", sqs: "available", sns: services.sns.admissionStatus(), ssm: "available", secretsmanager: services.secretsmanager.admissionStatus(), eventbridge: "available", scheduler: "available", logs: "available", cloudwatch: "available", iam: "available", sts: "available", ses: services.ses.admissionStatus(), "cognito-idp": "available", xray: services.xray.health().status },
+        services: { cloudformation: "available", cloudfront: "available", lambda: "available", apigateway: "available", appsync: "available", dynamodb: "available", rds: "available", s3: "available", sqs: "available", sns: services.sns.admissionStatus(), ssm: "available", secretsmanager: services.secretsmanager.admissionStatus(), eventbridge: "available", scheduler: "available", logs: "available", cloudwatch: "available", iam: "available", sts: "available", ses: services.ses.admissionStatus(), "cognito-idp": "available", "cognito-identity": "available", xray: services.xray.health().status },
         cloudfront: { distributions: this.cloudfront.consoleSnapshot().distributions.length, viewers: this.cloudfront.listLocalViewers(), caCertificatePath: this.cloudfront.caCertificatePath },
         rds: this.rdsManager.metadata(),
         requestPrincipalType: requestPrincipal?.principalType ?? null,
@@ -731,6 +762,7 @@ export class StackSim {
       if (url.pathname.startsWith("/_stacksim/api/cloudformation/")) return this.localCloudFormationApi(req, res, url, services.cloudformation);
       if (url.pathname.startsWith("/_stacksim/api/iam/")) return this.localIamApi(req, res, url);
       if (url.pathname.startsWith("/_stacksim/api/rds/")) return this.localRdsQueryEditorApi(req, res, url, region);
+      if (url.pathname.startsWith("/_stacksim/api/cognito-identity/")) return this.localCognitoIdentityApi(req, res, url, services.cognitoIdentity);
       if (url.pathname.startsWith("/_stacksim/api/cognito/")) return this.localCognitoApi(req, res, url, services.cognito);
       if (url.pathname.startsWith("/_stacksim/api/ses/")) return services.ses.handleLocal(req, res, url, currentRequestId);
       const sesVerifyMatch = url.pathname.match(/^\/_stacksim\/ses\/verify-email\/([^/]+)$/);
@@ -774,9 +806,11 @@ export class StackSim {
       const signingService = this.requestSigningService(req, url); let routedService = url.pathname === "/v20180820/configuration/publicAccessBlock" && req.headers["x-amz-account-id"] ? "s3-control" : signingService ?? this.routeService(req, url); if (routedService === "unknown") routedService = await this.queryProtocolService(req, url);
       let principal: PrincipalContext;
       try {
-        principal = routedService === "cognito-idp" && isCognitoNonIamTarget(req.headers["x-amz-target"])
+        principal = routedService === "cognito-identity" && isCognitoIdentityNonIamTarget(req.headers["x-amz-target"])
           ? principalWithoutValidation(req, url, this.store, this.clock)
-          : await this.authenticateAndAuthorize(req, url, region, routedService, currentRequestId);
+          : routedService === "cognito-idp" && isCognitoNonIamTarget(req.headers["x-amz-target"])
+            ? principalWithoutValidation(req, url, this.store, this.clock)
+            : await this.authenticateAndAuthorize(req, url, region, routedService, currentRequestId);
         (req as any).awsPrincipal = principal;
       }
       catch (error) { return this.sendAuthorizationError(res, error, routedService, currentRequestId, req); }
@@ -796,6 +830,12 @@ export class StackSim {
       if (routedService === "rds") return services.rds.handle(req, res, currentRequestId);
       if (routedService === "monitoring") return services.metrics.handle(req, res, currentRequestId, principal);
       if (routedService === "ses") return services.ses.handle(req, res, url, currentRequestId, principal);
+      if (routedService === "cognito-identity") {
+        if (cognitoIdentitySdkEndpointRegion(url.pathname)) {
+          req.url = "/";
+        }
+        return services.cognitoIdentity.handle(req, res, currentRequestId);
+      }
       if (routedService === "cognito-idp") {
         if (cognitoSdkEndpointRegion(url.pathname)) {
           req.url = "/";
@@ -942,6 +982,7 @@ export class StackSim {
         lambda,
         this.cognitoIdentityProviderNetwork,
       );
+      const cognitoIdentity = new CognitoIdentityService(this.store, region, this.clock, this.sts, cognito);
       const xray = new XRayService(this.store, region, this.clock, this.random);
       const apigatewaywebsocket = new ApiGatewayWebSocketService(this.store, lambda, () => this.invokePort, region, this.clock, this.authMode, telemetry, logs, this.invokeProtocol, { idleTimeoutMs: this.apiGatewayWebSocketIdleTimeoutMs, lifetimeMs: this.apiGatewayWebSocketLifetimeMs });
       const apigateway = new ApiGatewayService(this.store, lambda, dynamodb, this.invokePort, region, this.clock, this.authMode, telemetry, logs, this.apiGatewayRateLimit, this.apiGatewayBurstLimit, this.invokeProtocol, this.apiGatewayVpcLinkOrigins, this.apiGatewayAllowClientCertificates, sqs, cognito, xray, async () => { await this.iam.ensureApiGatewayServiceLinkedRole(); });
@@ -1081,6 +1122,7 @@ export class StackSim {
           return (await s3.readObjectBytes(parsed.hostname, decodeURIComponent(parsed.pathname.slice(1)), parsed.searchParams.get("versionId") ?? undefined, 1024 * 1024)).body;
         }),
         ...createCognitoCloudFormationProviders(cognito),
+        ...createCognitoIdentityCloudFormationProviders(cognitoIdentity),
         createStepFunctionsStateMachineProvider(stepfunctions),
       ];
       const cloudFormationProviders = this.cloudFormationProviderTypes === undefined
@@ -1090,7 +1132,7 @@ export class StackSim {
       services = { cloudformation: new CloudFormationService(this.store, region, this.clock, s3, (roleArn, sessionName) => this.sts.assumeServiceRole(roleArn, sessionName, "cloudformation.amazonaws.com"), cloudFormationProviders, this.authMode === "enforce" ? async (principal, targets) => {
         const providerRequestId = requestId();
         for (const target of targets) await this.authorize(principal, { action: target.action, resource: target.resource, operation: "CloudFormationProvider", input: {}, context: { "aws:PrincipalArn": principal.principalArn, "aws:PrincipalAccount": principal.accountId, "aws:RequestedRegion": region, "aws:CurrentTime": new Date(this.clock.now()).toISOString(), "aws:SecureTransport": true, "aws:CalledVia": ["cloudformation.amazonaws.com"], ...(target.context ?? {}) } }, providerRequestId);
-      } : undefined, {}, generalCustomResourcesEnabled ? typeName => createLambdaCustomResourceProvider(typeName, this.store, lambda, this.customResourceCallbacks) : undefined, this.customResourceCallbacks), ssm, secretsmanager, lambda, stepfunctions, eventbridge, eventscheduler, dynamodb, rds: new RdsService(this.rdsManager, region), s3, sqs, sns, apigateway, apigatewayv2, apigatewaywebsocket, logs, metrics, telemetry, ses, cognito, appsync, xray };
+      } : undefined, {}, generalCustomResourcesEnabled ? typeName => createLambdaCustomResourceProvider(typeName, this.store, lambda, this.customResourceCallbacks) : undefined, this.customResourceCallbacks), ssm, secretsmanager, lambda, stepfunctions, eventbridge, eventscheduler, dynamodb, rds: new RdsService(this.rdsManager, region), s3, sqs, sns, apigateway, apigatewayv2, apigatewaywebsocket, logs, metrics, telemetry, ses, cognito, cognitoIdentity, appsync, xray };
       services.cloudformation.setSnsNotificationPublisher((topicArn, message, stackId) => sns.publishAuthorized({ TopicArn: topicArn, Message: message }, {
         principal: "cloudformation.amazonaws.com",
         sourceArn: stackId,
@@ -1220,7 +1262,7 @@ export class StackSim {
   }
 
   private requestRegion(req: import("node:http").IncomingMessage, url: URL): string {
-    const regionalCognitoEndpoint = cognitoSdkEndpointRegion(url.pathname);
+    const regionalCognitoEndpoint = regionalCognitoSdkEndpointRegion(url.pathname);
     if (regionalCognitoEndpoint) return regionalCognitoEndpoint;
     const explicit = req.headers["x-stacksim-region"];
     if (typeof explicit === "string" && /^[a-z]{2}(?:-gov)?-[a-z]+-\d$/.test(explicit)) return explicit;
@@ -1236,12 +1278,16 @@ export class StackSim {
     req: import("node:http").IncomingMessage,
     res: import("node:http").ServerResponse,
     preflight: boolean,
+    pathname = "",
   ): void {
     if (typeof req.headers.origin !== "string") return;
     res.setHeader("vary", "Origin");
+    const configured = cognitoIdentitySdkEndpointRegion(pathname)
+      ? this.cognitoIdentitySdkCorsOrigins
+      : this.cognitoSdkCorsOrigins;
     if (
       !defaultCognitoSdkCorsOrigin(req.headers.origin)
-      && !this.cognitoSdkCorsOrigins.has(req.headers.origin)
+      && !configured.has(req.headers.origin)
     ) return;
     res.setHeader("access-control-allow-origin", req.headers.origin);
     if (preflight) {
@@ -1263,6 +1309,7 @@ export class StackSim {
     if (url.pathname.startsWith("/_stacksim/api/cloudformation/")) return "cloudformation";
     if (url.pathname.startsWith("/_stacksim/api/iam/")) return "iam";
     if (url.pathname.startsWith("/_stacksim/api/rds/")) return "rds";
+    if (url.pathname.startsWith("/_stacksim/api/cognito-identity/")) return "cognito-identity";
     if (url.pathname.startsWith("/_stacksim/api/cognito/")) return "cognito-idp";
     if (url.pathname.startsWith("/_stacksim/api/ses/")) return "ses";
     if (url.pathname.startsWith("/_stacksim/api/secrets-manager/")) return "secretsmanager";
@@ -1335,6 +1382,12 @@ export class StackSim {
                 : path.endsWith("/continue-update-rollback") ? "ContinueUpdateRollback"
                   : method === "PUT" ? "UpdateStack" : method === "DELETE" ? "DeleteStack" : "ConsoleMutation";
       action = `cloudformation:${operation}`;
+    } else if (pathname.startsWith("/_stacksim/api/cognito-identity/")) {
+      const path = pathname.slice("/_stacksim/api/cognito-identity/".length);
+      const poolId = path.match(/^identity-pools\/([^/]+)/)?.[1];
+      resource = poolId ? `arn:aws:cognito-identity:${region}:${this.store.accountId}:identitypool/${decodeURIComponent(poolId)}` : "*";
+      operation = path === "identity-pools" ? "CreateIdentityPool" : method === "DELETE" ? "DeleteIdentityPool" : "DescribeIdentityPool";
+      action = `cognito-identity:${operation}`;
     } else if (pathname.startsWith("/_stacksim/api/cognito/")) {
       const path = pathname.slice("/_stacksim/api/cognito/".length);
       const poolId = path.match(/^user-pools\/([^/]+)/)?.[1];
@@ -1369,7 +1422,7 @@ export class StackSim {
 
   private routeService(req: import("node:http").IncomingMessage, url: URL): string {
     if (req.headers["x-stacksim-service"] === "cloudfront" || url.pathname.startsWith("/2020-05-31/")) return "cloudfront";
-    const target = String(req.headers["x-amz-target"] ?? ""); const explicit = String(req.headers["x-stacksim-service"] ?? ""); const host = String(req.headers.host ?? "").replace(/:\d+$/, ""); if (explicit === "appsync" || explicit === "iam" || explicit === "sts" || explicit === "xray") return explicit; if (new Set(["/TraceSegments", "/TraceSummaries", "/Traces", "/ServiceGraph", "/TraceGraph"]).has(url.pathname)) return "xray"; if (explicit === "states" || target.startsWith("AWSStepFunctions.")) return "states"; if (explicit === "cognito-idp" || cognitoTargetOperation(target)) return "cognito-idp"; if (explicit === "sns") return "sns"; if (explicit === "ses" || url.pathname.startsWith("/v2/email/")) return "ses"; if (explicit === "cloudformation") return "cloudformation"; if (explicit === "ssm" || target.startsWith("AmazonSSM.")) return "ssm"; if (explicit === "secretsmanager" || target.startsWith("secretsmanager.")) return "secretsmanager"; if (explicit === "rds") return "rds"; if (explicit === "events" || target.startsWith("AWSEvents.")) return "events"; if (explicit === "scheduler") return "scheduler"; if (explicit === "sqs" || target.startsWith("AmazonSQS.")) return "sqs"; if (explicit === "s3" || /(?:^|\.)s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com$/i.test(host) || /.+\.(?:localhost|127\.0\.0\.1)$/i.test(host)) return "s3"; if (/^DynamoDB(?:Streams)?_/.test(target)) return "dynamodb"; if (target.startsWith("Logs_20140328")) return "logs"; if (target.startsWith("GraniteServiceVersion20100801.")) return "monitoring"; if (url.pathname.startsWith("/2014-11-13") || url.pathname.startsWith("/2015-03-31") || url.pathname.startsWith("/2016-08-19") || url.pathname.startsWith("/2017-03-31/tags/") || url.pathname.startsWith("/2017-10-31") || url.pathname.startsWith("/2018-10-31") || url.pathname.startsWith("/2019-09-25") || url.pathname.startsWith("/2019-09-30") || url.pathname.startsWith("/2020-04-22") || url.pathname.startsWith("/2020-06-30") || url.pathname.startsWith("/2021-07-20") || url.pathname.startsWith("/2021-10-31") || url.pathname.startsWith("/2021-11-15") || url.pathname.startsWith("/2024-08-31") || url.pathname.startsWith("/2025-11-30") || url.pathname.startsWith("/2025-12-01")) return "lambda"; if (url.pathname.startsWith("/v2") || url.pathname.startsWith("/restapis") || url.pathname === "/account" || url.pathname.startsWith("/tags/") || url.pathname.startsWith("/apikeys") || url.pathname.startsWith("/usageplans") || url.pathname.startsWith("/domainnames") || url.pathname.startsWith("/domainnameaccessassociations") || url.pathname === "/rejectdomainnameaccessassociations" || url.pathname.startsWith("/vpclinks") || url.pathname.startsWith("/clientcertificates") || url.pathname.startsWith("/sdktypes")) return "apigateway"; return "unknown";
+    const target = String(req.headers["x-amz-target"] ?? ""); const explicit = String(req.headers["x-stacksim-service"] ?? ""); const host = String(req.headers.host ?? "").replace(/:\d+$/, ""); if (explicit === "appsync" || explicit === "iam" || explicit === "sts" || explicit === "xray") return explicit; if (new Set(["/TraceSegments", "/TraceSummaries", "/Traces", "/ServiceGraph", "/TraceGraph"]).has(url.pathname)) return "xray"; if (explicit === "states" || target.startsWith("AWSStepFunctions.")) return "states"; if (explicit === "cognito-identity" || isCognitoIdentityTarget(target) || cognitoIdentitySdkEndpointRegion(url.pathname)) return "cognito-identity"; if (explicit === "cognito-idp" || cognitoTargetOperation(target)) return "cognito-idp"; if (explicit === "sns") return "sns"; if (explicit === "ses" || url.pathname.startsWith("/v2/email/")) return "ses"; if (explicit === "cloudformation") return "cloudformation"; if (explicit === "ssm" || target.startsWith("AmazonSSM.")) return "ssm"; if (explicit === "secretsmanager" || target.startsWith("secretsmanager.")) return "secretsmanager"; if (explicit === "rds") return "rds"; if (explicit === "events" || target.startsWith("AWSEvents.")) return "events"; if (explicit === "scheduler") return "scheduler"; if (explicit === "sqs" || target.startsWith("AmazonSQS.")) return "sqs"; if (explicit === "s3" || /(?:^|\.)s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com$/i.test(host) || /.+\.(?:localhost|127\.0\.0\.1)$/i.test(host)) return "s3"; if (/^DynamoDB(?:Streams)?_/.test(target)) return "dynamodb"; if (target.startsWith("Logs_20140328")) return "logs"; if (target.startsWith("GraniteServiceVersion20100801.")) return "monitoring"; if (url.pathname.startsWith("/2014-11-13") || url.pathname.startsWith("/2015-03-31") || url.pathname.startsWith("/2016-08-19") || url.pathname.startsWith("/2017-03-31/tags/") || url.pathname.startsWith("/2017-10-31") || url.pathname.startsWith("/2018-10-31") || url.pathname.startsWith("/2019-09-25") || url.pathname.startsWith("/2019-09-30") || url.pathname.startsWith("/2020-04-22") || url.pathname.startsWith("/2020-06-30") || url.pathname.startsWith("/2021-07-20") || url.pathname.startsWith("/2021-10-31") || url.pathname.startsWith("/2021-11-15") || url.pathname.startsWith("/2024-08-31") || url.pathname.startsWith("/2025-11-30") || url.pathname.startsWith("/2025-12-01")) return "lambda"; if (url.pathname.startsWith("/v2") || url.pathname.startsWith("/restapis") || url.pathname === "/account" || url.pathname.startsWith("/tags/") || url.pathname.startsWith("/apikeys") || url.pathname.startsWith("/usageplans") || url.pathname.startsWith("/domainnames") || url.pathname.startsWith("/domainnameaccessassociations") || url.pathname === "/rejectdomainnameaccessassociations" || url.pathname.startsWith("/vpclinks") || url.pathname.startsWith("/clientcertificates") || url.pathname.startsWith("/sdktypes")) return "apigateway"; return "unknown";
   }
 
   private async queryProtocolService(req: import("node:http").IncomingMessage, url: URL): Promise<string> {
@@ -1463,6 +1516,13 @@ export class StackSim {
       for (const [key, value] of Object.entries(tags)) {
         target.context[`aws:ResourceTag/${key}`] = value;
         target.context[`secretsmanager:ResourceTag/${key}`] = value;
+      }
+    }
+    if (service === "cognito-identity" && target.resource.startsWith("arn:")) {
+      const pool = Object.values(this.store.regionState(region).cognitoIdentity.pools)
+        .find(candidate => this.services(region).cognitoIdentity.resourceArn(candidate.id) === target.resource);
+      for (const [key, value] of Object.entries(pool?.tags ?? {})) {
+        target.context[`aws:ResourceTag/${key}`] = value;
       }
     }
     if (service === "cognito-idp" && target.resource.startsWith("arn:")) {
@@ -1666,7 +1726,7 @@ export class StackSim {
     const aws = error instanceof AwsError ? error : new AwsError("InternalFailure", error instanceof Error ? error.message : String(error), 500);
     if (service === "cloudfront") return sendCloudFrontError(res, currentRequestId, new CloudFrontError(aws.code.replace(/Exception$/, ""), aws.message, aws.status));
     if (service === "s3") { const hostId = createHash("sha256").update(`${this.store.state.installation.id}:${currentRequestId}`).digest("base64"); res.setHeader("x-amz-id-2", hostId); return sendS3Error(res, aws, String(req?.url ?? "/").split("?", 1)[0], currentRequestId, hostId); }
-    if (service === "cognito-idp") return sendCognitoError(res, aws);
+    if (service === "cognito-idp" || service === "cognito-identity") return sendCognitoError(res, aws);
     if (service === "ses") return String(req?.url ?? "").startsWith("/v2/email/") ? sendSesV2Error(res, aws, currentRequestId) : sendSesV1Error(res, aws, currentRequestId);
     if (service === "sqs") { const jsonProtocol = req?.headers["x-amz-target"]?.toString().startsWith("AmazonSQS.") || String(req?.headers["content-type"] ?? "").includes("amz-json"); if (jsonProtocol) { res.setHeader("x-amzn-query-error", `${aws.code};${aws.status >= 500 ? "Server" : "Sender"}`); return sendAwsError(res, aws, "json", "com.amazonaws.sqs#"); } res.statusCode = aws.status; res.setHeader("content-type", "text/xml; charset=utf-8"); res.end(awsQueryErrorXml(aws.code.replace(/Exception$/, ""), aws.message, currentRequestId)); return; }
     if (service === "ssm") return sendSsmError(res, aws);
@@ -1852,6 +1912,37 @@ export class StackSim {
 
   private listen(server: HttpServer | HttpsServer, port: number): Promise<void> {
     return new Promise((resolve, reject) => { server.once("error", reject); server.listen(port, this.host, () => { server.off("error", reject); resolve(); }); });
+  }
+
+  private async localCognitoIdentityApi(
+    req: import("node:http").IncomingMessage,
+    res: import("node:http").ServerResponse,
+    url: URL,
+    identity: CognitoIdentityService,
+  ): Promise<void> {
+    res.setHeader("cache-control", "no-store");
+    res.setHeader("x-content-type-options", "nosniff");
+    res.setHeader("referrer-policy", "no-referrer");
+    try {
+      if (url.search) return json(res, { message: "Unknown Cognito Identity console query parameter." }, 400);
+      const path = url.pathname.slice("/_stacksim/api/cognito-identity/".length);
+      const decode = (value: string): string => {
+        try {
+          const decoded = decodeURIComponent(value);
+          if (encodeURIComponent(decoded) !== value) throw new Error();
+          return decoded;
+        } catch {
+          throw new AwsError("InvalidParameterException", "A Cognito Identity console path segment is invalid.", 400);
+        }
+      };
+      if (path === "identity-pools" && req.method === "GET") return json(res, identity.localIdentityPools());
+      const detail = path.match(/^identity-pools\/([^/]+)$/);
+      if (detail && req.method === "GET") return json(res, { identityPool: identity.localIdentityPool(decode(detail[1])) });
+      return json(res, { message: "Unknown local Cognito Identity console route." }, 404);
+    } catch (error) {
+      const aws = error instanceof AwsError ? error : new AwsError("InternalFailure", error instanceof Error ? error.message : String(error), 500);
+      return json(res, { message: aws.message, code: aws.code, __type: aws.code }, aws.status);
+    }
   }
 
   private async localCognitoApi(

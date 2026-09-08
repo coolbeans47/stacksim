@@ -31,6 +31,7 @@ export * from "./ses.js";
 export * from "./sns.js";
 export * from "./appsync.js";
 export * from "./cognito.js";
+export * from "./cognito-identity.js";
 export * from "./step-functions-state-machine.js";
 export * from "./nested-stack.js";
 export * from "./cloudfront.js";

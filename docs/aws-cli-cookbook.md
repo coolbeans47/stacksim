@@ -776,7 +776,7 @@ The returned credentials are temporary. Do not replace the durable default profi
 
 ## Cognito user pools
 
-StackSim supports Cognito user pools, not Cognito identity pools.
+StackSim supports Cognito user pools. Temporary AWS credentials are issued by the separate Cognito Identity Pools service (`cognito-identity`), not by user-pool token APIs.
 
 ### How to list user pools
 
@@ -808,6 +808,25 @@ aws cognito-idp admin-get-user --user-pool-id USER_POOL_ID --username USERNAME
 aws cognito-idp list-groups --user-pool-id USER_POOL_ID --query 'Groups[].{Name:GroupName,Description:Description,Precedence:Precedence}' --output table
 aws cognito-idp list-users-in-group --user-pool-id USER_POOL_ID --group-name GROUP_NAME
 ```
+
+## Cognito Identity Pools
+
+Identity Pools are a separate AWS JSON 1.1 service (`cognito-identity`). Unsigned `GetId` and `GetCredentialsForIdentity` mint enhanced-flow credentials; control APIs require SigV4.
+
+### How to list identity pools
+
+```console
+aws cognito-identity list-identity-pools --max-results 60
+```
+
+### How to get credentials from a User Pool ID token
+
+```console
+aws cognito-identity get-id --identity-pool-id IDENTITY_POOL_ID --logins cognito-idp.eu-west-1.amazonaws.com/USER_POOL_ID=ID_TOKEN
+aws cognito-identity get-credentials-for-identity --identity-id IDENTITY_ID --logins cognito-idp.eu-west-1.amazonaws.com/USER_POOL_ID=ID_TOKEN
+```
+
+The credentials object uses `SecretKey` (not `SecretAccessKey`) and a numeric Unix `Expiration`. Guest credentials, when enabled, cannot invoke API Gateway even if the unauthenticated role allows `execute-api:*`.
 
 ## SES
 

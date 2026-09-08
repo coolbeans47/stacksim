@@ -2,7 +2,7 @@
 
 This guide explains every panel in the StackSim Cognito console: what each setting does, why you would use it in real AWS workloads, and how it maps to production Amazon Cognito User Pools behavior.
 
-StackSim models user pools, users, groups, app clients, managed login, OAuth, federation, MFA, Lambda triggers, and signed JWTs locally. Where local behavior differs from AWS (for example DNS for hosted domains, SMS MFA, or Cognito Identity Pools), those boundaries are called out explicitly.
+StackSim models user pools, users, groups, app clients, managed login, OAuth, federation, MFA, Lambda triggers, and signed JWTs locally. Cognito Identity Pools are a separate console and API surface that exchanges User Pool ID tokens for temporary AWS credentials. Where local behavior differs from AWS (for example DNS for hosted domains or SMS MFA), those boundaries are called out explicitly.
 
 ---
 
@@ -26,10 +26,11 @@ The Cognito service in StackSim has a left navigation bar with these top-level a
 |------|---------|
 | **Overview** | Account summary, integration notes, and quick links |
 | **User pools** | Create, list, and open user pools |
+| **Identity Pools** | Separate console at `#/cognito-identity` for enhanced-flow credential brokers |
 
 Opening a user pool shows tabs: **Overview**, **Users**, **Groups**, **App clients**, **Managed login**, **Sign-in**, and **Self-service sign-up**.
 
-StackSim implements **Cognito User Pools** only. **Cognito Identity Pools** (federated AWS credentials) are not available locally.
+StackSim implements **Cognito User Pools** and a CID-01 **Cognito Identity Pools** slice (enhanced `GetId` / `GetCredentialsForIdentity`, User Pool ID-token login, and two CloudFormation types). Classic flow, role mappings, social IdPs, developer identities, and Amplify default Auth are not available.
 
 ---
 
@@ -797,7 +798,7 @@ Lambda triggers execute on supported lifecycle events when ARNs are configured a
 
 | Feature | StackSim behavior |
 |---------|-------------------|
-| Cognito Identity Pools | Not available |
+| Cognito Identity Pools | Separate service: enhanced GetId/GetCredentialsForIdentity, User Pool ID tokens, guest identities when enabled; classic flow, role mappings, and Amplify default Auth are unavailable |
 | SMS MFA / SMS verification | Unavailable |
 | External email delivery | Never sent; use SES Inbox |
 | Client secrets | Write-only; console shows existence only |

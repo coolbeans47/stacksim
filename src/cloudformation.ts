@@ -34,6 +34,10 @@ import {
   COGNITO_CLOUDFORMATION_RESOURCE_TYPES,
   COGNITO_USER_POOL_GROUP_TYPE,
   COGNITO_USER_POOL_TYPE,
+  COGNITO_IDENTITY_CLOUDFORMATION_AUTHORIZATION_MATRIX,
+  COGNITO_IDENTITY_CLOUDFORMATION_RESOURCE_TYPES,
+  COGNITO_IDENTITY_POOL_ROLE_ATTACHMENT_TYPE,
+  COGNITO_IDENTITY_POOL_TYPE,
   RDS_DB_INSTANCE_TYPE,
   RDS_DB_PARAMETER_GROUP_TYPE,
   SECRETS_MANAGER_SECRET_TYPE,
@@ -3811,6 +3815,14 @@ export class CloudFormationService {
         && (create || update)
         && typeof properties.RoleArn === "string"
         && properties.RoleArn) add("iam:PassRole");
+    } else if ((COGNITO_IDENTITY_CLOUDFORMATION_RESOURCE_TYPES as readonly string[]).includes(typeName)) {
+      add(...COGNITO_IDENTITY_CLOUDFORMATION_AUTHORIZATION_MATRIX[
+        typeName as keyof typeof COGNITO_IDENTITY_CLOUDFORMATION_AUTHORIZATION_MATRIX
+      ][operation]);
+      if (typeName === COGNITO_IDENTITY_POOL_ROLE_ATTACHMENT_TYPE
+        && (create || update)
+        && properties.Roles
+        && typeof properties.Roles === "object") add("iam:PassRole");
     } else if ((SES_CLOUDFORMATION_RESOURCE_TYPES as readonly string[]).includes(typeName)) {
       add(...SES_CLOUDFORMATION_AUTHORIZATION_MATRIX[typeName as keyof typeof SES_CLOUDFORMATION_AUTHORIZATION_MATRIX][operation]);
     } else if ((SNS_CLOUDFORMATION_RESOURCE_TYPES as readonly string[]).includes(typeName)) {
@@ -3917,6 +3929,23 @@ export class CloudFormationService {
       } else if ((COGNITO_CLOUDFORMATION_RESOURCE_TYPES as readonly string[]).includes(typeName) && action === "iam:PassRole") {
         if (typeof properties.RoleArn === "string" && properties.RoleArn) resources.push(properties.RoleArn);
         context = { "iam:PassedToService": "cognito-idp.amazonaws.com" };
+      } else if ((COGNITO_IDENTITY_CLOUDFORMATION_RESOURCE_TYPES as readonly string[]).includes(typeName) && action === "iam:PassRole") {
+        const roles = properties.Roles && typeof properties.Roles === "object" && !Array.isArray(properties.Roles) ? properties.Roles as Record<string, unknown> : {};
+        for (const arn of [roles.authenticated, roles.unauthenticated]) {
+          if (typeof arn === "string" && arn) resources.push(arn);
+        }
+        context = { "iam:PassedToService": "cognito-identity.amazonaws.com" };
+      } else if ((COGNITO_IDENTITY_CLOUDFORMATION_RESOURCE_TYPES as readonly string[]).includes(typeName)) {
+        const poolId = typeName === COGNITO_IDENTITY_POOL_TYPE
+          ? physicalId
+          : typeof properties.IdentityPoolId === "string"
+            ? properties.IdentityPoolId
+            : physicalId;
+        if (action === "cognito-identity:CreateIdentityPool") {
+          resources.push("*");
+        } else if (typeof poolId === "string" && poolId) {
+          resources.push(`arn:aws:cognito-identity:${this.region}:${accountId}:identitypool/${poolId}`);
+        }
       } else if ((COGNITO_CLOUDFORMATION_RESOURCE_TYPES as readonly string[]).includes(typeName)) {
         const poolId = typeName === COGNITO_USER_POOL_TYPE
           ? physicalId

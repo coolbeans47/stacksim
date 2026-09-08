@@ -63,6 +63,7 @@ template.
 | API Gateway invocation            | Regional HTTPS URL                        | `http://127.0.0.1:4567/{apiId}/{stage}/{path}`                   |
 | Direct S3 REST application origin | Regional HTTPS hostname                   | `http://{bucket}.localhost:4566`                                 |
 | Browser Cognito SDK               | Regional AWS endpoint                     | `http://127.0.0.1:4566/_stacksim/cognito-idp/{region}/sdk`       |
+| Browser Cognito Identity SDK      | Regional AWS endpoint                     | `http://127.0.0.1:4566/_stacksim/cognito-identity/{region}/sdk` |
 | S3 secure-transport policy        | Enabled                                   | Omitted only where local HTTP access is required                 |
 | CORS                              | Exact AWS web origin                      | Exact local web origin                                           |
 | CDK bootstrap                     | Bootstrap each AWS account and Region     | Do not run `cdk bootstrap`; StackSim manages a reduced bootstrap |

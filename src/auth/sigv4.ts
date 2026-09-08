@@ -28,6 +28,10 @@ export interface PrincipalContext {
   sessionTags?: Record<string, string>;
   transitiveTagKeys?: string[];
   lambdaLineage?: string[];
+  cognitoIdentityPoolId?: string;
+  cognitoIdentityId?: string;
+  cognitoIdentityAuthType?: string;
+  cognitoIdentityAuthProvider?: string;
 }
 
 export async function recordAccessKeyLastUsed(store: StateStore, accountId: string, accessKeyId: string, update: { date: number; serviceName: string; region: string }): Promise<void> {
@@ -107,7 +111,32 @@ function secretFor(store: StateStore, accessKeyId: string, clock: Clock): { secr
   const role = store.state.accounts[accountId]?.iam.roles[session.roleName];
   const material = session.credentialId ? store.credentialStore?.get(session.credentialId, { type: "sts-session", accountId, ownerId: session.principalId, accessKeyId }) : undefined;
   if (!material?.sessionToken) throw new AwsError("InvalidClientTokenId", "The security token included in the request is invalid", 403);
-  return { secret: material.secretAccessKey, token: material.sessionToken, principal: { principalType: "roleSession", accessKeyId, principalArn: session.principalArn, principalId: session.principalId, accountId, roleArn: session.roleArn, sessionArn: session.principalArn, sourceIdentity: session.sourceIdentity, issuedAt: session.issuedAt, principalTags: effectiveRoleTags(role?.tags ?? {}, session.sessionTags), sessionTags: session.sessionTags, transitiveTagKeys: session.transitiveTagKeys, lambdaLineage: session.lambdaLineage } };
+  const identity = session.cognitoIdentity;
+  return {
+    secret: material.secretAccessKey,
+    token: material.sessionToken,
+    principal: {
+      principalType: "roleSession",
+      accessKeyId,
+      principalArn: session.principalArn,
+      principalId: session.principalId,
+      accountId,
+      roleArn: session.roleArn,
+      sessionArn: session.principalArn,
+      sourceIdentity: session.sourceIdentity,
+      issuedAt: session.issuedAt,
+      principalTags: effectiveRoleTags(role?.tags ?? {}, session.sessionTags),
+      sessionTags: session.sessionTags,
+      transitiveTagKeys: session.transitiveTagKeys,
+      lambdaLineage: session.lambdaLineage,
+      ...(identity ? {
+        cognitoIdentityPoolId: identity.identityPoolId,
+        cognitoIdentityId: identity.identityId,
+        cognitoIdentityAuthType: identity.authClass,
+        cognitoIdentityAuthProvider: identity.provider,
+      } : {}),
+    },
+  };
 }
 
 export async function authenticateSigV4(req: IncomingMessage, url: URL, store: StateStore, clock: Clock, expectedRegion?: string, expectedService?: string): Promise<PrincipalContext> {
