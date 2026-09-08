@@ -11,6 +11,7 @@ function inferService(path, headers) {
   if (target.startsWith("AWSStepFunctions.")) return "states";
   if (target.startsWith("Logs_20140328.")) return "logs";
   if (target.startsWith("GraniteServiceVersion20100801.")) return "monitoring";
+  if (target.startsWith("AWSCognitoIdentityService.")) return "cognito-identity";
   if (target.startsWith("AWSCognitoIdentityProviderService.")) return "cognito-idp";
   if (target.startsWith("AmazonSSM.")) return "ssm";
   if (target.startsWith("secretsmanager.")) return "secretsmanager";
@@ -18,6 +19,7 @@ function inferService(path, headers) {
   if (pathname.startsWith("/_stacksim/api/cloudfront")) return "cloudfront";
   if (pathname.startsWith("/_stacksim/api/cloudformation/")) return "cloudformation";
   if (pathname.startsWith("/_stacksim/api/iam/")) return "iam";
+  if (pathname.startsWith("/_stacksim/api/cognito-identity/")) return "cognito-identity";
   if (pathname.startsWith("/_stacksim/api/cognito/")) return "cognito-idp";
   if (pathname.startsWith("/_stacksim/api/ses/")) return "ses";
   if (pathname.startsWith("/_stacksim/api/dynamodb/")) return "dynamodb";

@@ -8,11 +8,12 @@ export const metadata = {
   cls: "cognito",
   links: [
     ["User pools", "#/cognito/user-pools"],
+    ["Identity pools", "#/cognito-identity/identity-pools"],
     ["Overview", "#/cognito"],
   ],
   search: [
-    "cognito", "identity", "user pool", "app client", "users", "sign in", "sign up",
-    "authentication", "jwt", "jwks",
+    "cognito", "identity", "identity pool", "federated identities", "user pool", "app client",
+    "users", "sign in", "sign up", "authentication", "jwt", "jwks", "getid",
   ],
 };
 
@@ -23,7 +24,7 @@ const cognitoPanelHelp = {
   userPools: {
     level: "Supported locally",
     description: "A user pool is an application user directory. It stores users, sign-in identifiers, password and MFA rules, groups, app clients, and token settings. Create a pool when an application needs sign-up or administrator-managed users and Cognito-shaped authentication tokens.",
-    support: "User-pool creation, users, groups, password and SRP authentication, recovery, MFA, Lambda triggers, signed JWTs, and local JWKS are active and persist locally. Temporary AWS credentials are issued by the separate Cognito Identity Pools service.",
+    support: "User-pool creation, users, groups, password and SRP authentication, recovery, MFA, Lambda triggers, signed JWTs, and local JWKS are active and persist locally. Temporary AWS credentials are issued by Identity pools in this Cognito console.",
   },
   poolDetails: {
     level: "Supported locally",
@@ -252,14 +253,20 @@ function createPoolModal(context) {
 }
 
 async function landing(context) {
-  const { userPools } = await request("/_stacksim/api/cognito/user-pools");
+  const [{ userPools }, { identityPools }] = await Promise.all([
+    request("/_stacksim/api/cognito/user-pools"),
+    request("/_stacksim/api/cognito-identity/identity-pools"),
+  ]);
   const users = userPools.reduce((total, pool) => total + Number(pool.userCount), 0);
   const clients = userPools.reduce((total, pool) => total + Number(pool.appClientCount), 0);
   setChrome(context, ["Overview"]);
-  context.main.innerHTML = `<div class="page-width cognito-page">${pageHeader("Cognito", "Create local user directories, administer users and groups, confirm users through the SES Inbox, and issue signed Cognito-shaped JWTs.", '<button class="button primary" data-action="create-user-pool">Create user pool</button>')}
-    <div class="alert info"><strong>User pools development profile</strong><br>Supports self-service and administrator-created users, recovery, password and SRP authentication, refresh rotation, groups, TOTP/email MFA, Lambda triggers, signed tokens, and local JWKS. Temporary AWS credentials are issued by the separate <a href="#/cognito-identity">Cognito Identity Pools</a> console.</div>
-    <div class="cognito-summary-grid">
+  context.main.innerHTML = `<div class="page-width cognito-page">${pageHeader("Cognito", "Create local user directories, administer users and groups, confirm users through the SES Inbox, and exchange User Pool ID tokens for temporary AWS credentials.", '<button class="button primary" data-action="create-user-pool">Create user pool</button>')}
+    <div class="alert info"><strong>User pools development profile</strong><br>Supports self-service and administrator-created users, recovery, password and SRP authentication, refresh rotation, groups, TOTP/email MFA, Lambda triggers, signed tokens, and local JWKS. Temporary AWS credentials are issued by <a href="#/cognito-identity/identity-pools">Identity pools</a>.</div>
+    <div class="cognito-summary-grid cognito-product-grid">
       <section class="card"><div class="card-header"><h2>User pools</h2></div><div class="card-body"><div class="metric">${userPools.length}</div><p class="muted">Regional user directories</p><a href="#/cognito/user-pools">View user pools</a></div></section>
+      <section class="card"><div class="card-header"><h2>Identity pools</h2></div><div class="card-body"><div class="metric">${identityPools.length}</div><p class="muted">Enhanced-flow credential brokers</p><a href="#/cognito-identity/identity-pools">View identity pools</a></div></section>
+    </div>
+    <div class="cognito-summary-grid cognito-product-grid">
       <section class="card"><div class="card-header"><h2>Users</h2></div><div class="card-body"><div class="metric">${users}</div><p class="muted">Safe console summaries</p></div></section>
       <section class="card"><div class="card-header"><h2>App clients</h2></div><div class="card-body"><div class="metric">${clients}</div><p class="muted">Password and refresh clients</p></div></section>
     </div>

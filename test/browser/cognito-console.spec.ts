@@ -110,6 +110,7 @@ test.describe("Cognito console", () => {
     const errors = browserErrors(page);
     await page.goto(`${consoleUrl}#/cognito/user-pools`);
     await expect(page.getByRole("heading", { name: "User pools", exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Cognito navigation" }).getByRole("link", { name: "Identity pools" })).toBeVisible();
     await expect(page.getByText("No user pools", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Create user pool" }).first().click();
     let dialog = page.getByRole("dialog");

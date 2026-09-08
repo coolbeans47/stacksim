@@ -2,7 +2,7 @@
 
 This guide explains every panel in the StackSim Cognito console: what each setting does, why you would use it in real AWS workloads, and how it maps to production Amazon Cognito User Pools behavior.
 
-StackSim models user pools, users, groups, app clients, managed login, OAuth, federation, MFA, Lambda triggers, and signed JWTs locally. Cognito Identity Pools are a separate console and API surface that exchanges User Pool ID tokens for temporary AWS credentials. Where local behavior differs from AWS (for example DNS for hosted domains or SMS MFA), those boundaries are called out explicitly.
+StackSim models user pools, users, groups, app clients, managed login, OAuth, federation, MFA, Lambda triggers, and signed JWTs locally. Identity pools live on the same Cognito console as user pools and exchange User Pool ID tokens for temporary AWS credentials. Where local behavior differs from AWS (for example DNS for hosted domains or SMS MFA), those boundaries are called out explicitly.
 
 ---
 
@@ -24,9 +24,9 @@ The Cognito service in StackSim has a left navigation bar with these top-level a
 
 | Area | Purpose |
 |------|---------|
-| **Overview** | Account summary, integration notes, and quick links |
+| **Overview** | Account summary, user-pool and identity-pool cards, and integration notes |
 | **User pools** | Create, list, and open user pools |
-| **Identity Pools** | Separate console at `#/cognito-identity` for enhanced-flow credential brokers |
+| **Identity pools** | List and inspect enhanced-flow credential brokers |
 
 Opening a user pool shows tabs: **Overview**, **Users**, **Groups**, **App clients**, **Managed login**, **Sign-in**, and **Self-service sign-up**.
 
@@ -38,7 +38,7 @@ StackSim implements **Cognito User Pools** and a CID-01 **Cognito Identity Pools
 
 ### What it is
 
-The **Overview** page summarizes regional user pools, total users, and app clients. It also lists local integration details: JSON 1.1 protocol, SDK client, SES Inbox delivery, issuer format, and JWKS tooling route.
+The **Overview** page summarizes regional user pools and identity pools, plus total users and app clients. It also lists local integration details: JSON 1.1 protocol, SDK client, SES Inbox delivery, issuer format, and JWKS tooling route.
 
 ### Why use it
 
@@ -46,7 +46,7 @@ In AWS, the Cognito landing page orients you toward user pools, getting-started 
 
 ### How it works in StackSim
 
-Counts reflect the local installation. The summary cards link to **User pools**. A **Create user pool** button opens the pool creation modal.
+Counts reflect the local installation. Product cards link to **User pools** and **Identity pools**. A **Create user pool** button opens the pool creation modal.
 
 User counts are safe console summaries — no passwords, secrets, or token material appear on this page.
 

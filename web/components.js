@@ -48,6 +48,7 @@ export const breadcrumbGroup = (service, items, hash = location.hash) => {
     "cloudwatch:Log groups": "#/cloudwatch/log-groups",
     "iam:Roles": "#/iam/roles",
     "iam:Policies": "#/iam/policies",
+    "cognito:Identity pools": "#/cognito-identity/identity-pools",
   };
   const normalizedItems = service === "cloudwatch"
     ? items.filter((item, index) => !(String(typeof item === "string" ? item : item.label) === "Logs" && String(typeof items[index + 1] === "string" ? items[index + 1] : items[index + 1]?.label) === "Log groups"))
