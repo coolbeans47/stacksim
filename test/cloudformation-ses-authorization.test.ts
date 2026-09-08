@@ -179,6 +179,7 @@ test("current bootstrap revision retains SES, SNS, AppSync, Cognito, and Step Fu
     const supportedPassRole = allStatements.find(statement => statement.Sid === "PassSupportedServiceRoles");
     assert(Array.isArray((supportedPassRole?.Condition as any)?.StringEquals?.["iam:PassedToService"]));
     assert((supportedPassRole!.Condition as any).StringEquals["iam:PassedToService"].includes("states.amazonaws.com"));
+    assert((supportedPassRole!.Condition as any).StringEquals["iam:PassedToService"].includes("cognito-identity.amazonaws.com"));
 
     const passRoleStatements = Object.values(store.ensureAccount().iam.roles)
       .flatMap(role => Object.values(role.inlinePolicies))

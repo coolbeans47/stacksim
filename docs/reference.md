@@ -14,7 +14,7 @@ This reference describes the current repository implementation. StackSim is a bo
 
 ## Implemented service surface
 
-- AWS CDK and CloudFormation support unmodified CDK v2 deployments through a reduced local bootstrap, file assets, direct and change-set deployments, outputs and exports, updates, rollback, deletion, retention policies, and 109 registered resource providers. Nested stacks use real child stack records, local S3 template assets, parent/root relationships, linked change sets, recursive rollback, restart recovery, and retained-subtree detachment. General `Custom::*` resources use the bounded local ZIP-Lambda callback protocol. Full bootstrap templates, transforms and macros, resource import, StackSets, registry extensions, arbitrary helper ecosystems, and image-asset publication are not implied.
+- AWS CDK and CloudFormation support unmodified CDK v2 deployments through a reduced local bootstrap, file assets, direct and change-set deployments, outputs and exports, updates, rollback, deletion, retention policies, and 111 registered resource providers. Nested stacks use real child stack records, local S3 template assets, parent/root relationships, linked change sets, recursive rollback, restart recovery, and retained-subtree detachment. General `Custom::*` resources use the bounded local ZIP-Lambda callback protocol. Full bootstrap templates, transforms and macros, resource import, StackSets, registry extensions, arbitrary helper ecosystems, and image-asset publication are not implied.
 
 - DynamoDB everyday table/item CRUD, scan/query/batch behavior, exact AttributeValues, nested expressions, projections, conditions, updates, pagination, atomic transactions, deterministic Time to Live expiration, typed DynamoDB-subset PartiQL execution with official request-field pagination, exact-get/query/partition-IN/scan planning and statement-derived IAM context, a singleton/batch/transaction workbench, persistent table/capacity settings, immutable on-demand backups, second-resolution point-in-time recovery, durable Streams polling, table/index/stream resource policies, restart-safe multi-Region global tables, DynamoDB JSON/GZIP import/export to local S3 buckets through an S3-owned transfer port (optional `file://` with `STACKSIM_ALLOW_LOCAL_FILES`), contributor-insights key-frequency metrics, and configuration-only Kinesis streaming destinations.
 - Lambda local Node.js ZIP and digest-pinned OCI-image functions with lifecycle state, context, limits, timeouts/errors, execution-role credentials, resource policies, tags, versions, weighted aliases, synchronous log tail, permission-gated CloudWatch Logs output, durable asynchronous invocation, DynamoDB Streams and SQS event source mappings, SQS async/dead-letter/discarded-record destinations, account/reserved/qualified provisioned concurrency, immutable ordered layers, durable public/IAM function URLs, advanced runtime/infrastructure configuration, managed-instance capacity-provider control state, recursive-lineage protection, and durable checkpoint/replay execution. Node ZIP functions use bounded fingerprinted warm-worker pools: module state, SDK clients, private `/tmp`, and an environment's log stream persist across sequential leases, while credentials, request/deadline/context, client context, trace/correlation metadata, and lineage refresh per invocation. Concurrent invokes use different workers; code/config changes, timeout, crash, idle expiry, shutdown, and restart cold-start replacements. Provisioned concurrency reaches `READY` only after its Node ZIP workers initialize; image-function provisioned concurrency fails closed until reusable/prewarmed Docker containers exist.
@@ -455,7 +455,7 @@ aws dynamodb list-tables --endpoint-url http://127.0.0.1:4566 --region eu-west-1
 
 ## Deploy with AWS CDK and CloudFormation
 
-The same global environment configures an unmodified standard AWS CDK v2 CLI because CDK uses several service clients during one deployment. The public registry contains exactly 109 resource types:
+The same global environment configures an unmodified standard AWS CDK v2 CLI because CDK uses several service clients during one deployment. The public registry contains exactly 111 resource types:
 
 <details>
 <summary>Complete CloudFormation resource-type list</summary>
@@ -468,7 +468,7 @@ The same global environment configures an unmodified standard AWS CDK v2 CLI bec
 | CDK and CloudFormation | `AWS::CDK::Metadata`, `AWS::CloudFormation::CustomResource`, `AWS::CloudFormation::Stack` |
 | CloudFront | `AWS::CloudFront::Distribution`, `Function`, `OriginAccessControl`, `ResponseHeadersPolicy` |
 | CloudWatch | `AWS::CloudWatch::Alarm`, `AnomalyDetector`, `CompositeAlarm`, `Dashboard`, `InsightRule`, `MetricStream` |
-| Cognito | `AWS::Cognito::UserPool`, `UserPoolClient`, `UserPoolDomain`, `UserPoolGroup`, `UserPoolIdentityProvider`, `UserPoolResourceServer`, `UserPoolUser`, `UserPoolUserToGroupAttachment` |
+| Cognito | `AWS::Cognito::IdentityPool`, `IdentityPoolRoleAttachment`, `UserPool`, `UserPoolClient`, `UserPoolDomain`, `UserPoolGroup`, `UserPoolIdentityProvider`, `UserPoolResourceServer`, `UserPoolUser`, `UserPoolUserToGroupAttachment` |
 | DynamoDB | `AWS::DynamoDB::GlobalTable`, `Table` |
 | EventBridge | `AWS::Events::EventBus`, `Rule` |
 | IAM | `AWS::IAM::ManagedPolicy`, `Policy`, `Role` |
