@@ -16,6 +16,7 @@ const userPool = new cognito.UserPool(stack, "Users", {
   signInAliases: { email: true },
   selfSignUpEnabled: true,
   autoVerify: { email: true },
+  accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
 });
 const client = userPool.addClient("Web", {
   userPoolClientName: "cid01-web",
