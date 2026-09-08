@@ -470,8 +470,8 @@ test("CID-01 public Identity actions ignore caller IAM and unknown Identity targ
     }, { credentials: restricted });
     assert.equal(denied.status, 403);
     assert.equal(denied.payload.__type, "AccessDeniedException");
-    const listed = await identityJson(simulator, "ListIdentityPools", { MaxResults: 1 }, { credentials: restricted });
-    assert.equal(listed.status, 200);
+    const allowed = await identityJson(simulator, "ListIdentityPools", { MaxResults: 1 }, { credentials: restricted });
+    assert.equal(allowed.status, 200);
     const unsigned = await identityJson(simulator, "GetId", { IdentityPoolId: pool.IdentityPoolId });
     assert.equal(unsigned.status, 200);
     const unsignedControl = await identityJson(simulator, "ListIdentityPools", { MaxResults: 1 });

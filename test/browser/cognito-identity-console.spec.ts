@@ -17,7 +17,7 @@ function browserErrors(page: Page): string[] {
   page.on("pageerror", error => errors.push(`pageerror: ${error.message}`));
   page.on("requestfailed", request => errors.push(`requestfailed: ${request.method()} ${request.url()} (${request.failure()?.errorText ?? "unknown"})`));
   page.on("response", response => {
-    if (response.status >= 400) errors.push(`http ${response.status}: ${response.request().method()} ${response.url()}`);
+    if (response.status() >= 400) errors.push(`http ${response.status()}: ${response.request().method()} ${response.url()}`);
   });
   return errors;
 }

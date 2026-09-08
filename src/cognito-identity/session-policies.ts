@@ -7,10 +7,10 @@ import type { PolicyDocument } from "../types.js";
  */
 export const COGNITO_UNAUTH_INLINE_SESSION_POLICY: PolicyDocument = Object.freeze({
   Version: "2012-10-17",
-  Statement: Object.freeze([
-    Object.freeze({
+  Statement: [
+    {
       Effect: "Allow" as const,
-      Action: Object.freeze([
+      Action: [
         "cloudwatch:*",
         "logs:*",
         "dynamodb:*",
@@ -43,11 +43,11 @@ export const COGNITO_UNAUTH_INLINE_SESSION_POLICY: PolicyDocument = Object.freez
         "textract:DetectDocumentText",
         "textract:AnalyzeDocument",
         "sdb:*",
-      ]),
-      Resource: Object.freeze(["*"]),
-    }),
-  ]),
-});
+      ],
+      Resource: ["*"],
+    },
+  ],
+}) as PolicyDocument;
 
 /**
  * AWS managed `AmazonCognitoUnAuthedIdentitiesSessionPolicy` v4 as published
@@ -55,11 +55,11 @@ export const COGNITO_UNAUTH_INLINE_SESSION_POLICY: PolicyDocument = Object.freez
  */
 export const COGNITO_UNAUTH_MANAGED_SESSION_POLICY: PolicyDocument = Object.freeze({
   Version: "2012-10-17",
-  Statement: Object.freeze([
-    Object.freeze({
+  Statement: [
+    {
       Sid: "CognitoUnAuthedIdentitiesSessionPolicy",
       Effect: "Allow" as const,
-      Action: Object.freeze([
+      Action: [
         "rum:PutRumEvents",
         "sagemaker:InvokeEndpoint",
         "polly:*",
@@ -86,11 +86,11 @@ export const COGNITO_UNAUTH_MANAGED_SESSION_POLICY: PolicyDocument = Object.free
         "kms:GenerateDataKeyPair",
         "kms:GenerateDataKeyPairWithoutPlaintext",
         "kms:GenerateDataKeyWithoutPlaintext",
-      ]),
+      ],
       Resource: "*",
-    }),
-  ]),
-});
+    },
+  ],
+}) as PolicyDocument;
 
 export function guestSessionPolicies(): PolicyDocument[] {
   return [

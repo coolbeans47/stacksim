@@ -140,7 +140,7 @@ test("CID-01 CloudFormation providers register Identity Pool and RoleAttachment 
     assert.equal(poolProvider.getAtt(poolCreated.model, "Name"), "cfn-identity-pool");
     const described = await simulator.cognitoIdentity.executeCloudFormationControl("DescribeIdentityPool", { IdentityPoolId: poolId });
     assert.equal(described.IdentityPoolName, "cfn-identity-pool");
-    const noOp = poolProvider.plan(poolDesired, poolDesired);
+    const noOp = poolProvider.plan(poolDesired, poolDesired, context("Pool"));
     assert.equal(noOp.action, "NO_OP");
 
     await iam.send(new CreateRoleCommand({
@@ -157,7 +157,7 @@ test("CID-01 CloudFormation providers register Identity Pool and RoleAttachment 
     if (attachmentCreated.status !== "SUCCESS") return;
     assert.equal(attachmentProvider.ref(attachmentCreated.model), poolId);
     assert.equal(attachmentProvider.getAtt(attachmentCreated.model, "Id"), poolId);
-    const roles = await simulator.cognitoIdentity.executeCloudFormationControl("GetIdentityPoolRoles", { IdentityPoolId: poolId });
+    const roles = await simulator.cognitoIdentity.executeCloudFormationControl("GetIdentityPoolRoles", { IdentityPoolId: poolId }) as { Roles?: { authenticated?: string } };
     assert.equal(roles.Roles?.authenticated, roleArn);
 
     const renamed = poolProvider.canonicalize({
@@ -177,7 +177,7 @@ test("CID-01 CloudFormation providers register Identity Pool and RoleAttachment 
     const replacement = attachmentProvider.plan(attachmentDesired, attachmentProvider.canonicalize({
       IdentityPoolId: "eu-west-1:11111111-1111-1111-1111-111111111111",
       Roles: { authenticated: roleArn },
-    }, context("Roles")));
+    }, context("Roles")), context("Roles"));
     assert.equal(replacement.action, "REPLACE");
 
     assert.equal((await attachmentProvider.delete(poolId, attachmentDesired, context("Roles"))).status, "SUCCESS");

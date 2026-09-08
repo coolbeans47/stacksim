@@ -230,7 +230,7 @@ function createPoolProvider(service: CognitoIdentityService): ProductionResource
     async read(physicalId): Promise<ProviderReadResult<Model>> {
       try {
         const model = await readPool(service, physicalId);
-        return { status: "SUCCESS", model };
+        return { status: "SUCCESS", physicalId, model };
       } catch (error) {
         return isMissing(error) ? { status: "NOT_FOUND" } : failed(error) as ProviderReadResult<Model>;
       }
@@ -286,7 +286,7 @@ function createAttachmentProvider(service: CognitoIdentityService): ProductionRe
           properties: canonicalAttachment({ IdentityPoolId: physicalId, Roles: raw.Roles }),
           attributes: Object.freeze({ Id: physicalId }),
         });
-        return { status: "SUCCESS", model };
+        return { status: "SUCCESS", physicalId, model };
       } catch (error) {
         return isMissing(error) ? { status: "NOT_FOUND" } : failed(error) as ProviderReadResult<Model>;
       }
