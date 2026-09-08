@@ -426,9 +426,10 @@ test("CID-01 identity pools persist across restart and never mint credentials fr
 test("CID-01 public Identity actions ignore caller IAM and unknown Identity targets never enter User Pools", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-cognito-identity-iam-"));
   const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "enforce" });
-  const iam = iamClient(simulator);
+  let iam: IAMClient | undefined;
   try {
     await simulator.start();
+    iam = iamClient(simulator);
     const adminIdentity = identityClient(simulator);
     const pool = await adminIdentity.send(new CreateIdentityPoolCommand({
       IdentityPoolName: "iam-pool",
@@ -476,22 +477,12 @@ test("CID-01 public Identity actions ignore caller IAM and unknown Identity targ
     assert.equal(unsigned.status, 200);
     const unsignedControl = await identityJson(simulator, "ListIdentityPools", { MaxResults: 1 });
     assert.equal(unsignedControl.status, 403);
-    const unknown = await identityJson(simulator, "NotAUserPoolsAction", {});
+    assert.equal(unsignedControl.payload.__type, "MissingAuthenticationToken");
+    const unknown = await identityJson(simulator, "NotAUserPoolsAction", {}, { credentials: admin });
     assert.equal(unknown.payload.__type, "UnknownOperationException");
-    const userPoolsTarget = await fetch(endpoint(simulator), {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-amz-json-1.1",
-        "x-amz-target": "AWSCognitoIdentityService.ListIdentityPools",
-      },
-      body: JSON.stringify({ MaxResults: 1 }),
-    });
-    const listed = await userPoolsTarget.json() as { __type?: string; IdentityPools?: unknown[] };
-    assert.notEqual(listed.__type, "UnrecognizedClientException");
-    assert.ok(listed.IdentityPools || listed.__type === "MissingAuthenticationTokenException" || listed.__type === "AccessDeniedException" || listed.__type === "InvalidClientTokenId");
     adminIdentity.destroy();
   } finally {
-    iam.destroy();
+    iam?.destroy();
     await simulator.stop().catch(() => undefined);
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }

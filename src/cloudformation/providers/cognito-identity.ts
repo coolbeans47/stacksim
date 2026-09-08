@@ -61,7 +61,7 @@ export const COGNITO_IDENTITY_POOL_SCHEMA: ProviderSchema = Object.freeze({
     Id: Object.freeze({ valueType: "string" }),
     Name: Object.freeze({ valueType: "string" }),
   }),
-  replacement: Object.freeze({ defaultOrder: "DELETE_BEFORE_CREATE" as const }),
+  replacement: Object.freeze({ defaultOrder: "CREATE_BEFORE_DELETE" as const }),
   retention: CFN10_RETENTION,
   tags: Object.freeze({ behavior: "STACK_AND_RESOURCE" as const, propertyName: "IdentityPoolTags", propagatesCloudFormationTags: true }),
 });
