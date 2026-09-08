@@ -53,7 +53,7 @@ test.describe("Cognito Identity Pools console", () => {
         IdentityPoolName: "browser-identities",
         AllowUnauthenticatedIdentities: false,
       }));
-      await page.goto(`${consoleUrl}#/cognito-identity/identity-pools`);
+      await page.reload();
       await expect(page.getByRole("link", { name: "browser-identities" })).toBeVisible();
       await page.getByRole("link", { name: "browser-identities" }).click();
       await expect(page.getByRole("heading", { name: "browser-identities", exact: true })).toBeVisible();

@@ -234,8 +234,9 @@ test("CID-01 pinned CDK Identity L1 fixture synthesizes without PrincipalTag/Rol
         sessionToken: credentials.Credentials!.SessionToken,
       },
     });
-    assert.equal(response.status, 200, await response.text());
-    assert.equal((await response.json() as { ok?: boolean }).ok, true);
+    const body = await response.text();
+    assert.equal(response.status, 200, body);
+    assert.equal((JSON.parse(body) as { ok?: boolean }).ok, true);
   } finally {
     for (const client of clients) client.destroy();
     await simulator.stop().catch(() => undefined);
