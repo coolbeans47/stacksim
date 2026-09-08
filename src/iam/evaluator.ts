@@ -207,7 +207,18 @@ export function evaluateAuthorization(iam: IamState, principal: PrincipalContext
   const session = iam.sessions[principal.accessKeyId]; if (!session) return { decision: "implicitDeny", reason: "The principal has no identity policies", matchedStatements: [] };
   const role = iam.roles[session.roleName]; if (!role) return { decision: "implicitDeny", reason: "The session role no longer exists", matchedStatements: [] };
   const documents = [...Object.values(role.inlinePolicies), ...role.attachedPolicyArns.map(arn => iam.policies[arn]?.versions[iam.policies[arn]?.defaultVersionId]?.document).filter(Boolean)]; const identity = evaluateDocuments(documents, action, resource, context);
-  const limited = session.sessionPolicy ? evaluateDocuments([session.sessionPolicy], action, resource, context) : undefined;
+  const sessionDocuments = session.sessionPolicies?.length
+    ? session.sessionPolicies
+    : session.sessionPolicy
+      ? [session.sessionPolicy]
+      : [];
+  const sessionLayers = sessionDocuments.map(document => evaluateDocuments([document], action, resource, context));
+  const limited = sessionLayers.length
+    ? sessionLayers.find(layer => layer.decision === "explicitDeny")
+      ?? (sessionLayers.every(layer => layer.decision === "allowed")
+        ? { decision: "allowed" as const, reason: "Every session policy allows the action", matchedStatements: sessionLayers.flatMap(layer => layer.matchedStatements) }
+        : { decision: "implicitDeny" as const, reason: "A session policy does not allow the action", matchedStatements: sessionLayers.flatMap(layer => layer.matchedStatements) })
+    : undefined;
   const policy = role.permissionsBoundaryArn ? iam.policies[role.permissionsBoundaryArn] : undefined;
   const boundary = role.permissionsBoundaryArn ? policy ? evaluateDocuments([policy.versions[policy.defaultVersionId].document], action, resource, context) : { decision: "implicitDeny" as const, reason: "Permissions boundary was not found", matchedStatements: [] } : undefined;
   const layers: AuthorizationLayers = { identity, ...(limited ? { session: limited } : {}), ...(boundary ? { boundary } : {}) };

@@ -10,6 +10,7 @@ export const CLOUDFORMATION_RESOURCE_INVENTORY = [
   "AWS::CDK::Metadata", "AWS::CloudFormation::CustomResource", "AWS::CloudFormation::Stack",
   "AWS::CloudFront::Distribution", "AWS::CloudFront::Function", "AWS::CloudFront::OriginAccessControl", "AWS::CloudFront::ResponseHeadersPolicy",
   "AWS::CloudWatch::Alarm", "AWS::CloudWatch::AnomalyDetector", "AWS::CloudWatch::CompositeAlarm", "AWS::CloudWatch::Dashboard", "AWS::CloudWatch::InsightRule", "AWS::CloudWatch::MetricStream",
+  "AWS::Cognito::IdentityPool", "AWS::Cognito::IdentityPoolRoleAttachment",
   "AWS::Cognito::UserPool", "AWS::Cognito::UserPoolClient", "AWS::Cognito::UserPoolDomain", "AWS::Cognito::UserPoolGroup",
   "AWS::Cognito::UserPoolIdentityProvider", "AWS::Cognito::UserPoolResourceServer", "AWS::Cognito::UserPoolUser", "AWS::Cognito::UserPoolUserToGroupAttachment",
   "AWS::DynamoDB::GlobalTable", "AWS::DynamoDB::Table", "AWS::Events::EventBus", "AWS::Events::Rule", "AWS::IAM::ManagedPolicy", "AWS::IAM::Policy", "AWS::IAM::Role",

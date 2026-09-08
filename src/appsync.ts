@@ -508,6 +508,21 @@ function resolverHeaders(req: IncomingMessage): Record<string, string> {
     .map(([name, value]) => [name.toLowerCase(), Array.isArray(value) ? value.join(",") : String(value)]));
 }
 
+function iamResolverIdentity(principal: PrincipalContext, sourceIp: string[]): Record<string, unknown> {
+  return {
+    accountId: principal.accountId,
+    sourceIp,
+    username: principal.userName ?? principal.principalId,
+    userArn: principal.principalArn,
+    ...(principal.cognitoIdentityPoolId ? {
+      cognitoIdentityPoolId: principal.cognitoIdentityPoolId,
+      cognitoIdentityId: principal.cognitoIdentityId,
+      cognitoIdentityAuthType: principal.cognitoIdentityAuthType,
+      cognitoIdentityAuthProvider: principal.cognitoIdentityAuthProvider,
+    } : {}),
+  };
+}
+
 function requireString(value: unknown, name: string, maximum = 65_536): string {
   if (typeof value !== "string" || value.length < 1 || value.length > maximum) {
     throw new AwsError("BadRequestException", `${name} must be a non-empty string no longer than ${maximum} characters.`, 400);
@@ -1067,10 +1082,7 @@ export class AppSyncService {
       if (!resolver || resolver.kind !== "PIPELINE") throw new AwsError("ResolverNotFound", "The generated subscription pipeline resolver is required.", 400);
       const evaluation = await this.executePipelineResolver(api, resolver, {
         arguments: structuredClone(args), source: null,
-        identity: auth.mode === "AWS_IAM" ? {
-          accountId: auth.principal.accountId, sourceIp: [], username: auth.principal.userName ?? auth.principal.principalId,
-          userArn: auth.principal.principalArn,
-        } : null,
+        identity: auth.mode === "AWS_IAM" ? iamResolverIdentity(auth.principal, []) : null,
         stash: {}, request: { headers: {} },
         info: { fieldName: root.fieldName, parentTypeName: subscriptionType.name, variables: structuredClone(input.variables ?? {}) },
         authType: auth.mode === "AWS_IAM" ? "IAM Authorization" : "API Key Authorization",
@@ -1948,12 +1960,9 @@ export class AppSyncService {
         const resolverContext = {
           arguments: structuredClone(args),
           source: source === undefined ? null : structuredClone(source),
-          identity: authorizationMode === "AWS_IAM" && principal ? {
-            accountId: principal.accountId,
-            sourceIp: [req.socket.remoteAddress?.replace(/^::ffff:/, "") ?? ""],
-            username: principal.userName ?? principal.principalId,
-            userArn: principal.principalArn,
-          } : null,
+          identity: authorizationMode === "AWS_IAM" && principal
+            ? iamResolverIdentity(principal, [req.socket.remoteAddress?.replace(/^::ffff:/, "") ?? ""])
+            : null,
           stash: {},
           request: { headers: resolverHeaders(req) },
           info: {

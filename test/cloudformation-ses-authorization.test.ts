@@ -27,6 +27,7 @@ import {
   cdkBootstrapNames,
 } from "../src/cloudformation/bootstrap.js";
 import { COGNITO_CLOUDFORMATION_EXECUTION_ACTIONS } from "../src/cloudformation/providers/cognito.js";
+import { COGNITO_IDENTITY_CLOUDFORMATION_EXECUTION_ACTIONS } from "../src/cloudformation/providers/cognito-identity.js";
 import {
   SES_CLOUDFORMATION_AUTHORIZATION_MATRIX,
   SES_CONFIGURATION_SET_EVENT_DESTINATION_TYPE,
@@ -114,13 +115,14 @@ test("current bootstrap revision retains SES, SNS, AppSync, Cognito, and Step Fu
     const policy = executionRole.inlinePolicies[CDK_BOOTSTRAP_POLICY_NAME];
     const allStatements = statements(policy);
 
-    assert.equal(CDK_BOOTSTRAP_POLICY_REVISION, 19);
+    assert.equal(CDK_BOOTSTRAP_POLICY_REVISION, 20);
     assert.equal(bootstrap.policyRevision, CDK_BOOTSTRAP_POLICY_REVISION);
     assert.equal(executionRole.tags["stacksim:policy-revision"], String(CDK_BOOTSTRAP_POLICY_REVISION));
     const cognitoPolicyArn = `arn:aws:iam::${accountId}:policy/${CDK_BOOTSTRAP_COGNITO_POLICY_NAME}`;
     const cognitoPolicy = store.ensureAccount().iam.policies[cognitoPolicyArn];
     assert(cognitoPolicy);
     assert.deepEqual(actionList(statements(cognitoPolicy.versions[cognitoPolicy.defaultVersionId].document)[0]).sort(), [...COGNITO_CLOUDFORMATION_EXECUTION_ACTIONS]);
+    assert.deepEqual(actionList(statements(cognitoPolicy.versions[cognitoPolicy.defaultVersionId].document)[1]).sort(), [...COGNITO_IDENTITY_CLOUDFORMATION_EXECUTION_ACTIONS]);
     assert.deepEqual(executionRole.attachedPolicyArns, [cognitoPolicyArn]);
 
     const expected = [
@@ -177,6 +179,7 @@ test("current bootstrap revision retains SES, SNS, AppSync, Cognito, and Step Fu
     const supportedPassRole = allStatements.find(statement => statement.Sid === "PassSupportedServiceRoles");
     assert(Array.isArray((supportedPassRole?.Condition as any)?.StringEquals?.["iam:PassedToService"]));
     assert((supportedPassRole!.Condition as any).StringEquals["iam:PassedToService"].includes("states.amazonaws.com"));
+    assert((supportedPassRole!.Condition as any).StringEquals["iam:PassedToService"].includes("cognito-identity.amazonaws.com"));
 
     const passRoleStatements = Object.values(store.ensureAccount().iam.roles)
       .flatMap(role => Object.values(role.inlinePolicies))

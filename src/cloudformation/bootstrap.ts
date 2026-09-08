@@ -5,6 +5,7 @@ import type { S3Service } from "../s3.js";
 import type { StateStore } from "../state.js";
 import type { CloudFormationBootstrapState, PolicyDocument } from "../types.js";
 import { COGNITO_CLOUDFORMATION_EXECUTION_ACTIONS } from "./providers/cognito.js";
+import { COGNITO_IDENTITY_CLOUDFORMATION_EXECUTION_ACTIONS } from "./providers/cognito-identity.js";
 import {
   SES_CLOUDFORMATION_AUTHORIZATION_MATRIX,
   SES_CLOUDFORMATION_RESOURCE_TYPES,
@@ -25,7 +26,7 @@ export const CDK_BOOTSTRAP_QUALIFIER = "hnb659fds";
 // permissions backed by StackSim's bounded providers; they do not advertise
 // the cumulative upstream version 30 template.
 export const CDK_BOOTSTRAP_COMPATIBILITY_VERSION = 23;
-export const CDK_BOOTSTRAP_POLICY_REVISION = 19;
+export const CDK_BOOTSTRAP_POLICY_REVISION = 20;
 export const CDK_BOOTSTRAP_VERSION_PARAMETER = `/cdk-bootstrap/${CDK_BOOTSTRAP_QUALIFIER}/version`;
 export const CDK_BOOTSTRAP_POLICY_NAME = "stacksim-cdk-bootstrap";
 export const CDK_BOOTSTRAP_COGNITO_POLICY_NAME = "stacksim-cdk-bootstrap-cognito";
@@ -207,12 +208,20 @@ function snsActions(): string[] {
 function cognitoOnlyExecutionPolicy(): PolicyDocument {
   return {
     Version: "2012-10-17",
-    Statement: [{
-      Sid: "ManageCognitoUserPools",
-      Effect: "Allow",
-      Action: [...COGNITO_CLOUDFORMATION_EXECUTION_ACTIONS],
-      Resource: "*",
-    }],
+    Statement: [
+      {
+        Sid: "ManageCognitoUserPools",
+        Effect: "Allow",
+        Action: [...COGNITO_CLOUDFORMATION_EXECUTION_ACTIONS],
+        Resource: "*",
+      },
+      {
+        Sid: "ManageCognitoIdentityPools",
+        Effect: "Allow",
+        Action: [...COGNITO_IDENTITY_CLOUDFORMATION_EXECUTION_ACTIONS],
+        Resource: "*",
+      },
+    ],
   };
 }
 
@@ -292,7 +301,7 @@ function executionPolicy(bucketName: string, accountId: string, region: string):
         Effect: "Allow",
         Action: "iam:PassRole",
         Resource: `arn:aws:iam::${accountId}:role/*`,
-        Condition: { StringEquals: { "iam:PassedToService": ["apigateway.amazonaws.com", "appsync.amazonaws.com", "cognito-idp.amazonaws.com", "lambda.amazonaws.com", "logs.amazonaws.com", "states.amazonaws.com", "streams.metrics.cloudwatch.amazonaws.com"] } },
+        Condition: { StringEquals: { "iam:PassedToService": ["apigateway.amazonaws.com", "appsync.amazonaws.com", "cognito-idp.amazonaws.com", "cognito-identity.amazonaws.com", "lambda.amazonaws.com", "logs.amazonaws.com", "states.amazonaws.com", "streams.metrics.cloudwatch.amazonaws.com"] } },
       },
       {
         Sid: "ManageLambdaResources",

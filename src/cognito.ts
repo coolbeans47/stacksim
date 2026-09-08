@@ -10906,4 +10906,56 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }).sort();
     return createHash("sha256").update(versions.join("\0")).digest("hex");
   }
+
+  /**
+   * Read-only ID-token proof used by Cognito Identity Pools. Does not write
+   * User Pools state and never fetches JWKS over the network.
+   */
+  verifyIdentityPoolIdToken(input: {
+    userPoolId: string;
+    clientId: string;
+    token: string;
+    serverSideTokenCheck: boolean;
+  }): { sub: string; originJti?: string } {
+    const pool = this.state.pools[input.userPoolId];
+    if (!pool || !pool.clients[input.clientId]) {
+      throw new AwsError("NotAuthorizedException", "Invalid login token.");
+    }
+    let verified;
+    try {
+      const escaped = input.clientId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      verified = verifyCognitoRestToken(pool, this.region, this.clock.now(), {
+        token: input.token,
+        expectedUse: "id",
+        audienceExpression: `^${escaped}$`,
+      });
+    } catch (error) {
+      if (error instanceof CognitoRestTokenError || error instanceof CognitoRestConfigurationError) {
+        throw new AwsError("NotAuthorizedException", "Invalid login token.");
+      }
+      throw error;
+    }
+    const sub = verified.claims.sub;
+    if (typeof sub !== "string" || !sub) {
+      throw new AwsError("NotAuthorizedException", "Invalid login token.");
+    }
+    const originJti = typeof verified.claims.origin_jti === "string" ? verified.claims.origin_jti : undefined;
+    if (input.serverSideTokenCheck) {
+      const user = pool.usersBySub[sub];
+      if (!user || !user.enabled) {
+        throw new AwsError("NotAuthorizedException", "Invalid login token.");
+      }
+      if (originJti) {
+        const active = Object.values(pool.refreshSessions).some(session =>
+          session.status === "ACTIVE"
+          && session.userSub === sub
+          && session.originJti === originJti
+        );
+        if (!active) {
+          throw new AwsError("NotAuthorizedException", "Invalid login token.");
+        }
+      }
+    }
+    return { sub, ...(originJti ? { originJti } : {}) };
+  }
 }

@@ -108,7 +108,7 @@ test("bootstrap manager creates the reduced CDK contract durably and idempotentl
     ].sort());
     assert.deepEqual(statements(executionDocument).find(statement => statement.Sid === "PassSupportedServiceRoles"), {
       Sid: "PassSupportedServiceRoles", Effect: "Allow", Action: "iam:PassRole", Resource: `arn:aws:iam::${ACCOUNT}:role/*`,
-      Condition: { StringEquals: { "iam:PassedToService": ["apigateway.amazonaws.com", "appsync.amazonaws.com", "cognito-idp.amazonaws.com", "lambda.amazonaws.com", "logs.amazonaws.com", "states.amazonaws.com", "streams.metrics.cloudwatch.amazonaws.com"] } },
+      Condition: { StringEquals: { "iam:PassedToService": ["apigateway.amazonaws.com", "appsync.amazonaws.com", "cognito-idp.amazonaws.com", "cognito-identity.amazonaws.com", "lambda.amazonaws.com", "logs.amazonaws.com", "states.amazonaws.com", "streams.metrics.cloudwatch.amazonaws.com"] } },
     });
     assert.deepEqual(actions(executionDocument, "ManageAppSyncResources"), [
       "appsync:*Function*",

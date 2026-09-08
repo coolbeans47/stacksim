@@ -85,6 +85,7 @@ import { migrateV84ToV85 } from "./v84-to-v85.js";
 import { migrateV85ToV86 } from "./v85-to-v86.js";
 import { migrateV86ToV87 } from "./v86-to-v87.js";
 import { migrateV87ToV88 } from "./v87-to-v88.js";
+import { migrateV88ToV89 } from "./v88-to-v89.js";
 
 export function migrateState(input: unknown, accountId: string, region: string): { state: SimState; migrated: boolean } {
   const version = Number((input as any)?.schemaVersion ?? 1);
@@ -184,6 +185,7 @@ export function migrateState(input: unknown, accountId: string, region: string):
   if (version <= 85) state = migrateV85ToV86(state);
   if (version <= 86) state = migrateV86ToV87(state);
   if (version <= 87) state = migrateV87ToV88(state);
+  if (version <= 88) state = migrateV88ToV89(state);
   if (version < CURRENT_SCHEMA_VERSION) return { state, migrated: true };
   if (version === CURRENT_SCHEMA_VERSION) return { state: structuredClone(input) as SimState, migrated: false };
   throw new Error(`No migration path exists from state schema ${version}`);

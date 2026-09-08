@@ -103,19 +103,27 @@ http://127.0.0.1:4566/_stacksim/cognito-idp/eu-west-1/sdk
 
 HTTP and HTTPS browser apps served from `localhost`, `127.0.0.0/8`, or `[::1]` are allowed by default on any port, so an ordinary local development server needs no additional StackSim setting.
 
+Identity Pools use a separate regional alias:
+
+```text
+http://127.0.0.1:4566/_stacksim/cognito-identity/eu-west-1/sdk
+```
+
 For a non-loopback development hostname, add its exact origin when starting StackSim. The setting is a JSON array, and origins must not include a trailing slash or path:
 
 ```bash
 export STACKSIM_COGNITO_SDK_CORS_ORIGINS='["https://app.dev.example"]'
+export STACKSIM_COGNITO_IDENTITY_SDK_CORS_ORIGINS='["https://app.dev.example"]'
 npm start
 ```
 
 ```powershell
 $env:STACKSIM_COGNITO_SDK_CORS_ORIGINS = '["https://app.dev.example"]'
+$env:STACKSIM_COGNITO_IDENTITY_SDK_CORS_ORIGINS = '["https://app.dev.example"]'
 npm start
 ```
 
-The default does not include `*.localhost`, hostnames that merely contain `localhost`, or private-LAN addresses. This policy applies only to the regional Cognito SDK alias and does not weaken Cognito's operation-specific authentication. It also cannot make an HTTPS page call the HTTP endpoint; use a same-origin HTTPS proxy in that case.
+The default does not include `*.localhost`, hostnames that merely contain `localhost`, or private-LAN addresses. This policy applies only to the regional Cognito User Pools and Identity Pools SDK aliases and does not weaken operation-specific authentication. It also cannot make an HTTPS page call the HTTP endpoint; use a same-origin HTTPS proxy in that case.
 
 ## Supported services
 
@@ -138,7 +146,8 @@ StackSim focuses on useful learning workflows rather than complete AWS parity. U
 | Amazon EventBridge and Scheduler | Buses, rules, event patterns, input transforms, Lambda/SQS/API Gateway/Logs/Standard Step Functions targets, retries, DLQs, encrypted local archives, selected-rule replay, and schedules with immutable admitted occurrences across update/delete/restart | Pipes, API destinations, Schemas, partner events, customer-managed KMS, and cross-account delivery |
 | Amazon CloudWatch | Logs, metrics, alarms, dashboards, metric math, bounded Logs/Metrics Insights, subscriptions, streams, and contributor insights. See the generated [Logs Insights capability manifest](docs/generated/cloudwatch-logs-insights-capabilities.json) for production-level grammar, function, API, log-class, and limit coverage. | The complete Insights query languages and action catalogs, plus AWS-managed telemetry infrastructure |
 | AWS IAM and STS | Users, groups, access keys, roles, policies, exact path-qualified authorization targets, SigV4 enforcement, `AssumeRole`, session policies/tags, and caller identity | IAM Identity Center, Organizations, and the complete IAM/STS administration surface |
-| Amazon Cognito user pools | Users, groups, password/SRP auth, MFA, remembered-device tracking (`DeviceConfiguration`, `NewDeviceMetadata`, device SRP challenges), basic `V1_0` token triggers, OAuth, local domains, OIDC, SAML, API Gateway authorizers, and eight CloudFormation/CDK user-pool resource types | `V2_0`/`V3_0` and M2M advanced token customization, Cognito identity pools, production federation breadth, unsupported `AWS::Cognito::*` types/properties, and the complete Cognito action catalog |
+| Amazon Cognito user pools | Users, groups, password/SRP auth, MFA, remembered-device tracking (`DeviceConfiguration`, `NewDeviceMetadata`, device SRP challenges), basic `V1_0` token triggers, OAuth, local domains, OIDC, SAML, API Gateway authorizers, and eight CloudFormation/CDK user-pool resource types | `V2_0`/`V3_0` and M2M advanced token customization, production federation breadth, unsupported `AWS::Cognito::*` types/properties, and the complete Cognito User Pools action catalog |
+| Amazon Cognito Identity Pools | Enhanced `GetId` / `GetCredentialsForIdentity`, User Pool ID-token login, guest identities when enabled, IAM control APIs, `AWS::Cognito::IdentityPool`, and `AWS::Cognito::IdentityPoolRoleAttachment` | Classic flow, role mappings, principal tags, social IdPs, developer identities, public `AssumeRoleWithWebIdentity`, Amplify default Auth, and the remaining Identity action catalog |
 | Amazon SES | SES v1/v2 sending, identities, templates, configuration sets, quotas, and a durable local inbox | External SMTP delivery, production DKIM/reputation behavior, ISP feedback, and advanced delivery families |
 | AWS Systems Manager Parameter Store | Standard/Advanced `String`, `StringList`, and locally protected `SecureString` parameters; selectors; history; hierarchy reads; tags; exact expiration/notification/no-change policies with safe EventBridge events; IAM; dynamic references; and `AWS::SSM::Parameter` | General Systems Manager, KMS `KeyId`, Intelligent-Tiering/account tier settings, sharing, and the full SSM catalog |
 | AWS Secrets Manager | Secret lifecycle, encrypted values, stages and rollback, batch reads, configured-account policies, deletion/recovery, IAM, dynamic references, existing permitted non-VPC Lambda rotation, bounded local RDS attachment/managed credentials, and four CloudFormation resource types | Hosted/VPC rotation, arbitrary target services, replication, cross-account policies, customer KMS, and the complete Secrets Manager catalog |
@@ -185,7 +194,7 @@ Panel-by-panel references for every StackSim service console (what each setting 
 | [CloudFormation](docs/cloudformation-console-guide.md) | Stacks, change sets, exports, events, and local CDK setup |
 | [CloudFront](docs/cloudfront-console-guide.md) | Canonical distribution identity, local HTTPS viewers, Functions, OAC, response policies, invalidations, and cache diagnostics |
 | [CloudWatch](docs/cloudwatch-console-guide.md) | Metrics, alarms, dashboards, log groups, Logs Insights, and Contributor Insights |
-| [Cognito](docs/cognito-console-guide.md) | User pools, app clients, hosted UI, and triggers |
+| [Cognito](docs/cognito-console-guide.md) | User pools, Identity Pools, app clients, hosted UI, and triggers |
 | [DynamoDB](docs/dynamodb-console-guide.md) | Tables, items, streams, backups, PartiQL, and global tables |
 | [EventBridge](docs/eventbridge-console-guide.md) | Event buses, rules, Sandbox, and Scheduler |
 | [IAM](docs/iam-console-guide.md) | Users, groups, roles, policies, and authorization decisions |

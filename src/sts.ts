@@ -9,7 +9,7 @@ import { validatePolicyDocument } from "./iam.js";
 import { canonicalPolicyDocument } from "./iam/policy-storage.js";
 import { awsQueryErrorXml, parseAwsQuery, sendAwsQueryXml } from "./protocols/query-xml.js";
 import type { StateStore } from "./state.js";
-import type { PolicyDocument, PolicyStatement } from "./types.js";
+import type { IamRoleState, LocalCredentialState, PolicyDocument, PolicyStatement } from "./types.js";
 import { readBody } from "./util.js";
 
 const NAMESPACE = "https://sts.amazonaws.com/doc/2011-06-15/";
@@ -56,6 +56,104 @@ export class StsService {
       principalTags: effectiveRoleTags(role?.tags ?? {}, session.sessionTags),
       sessionTags: structuredClone(session.sessionTags),
       transitiveTagKeys: [...(session.transitiveTagKeys ?? [])],
+    };
+  }
+
+  private persistRoleSession(input: {
+    role: IamRoleState;
+    sessionName: string;
+    durationSeconds: number;
+    sourceIdentity?: string;
+    sessionTags: Record<string, string>;
+    transitiveTagKeys: string[];
+    sessionPolicy?: PolicyDocument;
+    sessionPolicies?: PolicyDocument[];
+    skipPackedPolicyCheck?: boolean;
+    cognitoIdentity?: LocalCredentialState["cognitoIdentity"];
+  }): Promise<{
+    AccessKeyId: string;
+    SecretAccessKey: string;
+    SessionToken: string;
+    Expiration: Date;
+    AssumedRoleUser: { AssumedRoleId: string; Arn: string };
+  }> {
+    const duration = input.durationSeconds;
+    const sessionName = input.sessionName;
+    const role = input.role;
+    const sessionTags = input.sessionTags;
+    const resultingTransitiveTagKeys = input.transitiveTagKeys;
+    const sourceIdentity = input.sourceIdentity;
+    const sessionPolicy = input.sessionPolicy;
+    const sessionPolicies = input.sessionPolicies;
+    const packedBytes = input.skipPackedPolicyCheck
+      ? 0
+      : Buffer.byteLength(JSON.stringify({ sessionPolicy, tags: sessionTags }));
+    if (!input.skipPackedPolicyCheck && packedBytes > 2048) throw new AwsError("PackedPolicyTooLarge", "Packed session policy exceeds the allowed size", 400);
+    return this.store.withCredentialMutation(this.store.accountId, async () => {
+      let accessKeyId: string; do { accessKeyId = randomCredential("ASIA", 16, 20); } while (Object.values(this.store.state.accounts).some(account => account.iam.sessions[accessKeyId] || account.iam.accessKeys[accessKeyId]));
+      const secretAccessKey = randomCredential("", 32, 40); const issuedAt = this.clock.now(); const expiration = issuedAt + duration * 1000; const assumedRoleId = `${role.roleId}:${sessionName}`; const arn = `arn:aws:sts::${this.store.accountId}:assumed-role/${role.roleName}/${sessionName}`; const tokenPayload = Buffer.from(JSON.stringify({ accessKeyId, expiration, arn })).toString("base64url"); const signature = createHmac("sha256", this.store.state.installation.paginationSecret).update(tokenPayload).digest("base64url"); const sessionToken = `${tokenPayload}.${signature}`;
+      const credentialId = randomUUID();
+      if (!this.store.credentialStore) throw new AwsError("InternalFailure", "The IAM credential store is unavailable", 500);
+      await this.store.credentialStore.put({ credentialId, type: "sts-session", accountId: this.store.accountId, ownerId: assumedRoleId, accessKeyId }, { secretAccessKey, sessionToken });
+      const persisted: LocalCredentialState = {
+        accessKeyId, credentialId, principalArn: arn, principalId: assumedRoleId, roleArn: role.arn, roleName: role.roleName, sessionName, issuedAt, expiration, sourceIdentity, sessionPolicy,
+        ...(sessionPolicy ? { sessionPolicyCanonical: canonicalPolicyDocument(sessionPolicy) } : {}),
+        ...(sessionPolicies ? { sessionPolicies: sessionPolicies.map(document => structuredClone(document)) } : {}),
+        sessionTags, transitiveTagKeys: resultingTransitiveTagKeys,
+        ...(input.cognitoIdentity ? { cognitoIdentity: structuredClone(input.cognitoIdentity) } : {}),
+      };
+      this.store.ensureAccount().iam.sessions[accessKeyId] = persisted;
+      try {
+        await this.store.save();
+      } catch (error) {
+        delete this.store.ensureAccount().iam.sessions[accessKeyId];
+        await this.store.credentialStore.delete(credentialId).catch(() => undefined);
+        throw error;
+      }
+      return { AccessKeyId: accessKeyId, SecretAccessKey: secretAccessKey, SessionToken: sessionToken, Expiration: new Date(expiration), AssumedRoleUser: { AssumedRoleId: assumedRoleId, Arn: arn } };
+    });
+  }
+
+  /**
+   * Private enhanced-flow issuance used by Cognito Identity Pools.
+   * Public `AssumeRoleWithWebIdentity` remains unsupported.
+   */
+  async issueCognitoIdentityCredentials(input: {
+    roleArn: string;
+    sessionName: string;
+    durationSeconds: number;
+    trustContext: Record<string, unknown>;
+    sessionPolicies?: PolicyDocument[];
+    cognitoIdentity: NonNullable<LocalCredentialState["cognitoIdentity"]>;
+  }): Promise<{ AccessKeyId: string; SecretKey: string; SessionToken: string; Expiration: number }> {
+    const role = Object.values(this.store.ensureAccount().iam.roles).find(item => item.arn === input.roleArn);
+    if (!role) throw new AwsError("InvalidIdentityPoolConfigurationException", "Invalid identity pool configuration: role is not available.");
+    const account = role.arn.match(/^arn:[^:]+:iam::(\d{12}):role\//)?.[1];
+    if (account !== this.store.accountId) {
+      throw new AwsError("InvalidIdentityPoolConfigurationException", "Invalid identity pool configuration: the role must be in the same account.");
+    }
+    if (!/^[\w+=,.@-]{2,64}$/.test(input.sessionName)) {
+      throw new AwsError("InternalErrorException", "Could not allocate a valid identity role session name.", 500);
+    }
+    const trust = evaluateTrust(role.assumeRolePolicyDocument, "cognito-identity.amazonaws.com", "sts:AssumeRoleWithWebIdentity", input.trustContext);
+    if (trust.decision !== "allowed") {
+      throw new AwsError("InvalidIdentityPoolConfigurationException", "Invalid identity pool configuration: the role does not trust cognito-identity.amazonaws.com.");
+    }
+    const issued = await this.persistRoleSession({
+      role,
+      sessionName: input.sessionName,
+      durationSeconds: input.durationSeconds,
+      sessionTags: {},
+      transitiveTagKeys: [],
+      sessionPolicies: input.sessionPolicies,
+      skipPackedPolicyCheck: Boolean(input.sessionPolicies?.length),
+      cognitoIdentity: input.cognitoIdentity,
+    });
+    return {
+      AccessKeyId: issued.AccessKeyId,
+      SecretKey: issued.SecretAccessKey,
+      SessionToken: issued.SessionToken,
+      Expiration: Math.floor(issued.Expiration.getTime() / 1000),
     };
   }
 
@@ -108,23 +206,17 @@ export class StsService {
       }
     }
     const sessionDocuments: PolicyDocument[] = []; if (input.Policy) sessionDocuments.push(validatePolicyDocument(input.Policy)); for (const item of list<any>(input.PolicyArns)) { const policy = this.store.ensureAccount().iam.policies[item.arn]; if (!policy) throw new AwsError("ValidationError", `Managed session policy ${item.arn} was not found`, 400); sessionDocuments.push(policy.versions[policy.defaultVersionId].document); } if (sessionDocuments.length > 10) throw new AwsError("PackedPolicyTooLarge", "Too many session policies", 400);
-    const statements = sessionDocuments.flatMap(document => list<PolicyStatement>(document.Statement)); const sessionPolicy = sessionDocuments.length === 1 ? structuredClone(sessionDocuments[0]) : statements.length ? { Version: "2012-10-17", Statement: statements } as PolicyDocument : undefined; const packedBytes = Buffer.byteLength(JSON.stringify({ sessionPolicy, tags: sessionTags })); if (packedBytes > 2048) throw new AwsError("PackedPolicyTooLarge", "Packed session policy exceeds the allowed size", 400);
-    return this.store.withCredentialMutation(this.store.accountId, async () => {
-      let accessKeyId: string; do { accessKeyId = randomCredential("ASIA", 16, 20); } while (Object.values(this.store.state.accounts).some(account => account.iam.sessions[accessKeyId] || account.iam.accessKeys[accessKeyId]));
-      const secretAccessKey = randomCredential("", 32, 40); const issuedAt = this.clock.now(); const expiration = issuedAt + duration * 1000; const assumedRoleId = `${role.roleId}:${sessionName}`; const arn = `arn:aws:sts::${this.store.accountId}:assumed-role/${role.roleName}/${sessionName}`; const tokenPayload = Buffer.from(JSON.stringify({ accessKeyId, expiration, arn })).toString("base64url"); const signature = createHmac("sha256", this.store.state.installation.paginationSecret).update(tokenPayload).digest("base64url"); const sessionToken = `${tokenPayload}.${signature}`;
-      const credentialId = randomUUID();
-      if (!this.store.credentialStore) throw new AwsError("InternalFailure", "The IAM credential store is unavailable", 500);
-      await this.store.credentialStore.put({ credentialId, type: "sts-session", accountId: this.store.accountId, ownerId: assumedRoleId, accessKeyId }, { secretAccessKey, sessionToken });
-      const persisted = { accessKeyId, credentialId, principalArn: arn, principalId: assumedRoleId, roleArn: role.arn, roleName: role.roleName, sessionName, issuedAt, expiration, sourceIdentity, sessionPolicy, ...(sessionPolicy ? { sessionPolicyCanonical: canonicalPolicyDocument(sessionPolicy) } : {}), sessionTags, transitiveTagKeys: resultingTransitiveTagKeys };
-      this.store.ensureAccount().iam.sessions[accessKeyId] = persisted;
-      try {
-        await this.store.save();
-      } catch (error) {
-        delete this.store.ensureAccount().iam.sessions[accessKeyId];
-        await this.store.credentialStore.delete(credentialId).catch(() => undefined);
-        throw error;
-      }
-      return { Credentials: { AccessKeyId: accessKeyId, SecretAccessKey: secretAccessKey, SessionToken: sessionToken, Expiration: new Date(expiration) }, AssumedRoleUser: { AssumedRoleId: assumedRoleId, Arn: arn }, PackedPolicySize: Math.ceil(packedBytes / 2048 * 100), SourceIdentity: sourceIdentity };
+    const statements = sessionDocuments.flatMap(document => list<PolicyStatement>(document.Statement)); const sessionPolicy = sessionDocuments.length === 1 ? structuredClone(sessionDocuments[0]) : statements.length ? { Version: "2012-10-17", Statement: statements } as PolicyDocument : undefined;
+    const issued = await this.persistRoleSession({
+      role,
+      sessionName,
+      durationSeconds: duration,
+      sourceIdentity,
+      sessionTags,
+      transitiveTagKeys: resultingTransitiveTagKeys,
+      sessionPolicy,
     });
+    const packedBytes = Buffer.byteLength(JSON.stringify({ sessionPolicy, tags: sessionTags }));
+    return { Credentials: { AccessKeyId: issued.AccessKeyId, SecretAccessKey: issued.SecretAccessKey, SessionToken: issued.SessionToken, Expiration: issued.Expiration }, AssumedRoleUser: issued.AssumedRoleUser, PackedPolicySize: Math.ceil(packedBytes / 2048 * 100), SourceIdentity: sourceIdentity };
   }
 }

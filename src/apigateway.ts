@@ -1098,7 +1098,35 @@ export class ApiGatewayService {
     else if (method.authorizationType === "CUSTOM" || method.authorizationType === "COGNITO_USER_POOLS") { const authorizer = authorizers[method.authorizerId ?? ""]; if (!authorizer) throw new AwsError(method.authorizationType === "COGNITO_USER_POOLS" ? "AuthorizerConfigurationException" : "UnauthorizedException", method.authorizationType === "COGNITO_USER_POOLS" ? "Cognito authorizer configuration is unavailable" : "Unauthorized", method.authorizationType === "COGNITO_USER_POOLS" ? 500 : 401); const result = await this.runAuthorizer(api, authorizer, input, methodArn, method); this.requireCombinedAuthorization(result.authorization, resourceAuthorization); authorizerContext = result.context; principalId = result.principalId; usageIdentifierKey = result.usageIdentifierKey; bearerDigest = result.bearerDigest; }
     else if (resourceAuthorization && resourceAuthorization.decision !== "allowed") throw new AwsError("AccessDeniedException", "User is not authorized to access this resource", 403);
     const apiKey = await this.enforceApiKey(api, resource, method, configuredMethod, input, configuration.apiKeySource, usageIdentifierKey);
-    const context = { resourceId: resource.id, resourcePath: resource.path, httpMethod: input.method, path: `/${input.stageName}${input.path}`, stage: input.stageName, requestId: input.requestId, deploymentId: input.deploymentId, isCanaryRequest: input.isCanaryRequest ?? false, identity: { sourceIp: input.sourceIp, userAgent: input.userAgent ?? "", apiKey: apiKey?.value, apiKeyId: apiKey?.id }, domainName: input.domainName, apiId: api.id, authorizer: { principalId, ...authorizerContext } };
+    const context = {
+      resourceId: resource.id,
+      resourcePath: resource.path,
+      httpMethod: input.method,
+      path: `/${input.stageName}${input.path}`,
+      stage: input.stageName,
+      requestId: input.requestId,
+      deploymentId: input.deploymentId,
+      isCanaryRequest: input.isCanaryRequest ?? false,
+      identity: {
+        sourceIp: input.sourceIp,
+        userAgent: input.userAgent ?? "",
+        apiKey: apiKey?.value,
+        apiKeyId: apiKey?.id,
+        ...(input.principalContext ? {
+          userArn: input.principalContext.principalArn,
+          accountId: input.principalContext.accountId,
+          ...(input.principalContext.cognitoIdentityPoolId ? {
+            cognitoIdentityPoolId: input.principalContext.cognitoIdentityPoolId,
+            cognitoIdentityId: input.principalContext.cognitoIdentityId,
+            cognitoIdentityAuthType: input.principalContext.cognitoIdentityAuthType,
+            cognitoIdentityAuthProvider: input.principalContext.cognitoIdentityAuthProvider,
+          } : {}),
+        } : {}),
+      },
+      domainName: input.domainName,
+      apiId: api.id,
+      authorizer: { principalId, ...authorizerContext },
+    };
     const requestBinary = matchesMediaType(input.headers["content-type"], configuration.binaryMediaTypes); const vtl: VtlContext = { body: requestBinary ? input.body.toString("base64") : input.body.toString("utf8"), headers: input.headers, query: input.query, path: input.pathParameters, context, stageVariables: input.stageVariables };
     const accessLogValues = { ...Object.fromEntries(Object.entries((authorizerContext.claims as Record<string, unknown> | undefined) ?? {}).map(([name, value]) => [`authorizer.claims.${name}`, value])), ...(input.xrayTraceId ? { xrayTraceId: input.xrayTraceId } : {}) };
     const mapped = this.integrationRequest(integration, input, vtl, configuration); const cacheControl = cache?.enabled ? this.cacheControl(input, cache.setting, methodArn) : { invalidate: false }; const cacheKey = cache?.enabled ? this.responseCacheKey(resource, method, configuredMethod, integration, input, mapped, principalId, apiKey?.id, bearerDigest) : undefined; const cacheState = cacheKey ? this.stageCache(api.id, input.stageName) : undefined;

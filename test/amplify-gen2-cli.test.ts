@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { CDK_BOOTSTRAP_POLICY_REVISION } from "../src/cloudformation/bootstrap.js";
 import { canonicalTextSha256 } from "./support/frozen-text.js";
 
 const captureScript = resolve("scripts/capture-amplify-gen2-evidence.mjs");
@@ -63,8 +64,8 @@ test("AMX-09 deploys the unchanged sandbox, writes usable outputs, survives rest
   assert.equal(evidence.calls.some((call: any) => call.service === "amplify"), false, "AMX-02A remains inactive");
 
   assert.equal(evidence.bootstrap.descriptor.compatibilityVersion, 23);
-  assert.equal(evidence.bootstrap.descriptor.policyRevision, 19);
-  assert.equal(evidence.bootstrap.bucket.managedRevision, 19);
+  assert.equal(evidence.bootstrap.descriptor.policyRevision, CDK_BOOTSTRAP_POLICY_REVISION);
+  assert.equal(evidence.bootstrap.bucket.managedRevision, CDK_BOOTSTRAP_POLICY_REVISION);
   assert.equal(evidence.bootstrap.versionParameter.Parameter.Value, "23");
   assert.deepEqual(Object.fromEntries(evidence.bootstrap.roles.map((role: any) => [role.purpose, role.roleName])), {
     deploy: "cdk-hnb659fds-deploy-role-000000000000-eu-west-1",

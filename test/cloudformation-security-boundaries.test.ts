@@ -442,6 +442,8 @@ test("API Gateway v2 Integration UPDATE preauthorizes a new CredentialsArn befor
 
     const executionRoleName = names.roleNames.cloudFormationExecution;
     const document = policyDocument((await iam.send(new GetRolePolicyCommand({ RoleName: executionRoleName, PolicyName: CDK_BOOTSTRAP_POLICY_NAME }))).PolicyDocument);
+    const updateSids = new Set(["ManageIamResources", "PassSupportedServiceRoles", "ManageRestApis"]);
+    document.Statement = (document.Statement ?? []).filter((statement: any) => updateSids.has(statement.Sid));
     document.Statement.push({
       Sid: "DenyNewApiGatewayIntegrationRole",
       Effect: "Deny",
