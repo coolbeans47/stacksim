@@ -290,7 +290,7 @@ Isolate messages that fail repeated processing without blocking the main queue �
 
 #### How it works in StackSim
 
-Redrive policies, receive counting, compatible queue-type validation, durable cross-queue moves, payload and attribute preservation, FIFO group behavior, Lambda failure paths, metrics, source discovery, and restart recovery are active. `StartMessageMoveTask` and related managed message-move operations remain unavailable.
+Redrive policies, receive counting, compatible queue-type validation, durable cross-queue moves, payload and attribute preservation, FIFO group behavior, Lambda failure paths, metrics, source discovery, and restart recovery are active. `StartMessageMoveTask`, `ListMessageMoveTasks`, and `CancelMessageMoveTask` are available through the task panel and both protocol families.
 
 #### Common AWS use cases
 
@@ -489,7 +489,7 @@ Available from **Details**. Removes the queue, its messages, and trigger referen
 | Fair queue (Standard) | Deterministic bounded-fair scheduling with `MessageGroupId` |
 | SSE-KMS | Validated; fails with `UnsupportedOperation` |
 | S3 extended client | Unavailable |
-| StartMessageMoveTask | Unavailable |
+| StartMessageMoveTask / ListMessageMoveTasks / CancelMessageMoveTask | Implemented through the DLQ task panel and both APIs; original/custom destinations, velocity, progress, cancellation and history |
 | Distributed throughput | Not reproduced |
 | Message persistence | Survives simulator restart |
 | Purge cooldown | Enforced locally |
@@ -511,3 +511,19 @@ Available from **Details**. Removes the queue, its messages, and trigger referen
 - [SES console guide](./ses-console-guide.md) — email is a separate messaging path from SQS
 - [SNS console guide](./sns-console-guide.md) — fan-out pub/sub to SQS and Lambda
 - [Lambda console guide](./lambda-console-guide.md) — event source mappings and workers
+
+
+## Complete the DLQ recovery loop
+
+Open the **Dead-letter queue** tab on the queue that holds the failures. Existing message inspection and source links remain available. Inspection receives messages and changes their visibility and receive counts; release their visibility before redriving if you want them eligible immediately.
+
+1. Fix the consumer and confirm its permissions and mapping are enabled.
+2. Choose **Start DLQ redrive**. Use **Original source queue(s)** to follow each message's stored origin, or **Custom destination** for another queue of the same type. A shared DLQ can return messages to multiple original queues. Direct sends and older messages lacking provenance need a custom destination.
+3. Leave velocity blank for a local system-optimized ceiling, or choose an integer from **1 to 500 messages/sec**. Start small while watching consumer logs.
+4. Read **DLQ redrive tasks**: status, approximate moved/initial count, destination, requested velocity and any bounded failure reason. Active tasks refresh automatically; **Refresh tasks** also works on terminal history. New messages can arrive during a task, so the moved count can exceed its initial estimate.
+5. **Cancel DLQ redrive** requests cancellation; CANCELLING becomes CANCELLED. Already committed messages remain at the destination. Up to ten recent tasks are retained, newest first.
+6. Check Lambda logs and the application's result store. **COMPLETED means movement completed**, not that the application processed the messages successfully.
+
+Listing requires ListMessageMoveTasks and GetQueueAttributes. Start/cancel also require their task action, ReceiveMessage and DeleteMessage on the DLQ; starting requires SendMessage on destinations. The service rechecks permissions during execution, so a policy change may stop a task. KMS and VPC endpoint dependent policies are explicit unsupported dependencies. Only SQS-backed DLQs in the same local account and Region are eligible. Errors are rendered in the form/history without copying message bodies or credentials into task diagnostics.
+
+Follow the [SDK learning exercise](../examples/sqs-recovery-lab/README.md) for the full failure → logs → fix → redrive → successful processing path, cancellation/restart and cleanup. See the [frozen API contract](sqs-action-inventory.md) for exact field and limit details. SQS-05 remains partially complete outside this message-move work.

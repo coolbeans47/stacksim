@@ -1,3 +1,4 @@
+import { resourcePolicySource } from "../iam/provenance.js";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { PrincipalContext } from "../auth/sigv4.js";
 import type { Clock } from "../core/clock.js";
@@ -393,7 +394,7 @@ export async function executeDynamoResolver(
       "aws:PrincipalArn": principal.principalArn,
       "aws:PrincipalAccount": principal.accountId,
       "aws:RequestedRegion": dependencies.region,
-    });
+    }, resourcePolicySource("dynamodb", table.arn, JSON.parse(attached.Policy), attached.RevisionId));
     combinedAuthorization = combineIdentityAndResourceAuthorization(
       authorization,
       resourceAuthorization,

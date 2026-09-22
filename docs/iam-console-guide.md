@@ -547,7 +547,11 @@ Customer-managed policies show **Delete** on the detail page. Service-managed po
 
 ### What it is
 
-**Authorization decisions** lists local diagnostic history: time, decision (`allowed` / denied), principal ARN, action, resource, and reason. Not part of the AWS IAM console — StackSim tooling.
+**Authorization decisions** lists local diagnostic history: time, decision (`allowed`, `implicitDeny`, `explicitDeny`), principal ARN, action, resource, and reason. This is StackSim tooling.
+
+Expand **Policy explanation** below a decision to see each evaluated identity, resource, boundary, session or trust policy. The explanation names its exact policy/entity/resource, version or revision, statement index (starting at 0), optional SID, effect and match status. Identical SIDs in different policies remain distinct. Read the final decision reason together with the layers: an implicit restriction does not always override a direct same-account resource grant, while an applicable explicit deny wins.
+
+Only bounded source metadata is retained: at most 32 entries and 16 KiB per decision, with evaluated/matched counts and a visible truncation notice. Oversized diagnostic fields retain a prefix with a separate visible notice. Policy bodies, condition values, credentials and payloads are excluded. The last 1,000 decisions survive restart; older records show **Policy provenance unavailable**. AppSync API/type/field scope decisions use this same view. Internal trust evaluations need not create a history row; existing STS request rows receive their trust result. See the [measurement and provenance reference](reference.md#learning-measurements-and-permission-explanations).
 
 ### Why use it
 

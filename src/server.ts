@@ -1,3 +1,4 @@
+import { trustPolicySource, authorizationDecision, resourcePolicySource, mergeProvenance } from "./iam/provenance.js";
 import { createServer, type Server as HttpServer } from "node:http";
 import { createServer as createSecureServer, type Server as HttpsServer } from "node:https";
 import { readFile } from "node:fs/promises";
@@ -19,7 +20,7 @@ import { LambdaService } from "./lambda.js";
 import { IamService } from "./iam.js";
 import { StsService } from "./sts.js";
 import { S3Service } from "./s3.js";
-import { SqsService } from "./sqs.js";
+import { SQS_ACTIONS, SqsService } from "./sqs.js";
 import { StepFunctionsService } from "./step-functions.js";
 import { SNS_02_ACTIONS, SnsService } from "./sns.js";
 import { SsmService, sendSsmError, ssmParameterArn } from "./ssm.js";
@@ -906,7 +907,7 @@ export class StackSim {
         if ((authorizationType === "AWS_IAM" || hasSignature) && this.authMode !== "off") {
           const principal = await authenticateSigV4(req, url, this.store, this.clock, region, "execute-api");
           (req as any).awsPrincipal = principal;
-          if (authorizationType === "AWS_IAM" && this.authMode === "enforce") { const authorizationPath = gatewayVersion === "v2" ? regional.apigatewayv2.canonicalAuthorizationPath(invocationPath, req.method ?? "GET") : invocationPath; (req as any).awsIdentityAuthorization = await this.evaluateAndRecordAuthorization(principal, executeApiTarget(req, authorizationPath, region, this.store.accountId, principal, this.clock.now()), currentRequestId); }
+          if (authorizationType === "AWS_IAM" && this.authMode === "enforce") { const authorizationPath = gatewayVersion === "v2" ? regional.apigatewayv2.canonicalAuthorizationPath(invocationPath, req.method ?? "GET") : invocationPath; (req as any).awsAuthorizationRequestId = currentRequestId; (req as any).awsIdentityAuthorization = await this.evaluateAndRecordAuthorization(principal, executeApiTarget(req, authorizationPath, region, this.store.accountId, principal, this.clock.now()), currentRequestId); }
         }
       } catch (error) { return apiGateway.sendInvocationError(req, res, invocationPath, error, currentRequestId); }
       return apiGateway.invoke(req, res, invocationPath, url);
@@ -943,7 +944,24 @@ export class StackSim {
       const telemetry = new TelemetryBus();
       const metrics = new CloudWatchMetricsService(this.store, region, this.clock, this.scheduler, this.metricRetention, this.alarmHistoryRetentionMs, this.allowLocalFiles);
       telemetry.subscribe(event => metrics.publish(event));
-      const sqs = new SqsService(this.store, region, this.clock, telemetry, this.scheduler, () => `http://${this.host}:${this.port}`);
+      const sqs = new SqsService(this.store, region, this.clock, telemetry, this.scheduler, () => `http://${this.host}:${this.port}`, async (caller, action, queue) => {
+        if (this.authMode !== "enforce") return;
+        if (!caller) throw new AwsError("AccessDeniedException", "Redrive requires an authenticated caller.", 403);
+        // Persist identity references, never access keys or session tokens, in queue-owned task records.
+        const session = Object.entries(this.store.state.accounts[caller.principal.accountId]?.iam.sessions ?? {}).find(([key, value]) => value.principalArn === caller.principal.principalArn && value.principalId === caller.principal.principalId && createHash("sha256").update(key).digest("hex") === caller.sessionFingerprint);
+        if (session) {
+          const currentRole = this.store.state.accounts[caller.principal.accountId]?.iam.roles[session[1].roleName];
+          if (!currentRole || !session[1].principalId.startsWith(`${currentRole.roleId}:`)) throw new AwsError("AccessDeniedException", "The initiating redrive role no longer exists.", 403);
+        }
+        const principal: PrincipalContext = { ...caller.principal, accessKeyId: session?.[0] ?? "" };
+        const context = { ...caller.context, "aws:PrincipalArn": principal.roleArn ?? principal.principalArn, "aws:PrincipalAccount": principal.accountId,
+          "aws:RequestedRegion": region, "aws:CurrentTime": new Date(this.clock.now()).toISOString(), "aws:SourceIdentity": principal.sourceIdentity,
+          "aws:TokenIssueTime": principal.issuedAt === undefined ? undefined : new Date(principal.issuedAt).toISOString(),
+          ...Object.fromEntries(Object.entries(principal.principalTags ?? principal.sessionTags ?? {}).map(([key, value]) => [`aws:PrincipalTag/${key}`, value])),
+          ...Object.fromEntries(Object.entries(queue.state.tags).map(([key, value]) => [`aws:ResourceTag/${key}`, value])),
+        };
+        await this.authorize(principal, { action, resource: queue.queueArn, operation: action.slice(4), input: {}, context }, randomUUID());
+      });
       // A wildcard is a valid public listen address but never a connectable
       // destination. Local Lambda runtimes use the matching loopback family so
       // their standard SDK endpoint remains reachable and inside the CFN-14
@@ -1435,7 +1453,7 @@ export class StackSim {
     const queryInput = req.method === "GET" ? Object.fromEntries(url.searchParams) : parseAwsQuery((await readBody(req)).toString("utf8"));
     if (queryInput.Version === "2010-12-01" && SES_V1_PHASE_01_02_ACTIONS.has(String(queryInput.Action ?? action ?? ""))) return "ses";
     if (queryInput.Version === "2010-03-31" && SNS_02_ACTIONS.has(String(queryInput.Action ?? action ?? ""))) return "sns";
-    if (new Set(["CreateQueue", "DeleteQueue", "GetQueueUrl", "ListQueues", "GetQueueAttributes", "SetQueueAttributes", "TagQueue", "UntagQueue", "ListQueueTags", "SendMessage", "ReceiveMessage", "DeleteMessage", "ChangeMessageVisibility", "SendMessageBatch", "DeleteMessageBatch", "ChangeMessageVisibilityBatch", "PurgeQueue", "ListDeadLetterSourceQueues", "AddPermission", "RemovePermission"]).has(action ?? "")) return "sqs";
+    if (SQS_ACTIONS.has(action ?? "")) return "sqs";
     if (req.method === "GET") return "unknown";
     if (new Set(["CreateDBInstance", "DescribeDBInstances", "DeleteDBInstance", "ModifyDBInstance", "RebootDBInstance", "StopDBInstance", "StartDBInstance", "DescribeValidDBInstanceModifications", "AddTagsToResource", "RemoveTagsFromResource", "ListTagsForResource", "CreateDBParameterGroup", "DescribeDBParameterGroups", "ModifyDBParameterGroup", "ResetDBParameterGroup", "DeleteDBParameterGroup", "DescribeDBParameters", "DescribeEngineDefaultParameters", "DescribeDBEngineVersions", "DescribeOrderableDBInstanceOptions", "DescribeAccountAttributes"]).has(action ?? "")) return "rds";
     return new Set(["PutMetricData", "ListMetrics", "GetMetricStatistics", "GetMetricData", "GetDataset", "AssociateDatasetKmsKey", "DisassociateDatasetKmsKey", "PutMetricStream", "GetMetricStream", "ListMetricStreams", "DeleteMetricStream", "StartMetricStreams", "StopMetricStreams", "PutInsightRule", "DescribeInsightRules", "DeleteInsightRules", "EnableInsightRules", "DisableInsightRules", "GetInsightRuleReport", "PutManagedInsightRules", "ListManagedInsightRules", "PutAnomalyDetector", "DescribeAnomalyDetectors", "DeleteAnomalyDetector", "PutMetricAlarm", "PutCompositeAlarm", "PutLogAlarm", "DescribeAlarms", "DescribeAlarmsForMetric", "DescribeAlarmContributors", "DeleteAlarms", "SetAlarmState", "EnableAlarmActions", "DisableAlarmActions", "DescribeAlarmHistory", "PutAlarmMuteRule", "GetAlarmMuteRule", "ListAlarmMuteRules", "DeleteAlarmMuteRule", "TagResource", "UntagResource", "ListTagsForResource", "PutDashboard", "GetDashboard", "ListDashboards", "DeleteDashboards", "GetMetricWidgetImage"]).has(action ?? "") ? "monitoring" : "unknown";
@@ -1605,7 +1623,7 @@ export class StackSim {
     for (const action of ["lambda:InvokeFunctionUrl", "lambda:InvokeFunction"] as const) {
       const root = principal?.principalType === "root"; const identity: AuthorizationResult = !principal ? { decision: "implicitDeny", reason: "Anonymous function URL requests have no identity policy", matchedStatements: [] } : root && this.rootRecovery ? { decision: "allowed", reason: "Configured recovery root", matchedStatements: [] } : evaluateAuthorization(this.store.ensureAccount().iam, principal, action, target.functionArn, context); const resource = lambda.functionUrlResourcePolicy(principal ?? principalArn, target, action, context);
       const result = combineIdentityAndResourceAuthorization(identity, resource, !principal ? "service" : sameAccount ? "sameAccount" : "crossAccount");
-      const decisions = this.store.ensureAccount().iam.authorizationDecisions; decisions.push({ time: this.clock.now(), requestId: currentRequestId, principalArn, action, resource: target.functionArn, decision: result.decision, reason: result.reason }); if (decisions.length > 1_000) decisions.splice(0, decisions.length - 1_000); if (result.decision !== "allowed") { await this.store.save(); throw new AwsError("AccessDeniedException", `User ${principalArn} is not authorized to perform ${action} on ${target.functionArn}. ${result.reason}`, 403); }
+      const decisions = this.store.ensureAccount().iam.authorizationDecisions; decisions.push(authorizationDecision({ time: this.clock.now(), requestId: currentRequestId, principalArn, action, resource: target.functionArn, decision: result.decision, reason: result.reason }, result)); if (decisions.length > 1_000) decisions.splice(0, decisions.length - 1_000); if (result.decision !== "allowed") { await this.store.save(); throw new AwsError("AccessDeniedException", `User ${principalArn} is not authorized to perform ${action} on ${target.functionArn}. ${result.reason}`, 403); }
     }
     await this.store.save();
   }
@@ -1630,7 +1648,7 @@ export class StackSim {
     }
     const dynamoPolicy = this.dynamoResourcePolicy(target);
     if (dynamoPolicy && !(bootstrap && target.action === "dynamodb:DeleteResourcePolicy")) {
-      const resource = evaluateResourcePolicy(dynamoPolicy.document, principal, target.action, target.resource, target.context);
+      const resource = evaluateResourcePolicy(dynamoPolicy.document, principal, target.action, target.resource, target.context, resourcePolicySource("dynamodb", dynamoPolicy.resourceArn, dynamoPolicy.document, dynamoPolicy.revisionId));
       result = combineIdentityAndResourceAuthorization(identity, resource, principal.accountId === dynamoPolicy.accountId ? "sameAccount" : "crossAccount");
     }
     const sqsPolicy = this.sqsResourcePolicy(target);
@@ -1643,7 +1661,7 @@ export class StackSim {
         "sqs:TagQueue", "sqs:UntagQueue",
       ]);
       if (principal.accountId !== sqsPolicy.accountId && nondelegable.has(target.action) && result.decision !== "explicitDeny") result = {
-        decision: "implicitDeny",
+        ...result, decision: "implicitDeny",
         reason: `${target.action} cannot be delegated across SQS accounts`,
         matchedStatements: result.matchedStatements,
       };
@@ -1659,7 +1677,7 @@ export class StackSim {
         "sns:TagResource", "sns:UntagResource", "sns:ListTagsForResource",
       ]);
       if (principal.accountId !== snsPolicy.accountId && nondelegable.has(target.action) && result.decision !== "explicitDeny") result = {
-        decision: "implicitDeny",
+        ...result, decision: "implicitDeny",
         reason: `${target.action} cannot be delegated across SNS accounts`,
         matchedStatements: result.matchedStatements,
       };
@@ -1675,17 +1693,17 @@ export class StackSim {
     if (target.action.startsWith("ses:") && target.resource.startsWith("arn:aws:ses:")) {
       const documents = this.services(String(target.context["aws:RequestedRegion"])).ses.resourcePolicies(target.resource);
       if (documents.length) {
-        const evaluations = documents.map(document => evaluateResourcePolicy(document, principal, target.action, target.resource, target.context));
+        const evaluations = documents.map(({ document, policyName }) => evaluateResourcePolicy(document, principal, target.action, target.resource, target.context, resourcePolicySource("ses", target.resource, document, undefined, policyName)));
         const resource: AuthorizationResult = evaluations.some(item => item.decision === "explicitDeny")
           ? { decision: "explicitDeny", reason: "An SES identity policy explicitly denies the action", matchedStatements: evaluations.flatMap(item => item.matchedStatements) }
           : evaluations.some(item => item.decision === "allowed")
             ? { decision: "allowed", reason: "An SES identity policy allows the action", matchedStatements: evaluations.flatMap(item => item.matchedStatements), grantBasis: evaluations.filter(item => item.decision === "allowed").sort((a, b) => ({ wildcard: 0, account: 1, role: 2, directUser: 3, directSession: 3 }[b.grantBasis ?? "wildcard"] - { wildcard: 0, account: 1, role: 2, directUser: 3, directSession: 3 }[a.grantBasis ?? "wildcard"]))[0]?.grantBasis }
             : { decision: "implicitDeny", reason: "No SES identity policy allows the action", matchedStatements: evaluations.flatMap(item => item.matchedStatements) };
-        result = combineIdentityAndResourceAuthorization(identity, resource, principal.accountId === this.store.accountId ? "sameAccount" : "crossAccount");
+        result = combineIdentityAndResourceAuthorization(identity, { ...resource, ...mergeProvenance(...evaluations) }, principal.accountId === this.store.accountId ? "sameAccount" : "crossAccount");
       }
     }
     const decisions = (callerIam ?? this.store.ensureAccount(this.store.accountId).iam).authorizationDecisions;
-    decisions.push({ time: this.clock.now(), requestId: currentRequestId, principalArn: principal.principalArn, action: target.action, resource: target.resource, decision: result.decision, reason: result.reason });
+    decisions.push(authorizationDecision({ time: this.clock.now(), requestId: currentRequestId, principalArn: principal.principalArn, action: target.action, resource: target.resource, decision: result.decision, reason: result.reason }, result));
     if (decisions.length > 1_000) decisions.splice(0, decisions.length - 1_000);
     await this.store.save();
     return result;
@@ -1714,12 +1732,12 @@ export class StackSim {
     catch { return { accountId }; }
   }
 
-  private dynamoResourcePolicy(target: AuthorizationTarget): { document: import("./types.js").PolicyDocument; accountId: string } | undefined {
+  private dynamoResourcePolicy(target: AuthorizationTarget): { document: import("./types.js").PolicyDocument; accountId: string; resourceArn: string; revisionId: string } | undefined {
     if (!target.action.startsWith("dynamodb:") || !target.resource.startsWith("arn:")) return undefined;
     const match = target.resource.match(/^arn:[^:]+:dynamodb:([^:]+):(\d{12}):(table\/[^/]+)(?:\/(index|stream)\/.+)?$/); if (!match) return undefined;
     const [, region, accountId, tableResource, suffix] = match; const regional = this.store.state.accounts[accountId]?.regions[region]; if (!regional) return undefined;
     const attachmentArn = suffix === "stream" ? target.resource : `arn:aws:dynamodb:${region}:${accountId}:${tableResource}`; const policy = regional.dynamodbResourcePolicies?.[attachmentArn]; if (!policy) return undefined;
-    try { return { document: JSON.parse(policy.policy), accountId }; } catch { return undefined; }
+    try { return { document: JSON.parse(policy.policy), accountId, resourceArn: attachmentArn, revisionId: policy.revisionId }; } catch { return undefined; }
   }
 
   private sendAuthorizationError(res: import("node:http").ServerResponse, error: unknown, service: string, currentRequestId: string, req?: import("node:http").IncomingMessage): void {
@@ -1854,7 +1872,7 @@ export class StackSim {
         const context = { "aws:RequestedRegion": region, "aws:CurrentTime": new Date(this.clock.now()).toISOString() };
         const hasConditions = (documents: any[]) => documents.some(document => (Array.isArray(document?.Statement) ? document.Statement : [document?.Statement]).some((statement: any) => statement?.Condition));
         const roles = Object.values(iam.roles).map(role => {
-          const trust = servicePrincipal ? evaluateTrust(role.assumeRolePolicyDocument, servicePrincipal, "sts:AssumeRole", context) : { decision: "allowed" as const, reason: "No service-principal constraint", matchedStatements: [] };
+          const trust = servicePrincipal ? evaluateTrust(role.assumeRolePolicyDocument, servicePrincipal, "sts:AssumeRole", context, trustPolicySource(role)) : { decision: "allowed" as const, reason: "No service-principal constraint", matchedStatements: [] };
           const documents = [...Object.values(role.inlinePolicies), ...role.attachedPolicyArns.map(arn => iam.policies[arn]?.versions[iam.policies[arn]?.defaultVersionId]?.document).filter(Boolean)];
           const permissionResults = requiredActions.map((required: any) => required.Resource
             ? evaluateRoleAuthorization(iam, role.arn, required.Action, String(required.Resource), roleSessionAuthorizationContext(role.arn, region, this.clock.now(), { ...(servicePrincipal ? { "aws:CalledVia": [servicePrincipal] } : {}) }))

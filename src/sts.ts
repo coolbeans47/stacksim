@@ -1,10 +1,11 @@
+import { trustPolicySource, policyRevision, mergeProvenance, authorizationDecision } from "./iam/provenance.js";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AwsError } from "./errors.js";
 import { effectiveRoleTags, type PrincipalContext } from "./auth/sigv4.js";
 import type { Clock } from "./core/clock.js";
 import type { Scheduler } from "./core/scheduler.js";
-import { evaluateTrust } from "./iam/evaluator.js";
+import { evaluateTrust, type AuthorizationResult } from "./iam/evaluator.js";
 import { validatePolicyDocument } from "./iam.js";
 import { canonicalPolicyDocument } from "./iam/policy-storage.js";
 import { awsQueryErrorXml, parseAwsQuery, sendAwsQueryXml } from "./protocols/query-xml.js";
@@ -23,7 +24,16 @@ export class StsService {
   private async cleanup(): Promise<void> { let changed = false; for (const account of Object.values(this.store.state.accounts)) for (const [key, session] of Object.entries(account.iam.sessions)) if (session.expiration <= this.clock.now()) { delete account.iam.sessions[key]; if (session.credentialId) await this.store.credentialStore?.delete(session.credentialId); changed = true; } if (changed) await this.store.save(); }
 
   async handle(req: IncomingMessage, res: ServerResponse, requestId: string, principal: PrincipalContext): Promise<void> {
-    try { const input = parseAwsQuery((await readBody(req)).toString("utf8")) as any; const action = String(input.Action ?? ""); if (!action || typeof (this as any)[action] !== "function") throw new AwsError("InvalidAction", `The action ${action} is not valid`, 400); delete input.Action; delete input.Version; const result = await (this as any)[action](input, principal); sendAwsQueryXml(res, `${action}Response`, { [`${action}Result`]: result, ResponseMetadata: { RequestId: requestId } }, NAMESPACE); }
+    try { const input = parseAwsQuery((await readBody(req)).toString("utf8")) as any; const action = String(input.Action ?? ""); if (!action || typeof (this as any)[action] !== "function") throw new AwsError("InvalidAction", `The action ${action} is not valid`, 400); delete input.Action; delete input.Version; const onTrust = async (trust: AuthorizationResult) => {
+      // Enrich the request's existing decision only; internal role assumptions
+      // never acquire a diagnostic-log requirement.
+      const decisions = this.store.ensureAccount(principal.accountId).iam.authorizationDecisions;
+      const decision = [...decisions].reverse().find(item => item.requestId === requestId && item.action === "sts:AssumeRole" && item.resource === input.RoleArn);
+      if (!decision) return;
+      Object.assign(decision, authorizationDecision(decision, mergeProvenance(decision, trust)));
+      if (trust.decision !== "allowed") { decision.decision = trust.decision; decision.reason = trust.reason; }
+      await this.store.save().catch(() => undefined);
+    }; const result = await (this as any)[action](input, principal, action === "AssumeRole" ? onTrust : undefined); sendAwsQueryXml(res, `${action}Response`, { [`${action}Result`]: result, ResponseMetadata: { RequestId: requestId } }, NAMESPACE); }
     catch (error) { const aws = error instanceof AwsError ? error : new AwsError("InternalFailure", error instanceof Error ? error.message : String(error), 500); res.statusCode = aws.status; res.setHeader("content-type", "text/xml; charset=utf-8"); res.end(awsQueryErrorXml(aws.code, aws.message, requestId)); }
   }
 
@@ -67,6 +77,7 @@ export class StsService {
     sessionTags: Record<string, string>;
     transitiveTagKeys: string[];
     sessionPolicy?: PolicyDocument;
+    sessionPolicyOrigins?: LocalCredentialState["sessionPolicyOrigins"];
     sessionPolicies?: PolicyDocument[];
     skipPackedPolicyCheck?: boolean;
     cognitoIdentity?: LocalCredentialState["cognitoIdentity"];
@@ -97,6 +108,7 @@ export class StsService {
       await this.store.credentialStore.put({ credentialId, type: "sts-session", accountId: this.store.accountId, ownerId: assumedRoleId, accessKeyId }, { secretAccessKey, sessionToken });
       const persisted: LocalCredentialState = {
         accessKeyId, credentialId, principalArn: arn, principalId: assumedRoleId, roleArn: role.arn, roleName: role.roleName, sessionName, issuedAt, expiration, sourceIdentity, sessionPolicy,
+        ...(input.sessionPolicyOrigins ? { sessionPolicyOrigins: structuredClone(input.sessionPolicyOrigins) } : {}),
         ...(sessionPolicy ? { sessionPolicyCanonical: canonicalPolicyDocument(sessionPolicy) } : {}),
         ...(sessionPolicies ? { sessionPolicies: sessionPolicies.map(document => structuredClone(document)) } : {}),
         sessionTags, transitiveTagKeys: resultingTransitiveTagKeys,
@@ -135,7 +147,7 @@ export class StsService {
     if (!/^[\w+=,.@-]{2,64}$/.test(input.sessionName)) {
       throw new AwsError("InternalErrorException", "Could not allocate a valid identity role session name.", 500);
     }
-    const trust = evaluateTrust(role.assumeRolePolicyDocument, "cognito-identity.amazonaws.com", "sts:AssumeRoleWithWebIdentity", input.trustContext);
+    const trust = evaluateTrust(role.assumeRolePolicyDocument, "cognito-identity.amazonaws.com", "sts:AssumeRoleWithWebIdentity", input.trustContext, trustPolicySource(role));
     if (trust.decision !== "allowed") {
       throw new AwsError("InvalidIdentityPoolConfigurationException", "Invalid identity pool configuration: the role does not trust cognito-identity.amazonaws.com.");
     }
@@ -157,7 +169,7 @@ export class StsService {
     };
   }
 
-  async AssumeRole(input: any, principal: PrincipalContext): Promise<any> {
+  async AssumeRole(input: any, principal: PrincipalContext, onTrust?: (result: AuthorizationResult) => Promise<void>): Promise<any> {
     const role = Object.values(this.store.ensureAccount().iam.roles).find(item => item.arn === input.RoleArn); if (!role) throw new AwsError("AccessDenied", `User ${principal.principalArn} is not authorized to perform sts:AssumeRole on resource ${input.RoleArn}`, 403);
     const sessionName = String(input.RoleSessionName ?? ""); if (!/^[\w+=,.@-]{2,64}$/.test(sessionName)) throw new AwsError("ValidationError", "RoleSessionName must contain 2-64 valid characters", 400);
     const duration = Number(input.DurationSeconds ?? 3600); const maximum = principal.roleArn ? Math.min(3600, role.maxSessionDuration) : role.maxSessionDuration; if (!Number.isInteger(duration) || duration < 900 || duration > maximum) throw new AwsError("ValidationError", `DurationSeconds must be between 900 and ${maximum}`, 400);
@@ -190,22 +202,26 @@ export class StsService {
       ...Object.fromEntries(Object.entries(principalTags).map(([key, value]) => [`aws:PrincipalTag/${key}`, value])),
       ...Object.fromEntries(Object.entries(role.tags).map(([key, value]) => [`aws:ResourceTag/${key}`, value])),
     };
-    const trust = evaluateTrust(role.assumeRolePolicyDocument, principal, "sts:AssumeRole", trustContext); if (trust.decision !== "allowed") throw new AwsError("AccessDenied", trust.reason, 403);
+    const trust = evaluateTrust(role.assumeRolePolicyDocument, principal, "sts:AssumeRole", trustContext, trustPolicySource(role)); await onTrust?.(trust); if (trust.decision !== "allowed") throw new AwsError("AccessDenied", trust.reason, 403);
     if (sourceIdentity !== undefined) {
-      const sourceTrust = evaluateTrust(role.assumeRolePolicyDocument, principal, "sts:SetSourceIdentity", trustContext);
+      const sourceTrust = evaluateTrust(role.assumeRolePolicyDocument, principal, "sts:SetSourceIdentity", trustContext, trustPolicySource(role)); await onTrust?.(sourceTrust);
       if (sourceTrust.decision !== "allowed") {
         const reason = sourceTrust.decision === "explicitDeny" ? "Trust policy explicitly denies sts:SetSourceIdentity" : "Trust policy does not allow sts:SetSourceIdentity for the principal";
         throw new AwsError("AccessDenied", reason, 403);
       }
     }
     if (tagKeys.length || transitiveTagKeys.length || inheritedTransitiveTagKeys.length) {
-      const tagTrust = evaluateTrust(role.assumeRolePolicyDocument, principal, "sts:TagSession", trustContext);
+      const tagTrust = evaluateTrust(role.assumeRolePolicyDocument, principal, "sts:TagSession", trustContext, trustPolicySource(role)); await onTrust?.(tagTrust);
       if (tagTrust.decision !== "allowed") {
         const reason = tagTrust.decision === "explicitDeny" ? "Trust policy explicitly denies sts:TagSession" : "Trust policy does not allow sts:TagSession for the principal";
         throw new AwsError("AccessDenied", reason, 403);
       }
     }
-    const sessionDocuments: PolicyDocument[] = []; if (input.Policy) sessionDocuments.push(validatePolicyDocument(input.Policy)); for (const item of list<any>(input.PolicyArns)) { const policy = this.store.ensureAccount().iam.policies[item.arn]; if (!policy) throw new AwsError("ValidationError", `Managed session policy ${item.arn} was not found`, 400); sessionDocuments.push(policy.versions[policy.defaultVersionId].document); } if (sessionDocuments.length > 10) throw new AwsError("PackedPolicyTooLarge", "Too many session policies", 400);
+    const sessionDocuments: PolicyDocument[] = []; const sessionPolicyOrigins: NonNullable<LocalCredentialState["sessionPolicyOrigins"]> = []; let statementOffset = 0;
+    const addSessionPolicy = (document: PolicyDocument, source: NonNullable<LocalCredentialState["sessionPolicyOrigins"]>[number]["source"]) => { const statementCount = list<PolicyStatement>(document.Statement).length; sessionDocuments.push(document); sessionPolicyOrigins.push({ source, statementOffset, statementCount }); statementOffset += statementCount; };
+    if (input.Policy) { const document = validatePolicyDocument(input.Policy); addSessionPolicy(document, { kind: "session", policyName: "Policy", revision: policyRevision(document) }); }
+    for (const item of list<any>(input.PolicyArns)) { const policy = this.store.ensureAccount().iam.policies[item.arn]; if (!policy) throw new AwsError("ValidationError", `Managed session policy ${item.arn} was not found`, 400); addSessionPolicy(policy.versions[policy.defaultVersionId].document, { kind: "managed", policyArn: policy.arn, versionId: policy.defaultVersionId }); }
+    if (sessionDocuments.length > 10) throw new AwsError("PackedPolicyTooLarge", "Too many session policies", 400);
     const statements = sessionDocuments.flatMap(document => list<PolicyStatement>(document.Statement)); const sessionPolicy = sessionDocuments.length === 1 ? structuredClone(sessionDocuments[0]) : statements.length ? { Version: "2012-10-17", Statement: statements } as PolicyDocument : undefined;
     const issued = await this.persistRoleSession({
       role,
@@ -214,7 +230,7 @@ export class StsService {
       sourceIdentity,
       sessionTags,
       transitiveTagKeys: resultingTransitiveTagKeys,
-      sessionPolicy,
+      sessionPolicy, sessionPolicyOrigins,
     });
     const packedBytes = Buffer.byteLength(JSON.stringify({ sessionPolicy, tags: sessionTags }));
     return { Credentials: { AccessKeyId: issued.AccessKeyId, SecretAccessKey: issued.SecretAccessKey, SessionToken: issued.SessionToken, Expiration: issued.Expiration }, AssumedRoleUser: issued.AssumedRoleUser, PackedPolicySize: Math.ceil(packedBytes / 2048 * 100), SourceIdentity: sourceIdentity };

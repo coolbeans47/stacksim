@@ -713,6 +713,17 @@ The simulator-managed CDK bootstrap bucket and roles are installation resources.
 
 ### 15. Troubleshooting
 
+#### Repeatable measurement and permission experiments
+
+Use a disposable data directory for these experiments; do not reset an installation that contains work you want to keep.
+
+1. Invoke a Node ZIP function twice with a module-level allocation. Compare `Memory Size` (configuration) with `Max Memory Used` (worker lifetime peak RSS). The warm call can retain the earlier peak. ZIP memory/scratch sizes are not enforced; image peak usage and abrupt worker exits report unavailable.
+2. Ingest two completed one-second X-Ray segments for the same service with start times an hour apart. The service graph should show two completed requests and two seconds total response time, averaging one second; the observation span is 3,601 seconds.
+3. Write a large DynamoDB item and compare eventual and strong `GetItem` calls. Then filter a query so it returns zero rows. Compare `ReturnConsumedCapacity: INDEXES` with CloudWatch consumed-unit sums: evaluated items still cost modeled units, table series include LSIs, and GSIs have their own series. Repeat with capacity omitted; metrics should still be present.
+4. Give an IAM learner two policies with the same SID, one allowing an operation and one denying it. Make a signed SDK request in the default enforce mode, then open **IAM → Authorization decisions → Policy explanation**. The source identity, revision and statement index identify the deny. Remove that deny and repeat to observe the remaining allow or implicit denial.
+
+These observations teach the local model, not AWS latency, throughput or bills. Definitions, limits and focused regression commands are in the [gap 1 closeout](gap-1-learning-observability-closeout.md).
+
 #### CDK reports a missing bootstrap version
 
 If the error refers to `/cdk-bootstrap/hnb659fds/version`, check that `STACKSIM_CDK_BOOTSTRAP` is not set to `false`, then restart stacksim:

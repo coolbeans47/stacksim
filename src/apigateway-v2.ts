@@ -1,3 +1,4 @@
+import { trustPolicySource } from "./iam/provenance.js";
 import { createHash, type JsonWebKey } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -281,7 +282,7 @@ export class ApiGatewayV2Service {
   private assertGatewayRole(roleArn: unknown, label: string, runtime = false): void {
     if (roleArn === undefined || roleArn === null || roleArn === "") return;
     const role = typeof roleArn === "string" ? Object.values(this.store.ensureAccount().iam.roles).find(candidate => candidate.arn === roleArn) : undefined;
-    if (!role || evaluateTrust(role.assumeRolePolicyDocument, "apigateway.amazonaws.com", "sts:AssumeRole", { "aws:PrincipalServiceName": "apigateway.amazonaws.com" }).decision !== "allowed") {
+    if (!role || evaluateTrust(role.assumeRolePolicyDocument, "apigateway.amazonaws.com", "sts:AssumeRole", { "aws:PrincipalServiceName": "apigateway.amazonaws.com" }, trustPolicySource(role)).decision !== "allowed") {
       throw runtime
         ? new AwsError("InternalServerErrorException", `API Gateway cannot assume the configured ${label} role`, 500)
         : new AwsError("BadRequestException", `API Gateway cannot assume the configured ${label} role`);

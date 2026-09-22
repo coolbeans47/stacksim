@@ -1,3 +1,4 @@
+import { trustPolicySource } from "../../iam/provenance.js";
 import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import { extname } from "node:path";
@@ -337,7 +338,7 @@ async function validatePinnedHelper(s3: S3Service, store: StateStore, model: Cdk
     throw new DeploymentBoundaryError("ProviderConfiguration", "The deployed BucketDeployment AWS CLI layer bytes do not match its accepted immutable asset");
   }
   const role = Object.values(store.ensureAccount().iam.roles).find(item => item.arn === fn.role);
-  if (!role || evaluateTrust(role.assumeRolePolicyDocument, "lambda.amazonaws.com", "sts:AssumeRole", { "aws:PrincipalServiceName": "lambda.amazonaws.com" }).decision !== "allowed") {
+  if (!role || evaluateTrust(role.assumeRolePolicyDocument, "lambda.amazonaws.com", "sts:AssumeRole", { "aws:PrincipalServiceName": "lambda.amazonaws.com" }, trustPolicySource(role)).decision !== "allowed") {
     throw new DeploymentBoundaryError("ProviderConfiguration", "The BucketDeployment provider execution role is missing or cannot be assumed by Lambda");
   }
   const declaredRole = Object.values(stack?.resources ?? {}).find(resource => resource.resourceType === "AWS::IAM::Role" && (resource.attributes.Arn === fn.role || resource.physicalResourceId === role.roleName));

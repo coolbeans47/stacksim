@@ -137,23 +137,53 @@ export class XRayService {
   }
 
   private graphForTraces(ids: readonly string[]): any[] {
-    const nodes = new Map<string, { reference: number; name: string; type: string; start: number; end: number; ok: number; error: number; fault: number; throttle: number; edges: Set<string> }>();
-    const idToNode = new Map<string, string>();
-    for (const traceId of ids) {
+    type Statistics = { start: number; end: number; ok: number; error: number; fault: number; throttle: number; duration: number };
+    type Node = Statistics & { reference: number; name: string; type: string; edges: Map<string, Statistics> };
+    const empty = (): Statistics => ({ start: Infinity, end: -Infinity, ok: 0, error: 0, fault: 0, throttle: 0, duration: 0 });
+    const complete = (segment: any): boolean => segment.in_progress !== true && Number.isFinite(Number(segment.end_time)) && segment.end_time !== undefined;
+    const accumulate = (stats: Statistics, segment: any): void => {
+      const start = Number(segment.start_time); const end = complete(segment) ? Number(segment.end_time) : start;
+      stats.start = Math.min(stats.start, start); stats.end = Math.max(stats.end, end);
+      // Partial segments establish observation bounds, but have no completed
+      // response or duration. Counts and averages use the same completed set.
+      if (!complete(segment)) return;
+      stats.duration += end - start;
+      const status = Number(segment.http?.response?.status);
+      if (segment.fault === true || status >= 500) stats.fault++;
+      else if (segment.error === true || segment.throttle === true || status >= 400) { stats.error++; if (segment.throttle === true || status === 429) stats.throttle++; }
+      else stats.ok++;
+    };
+    const view = (stats: Statistics) => ({ StartTime: stats.start, EndTime: stats.end, SummaryStatistics: { OkCount: stats.ok, ErrorStatistics: { ThrottleCount: stats.throttle, TotalCount: stats.error }, FaultStatistics: { OtherCount: stats.fault, TotalCount: stats.fault }, TotalCount: stats.ok + stats.error + stats.fault, TotalResponseTime: stats.duration } });
+    const nodes = new Map<string, Node>();
+    for (const traceId of new Set(ids)) {
       const trace = this.store.getTrace(traceId); if (!trace) continue;
-      for (const segment of trace.segments) {
-        let document: any; try { document = JSON.parse(segment.document); } catch { continue; }
-        const visit = (node: any, parent?: any) => {
-          const key = `${node.name ?? "unknown"}\0${node.namespace === "aws" ? "AWS::Service" : node.origin ?? "local"}`;
-          let aggregate = nodes.get(key); if (!aggregate) { aggregate = { reference: nodes.size, name: node.name ?? "unknown", type: node.origin ?? (node.namespace === "aws" ? "AWS::Service" : "local"), start: node.start_time, end: node.end_time ?? node.start_time, ok: 0, error: 0, fault: 0, throttle: 0, edges: new Set() }; nodes.set(key, aggregate); }
-          aggregate.start = Math.min(aggregate.start, node.start_time); aggregate.end = Math.max(aggregate.end, node.end_time ?? node.start_time); aggregate.ok += node.error || node.fault ? 0 : 1; aggregate.error += node.error ? 1 : 0; aggregate.fault += node.fault ? 1 : 0; aggregate.throttle += node.throttle ? 1 : 0; idToNode.set(node.id, key);
-          if (parent) nodes.get(idToNode.get(parent.id)!)?.edges.add(key);
-          for (const child of node.subsegments ?? []) visit(child, node);
-        };
-        visit(document);
+      // Identity is trace-local. A separately submitted subsegment may also
+      // appear embedded: prefer completed data, then the independent document.
+      const segments = new Map<string, { document: any; parentId?: string; independent: boolean }>();
+      const collect = (document: any, parentId?: string, independent = false): void => {
+        const previous = segments.get(document.id);
+        if (!previous || (complete(document) && !complete(previous.document)) || (complete(document) === complete(previous.document) && independent && !previous.independent)) segments.set(document.id, { document, parentId: document.parent_id ?? parentId, independent });
+        for (const child of document.subsegments ?? []) collect(child, document.id);
+      };
+      for (const segment of trace.segments) { try { collect(JSON.parse(segment.document), undefined, true); } catch { continue; } }
+      const keys = new Map<string, string>();
+      for (const [id, { document }] of segments) {
+        const type = document.origin ?? (document.namespace === "aws" ? "AWS::Service" : "local"); const name = document.name ?? "unknown"; const key = `${name}\0${type}`;
+        let node = nodes.get(key);
+        if (!node) { node = { ...empty(), reference: nodes.size, name, type, edges: new Map() }; nodes.set(key, node); }
+        keys.set(id, key); accumulate(node, document);
+      }
+      for (const [id, { document, parentId }] of segments) {
+        const source = parentId ? keys.get(parentId) : undefined; const destination = keys.get(id)!;
+        if (!source || source === destination) continue;
+        const edges = nodes.get(source)!.edges; let edge = edges.get(destination);
+        if (!edge) { edge = empty(); edges.set(destination, edge); }
+        // Each relationship contributes the child's duration/outcome once,
+        // never the parent's inclusive duration or unrelated source requests.
+        accumulate(edge, document);
       }
     }
-    return [...nodes.entries()].map(([key, node]) => ({ ReferenceId: node.reference, Name: node.name, Names: [node.name], Type: node.type, State: "active", StartTime: node.start, EndTime: node.end, SummaryStatistics: { OkCount: node.ok, ErrorStatistics: { ThrottleCount: node.throttle, TotalCount: node.error }, FaultStatistics: { OtherCount: node.fault, TotalCount: node.fault }, TotalCount: node.ok + node.error + node.fault, TotalResponseTime: Math.max(0, node.end - node.start) }, Edges: [...node.edges].map(destination => ({ ReferenceId: nodes.get(destination)!.reference, StartTime: node.start, EndTime: node.end, SummaryStatistics: { OkCount: node.ok, ErrorStatistics: { ThrottleCount: node.throttle, TotalCount: node.error }, FaultStatistics: { OtherCount: node.fault, TotalCount: node.fault }, TotalCount: node.ok + node.error + node.fault, TotalResponseTime: Math.max(0, node.end - node.start) } })) }));
+    return [...nodes.values()].map(node => ({ ReferenceId: node.reference, Name: node.name, Names: [node.name], Type: node.type, State: "active", ...view(node), Edges: [...node.edges].map(([destination, stats]) => ({ ReferenceId: nodes.get(destination)!.reference, ...view(stats) })) }));
   }
 
   health(): XRayRepositoryHealth { return this.store.health(); }

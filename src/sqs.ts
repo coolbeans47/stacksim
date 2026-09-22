@@ -1,3 +1,5 @@
+import { SQS_MOVE_ACTIONS, moveTaskSource, type SqsMoveCaller, type SqsMoveTask } from "./sqs/move-task.js";
+import { authorizationDecision } from "./iam/provenance.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Clock } from "./core/clock.js";
@@ -27,7 +29,8 @@ const QUEUE_DELETE_COOLDOWN_MS = 60_000;
 const PURGE_COOLDOWN_MS = 60_000;
 const FIFO_DEDUPLICATION_WINDOW_MS = 5 * 60_000;
 const RECEIVE_ATTEMPT_WINDOW_MS = 5 * 60_000;
-const ACTIONS = new Set([
+export const SQS_ACTIONS = new Set([
+  ...SQS_MOVE_ACTIONS,
   "CreateQueue", "DeleteQueue", "GetQueueUrl", "ListQueues", "GetQueueAttributes", "SetQueueAttributes",
   "TagQueue", "UntagQueue", "ListQueueTags", "SendMessage", "ReceiveMessage", "DeleteMessage",
   "ChangeMessageVisibility", "SendMessageBatch", "DeleteMessageBatch", "ChangeMessageVisibilityBatch", "PurgeQueue",
@@ -145,7 +148,7 @@ export type SqsAuthorizedMessageCaller =
 interface RedrivePolicy { deadLetterTargetArn: string; maxReceiveCount: number }
 interface RedriveAllowPolicy { redrivePermission: "allowAll" | "denyAll" | "byQueue"; sourceQueueArns?: string[] }
 interface PageCursor { after: string; fingerprint: string }
-interface SqsRequestContext { abortSignal?: AbortSignal }
+interface SqsRequestContext { abortSignal?: AbortSignal; moveCaller?: SqsMoveCaller }
 type XmlRecord = Record<string, unknown>;
 
 class SqsRequestAbortedError extends Error {
@@ -262,6 +265,8 @@ function queryMessageAttributes(value: unknown): Record<string, SqsMessageAttrib
 function normalizeQueryInput(action: string, parsed: Record<string, unknown>): any {
   const input: any = { ...parsed };
   delete input.Action; delete input.Version;
+  // SigV4 query authentication belongs to the transport, not task configuration.
+  for (const key of ["X-Amz-Algorithm", "X-Amz-Credential", "X-Amz-Date", "X-Amz-Expires", "X-Amz-SignedHeaders", "X-Amz-Signature", "X-Amz-Security-Token"]) delete input[key];
   if (input.Attribute !== undefined) { input.Attributes = queryNameValueMap(input.Attribute); delete input.Attribute; }
   if (input.Tag !== undefined) {
     const tags: Record<string, string> = {};
@@ -297,6 +302,7 @@ function xmlElement(name: string, value: unknown): string {
 }
 
 function queryResultShape(action: string, result: any): XmlRecord {
+  if (action === "ListMessageMoveTasks") return { Result: result.Results };
   if (action === "ListQueues" || action === "ListDeadLetterSourceQueues") return { QueueUrl: result.QueueUrls ?? result.queueUrls, NextToken: result.NextToken };
   if (action === "GetQueueAttributes") return { Attribute: Object.entries(result.Attributes ?? {}).map(([Name, Value]) => ({ Name, Value })) };
   if (action === "ListQueueTags") return { Tag: Object.entries(result.Tags ?? {}).map(([Key, Value]) => ({ Key, Value })) };
@@ -331,6 +337,11 @@ export class SqsService {
   private startPromise?: Promise<void>;
   private stopped = false;
   private readonly waiters = new Map<string, Set<() => void>>();
+  private readonly activeMoveSources = new Set<string>();
+  private cancelMoveTick?: () => void;
+  private moveTick?: Promise<void>;
+  private nextMoveDelay = 1000;
+  readonly diagnostics: Array<{ time: number; code: string }> = [];
   private readonly attributeUpdateTails = new Map<string, Promise<void>>();
 
   constructor(
@@ -340,9 +351,9 @@ export class SqsService {
     private readonly telemetry: TelemetryBus,
     private readonly scheduler: Scheduler,
     private readonly endpointProvider: () => string,
+    private readonly authorizeMove?: (caller: SqsMoveCaller | undefined, action: string, queue: ResolvedSqsQueue) => Promise<void>,
   ) {
-    this.storage = new SqsStorage(store);
-    void this.scheduler;
+    this.storage = SqsStorage.forStore(store);
   }
 
   private get pagination(): PaginationTokens {
@@ -354,6 +365,11 @@ export class SqsService {
       await this.storage.start();
       await this.recoverPendingAttributeUpdates();
       if (this.pruneQueueDeletionTimes()) await this.store.save();
+      for (const queue of Object.values(this.regionState().sqsQueues)) {
+        const data = await this.storage.readQueue(queue.queueArn);
+        if (data.moveTasks?.some(task => task.Status === "RUNNING" || task.Status === "CANCELLING")) this.activeMoveSources.add(queue.queueArn);
+      }
+      this.scheduleMoveTick();
     })();
     await this.startPromise;
     this.stopped = false;
@@ -361,6 +377,9 @@ export class SqsService {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.cancelMoveTick?.();
+    this.cancelMoveTick = undefined;
+    await this.moveTick;
     for (const callbacks of this.waiters.values()) for (const wake of [...callbacks]) wake();
     this.waiters.clear();
     await this.storage.stop();
@@ -389,13 +408,17 @@ export class SqsService {
         const parsed = parseAwsQuery(parameters);
         action = String(parsed.Action ?? action);
         input = normalizeQueryInput(action, parsed);
-        if (input.QueueUrl === undefined && url.pathname !== "/" && !new Set(["CreateQueue", "GetQueueUrl", "ListQueues"]).has(action)) {
+        if (input.QueueUrl === undefined && url.pathname !== "/" && !new Set(["CreateQueue", "GetQueueUrl", "ListQueues", ...SQS_MOVE_ACTIONS]).has(action)) {
           input.QueueUrl = new URL(url.pathname, `${this.endpointProvider().replace(/\/+$/, "")}/`).toString();
         }
       }
-      if (!ACTIONS.has(action)) throw new AwsError("InvalidAction", `The action ${action || "(empty)"} is not valid for this endpoint.`, 400);
+      if (!SQS_ACTIONS.has(action)) throw new AwsError("InvalidAction", `The action ${action || "(empty)"} is not valid for this endpoint.`, 400);
       const operation = (this as unknown as Record<string, (value: any, context?: SqsRequestContext) => Promise<unknown>>)[action];
-      const result = await operation.call(this, input, { abortSignal: requestAbort.signal });
+      const principal = (req as any).awsPrincipal;
+      const moveCaller: SqsMoveCaller | undefined = principal ? { ...(principal.principalType === "roleSession" ? { sessionFingerprint: createHash("sha256").update(principal.accessKeyId).digest("hex") } : {}), principal: Object.fromEntries(Object.entries(principal).filter(([key]) => key !== "accessKeyId" && key !== "sessionToken")) as SqsMoveCaller["principal"], context: {
+        "aws:SourceIp": req.socket.remoteAddress?.replace(/^::ffff:/, ""), "aws:SecureTransport": Boolean((req.socket as any).encrypted), "aws:UserAgent": req.headers["user-agent"] ?? "",
+      } } : undefined;
+      const result = await operation.call(this, input, { abortSignal: requestAbort.signal, moveCaller });
       if (requestAbort.signal.aborted || res.destroyed) return;
       res.setHeader("x-amzn-requestid", requestId);
       if (jsonProtocol) json(res, result, 200, "application/x-amz-json-1.0");
@@ -414,6 +437,189 @@ export class SqsService {
       req.removeListener("aborted", onRequestAborted);
       res.removeListener("close", onResponseClosed);
     }
+  }
+
+  private diagnostic(code: string): void {
+    this.diagnostics.push({ time: this.clock.now(), code });
+    if (this.diagnostics.length > 32) this.diagnostics.shift();
+  }
+
+  private moveQueue(arn: unknown): ResolvedSqsQueue {
+    if (typeof arn !== "string" || !/^arn:aws:sqs:[a-z0-9-]+:\d{12}:[A-Za-z0-9_.-]+$/.test(arn)) throw new AwsError("InvalidAddress", "A valid SQS queue ARN is required.", 400);
+    const parts = arn.split(":");
+    if (parts[3] !== this.region || parts[4] !== this.store.accountId) throw new AwsError("UnsupportedOperation", "Redrive requires queues in the same local account and Region.", 400);
+    let queue: ResolvedSqsQueue;
+    try { queue = this.resolveQueueArn(arn); } catch { throw new AwsError("ResourceNotFoundException", "The redrive queue does not exist.", 400); }
+    if (queue.state.attributes.KmsMasterKeyId || queue.state.attributes.KmsDataKeyReusePeriodSeconds) throw new AwsError("UnsupportedOperation", "KMS-backed message movement is unavailable; use SSE-SQS queues.", 400);
+    if (/aws:(?:sourcevpc|sourcevpce|vpcsourceip|vpceaccount|vpceorgid|vpceorgpaths)/i.test(queue.state.attributes.Policy ?? "")) throw new AwsError("UnsupportedOperation", "VPC endpoint dependent redrive policies are unavailable locally.", 400);
+    return queue;
+  }
+
+  private moveDestination(source: ResolvedSqsQueue, arn: string): ResolvedSqsQueue {
+    const destination = this.moveQueue(arn);
+    if (destination.queueArn === source.queueArn || destination.fifo !== source.fifo) throw new AwsError("UnsupportedOperation", "Redrive requires a different destination queue of the same type.", 400);
+    return destination;
+  }
+
+  private validateMoveFields(input: object, fields: string[]): void {
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new AwsError("InvalidParameterValue", "A request object is required.", 400);
+    if (Object.keys(input).some(key => !fields.includes(key))) throw new AwsError("UnsupportedOperation", "This message-move request includes an unsupported field. Filtering, payload changes, KMS and networking options are unavailable.", 400);
+  }
+
+  private async movePermissions(caller: SqsMoveCaller | undefined, operation: string, queue: ResolvedSqsQueue): Promise<void> {
+    const actions = operation === "ListMessageMoveTasks" ? [operation, "GetQueueAttributes"] : [operation, "ReceiveMessage", "DeleteMessage", "GetQueueAttributes"];
+    for (const action of actions) await this.authorizeMove?.(caller, `sqs:${action}`, queue);
+  }
+
+  async StartMessageMoveTask(input: { SourceArn: string; DestinationArn?: string; MaxNumberOfMessagesPerSecond?: number }, context?: SqsRequestContext): Promise<{ TaskHandle: string }> {
+    await this.ensureStarted();
+    this.validateMoveFields(input, ["SourceArn", "DestinationArn", "MaxNumberOfMessagesPerSecond"]);
+    if (input.DestinationArn !== undefined && typeof input.DestinationArn !== "string") throw new AwsError("InvalidParameterValue", "DestinationArn must be a string.", 400);
+    const source = this.moveQueue(input.SourceArn);
+    if (!this.deadLetterSources(source.queueArn).length) throw new AwsError("UnsupportedOperation", "The source must be configured as the dead-letter queue of an SQS queue. Lambda and SNS dead-letter sources are unsupported.", 400);
+    const rate = input.MaxNumberOfMessagesPerSecond === undefined ? undefined : numeric(input.MaxNumberOfMessagesPerSecond, "MaxNumberOfMessagesPerSecond", 1, 500);
+    await this.movePermissions(context?.moveCaller, "StartMessageMoveTask", source);
+    if (input.DestinationArn) {
+      const destination = this.moveDestination(source, input.DestinationArn);
+      await this.authorizeMove?.(context?.moveCaller, "sqs:SendMessage", destination);
+    } else {
+      const data = await this.storage.readQueue(source.queueArn);
+      // Original message provenance, never the current queue-policy relationship, determines routing.
+      const destinations = new Set(Object.values(data.messages).filter(message => message.retentionUntil > this.clock.now()).map(message => message.deadLetterSourceArn).filter((arn): arn is string => !!arn));
+      for (const arn of destinations) { const destination = this.moveDestination(source, arn); await this.authorizeMove?.(context?.moveCaller, "sqs:SendMessage", destination); }
+    }
+    const now = this.clock.now();
+    const TaskHandle = Buffer.from(JSON.stringify({ taskId: randomUUID(), sourceArn: source.queueArn })).toString("base64url");
+    await this.storage.addMoveTask({ TaskHandle, SourceArn: source.queueArn, ...(input.DestinationArn ? { DestinationArn: input.DestinationArn } : {}), ...(rate === undefined ? {} : { MaxNumberOfMessagesPerSecond: rate }), Status: "RUNNING", StartedTimestamp: now, ApproximateNumberOfMessagesMoved: 0, ApproximateNumberOfMessagesToMove: 0, nextMoveAt: now, caller: context?.moveCaller }, () => { if (this.resolveQueueArn(source.queueArn).state !== source.state) throw new AwsError("ResourceNotFoundException", "The source queue was replaced.", 400); });
+    this.activeMoveSources.add(source.queueArn);
+    this.scheduleMoveTick();
+    return { TaskHandle };
+  }
+
+  async ListMessageMoveTasks(input: { SourceArn: string; MaxResults?: number }, context?: SqsRequestContext): Promise<{ Results: object[] }> {
+    await this.ensureStarted();
+    this.validateMoveFields(input, ["SourceArn", "MaxResults"]);
+    const source = this.moveQueue(input.SourceArn);
+    const maximum = numeric(input.MaxResults, "MaxResults", 1, 10, 1);
+    await this.movePermissions(context?.moveCaller, "ListMessageMoveTasks", source);
+    const data = await this.storage.readQueue(source.queueArn);
+    return { Results: (data.moveTasks ?? []).slice(0, maximum).map(task => ({
+      ...(task.Status === "RUNNING" ? { TaskHandle: task.TaskHandle } : {}), Status: task.Status, SourceArn: task.SourceArn,
+      ...(task.DestinationArn ? { DestinationArn: task.DestinationArn } : {}),
+      ...(task.MaxNumberOfMessagesPerSecond === undefined ? {} : { MaxNumberOfMessagesPerSecond: task.MaxNumberOfMessagesPerSecond }),
+      ApproximateNumberOfMessagesMoved: task.ApproximateNumberOfMessagesMoved, ApproximateNumberOfMessagesToMove: task.ApproximateNumberOfMessagesToMove,
+      StartedTimestamp: task.StartedTimestamp, ...(task.Status === "FAILED" ? { FailureReason: task.FailureReason } : {}),
+    })) };
+  }
+
+  async CancelMessageMoveTask(input: { TaskHandle: string }, context?: SqsRequestContext): Promise<{ ApproximateNumberOfMessagesMoved: number }> {
+    await this.ensureStarted();
+    this.validateMoveFields(input, ["TaskHandle"]);
+    const arn = moveTaskSource(input.TaskHandle);
+    if (!arn) throw new AwsError("InvalidAddress", "Invalid message-move task handle.", 400);
+    const source = this.moveQueue(arn);
+    await this.movePermissions(context?.moveCaller, "CancelMessageMoveTask", source);
+    const moved = await this.storage.mutateQueue(arn, data => {
+      const task = data.moveTasks?.find(task => task.TaskHandle === input.TaskHandle);
+      if (!task) throw new AwsError("ResourceNotFoundException", "The message-move task does not exist in retained history.", 400);
+      if (task.Status !== "RUNNING") throw new AwsError("UnsupportedOperation", "Only RUNNING message-move tasks can be cancelled.", 400);
+      task.Status = "CANCELLING";
+      return task.ApproximateNumberOfMessagesMoved;
+    });
+    this.scheduleMoveTick();
+    return { ApproximateNumberOfMessagesMoved: moved };
+  }
+
+  private scheduleMoveTick(delay = 1): void {
+    if (this.stopped || this.cancelMoveTick || !this.activeMoveSources.size) return;
+    this.cancelMoveTick = this.scheduler.schedule(() => { this.cancelMoveTick = undefined; return this.runMessageMoveTasks(); }, delay);
+  }
+
+  /** Shared scheduler entry point, also drainable under an injected clock. One worker per Region. */
+  async runMessageMoveTasks(): Promise<void> {
+    if (this.moveTick) return this.moveTick;
+    if (this.stopped) return;
+    this.cancelMoveTick?.(); this.cancelMoveTick = undefined;
+    this.moveTick = this.processMoveTasks();
+    try { await this.moveTick; }
+    finally { this.moveTick = undefined; this.scheduleMoveTick(Math.max(1, this.nextMoveDelay)); }
+  }
+
+  private async processMoveTasks(): Promise<void> {
+    this.nextMoveDelay = 1000;
+    for (const arn of [...this.activeMoveSources]) {
+      if (this.stopped) break;
+      let task: SqsMoveTask | undefined;
+      try {
+        const data = await this.storage.readQueue(arn);
+        task = data.moveTasks?.find(item => item.Status === "RUNNING" || item.Status === "CANCELLING");
+        if (!task) { this.activeMoveSources.delete(arn); continue; }
+        if (task.Status === "CANCELLING") { await this.finishMoveTask(task, "CANCELLED"); continue; }
+        if (this.clock.now() - task.StartedTimestamp >= 36 * 60 * 60_000) { await this.finishMoveTask(task, "FAILED", "TaskTimedOut: redrive exceeded 36 hours."); continue; }
+        if (task.nextMoveAt > this.clock.now()) { this.nextMoveDelay = Math.min(this.nextMoveDelay, task.nextMoveAt - this.clock.now()); continue; }
+        const source = this.moveQueue(arn);
+        await this.movePermissions(task.caller, "StartMessageMoveTask", source);
+        const now = this.clock.now();
+        const live = Object.values(data.messages).filter(message => message.retentionUntil > now);
+        const liveData = { ...data, messages: Object.fromEntries(live.map(message => [message.messageId, message])) };
+        const eligible = (source.fifo ? this.selectMessagesForReceive(source, liveData, 1, now) : live.filter(message => message.availableAt <= now && (message.invisibleUntil ?? 0) <= now)).sort((a, b) => (a.deadLetteredAt ?? a.sentAt) - (b.deadLetteredAt ?? b.sentAt) || (a.queueOrder && b.queueOrder ? Number(BigInt(a.queueOrder) - BigInt(b.queueOrder)) : utf8Compare(a.messageId, b.messageId)));
+        const message = eligible[0];
+        if (!message) { if (!live.length) await this.finishMoveTask(task, "COMPLETED"); continue; }
+        const destinationArn = task.DestinationArn ?? message.deadLetterSourceArn;
+        if (!destinationArn) { await this.finishMoveTask(task, "FAILED", "CouldNotDetermineMessageSource: use a custom destination for direct sends or legacy messages without original-source metadata."); continue; }
+        const destination = this.moveDestination(source, destinationArn);
+        await this.authorizeMove?.(task.caller, "sqs:SendMessage", destination);
+        const payload = await this.storage.readPayload(message.blobId);
+        if (Buffer.byteLength(payload.body) + messageAttributeBytes(payload.messageAttributes) > Number(destination.state.attributes.MaximumMessageSize)) throw new AwsError("InvalidParameterValue", "Destination MaximumMessageSize is too small.", 400);
+        const rate = task.MaxNumberOfMessagesPerSecond ?? Math.min(500, Math.max(1, live.length));
+        this.nextMoveDelay = Math.min(this.nextMoveDelay, Math.ceil(1000 / rate));
+        await this.storage.mutateQueue(arn, current => { const item = current.moveTasks?.find(item => item.TaskHandle === task!.TaskHandle); if (item?.Status === "RUNNING") item.leaseUntil = now + 30_000; });
+        const moved = await this.storage.moveMessage(arn, destinationArn, message.messageId, (original, transferId, target) => {
+          const messageId = randomUUID();
+          const queueOrder = target.nextSequenceNumber ?? "1";
+          target.nextSequenceNumber = (BigInt(queueOrder) + 1n).toString();
+          let sequenceNumber: string | undefined;
+          if (destination.fifo) {
+            sequenceNumber = queueOrder;
+            target.deduplication ??= {};
+            const dedup = original.messageDeduplicationId ?? original.messageId;
+            const key = destination.state.attributes.DeduplicationScope === "messageGroup" ? `${original.messageGroupId}\u0000${dedup}` : dedup;
+            target.deduplication[key] = { expiresAt: now + FIFO_DEDUPLICATION_WINDOW_MS, messageId, sequenceNumber };
+          }
+          return { ...original, messageId, transferId, queueOrder, sentAt: now, availableAt: now + Number(destination.state.attributes.DelaySeconds) * 1000,
+            retentionUntil: now + Number(destination.state.attributes.MessageRetentionPeriod) * 1000,
+            receiveCount: 0, receiptVersion: 0, leaseMutationVersion: 0, firstReceivedAt: undefined, invisibleUntil: undefined, currentReceiptHandle: undefined,
+            deadLetteredAt: undefined, deadLetterSourceArn: undefined, sequenceNumber,
+            sqsManagedSse: destination.state.attributes.SqsManagedSseEnabled === "true" };
+        }, { taskHandle: task.TaskHandle, nextMoveAt: now + Math.ceil(1000 / rate),
+          eligible: current => current.retentionUntil > this.clock.now() && current.availableAt <= this.clock.now() && (current.invisibleUntil ?? 0) <= this.clock.now(),
+          validate: () => { if (this.resolveQueueArn(arn).state !== source.state || this.resolveQueueArn(destinationArn).state !== destination.state) throw new AwsError("ResourceNotFoundException", "A redrive queue was replaced.", 400); },
+        });
+        if (moved) {
+          this.notify(destinationArn);
+          await this.metric(destination.queueName, "NumberOfMessagesSent", 1, "Count");
+          await this.publishGauges(source.state); await this.publishGauges(destination.state);
+        }
+      } catch (error) {
+        // Never copy exception text: it may contain a payload, credentials or host path.
+        this.diagnostic(error instanceof AwsError ? error.code : "MoveStorageFailure");
+        if (task) {
+          try { await this.finishMoveTask(task, "FAILED", error instanceof AwsError ? `${error.code}: redrive queue validation or permission check failed.` : "StorageFailure: movement paused after a storage error; repair storage and start another task."); }
+          catch { this.diagnostic("MoveCheckpointFailure"); } // retry reconciliation on the next tick, not an unobserved stopped worker
+        }
+      }
+    }
+  }
+
+  private async finishMoveTask(task: SqsMoveTask, status: "COMPLETED" | "CANCELLED" | "FAILED", reason?: string): Promise<void> {
+    await this.storage.mutateQueue(task.SourceArn, data => {
+      const current = data.moveTasks?.find(item => item.TaskHandle === task.TaskHandle);
+      if (!current) return;
+      current.Status = current.Status === "CANCELLING" ? "CANCELLED" : status;
+      current.FailureReason = current.Status === "FAILED" ? reason : undefined;
+      current.endedAt = this.clock.now(); current.leaseUntil = undefined;
+    });
+    this.activeMoveSources.delete(task.SourceArn);
   }
 
   queueArn(name: string): string {
@@ -898,7 +1104,10 @@ export class SqsService {
         data.deduplication ??= {};
         data.deduplication[deduplicationKey] = { expiresAt: now + FIFO_DEDUPLICATION_WINDOW_MS, messageId, sequenceNumber };
       }
+      const queueOrder = sequenceNumber ?? data.nextSequenceNumber ?? "1";
+      if (!isFifo) data.nextSequenceNumber = (BigInt(queueOrder) + 1n).toString();
       data.messages[messageId] = {
+        queueOrder,
         messageId, blobId, md5OfBody: md5Body, ...(md5Attributes ? { md5OfMessageAttributes: md5Attributes } : {}),
         ...(md5SystemAttributes ? { md5OfMessageSystemAttributes: md5SystemAttributes } : {}), sentAt: now,
         availableAt: now + delay * 1000, retentionUntil: now + Number(queue.state.attributes.MessageRetentionPeriod) * 1000,
@@ -917,10 +1126,10 @@ export class SqsService {
       await this.publishGauges(queue.state);
       return stored.integrationOutput ?? response(stored.messageId, stored.sequenceNumber);
     }
+    this.notify(queue.queueArn);
     await this.metric(queue.queueName, "NumberOfMessagesSent", 1, "Count");
     await this.metric(queue.queueName, "SentMessageSize", size, "Bytes");
     await this.publishGauges(queue.state);
-    this.notify(queue.queueArn);
     return stored.integrationOutput ?? response(stored.messageId, stored.sequenceNumber);
   }
 
@@ -975,10 +1184,11 @@ export class SqsService {
         if (!redrive || !redriveTarget) continue;
         const fifoMove = queue.state.attributes.FifoQueue === "true";
         const moved = await this.storage.moveMessage(queue.queueArn, redriveTarget.queueArn, leased.redriveId, (message, transferId, destination) => {
+          const queueOrder = destination.nextSequenceNumber ?? "1";
+          destination.nextSequenceNumber = (BigInt(queueOrder) + 1n).toString();
           let sequenceNumber = message.sequenceNumber;
           if (fifoMove) {
-            sequenceNumber = BigInt(destination.nextSequenceNumber ?? "1").toString();
-            destination.nextSequenceNumber = (BigInt(sequenceNumber) + 1n).toString();
+            sequenceNumber = queueOrder;
             destination.deduplication ??= {};
             const deduplicationKey = redriveTarget!.state.attributes.DeduplicationScope === "messageGroup" ? `${message.messageGroupId}\u0000${message.messageId}` : message.messageId;
             destination.deduplication[deduplicationKey] = { expiresAt: now + FIFO_DEDUPLICATION_WINDOW_MS, messageId: message.messageId, sequenceNumber };
@@ -986,7 +1196,9 @@ export class SqsService {
           return {
             ...message,
             transferId,
+            queueOrder,
             deadLetteredAt: now,
+            deadLetterSourceArn: queue.queueArn,
             availableAt: now,
             invisibleUntil: undefined,
             currentReceiptHandle: undefined,
@@ -998,10 +1210,12 @@ export class SqsService {
               sequenceNumber,
             } : {}),
           };
+        }, { eligible: current => current.retentionUntil > this.clock.now() && current.availableAt <= this.clock.now() && (current.invisibleUntil ?? 0) <= this.clock.now(),
+          validate: () => { this.resolveQueueArn(queue.queueArn); this.resolveQueueArn(redriveTarget!.queueArn); },
         });
         if (moved) {
           this.notify(redriveTarget.queueArn);
-          await this.telemetry.publish({ namespace: "AWS/SQS", metricName: "NumberOfMessagesMovedToDeadLetterQueue", dimensions: { QueueName: queue.queueName }, value: 1, unit: "Count", timestamp: this.clock.now() });
+          await this.metric(queue.queueName, "NumberOfMessagesMovedToDeadLetterQueue", 1, "Count");
           await this.publishGauges(queue.state); await this.publishGauges(redriveTarget.state);
         }
         continue;
@@ -1098,6 +1312,7 @@ export class SqsService {
       SentTimestamp: String(message.sentAt),
       ApproximateReceiveCount: String(message.receiveCount),
       ...(message.firstReceivedAt === undefined ? {} : { ApproximateFirstReceiveTimestamp: String(message.firstReceivedAt) }),
+      ...(message.deadLetterSourceArn === undefined ? {} : { DeadLetterQueueSourceArn: message.deadLetterSourceArn }),
       ...(message.messageGroupId === undefined ? {} : { MessageGroupId: message.messageGroupId }),
       ...(message.messageDeduplicationId === undefined ? {} : { MessageDeduplicationId: message.messageDeduplicationId }),
       ...(message.sequenceNumber === undefined ? {} : { SequenceNumber: message.sequenceNumber }),
@@ -1158,7 +1373,7 @@ export class SqsService {
   private async recordAuthorization(principalArn: string, action: string, resource: string, decision: AuthorizationResult): Promise<void> {
     const accountId = principalArn.match(/^arn:[a-z0-9-]+:(?:iam|sts)::(\d{12}):/i)?.[1] ?? resource.match(/^arn:[a-z0-9-]+:sqs:[^:]+:(\d{12}):/i)?.[1] ?? this.store.accountId;
     const decisions = this.store.ensureAccount(accountId).iam.authorizationDecisions;
-    decisions.push({ time: this.clock.now(), requestId: randomUUID(), principalArn, action, resource, decision: decision.decision, reason: decision.reason });
+    decisions.push(authorizationDecision({ time: this.clock.now(), requestId: randomUUID(), principalArn, action, resource, decision: decision.decision, reason: decision.reason }, decision));
     if (decisions.length > 1_000) decisions.splice(0, decisions.length - 1_000);
     await this.store.save();
   }
@@ -1455,7 +1670,8 @@ export class SqsService {
   }
 
   private async metric(queueName: string, metricName: string, value: number, unit: string, aggregation: "sample" | "gauge" = "sample"): Promise<void> {
-    await this.telemetry.publish({ namespace: "AWS/SQS", metricName, dimensions: { QueueName: queueName }, value, unit, timestamp: this.clock.now(), aggregation });
+    try { await this.telemetry.publish({ namespace: "AWS/SQS", metricName, dimensions: { QueueName: queueName }, value, unit, timestamp: this.clock.now(), aggregation }); }
+    catch { this.diagnostic("TelemetrySubscriberFailed"); }
   }
 
   private async publishGauges(queue: SqsQueueState, supplied?: SqsQueueData): Promise<void> {

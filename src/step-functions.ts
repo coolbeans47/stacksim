@@ -1,3 +1,4 @@
+import { trustPolicySource } from "./iam/provenance.js";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Clock } from "./core/clock.js";
@@ -210,7 +211,7 @@ export class StepFunctionsService {
     if (!/^arn:aws:iam::\d{12}:role\/[\w+=,.@/-]+$/.test(arn)) throw new AwsError("InvalidArn", "roleArn is invalid.");
     const role = Object.values(this.store.ensureAccount().iam.roles).find(candidate => candidate.arn === arn);
     if (!role) throw new AwsError("InvalidArn", `The role '${arn}' does not exist.`);
-    const trust = evaluateTrust(role.assumeRolePolicyDocument, "states.amazonaws.com", "sts:AssumeRole", { "aws:PrincipalAccount": this.store.accountId });
+    const trust = evaluateTrust(role.assumeRolePolicyDocument, "states.amazonaws.com", "sts:AssumeRole", { "aws:PrincipalAccount": this.store.accountId }, trustPolicySource(role));
     if (trust.decision !== "allowed") throw new AwsError("AccessDeniedException", `The role '${arn}' cannot be assumed by Step Functions.`, 400);
     return arn;
   }

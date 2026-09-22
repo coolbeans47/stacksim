@@ -16,7 +16,7 @@ Raw documents are decrypted only for the current request, redacted on the server
 
 ## Service map
 
-The service map aggregates retained segment and embedded-subsegment identities into services and directed edges. It reports bounded request, error, fault, throttle, and response-time statistics. X-Ray groups, Insights, inferred remote nodes, sampling-rule management, and Transaction Search belong to later phases and return explicit unsupported errors.
+The service map aggregates retained segment and embedded-subsegment identities into services and directed edges. It reports completed request counts, error/fault/throttle counts, summed response time and the average over that same completed set. Two one-second requests an hour apart contribute two seconds of response time. Observation start/end times remain separate. Overlapping requests each contribute their duration; parent nodes are not charged their children's durations again. Each edge uses only its child-call samples. Duplicate trace/segment identities, including embedded/independent subsegments, contribute once. In-progress segments contribute no duration or completed count until replaced by their completion; an average with no completed samples is unavailable. The current graph covers the selected trace page. X-Ray groups, Insights, inferred remote nodes, sampling-rule management, and Transaction Search belong to later phases and return explicit unsupported errors.
 
 ## Repository diagnostics
 

@@ -1,3 +1,4 @@
+import { measureWorkerMemory } from "./lambda-memory.js";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { createWriteStream } from "node:fs";
@@ -318,7 +319,7 @@ process.stdin.on("data", chunk => {
         try { handler = await loadHandler(request); protocol.write(`${JSON.stringify({ type: "ready", ok: true })}\n`); }
         catch (error: any) { protocol.write(`${JSON.stringify({ type: "ready", ok: false, error: { errorMessage: error?.message ?? String(error), errorType: error?.name ?? "Error", stackTrace: String(error?.stack ?? "").split("\n") } })}\n`); process.exitCode = 1; }
       } else if (request.type === "invoke" && handler) {
-        const result = await invoke(handler, request); await finishApplicationLogs(request.invocationId); protocol.write(`${JSON.stringify({ type: "result", invocationId: request.invocationId, ...result })}\n`);
+        const result = await invoke(handler, request); await finishApplicationLogs(request.invocationId); protocol.write(`${JSON.stringify({ type: "result", invocationId: request.invocationId, ...result, memoryUsage: measureWorkerMemory() })}\n`);
       } else throw new Error("Lambda runtime received an invalid protocol request");
     }
   })().catch(error => { protocol.write(`${JSON.stringify({ type: "ready", ok: false, error: { errorMessage: error?.message ?? String(error), errorType: error?.name ?? "Error" } })}\n`); process.exitCode = 1; });

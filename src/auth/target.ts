@@ -9,6 +9,7 @@ import { resolveSesV2Operation } from "../ses/protocol-v2.js";
 import type { IamState } from "../types.js";
 import { resolveIamAuthorizationTarget } from "./iam-target.js";
 import { xrayOperation } from "../xray/action-inventory.js";
+import { moveTaskSource } from "../sqs/move-task.js";
 import { AwsError } from "../errors.js";
 
 export interface AuthorizationTarget { action: string; resource: string; operation: string; input: any; context: Record<string, unknown>; additionalTargets?: AuthorizationTarget[] }
@@ -343,6 +344,8 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
     const queueName = operation === "CreateQueue" || operation === "GetQueueUrl" ? input.QueueName : supplied.name ?? pathIdentity.name;
     const owner = String(input.QueueOwnerAWSAccountId ?? supplied.owner ?? pathIdentity.owner ?? accountId);
     if (queueName && operation !== "ListQueues") resource = `arn:aws:sqs:${region}:${owner}:${queueName}`;
+    if (operation === "StartMessageMoveTask" || operation === "ListMessageMoveTasks") resource = typeof input.SourceArn === "string" ? input.SourceArn : "*";
+    if (operation === "CancelMessageMoveTask") resource = moveTaskSource(input.TaskHandle) || "*";
     if (operation === "CreateQueue") {
       const createTags = input.tags ?? input.Tags ?? input.Tag;
       const hasTags = Array.isArray(createTags) ? createTags.length > 0 : Boolean(createTags && typeof createTags === "object" && Object.keys(createTags).length);

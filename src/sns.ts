@@ -1,3 +1,4 @@
+import { trustPolicySource } from "./iam/provenance.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { PrincipalContext } from "./auth/sigv4.js";
@@ -1190,7 +1191,7 @@ export class SnsService {
         "aws:PrincipalServiceName": "sns.amazonaws.com",
         "aws:SourceArn": topic.arn,
         "aws:SourceAccount": this.store.accountId,
-      });
+      }, trustPolicySource(role));
       if (trust.decision !== "allowed") throw new AwsError("InvalidParameter", `Delivery feedback role ${roleArn} does not trust sns.amazonaws.com.`, 400);
     }
     if (creating && attributes.FifoTopic === undefined) {
