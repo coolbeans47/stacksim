@@ -86,6 +86,8 @@ DynamoDB stream triggers are fully supported. S3 notifications are configured fr
 
 **Execution result** — status, duration, response, log tail, durable execution link.
 
+In the log tail, **Memory Size** is the configured allocation. **Max Memory Used** is Node ZIP worker lifetime peak RSS, including initialization and earlier warm calls, excluding child processes. It can stay high across warm calls after an allocation is freed. It is not an enforced memory limit. A worker exit/timeout or unavailable host measurement is labeled **unavailable**; JSON reports omit the numeric usage field and include a status/reason. Image peak memory is unavailable separately from Docker's requested memory and scratch limits. ZIP memory and scratch sizes are descriptor-only. General configuration explains this boundary; [the reference](reference.md#learning-measurements-and-permission-explanations) defines the measurement.
+
 ### Monitor tab
 
 **Asynchronous invocation queue** — queued/leased events table.

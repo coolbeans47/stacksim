@@ -1,3 +1,4 @@
+import { resourcePolicySource, mergeProvenance } from "./iam/provenance.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { once } from "node:events";
@@ -283,7 +284,7 @@ function validatePolicyDocument(value: unknown): PolicyDocument {
 
 function publicGetAllowed(bucket: S3BucketState, key: string): boolean {
   if (!bucket.policyDocument || canonicalPublicAccessBlock(bucket.publicAccessBlock).restrictPublicBuckets) return false;
-  return evaluateResourcePolicy(bucket.policyDocument, "*", "s3:GetObject", objectArn(bucket.name, key), { "aws:PrincipalArn": "*", "aws:SecureTransport": false }).decision === "allowed";
+  return evaluateResourcePolicy(bucket.policyDocument, "*", "s3:GetObject", objectArn(bucket.name, key), { "aws:PrincipalArn": "*", "aws:SecureTransport": false }, resourcePolicySource("s3", bucket.arn, bucket.policyDocument)).decision === "allowed";
 }
 
 function parseXmlBoolean(xml: string, name: string): boolean {
@@ -1040,7 +1041,7 @@ export class S3Service {
       "aws:CurrentTime": new Date(this.clock.now()).toISOString(),
     };
     const policy = located.bucket.policyDocument
-      ? evaluateResourcePolicy(located.bucket.policyDocument, CLOUDFRONT_S3_SERVICE_PRINCIPAL, "s3:GetObject", resource, context)
+      ? evaluateResourcePolicy(located.bucket.policyDocument, CLOUDFRONT_S3_SERVICE_PRINCIPAL, "s3:GetObject", resource, context, resourcePolicySource("s3", located.bucket.arn, located.bucket.policyDocument))
       : { decision: "implicitDeny" as const, reason: "The bucket has no policy authorizing CloudFront", matchedStatements: [] };
     const authorization = combineIdentityAndResourceAuthorization(undefined, policy, "service");
     if (authorization.decision !== "allowed") throw new AwsError("AccessDenied", "Access Denied", 403);
@@ -1109,7 +1110,7 @@ export class S3Service {
     const located = await this.locateTransferBucket(match[1], caller);
     const context = this.transferCallerContext(caller);
     const policy = located.bucket.policyDocument
-      ? evaluateResourcePolicy(located.bucket.policyDocument, caller.servicePrincipal, action, resource, context)
+      ? evaluateResourcePolicy(located.bucket.policyDocument, caller.servicePrincipal, action, resource, context, resourcePolicySource("s3", located.bucket.arn, located.bucket.policyDocument))
       : { decision: "implicitDeny" as const, reason: "The bucket has no resource policy authorizing DynamoDB", matchedStatements: [] };
     return combineIdentityAndResourceAuthorization(undefined, policy, "service");
   }
@@ -1365,17 +1366,17 @@ export class S3Service {
     const match = resource.match(/^arn:aws:s3:::([^/]+)(?:\/(.*))?$/); if (!match) return undefined;
     const located = this.findBucket(match[1]); if (!located) return undefined;
     let policy: AuthorizationResult = located.bucket.policyDocument
-      ? evaluateResourcePolicy(located.bucket.policyDocument, principal, action, resource, context)
+      ? evaluateResourcePolicy(located.bucket.policyDocument, principal, action, resource, context, resourcePolicySource("s3", located.bucket.arn, located.bucket.policyDocument))
       : { decision: "implicitDeny", reason: "The bucket has no resource policy", matchedStatements: [] };
     const block = this.effectiveBlock(located);
-    if (block.restrictPublicBuckets && policyIsPublic(located.bucket.policyDocument) && principal.accountId !== located.accountId && policy.decision === "allowed") policy = { decision: "implicitDeny", reason: "RestrictPublicBuckets blocks public cross-account access", matchedStatements: policy.matchedStatements };
+    if (block.restrictPublicBuckets && policyIsPublic(located.bucket.policyDocument) && principal.accountId !== located.accountId && policy.decision === "allowed") policy = { ...mergeProvenance(policy), decision: "implicitDeny", reason: "RestrictPublicBuckets blocks public cross-account access", matchedStatements: policy.matchedStatements };
     let acl = located.bucket.acl ?? privateAcl(located.accountId);
     if (match[2] !== undefined && !action.endsWith("PutObject") && !action.endsWith("DeleteObject")) {
       try { acl = objectAcl(selectObject(await this.bucketIndex(located), match[2], typeof context["s3:VersionId"] === "string" ? context["s3:VersionId"] : undefined).version, located.bucket); } catch {}
     }
     const aclAllowed = located.bucket.objectOwnership !== "BucketOwnerEnforced" && aclAllows(acl, principal.accountId || undefined, principal.principalArn !== "*", action, block.ignorePublicAcls);
     if (policy.decision === "explicitDeny") return { result: policy, ownerAccountId: located.accountId };
-    if (aclAllowed) return { result: { decision: "allowed", reason: "An applicable S3 ACL grant allows the action", matchedStatements: policy.matchedStatements }, ownerAccountId: located.accountId };
+    if (aclAllowed) return { result: { ...mergeProvenance(policy), decision: "allowed", reason: "An applicable S3 ACL grant allows the action", matchedStatements: policy.matchedStatements }, ownerAccountId: located.accountId };
     return { result: policy, ownerAccountId: located.accountId };
   }
 

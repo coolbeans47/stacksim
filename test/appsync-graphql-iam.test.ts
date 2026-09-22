@@ -463,6 +463,16 @@ test("AMX-06 authenticates AppSync SigV4 and authorizes each selected root field
     assert(decisions.some(decision => decision.resource === fieldArn("allowed") && decision.decision === "allowed"));
     assert(decisions.some(decision => decision.resource === fieldArn("nullableDenied") && decision.decision === "implicitDeny"));
     assert(decisions.some(decision => decision.resource === fieldArn("requiredDenied") && decision.decision === "explicitDeny"));
+    for (const outcome of ["allowed", "implicitDeny", "explicitDeny"] as const) {
+      const explained = decisions.filter(decision => decision.decision === outcome);
+      assert(explained.length > 0);
+      assert(explained.every(decision => decision.provenance !== undefined && decision.provenanceTotalCount! > 0));
+      assert(explained.some(decision => decision.provenance!.some(entry => entry.source.entityType === "role" && entry.source.policyName && entry.statementIndex !== undefined)));
+    }
+    assert(decisions.some(decision => decision.provenance?.some(entry => entry.layer === "boundary")));
+    assert(decisions.some(decision => decision.provenance?.some(entry => entry.layer === "session")));
+    const diagnosticText = JSON.stringify(decisions);
+    for (const secret of [session.accessKeyId, session.secretAccessKey, session.sessionToken!]) assert.equal(diagnosticText.includes(secret), false);
     const persisted = JSON.stringify(simulator.store.regionState(region).appsync);
     assert.doesNotMatch(persisted, new RegExp(session.accessKeyId));
     assert.doesNotMatch(persisted, new RegExp(session.secretAccessKey));

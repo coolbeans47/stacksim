@@ -1,3 +1,4 @@
+import { trustPolicySource } from "./iam/provenance.js";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP, type Socket } from "node:net";
@@ -2831,7 +2832,7 @@ export class AppSyncService {
       role.assumeRolePolicyDocument,
       "appsync.amazonaws.com",
       "sts:AssumeRole",
-      { "aws:PrincipalServiceName": "appsync.amazonaws.com" },
+      { "aws:PrincipalServiceName": "appsync.amazonaws.com" }, trustPolicySource(role),
     ).decision !== "allowed") {
       throw new AwsError("BadRequestException", "AppSync cannot assume the configured data source role.", 400);
     }

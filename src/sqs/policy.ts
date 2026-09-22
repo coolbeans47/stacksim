@@ -1,3 +1,4 @@
+import { boundProvenance, resourcePolicySource, statementProvenance, type PolicyProvenanceEntry } from "../iam/provenance.js";
 import { classifyResourceGrant, type AuthorizationContext, type AuthorizationResult, type ResourceGrantBasis } from "../iam/evaluator.js";
 import type { PolicyDocument, PolicyStatement } from "../types.js";
 import { cidrMatches, validIpOrCidr } from "../core/ip.js";
@@ -519,11 +520,13 @@ export function evaluateSqsQueuePolicy(
   const evaluatedContext = evaluationContext(principal, context);
   let allowed = false;
   let grantBasis: ResourceGrantBasis | undefined;
-  const matchedStatements: string[] = [];
+  const matchedStatements: string[] = []; const entries: PolicyProvenanceEntry[] = []; let denied = false;
+  const source = resourcePolicySource("sqs", resource, document);
   for (const [index, statement] of (Array.isArray(document.Statement) ? document.Statement : [document.Statement]).entries()) {
-    if (!statementMatches(statement, principal, action, resource, evaluatedContext)) continue;
+    const matched = statementMatches(statement, principal, action, resource, evaluatedContext); entries.push(statementProvenance({ document, source, layer: "resource" }, statement, index, matched));
+    if (!matched) continue;
     matchedStatements.push(statement.Sid ?? `${statement.Effect}:${index + 1}`);
-    if (statement.Effect === "Deny") return { decision: "explicitDeny", reason: "An applicable SQS queue-policy statement explicitly denies the action", matchedStatements };
+    if (statement.Effect === "Deny") { denied = true; continue; }
     allowed = true;
     if (principal.type === "AWS") {
       const matches = principalValues(statement.Principal).filter(item => (item.kind === "AWS" || item.kind === "Any") && principalMatches(item, principal));
@@ -534,7 +537,8 @@ export function evaluateSqsQueuePolicy(
       }
     }
   }
+  if (denied) return { decision: "explicitDeny", reason: "An applicable SQS queue-policy statement explicitly denies the action", matchedStatements, ...boundProvenance(entries) };
   return allowed
-    ? { decision: "allowed", reason: "An applicable SQS queue-policy statement allows the action", matchedStatements, ...(principal.type === "AWS" ? { grantBasis: grantBasis ?? "wildcard" } : {}) }
-    : { decision: "implicitDeny", reason: "No applicable SQS queue-policy Allow statement was found", matchedStatements };
+    ? { ...boundProvenance(entries), decision: "allowed", reason: "An applicable SQS queue-policy statement allows the action", matchedStatements, ...(principal.type === "AWS" ? { grantBasis: grantBasis ?? "wildcard" } : {}) }
+    : { ...boundProvenance(entries), decision: "implicitDeny", reason: "No applicable SQS queue-policy Allow statement was found", matchedStatements };
 }

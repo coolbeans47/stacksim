@@ -1,3 +1,4 @@
+import type { AuthorizationProvenance, PolicySource } from "./iam/provenance.js";
 export type AttributeValue =
   | { S: string }
   | { N: string }
@@ -1558,6 +1559,7 @@ export interface LocalCredentialState {
   sourceIdentity?: string;
   sessionPolicy?: PolicyDocument;
   sessionPolicyCanonical?: string;
+  sessionPolicyOrigins?: Array<{ source: PolicySource; statementOffset: number; statementCount: number }>;
   sessionTags: Record<string, string>;
   /** Present on normalized/new sessions; optional only for legacy in-memory fixtures. */
   transitiveTagKeys?: string[];
@@ -1577,7 +1579,7 @@ export interface LocalCredentialState {
   };
 }
 
-export interface AuthorizationDecisionState { time: number; requestId: string; principalArn: string; action: string; resource: string; decision: "allowed" | "implicitDeny" | "explicitDeny"; reason: string }
+export interface AuthorizationDecisionState extends AuthorizationProvenance { time: number; requestId: string; principalArn: string; action: string; resource: string; decision: "allowed" | "implicitDeny" | "explicitDeny"; reason: string; diagnosticFieldsTruncated?: string[] }
 export interface IamState {
   users: Record<string, IamUserState>;
   groups: Record<string, IamGroupState>;

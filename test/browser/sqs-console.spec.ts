@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { SQSClient, CreateQueueCommand, SendMessageCommand, GetQueueAttributesCommand, ListMessageMoveTasksCommand } from "@aws-sdk/client-sqs";
 import { AttachRolePolicyCommand, CreateRoleCommand, IAMClient } from "@aws-sdk/client-iam";
 import { CreateFunctionCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -94,7 +95,7 @@ async function createLambdaWorker(name: string) {
   }
 }
 
-test.describe("SQS-01 through SQS-04 console", () => {
+test.describe("SQS console and DLQ recovery", () => {
   test.beforeEach(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "stacksim-sqs-console-"));
     simulator = new StackSim({ port: 0, invokePort: 0, dataDir, region: "eu-west-1", authMode: "off"});
@@ -105,6 +106,45 @@ test.describe("SQS-01 through SQS-04 console", () => {
   test.afterEach(async () => {
     await simulator.stop();
     await rm(dataDir, { recursive: true, force: true });
+  });
+
+  test("starts, lists and cancels redrive with custom destinations and bounded history on a narrow screen", async ({ page }) => {
+    const errors = browserErrors(page); const client = new SQSClient(sdkOptions(simulator));
+    try {
+      const dlq = (await client.send(new CreateQueueCommand({ QueueName: "redrive-dead" }))).QueueUrl!;
+      const arn = (await client.send(new GetQueueAttributesCommand({ QueueUrl: dlq, AttributeNames: ["QueueArn"] }))).Attributes!.QueueArn!;
+      await client.send(new CreateQueueCommand({ QueueName: "redrive-source", Attributes: { RedrivePolicy: JSON.stringify({ deadLetterTargetArn: arn, maxReceiveCount: 1 }) } }));
+      await client.send(new CreateQueueCommand({ QueueName: "redrive-custom" }));
+      for (let i = 0; i < 10; i++) await client.send(new SendMessageCommand({ QueueUrl: dlq, MessageBody: `private-work-${i}` }));
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto(`${consoleUrl}#/sqs/queues/redrive-dead/dead-letter`);
+      await expect(page.getByText("No redrive tasks yet.")).toBeVisible();
+      await page.getByRole("button", { name: "Start DLQ redrive", exact: true }).click();
+      await expect(page.getByLabel("Destination mode")).toHaveValue("original");
+      await page.getByLabel("Destination mode").selectOption("custom");
+      await selectArnSuggestion(page, "Custom destination", "redrive-custom");
+      await page.getByLabel("Maximum messages per second").fill("501");
+      await page.getByRole("button", { name: "Redrive messages", exact: true }).click();
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await page.getByLabel("Maximum messages per second").fill("1");
+      await page.getByRole("button", { name: "Redrive messages", exact: true }).click();
+      await expect(page.getByRole("dialog")).not.toBeVisible();
+      const history = page.locator("[data-move-history]");
+      await expect(history).toContainText("RUNNING");
+      await expect(history).toContainText("redrive-custom");
+      await expect(page.getByText("Completion means messages reached their destination queue.", { exact: false })).toBeVisible();
+      await page.getByRole("button", { name: "Cancel DLQ redrive", exact: true }).click();
+      await expect(history).toContainText("CANCELLED");
+      const tasks = (await client.send(new ListMessageMoveTasksCommand({ SourceArn: arn, MaxResults: 10 }))).Results!;
+      expect(tasks[0].Status).toBe("CANCELLED"); expect(tasks[0].ApproximateNumberOfMessagesMoved).toBeLessThan(10);
+      await expect(history).not.toContainText("private-work");
+      await page.getByRole("button", { name: "Start DLQ redrive", exact: true }).click();
+      await page.getByLabel("Destination mode").selectOption("custom");
+      await selectArnSuggestion(page, "Custom destination", "redrive-custom");
+      await page.getByRole("button", { name: "Redrive messages", exact: true }).click();
+      await expect(page.locator("[data-move-history]")).toContainText("COMPLETED");
+      expect(errors).toEqual([]);
+    } finally { client.destroy(); }
   });
 
   test("explains SQS input panels and support boundaries", async ({ page }) => {

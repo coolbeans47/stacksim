@@ -1,3 +1,4 @@
+import type { LambdaMemoryUsage } from "./lambda-memory.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -37,6 +38,7 @@ export interface LambdaWorkerInvocation {
 }
 
 export interface LambdaWorkerInvocationResult {
+  memoryUsage?: LambdaMemoryUsage;
   ok: boolean;
   result?: unknown;
   error?: { errorMessage: string; errorType: string; stackTrace?: string[] };
@@ -49,6 +51,7 @@ export interface LambdaWorkerInvocationResult {
 }
 
 interface RunnerMessage {
+  memoryUsage?: LambdaMemoryUsage;
   type: "ready" | "result";
   invocationId?: string;
   ok: boolean;
@@ -237,7 +240,7 @@ export class LambdaWorker {
       await this.current!.logsComplete;
       const applicationLogs = [...this.initializationLogs, ...(this.invocationLogs.get(input.invocationId) ?? [])];
       this.initializationLogs = []; this.invocationLogs.delete(input.invocationId);
-      return { ok: message.ok, result: message.result, error: message.error, streamed: message.streamed, metadata: message.metadata, durationMs: performance.now() - started, timedOut, callbackTerminated, applicationLogs };
+      return { memoryUsage: message.memoryUsage, ok: message.ok, result: message.result, error: message.error, streamed: message.streamed, metadata: message.metadata, durationMs: performance.now() - started, timedOut, callbackTerminated, applicationLogs };
     } catch (error) {
       const applicationLogs = [...this.initializationLogs, ...(this.invocationLogs.get(input.invocationId) ?? [])];
       this.initializationLogs = []; this.invocationLogs.delete(input.invocationId);

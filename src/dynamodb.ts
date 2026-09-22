@@ -1,3 +1,5 @@
+import { resourcePolicySource } from "./iam/provenance.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -458,6 +460,7 @@ function streamSequence(value: number | bigint): string { return String(value).p
 function streamSequenceValue(value: string): bigint { try { return BigInt(value); } catch { throw new AwsError("ValidationException", "SequenceNumber must be a valid decimal value"); } }
 
 export class DynamoDbService {
+  private readonly requestCapacity = new AsyncLocalStorage<CapacityCharge[]>();
   private readonly transactionLocks = new Map<string, Promise<void>>();
   private readonly capacityBuckets = new Map<string, { tokens: number; at: number; rate: number }>();
   private readonly ttlSchedule: DynamoTtlSchedule;
@@ -496,6 +499,7 @@ export class DynamoDbService {
     const snapshots = new Map(requests.map(({ suffix }) => { const key = `${table.name}\0${suffix}\0${kind}`; const bucket = this.capacityBuckets.get(key); return [key, bucket ? { ...bucket } : undefined] as const; }));
     try {
       for (const request of requests) this.takeCapacity(table, kind, request.units, request.suffix, contributors);
+      this.requestCapacity.getStore()?.push(structuredClone(charge));
     } catch (error) {
       for (const [key, bucket] of snapshots) { if (bucket) this.capacityBuckets.set(key, bucket); else this.capacityBuckets.delete(key); }
       throw error;
@@ -629,7 +633,7 @@ export class DynamoDbService {
         if (region === this.region || !replica.globalTable || this.compareGlobalVersions(version, replica.globalTable.itemVersions[change.key]) <= 0) continue;
         try {
           const regional = this.store.regionState(region); const attached = regional.dynamodbResourcePolicies[replica.arn];
-          if (attached) { const action = change.item ? "dynamodb:PutItem" : "dynamodb:DeleteItem"; const serviceRole = `arn:aws:iam::${this.store.accountId}:role/aws-service-role/replication.dynamodb.amazonaws.com/AWSServiceRoleForDynamoDBReplication`; const resourceAuthorization = evaluateResourcePolicy(JSON.parse(attached.policy), { principalArn: serviceRole, roleArn: serviceRole }, action, replica.arn, { "aws:PrincipalArn": serviceRole, "aws:PrincipalAccount": this.store.accountId, "aws:RequestedRegion": region }); const decision = combineIdentityAndResourceAuthorization({ decision: "allowed", reason: "The DynamoDB replication service-linked role authorizes replication", matchedStatements: [] }, resourceAuthorization, "sameAccount"); if (decision.decision !== "allowed") { replica.globalTable.lastReplicationError = "Replication is not authorized by the target table resource policy"; continue; } }
+          if (attached) { const action = change.item ? "dynamodb:PutItem" : "dynamodb:DeleteItem"; const serviceRole = `arn:aws:iam::${this.store.accountId}:role/aws-service-role/replication.dynamodb.amazonaws.com/AWSServiceRoleForDynamoDBReplication`; const resourceAuthorization = evaluateResourcePolicy(JSON.parse(attached.policy), { principalArn: serviceRole, roleArn: serviceRole }, action, replica.arn, { "aws:PrincipalArn": serviceRole, "aws:PrincipalAccount": this.store.accountId, "aws:RequestedRegion": region }, resourcePolicySource("dynamodb", attached.resourceArn, JSON.parse(attached.policy), attached.revisionId)); const decision = combineIdentityAndResourceAuthorization({ decision: "allowed", reason: "The DynamoDB replication service-linked role authorizes replication", matchedStatements: [] }, resourceAuthorization, "sameAccount"); if (decision.decision !== "allowed") { replica.globalTable.lastReplicationError = "Replication is not authorized by the target table resource policy"; continue; } }
           const previous = replica.items[change.key]; if (change.item) replica.items[change.key] = clone(change.item); else delete replica.items[change.key]; replica.globalTable.itemVersions[change.key] = clone(version); delete replica.globalTable.lastReplicationError;
           const persistence = new DynamoBackupPersistence(this.store.root, this.store.accountId, region); await persistence.appendPitr(replica, this.pitrTime(), [{ key: change.key, ...(change.item ? { item: change.item } : {}) }]); await persistence.prunePitr(replica, this.pitrTime());
           if (change.item || previous) await this.emitStreamRecordForRegion(region, replica, { oldImage: previous, ...(change.item ? { newImage: change.item } : {}), ...(change.ttl ? { ttl: true } : {}) });
@@ -757,32 +761,58 @@ export class DynamoDbService {
   }
 
   async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const started = performance.now(); let operation = ""; let input: any = {};
+    let operation = ""; let input: any = {};
     try {
       operation = String(req.headers["x-amz-target"] ?? "").split(".").pop() ?? "";
       input = await readJson(req);
       if (!operation || typeof (this as any)[operation] !== "function") throw new AwsError("UnknownOperationException", `Unknown operation: ${operation}`);
       const output = await (this as any)[operation](input, (req as any).awsPrincipal);
-      await this.publishRequestMetrics(operation, input, performance.now() - started).catch(() => undefined);
       json(res, output, 200, "application/x-amz-json-1.0");
     } catch (error) { if (this.telemetry && operation) { const metricName = error instanceof AwsError && error.status < 500 ? error.code === "ConditionalCheckFailedException" ? "ConditionalCheckFailedRequests" : "UserErrors" : "SystemErrors"; await this.telemetry.publish({ namespace: "AWS/DynamoDB", metricName, dimensions: {}, value: 1, unit: "Count", timestamp: this.clock.now() }).catch(() => undefined); } sendAwsError(res, error); }
   }
 
-  private async publishRequestMetrics(operation: string, input: any, latency: number): Promise<void> {
-    if (!this.telemetry || !new Set(["PutItem", "GetItem", "UpdateItem", "DeleteItem", "Scan", "Query", "BatchGetItem", "BatchWriteItem", "TransactGetItems", "TransactWriteItems"]).has(operation)) return;
-    const at = this.clock.now(); await this.telemetry.publish({ namespace: "AWS/DynamoDB", metricName: "SuccessfulRequestLatency", dimensions: { Operation: operation }, value: latency, unit: "Milliseconds", timestamp: at });
-    if (!input.TableName) return; const read = new Set(["GetItem", "Scan", "Query"]).has(operation); const write = new Set(["PutItem", "UpdateItem", "DeleteItem"]).has(operation); if (!read && !write) return;
-    const table = requireTable(this.store, this.region, String(input.TableName)); const index = input.IndexName ? table.globalSecondaryIndexes?.find(candidate => candidate.indexName === input.IndexName) : undefined;
-    const publishScope = async (dimensions: Record<string, string>, provisioned: DynamoProvisionedThroughputState | undefined, metricName: "ConsumedReadCapacityUnits" | "ConsumedWriteCapacityUnits") => {
-      await this.telemetry!.publish({ namespace: "AWS/DynamoDB", metricName, dimensions, value: 1, unit: "Count", timestamp: at });
-      if (table.billingMode === "PROVISIONED" && provisioned) await Promise.all([
-        this.telemetry!.publish({ namespace: "AWS/DynamoDB", metricName: "ProvisionedReadCapacityUnits", dimensions, value: provisioned.ReadCapacityUnits, unit: "Count", timestamp: at }),
-        this.telemetry!.publish({ namespace: "AWS/DynamoDB", metricName: "ProvisionedWriteCapacityUnits", dimensions, value: provisioned.WriteCapacityUnits, unit: "Count", timestamp: at }),
-      ]);
+  private async withRequestMetrics(operation: string, execute: () => Promise<any>): Promise<any> {
+    const parent = this.requestCapacity.getStore();
+    const charges: CapacityCharge[] = [];
+    const started = performance.now();
+    let succeeded = false;
+    try { const output = await this.requestCapacity.run(charges, execute); succeeded = true; return output; }
+    finally {
+      // Charges describe accepted execution accounting, even if a later step
+      // fails. Failed admission adds no charge (takeCapacityCharge rolls back).
+      // Nested native/PartiQL calls contribute only to their owning request.
+      if (parent) parent.push(...charges);
+      else await this.publishRequestMetrics(operation, charges, performance.now() - started, succeeded).catch(() => undefined);
+    }
+  }
+
+  private async publishRequestMetrics(operation: string, charges: CapacityCharge[], latency: number, succeeded: boolean): Promise<void> {
+    if (!this.telemetry) return;
+    const timestamp = this.clock.now();
+    const publish = async (metricName: string, dimensions: Record<string, string>, value: number, unit = "Count") => {
+      try { await this.telemetry!.publish({ namespace: "AWS/DynamoDB", metricName, dimensions, value, unit, timestamp }); } catch { /* Telemetry cannot undo execution. */ }
     };
-    const dimensions = { TableName: table.name, ...(index ? { GlobalSecondaryIndexName: index.indexName } : {}) };
-    await publishScope(dimensions, index?.provisionedThroughput ?? table.provisionedThroughput, read ? "ConsumedReadCapacityUnits" : "ConsumedWriteCapacityUnits");
-    if (write) await Promise.all((table.globalSecondaryIndexes ?? []).map(globalIndex => publishScope({ TableName: table.name, GlobalSecondaryIndexName: globalIndex.indexName }, globalIndex.provisionedThroughput, "ConsumedWriteCapacityUnits")));
+    if (succeeded) await publish("SuccessfulRequestLatency", { Operation: operation }, latency, "Milliseconds");
+    const scopes = new Map<string, { tableName: string; indexName?: string; read: number; write: number }>();
+    for (const charge of charges) {
+      // LSIs consume their table's throughput; GSIs have independent series.
+      const local = Object.values(charge.localIndexes);
+      const buckets = [{ indexName: undefined as string | undefined, read: charge.table.read + local.reduce((sum, bucket) => sum + bucket.read, 0), write: charge.table.write + local.reduce((sum, bucket) => sum + bucket.write, 0) }, ...Object.entries(charge.globalIndexes).map(([indexName, bucket]) => ({ indexName, ...bucket }))];
+      for (const bucket of buckets) {
+        const key = `${charge.tableName}\0${bucket.indexName ?? ""}`; const total = scopes.get(key) ?? { tableName: charge.tableName, indexName: bucket.indexName, read: 0, write: 0 };
+        total.read += bucket.read; total.write += bucket.write; scopes.set(key, total);
+      }
+    }
+    for (const scope of scopes.values()) {
+      const dimensions = { TableName: scope.tableName, ...(scope.indexName ? { GlobalSecondaryIndexName: scope.indexName } : {}) };
+      if (scope.read) await publish("ConsumedReadCapacityUnits", dimensions, scope.read);
+      if (scope.write) await publish("ConsumedWriteCapacityUnits", dimensions, scope.write);
+      const table = this.tables[scope.tableName]; const provisioned = scope.indexName ? table?.globalSecondaryIndexes?.find(index => index.indexName === scope.indexName)?.provisionedThroughput : table?.provisionedThroughput;
+      if (table?.billingMode === "PROVISIONED" && provisioned) {
+        await publish("ProvisionedReadCapacityUnits", dimensions, provisioned.ReadCapacityUnits);
+        await publish("ProvisionedWriteCapacityUnits", dimensions, provisioned.WriteCapacityUnits);
+      }
+    }
   }
 
   async CreateTable(input: any): Promise<any> {
@@ -1669,7 +1699,9 @@ export class DynamoDbService {
     return { TableDescription: { ...tableDescription(table, this.store), TableStatus: "DELETING" } };
   }
 
-  async PutItem(input: any, attempt?: ServiceIntegrationAttempt): Promise<any> {
+  async PutItem(input: any, attempt?: ServiceIntegrationAttempt): Promise<any> { return this.withRequestMetrics("PutItem", () => this.executePutItem(input, attempt)); }
+
+  private async executePutItem(input: any, attempt?: ServiceIntegrationAttempt): Promise<any> {
     if (!attempt?.attemptId) attempt = undefined;
     const prior = attempt ? this.reconcileIntegrationAttempt(attempt) : undefined; if (prior) return structuredClone(prior.output);
     validateExpressionRequest(input);
@@ -1685,17 +1717,21 @@ export class DynamoDbService {
     const output = { ...(input.ReturnValues === "ALL_OLD" && previous ? { Attributes: clone(previous) } : {}), ...(formatConsumedCapacity(input.ReturnConsumedCapacity, charge) ? { ConsumedCapacity: formatConsumedCapacity(input.ReturnConsumedCapacity, charge) } : {}), ...itemCollectionMetricsResponse(input.ReturnItemCollectionMetrics, [{ table, items: [input.Item] }], "single") }; if (attempt) this.acceptIntegrationAttempt(attempt, output); await this.store.save(); return output;
   }
 
-  async GetItem(input: any, attempt?: ServiceIntegrationAttempt): Promise<any> {
+  async GetItem(input: any, attempt?: ServiceIntegrationAttempt): Promise<any> { return this.withRequestMetrics("GetItem", () => this.executeGetItem(input, attempt)); }
+
+  private async executeGetItem(input: any, attempt?: ServiceIntegrationAttempt): Promise<any> {
     if (!attempt?.attemptId) attempt = undefined;
     const prior = attempt ? this.reconcileIntegrationAttempt(attempt) : undefined; if (prior) return structuredClone(prior.output);
     validateExpressionRequest(input);
     const table = requireTable(this.store, this.region, input.TableName); assertDataPlaneAvailable(table);
     validateKey(table, input.Key);
-    const item = table.items[stableItemKey(table, input.Key)]; const readUnits = this.itemReadUnits(item, input.ConsistentRead === true); this.takeCapacity(table, "read", readUnits, "table", [input.Key]); await this.publishContributorMetrics(table, [item ?? input.Key], "AccessFrequency");
+    const item = table.items[stableItemKey(table, input.Key)]; const readUnits = this.itemReadUnits(item, input.ConsistentRead === true); const charge = emptyCapacity(table.name); addCapacityUnits(charge, "table", readUnits, 0); this.takeCapacityCharge(table, "read", charge, [input.Key]); await this.publishContributorMetrics(table, [item ?? input.Key], "AccessFrequency");
     const output = { ...(item ? { Item: projectItem(item, input.ProjectionExpression, expressionContext(input)) } : {}), ...capacity(input, table.name, readUnits, 0) }; if (attempt) { this.acceptIntegrationAttempt(attempt, output); await this.store.save(); } return output;
   }
 
-  async DeleteItem(input: any, attempt?: ServiceIntegrationAttempt): Promise<any> {
+  async DeleteItem(input: any, attempt?: ServiceIntegrationAttempt): Promise<any> { return this.withRequestMetrics("DeleteItem", () => this.executeDeleteItem(input, attempt)); }
+
+  private async executeDeleteItem(input: any, attempt?: ServiceIntegrationAttempt): Promise<any> {
     if (!attempt?.attemptId) attempt = undefined;
     const prior = attempt ? this.reconcileIntegrationAttempt(attempt) : undefined; if (prior) return structuredClone(prior.output);
     validateExpressionRequest(input);
@@ -1710,7 +1746,9 @@ export class DynamoDbService {
     const output = { ...(input.ReturnValues === "ALL_OLD" && previous ? { Attributes: clone(previous) } : {}), ...(formatConsumedCapacity(input.ReturnConsumedCapacity, charge) ? { ConsumedCapacity: formatConsumedCapacity(input.ReturnConsumedCapacity, charge) } : {}), ...itemCollectionMetricsResponse(input.ReturnItemCollectionMetrics, [{ table, items: [previous ?? input.Key] }], "single") }; if (attempt) this.acceptIntegrationAttempt(attempt, output); await this.store.save(); return output;
   }
 
-  async UpdateItem(input: any, attempt?: ServiceIntegrationAttempt): Promise<any> {
+  async UpdateItem(input: any, attempt?: ServiceIntegrationAttempt): Promise<any> { return this.withRequestMetrics("UpdateItem", () => this.executeUpdateItem(input, attempt)); }
+
+  private async executeUpdateItem(input: any, attempt?: ServiceIntegrationAttempt): Promise<any> {
     if (!attempt?.attemptId) attempt = undefined;
     const prior = attempt ? this.reconcileIntegrationAttempt(attempt) : undefined; if (prior) return structuredClone(prior.output);
     validateExpressionRequest(input);
@@ -1814,8 +1852,12 @@ export class DynamoDbService {
     return { ...(projected ? { Items: projected } : {}), Count: matched.length, ScannedCount: evaluated.length, ...(items.length > evaluated.length && evaluated.length ? { LastEvaluatedKey: index ? indexKey(table, index, evaluated.at(-1)!) : keyFromItem(table, evaluated.at(-1)!) } : {}), ...(consumedCapacity ? { ConsumedCapacity: consumedCapacity } : {}) };
   }
 
-  async Scan(input: any): Promise<any> { return this.readMany(input, false); }
-  async Query(input: any): Promise<any> {
+  async Scan(input: any): Promise<any> { return this.withRequestMetrics("Scan", () => this.executeScan(input)); }
+
+  private async executeScan(input: any): Promise<any> { return this.readMany(input, false); }
+  async Query(input: any): Promise<any> { return this.withRequestMetrics("Query", () => this.executeQuery(input)); }
+
+  private async executeQuery(input: any): Promise<any> {
     if (!input.KeyConditionExpression) throw new AwsError("ValidationException", "KeyConditionExpression is required");
     return this.readMany(input, true);
   }
@@ -1899,9 +1941,13 @@ export class DynamoDbService {
     }
   }
 
-  async ExecuteStatement(input: any): Promise<any> { const plan = parsePartiql(input.Statement, input.Parameters); return this.executePartiqlPlan(plan, input); }
+  async ExecuteStatement(input: any): Promise<any> { return this.withRequestMetrics("ExecuteStatement", () => this.executeExecuteStatement(input)); }
 
-  async BatchExecuteStatement(input: any): Promise<any> {
+  private async executeExecuteStatement(input: any): Promise<any> { const plan = parsePartiql(input.Statement, input.Parameters); return this.executePartiqlPlan(plan, input); }
+
+  async BatchExecuteStatement(input: any): Promise<any> { return this.withRequestMetrics("BatchExecuteStatement", () => this.executeBatchExecuteStatement(input)); }
+
+  private async executeBatchExecuteStatement(input: any): Promise<any> {
     if (!Array.isArray(input.Statements) || input.Statements.length < 1 || input.Statements.length > 25) throw new AwsError("ValidationException", "Statements must contain between 1 and 25 entries"); this.validatePartiqlOptions(input);
     const parsed: Array<{ plan?: PartiqlPlan; error?: unknown }> = input.Statements.map((entry: any) => { try { return { plan: parsePartiql(entry?.Statement, entry?.Parameters) }; } catch (error) { return { error }; } });
     const modes = new Set(parsed.flatMap(entry => entry.plan ? [entry.plan.kind === "select" ? "read" : "write"] : [])); if (modes.size > 1) throw new AwsError("ValidationException", "BatchExecuteStatement cannot mix read and write statements");
@@ -1926,7 +1972,9 @@ export class DynamoDbService {
     return { Responses, ...(input.ReturnConsumedCapacity && input.ReturnConsumedCapacity !== "NONE" ? { ConsumedCapacity } : {}) };
   }
 
-  async ExecuteTransaction(input: any): Promise<any> {
+  async ExecuteTransaction(input: any): Promise<any> { return this.withRequestMetrics("ExecuteTransaction", () => this.executeExecuteTransaction(input)); }
+
+  private async executeExecuteTransaction(input: any): Promise<any> {
     if (!Array.isArray(input.TransactStatements) || input.TransactStatements.length < 1 || input.TransactStatements.length > 100) throw new AwsError("ValidationException", "TransactStatements must contain between 1 and 100 entries"); this.validatePartiqlOptions(input);
     if (Buffer.byteLength(JSON.stringify(input)) > 4 * 1024 * 1024) throw new AwsError("ValidationException", "Transaction request exceeds the maximum allowed size");
     const plans: PartiqlPlan[] = input.TransactStatements.map((entry: any) => parsePartiql(entry?.Statement, entry?.Parameters)); const modes = new Set(plans.map((plan: PartiqlPlan) => plan.kind === "select" ? "read" : "write")); if (modes.size !== 1) throw new AwsError("ValidationException", "ExecuteTransaction cannot mix read and write statements");
@@ -1946,7 +1994,9 @@ export class DynamoDbService {
     const result = await this.TransactWriteItems({ TransactItems, ClientRequestToken: input.ClientRequestToken, ReturnConsumedCapacity: input.ReturnConsumedCapacity }); return { Responses: plans.map(() => ({})), ...(result.ConsumedCapacity ? { ConsumedCapacity: result.ConsumedCapacity } : {}) };
   }
 
-  async BatchGetItem(input: any): Promise<any> {
+  async BatchGetItem(input: any): Promise<any> { return this.withRequestMetrics("BatchGetItem", () => this.executeBatchGetItem(input)); }
+
+  private async executeBatchGetItem(input: any): Promise<any> {
     const Responses: Record<string, Item[]> = {}; const charges = new Map<string, CapacityCharge>(); const contributors = new Map<string, Item[]>();
     const total = Object.values<any>(input.RequestItems ?? {}).reduce((sum, request) => sum + (request.Keys?.length ?? 0), 0);
     if (total > 100) throw new AwsError("ValidationException", "Too many items requested for the BatchGetItem call");
@@ -1960,7 +2010,9 @@ export class DynamoDbService {
     for (const [name, charge] of charges) this.takeCapacityCharge(requireTable(this.store, this.region, name), "read", charge, contributors.get(name)); for (const [name, items] of contributors) await this.publishContributorMetrics(requireTable(this.store, this.region, name), items, "AccessFrequency"); return { Responses, UnprocessedKeys: {}, ...(input.ReturnConsumedCapacity && input.ReturnConsumedCapacity !== "NONE" ? { ConsumedCapacity: [...charges.values()].map(charge => formatConsumedCapacity(input.ReturnConsumedCapacity, charge)) } : {}) };
   }
 
-  async BatchWriteItem(input: any): Promise<any> {
+  async BatchWriteItem(input: any): Promise<any> { return this.withRequestMetrics("BatchWriteItem", () => this.executeBatchWriteItem(input)); }
+
+  private async executeBatchWriteItem(input: any): Promise<any> {
     validateReturnItemCollectionMetrics(input.ReturnItemCollectionMetrics);
     const count = Object.values<any[]>(input.RequestItems ?? {}).reduce((sum, requests) => sum + requests.length, 0);
     if (count > 25) throw new AwsError("ValidationException", "Too many items requested for the BatchWriteItem call");
@@ -1985,7 +2037,9 @@ export class DynamoDbService {
     return { UnprocessedItems: {}, ...(input.ReturnConsumedCapacity && input.ReturnConsumedCapacity !== "NONE" ? { ConsumedCapacity: [...charges.values()].map(charge => formatConsumedCapacity(input.ReturnConsumedCapacity, charge)) } : {}), ...metrics };
   }
 
-  async TransactGetItems(input: any): Promise<any> {
+  async TransactGetItems(input: any): Promise<any> { return this.withRequestMetrics("TransactGetItems", () => this.executeTransactGetItems(input)); }
+
+  private async executeTransactGetItems(input: any): Promise<any> {
     const actions = input.TransactItems;
     this.validateTransactionEnvelope(input, actions, "get");
     const targets = new Set<string>();
@@ -2001,7 +2055,9 @@ export class DynamoDbService {
     for (const [name, charge] of charges) this.takeCapacityCharge(requireTable(this.store, this.region, name), "read", charge, contributors.get(name)); for (const [name, items] of contributors) await this.publishContributorMetrics(requireTable(this.store, this.region, name), items, "AccessFrequency"); return { Responses: responses, ...(input.ReturnConsumedCapacity && input.ReturnConsumedCapacity !== "NONE" ? { ConsumedCapacity: [...charges.values()].map(charge => formatConsumedCapacity(input.ReturnConsumedCapacity, charge)) } : {}) };
   }
 
-  async TransactWriteItems(input: any): Promise<any> {
+  async TransactWriteItems(input: any): Promise<any> { return this.withRequestMetrics("TransactWriteItems", () => this.executeTransactWriteItems(input)); }
+
+  private async executeTransactWriteItems(input: any): Promise<any> {
     const actions = input.TransactItems;
     this.validateTransactionEnvelope(input, actions, "write");
     const token = input.ClientRequestToken;

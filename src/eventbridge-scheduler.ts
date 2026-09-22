@@ -1,3 +1,4 @@
+import { trustPolicySource } from "./iam/provenance.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { StateStore } from "./state.js";
@@ -117,7 +118,7 @@ export class EventBridgeSchedulerService {
   }
   private executionRole(roleArnValue: unknown): string {
     const roleArn = String(roleArnValue ?? ""); const role = Object.values(this.store.ensureAccount().iam.roles).find(candidate => candidate.arn === roleArn);
-    if (!role || evaluateTrust(role.assumeRolePolicyDocument, "scheduler.amazonaws.com", "sts:AssumeRole", { "aws:PrincipalServiceName": "scheduler.amazonaws.com" }).decision !== "allowed") throw new AwsError("ValidationException", "Target.RoleArn must identify a role that trusts scheduler.amazonaws.com.", 400);
+    if (!role || evaluateTrust(role.assumeRolePolicyDocument, "scheduler.amazonaws.com", "sts:AssumeRole", { "aws:PrincipalServiceName": "scheduler.amazonaws.com" }, trustPolicySource(role)).decision !== "allowed") throw new AwsError("ValidationException", "Target.RoleArn must identify a role that trusts scheduler.amazonaws.com.", 400);
     return roleArn;
   }
   private authorize(roleArn: string, action: string, resource: string, sourceArn: string): void {

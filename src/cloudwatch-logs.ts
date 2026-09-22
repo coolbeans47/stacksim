@@ -1,3 +1,4 @@
+import { resourcePolicySource, mergeProvenance } from "./iam/provenance.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -225,7 +226,7 @@ export class CloudWatchLogsService {
         if (policy.policyScope === "RESOURCE" && policy.resourceArn !== group.arn && policy.resourceArn !== `${group.arn}:*`) continue;
         let document;
         try { document = JSON.parse(policy.policyDocument); } catch { continue; }
-        const result = evaluateResourcePolicy(document, "events.amazonaws.com", action, resource, context);
+        const result = evaluateResourcePolicy(document, "events.amazonaws.com", action, resource, context, resourcePolicySource("logs", policy.resourceArn ?? `arn:aws:logs:${this.region}:${this.store.accountId}:resource-policy:${policy.policyName}`, document, policy.revisionId, policy.policyName));
         evaluations.push(result);
       }
       const resourceAuthorization: AuthorizationResult = evaluations.some(result => result.decision === "explicitDeny")
@@ -235,7 +236,7 @@ export class CloudWatchLogsService {
           : { decision: "implicitDeny", reason: "No Logs resource policy allows the action", matchedStatements: evaluations.flatMap(result => result.matchedStatements) };
       return combineIdentityAndResourceAuthorization(
         { decision: "implicitDeny", reason: "Service principals use the Logs resource policy", matchedStatements: [] },
-        resourceAuthorization,
+        { ...resourceAuthorization, ...mergeProvenance(...evaluations) },
         "service",
       ).decision === "allowed";
     };

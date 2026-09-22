@@ -1,3 +1,4 @@
+import { trustPolicySource } from "./iam/provenance.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Clock } from "./core/clock.js";
@@ -538,7 +539,7 @@ export class EventBridgeService {
     const roleArn = text(roleValue, "RoleArn", 1, 1600);
     const match = /^arn:aws:iam::(\d{12}):role\/[A-Za-z0-9+=,.@_\/-]+$/.exec(roleArn);
     const role = match?.[1] === this.store.accountId ? Object.values(this.store.ensureAccount().iam.roles).find(candidate => candidate.arn === roleArn) : undefined;
-    const trusted = role && evaluateTrust(role.assumeRolePolicyDocument, "events.amazonaws.com", "sts:AssumeRole", { "aws:PrincipalServiceName": "events.amazonaws.com", "aws:SourceAccount": this.store.accountId, ...(sourceArn ? { "aws:SourceArn": sourceArn } : {}) }).decision === "allowed";
+    const trusted = role && evaluateTrust(role.assumeRolePolicyDocument, "events.amazonaws.com", "sts:AssumeRole", { "aws:PrincipalServiceName": "events.amazonaws.com", "aws:SourceAccount": this.store.accountId, ...(sourceArn ? { "aws:SourceArn": sourceArn } : {}) }, trustPolicySource(role)).decision === "allowed";
     if (!role || !trusted) {
       if (delivery) throw new AwsError("FailedToAssumeRoleException", `EventBridge cannot assume target role ${roleArn}.`, 403);
       throw new AwsError("AccessDeniedException", `RoleArn must identify a role in this account that trusts events.amazonaws.com.`, 403);

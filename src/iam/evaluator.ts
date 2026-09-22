@@ -1,3 +1,4 @@
+import { boundProvenance, mergeProvenance, policyRevision, resourcePolicySource, statementProvenance, type AuthorizationProvenance, type PolicySource, type PolicyLayer, type SourcedPolicy, type PolicyProvenanceEntry } from "./provenance.js";
 import type { IamState, PolicyDocument, PolicyStatement } from "../types.js";
 import type { PrincipalContext } from "../auth/sigv4.js";
 import { parseConditionOperator } from "./condition-operators.js";
@@ -7,9 +8,9 @@ import { cidrMatches } from "../core/ip.js";
 
 export interface AuthorizationContext { [key: string]: unknown }
 export type ResourceGrantBasis = "directUser" | "role" | "directSession" | "account" | "wildcard";
-export interface AuthorizationLayerResult { decision: AuthorizationResult["decision"]; matchedStatements: string[] }
+export interface AuthorizationLayerResult extends AuthorizationProvenance { decision: AuthorizationResult["decision"]; matchedStatements: string[] }
 export interface AuthorizationLayers { identity: AuthorizationLayerResult; session?: AuthorizationLayerResult; boundary?: AuthorizationLayerResult }
-export interface AuthorizationResult {
+export interface AuthorizationResult extends AuthorizationProvenance {
   decision: "allowed" | "implicitDeny" | "explicitDeny";
   reason: string;
   matchedStatements: string[];
@@ -37,7 +38,11 @@ export function roleSessionAuthorizationContext(roleArn: string, region: string,
 export type ResourcePolicyRelationship = "sameAccount" | "crossAccount" | "service";
 
 /** Combines already-evaluated identity and resource policies using IAM's account boundary rules. */
-export function combineIdentityAndResourceAuthorization(
+export function combineIdentityAndResourceAuthorization(identity: AuthorizationResult | undefined, resource: AuthorizationResult, relationship: ResourcePolicyRelationship): AuthorizationResult {
+  return { ...combineDecision(identity, resource, relationship), ...mergeProvenance(identity, resource), ...(identity?.layers ? { layers: identity.layers } : {}) };
+}
+
+function combineDecision(
   identity: AuthorizationResult | undefined,
   resource: AuthorizationResult,
   relationship: ResourcePolicyRelationship,
@@ -113,33 +118,51 @@ function statementMatches(statement: PolicyStatement, action: string, resource: 
   return resourceMatch && conditionMatches(statement.Condition, context);
 }
 
-function evaluateDocuments(documents: PolicyDocument[], action: string, resource: string, context: AuthorizationContext): AuthorizationResult {
-  let allowed = false; const matchedStatements: string[] = [];
-  for (const document of documents) {
-    if (policyDocumentValidationError(document, "identity")) continue;
-    for (const statement of values(document.Statement) as PolicyStatement[]) if (statementMatches(statement, action, resource, context)) { matchedStatements.push(statement.Sid ?? `${statement.Effect}:${matchedStatements.length + 1}`); if (statement.Effect === "Deny") return { decision: "explicitDeny", reason: "An applicable policy statement explicitly denies the action", matchedStatements }; if (statement.Effect === "Allow") allowed = true; }
+function managedPolicy(iam: IamState, arn: string, layer: PolicyLayer, entityArn?: string, entityType?: PolicySource["entityType"]): SourcedPolicy {
+  const policy = iam.policies[arn]; const versionId = policy?.defaultVersionId;
+  return { document: policy?.versions[versionId!]?.document, layer, source: { kind: "managed", policyArn: arn, ...(versionId ? { versionId } : {}), ...(entityArn ? { entityArn, entityType } : {}) } };
+}
+function entityPolicies(iam: IamState, entity: { arn: string; inlinePolicies: Record<string, PolicyDocument>; attachedPolicyArns: string[] }, entityType: "user" | "group" | "role"): SourcedPolicy[] {
+  return [
+    ...Object.entries(entity.inlinePolicies).map(([policyName, document]): SourcedPolicy => ({ document, layer: "identity", source: { kind: "inline", entityArn: entity.arn, entityType, policyName, revision: policyRevision(document) } })),
+    ...entity.attachedPolicyArns.map(arn => managedPolicy(iam, arn, "identity", entity.arn, entityType)),
+  ];
+}
+function withLayerProvenance(result: AuthorizationResult): AuthorizationResult {
+  return { ...result, ...mergeProvenance(...Object.values(result.layers ?? {})) };
+}
+function evaluateDocuments(policies: SourcedPolicy[], action: string, resource: string, context: AuthorizationContext): AuthorizationResult {
+  let allowed = false; let denied = false; const matchedStatements: string[] = []; const entries: PolicyProvenanceEntry[] = [];
+  for (const policy of policies) {
+    const document = policy.document;
+    if (!document || policyDocumentValidationError(document, "identity")) { entries.push({ source: policy.source, layer: policy.layer, matched: false, status: document ? "invalid" : "missing" }); continue; }
+    for (const [index, statement] of (values(document.Statement) as PolicyStatement[]).entries()) {
+      const matched = statementMatches(statement, action, resource, context); entries.push(statementProvenance(policy, statement, index, matched));
+      if (!matched) continue;
+      matchedStatements.push(statement.Sid ?? `${statement.Effect}:${matchedStatements.length + 1}`);
+      if (statement.Effect === "Deny") denied = true; else if (statement.Effect === "Allow") allowed = true;
+    }
   }
-  return allowed ? { decision: "allowed", reason: "An applicable policy statement allows the action", matchedStatements } : { decision: "implicitDeny", reason: "No applicable Allow statement was found", matchedStatements };
+  return { decision: denied ? "explicitDeny" : allowed ? "allowed" : "implicitDeny", reason: denied ? "An applicable policy statement explicitly denies the action" : allowed ? "An applicable policy statement allows the action" : "No applicable Allow statement was found", matchedStatements, ...boundProvenance(entries) };
 }
 
 export function evaluateRoleAuthorization(iam: IamState, roleArn: string, action: string, resource: string, context: AuthorizationContext = {}): AuthorizationResult {
   const role = Object.values(iam.roles).find(candidate => candidate.arn === roleArn);
   if (!role) return { decision: "implicitDeny", reason: "The execution role does not exist", matchedStatements: [] };
-  const documents = [...Object.values(role.inlinePolicies), ...role.attachedPolicyArns.map(arn => iam.policies[arn]?.versions[iam.policies[arn]?.defaultVersionId]?.document).filter(Boolean)];
+  const documents = entityPolicies(iam, role, "role");
   const identity = evaluateDocuments(documents, action, resource, context);
-  const boundaryPolicy = role.permissionsBoundaryArn ? iam.policies[role.permissionsBoundaryArn] : undefined;
-  const boundary = role.permissionsBoundaryArn ? boundaryPolicy ? evaluateDocuments([boundaryPolicy.versions[boundaryPolicy.defaultVersionId].document], action, resource, context) : { decision: "implicitDeny" as const, reason: "Permissions boundary was not found", matchedStatements: [] } : undefined;
+  const boundary = role.permissionsBoundaryArn ? evaluateDocuments([managedPolicy(iam, role.permissionsBoundaryArn, "boundary", role.arn, "role")], action, resource, context) : undefined;
   const layers: AuthorizationLayers = { identity, ...(boundary ? { boundary } : {}) };
-  if (identity.decision === "explicitDeny") return { ...identity, layers };
-  if (boundary?.decision === "explicitDeny") return { ...boundary, reason: `Permissions boundary: ${boundary.reason}`, layers };
-  if (identity.decision !== "allowed") return { ...identity, layers };
-  if (boundary?.decision !== undefined && boundary.decision !== "allowed") return { ...boundary, reason: `Permissions boundary: ${boundary.reason}`, layers };
-  return { ...identity, layers };
+  if (identity.decision === "explicitDeny") return withLayerProvenance({ ...identity, layers });
+  if (boundary?.decision === "explicitDeny") return withLayerProvenance({ ...boundary, reason: `Permissions boundary: ${boundary.reason}`, layers });
+  if (identity.decision !== "allowed") return withLayerProvenance({ ...identity, layers });
+  if (boundary?.decision !== undefined && boundary.decision !== "allowed") return withLayerProvenance({ ...boundary, reason: `Permissions boundary: ${boundary.reason}`, layers });
+  return withLayerProvenance({ ...identity, layers });
 }
 
 /** Evaluates a standalone identity-shaped policy, such as an API Gateway authorizer result. */
 export function evaluateIdentityPolicy(document: PolicyDocument, action: string, resource: string, context: AuthorizationContext = {}): AuthorizationResult {
-  return evaluateDocuments([document], action, resource, context);
+  return evaluateDocuments([{ document, layer: "identity", source: { kind: "standalone", revision: policyRevision(document) } }], action, resource, context);
 }
 
 export interface PrincipalIdentity { principalArn: string; roleArn?: string }
@@ -158,19 +181,22 @@ export function classifyResourceGrant(expected: string, principal: PrincipalIden
 
 const grantRank: Record<ResourceGrantBasis, number> = { wildcard: 0, account: 1, role: 2, directUser: 3, directSession: 3 };
 
-export function evaluateResourcePolicy(document: PolicyDocument, principal: string | PrincipalIdentity, action: string, resource: string, context: AuthorizationContext = {}): AuthorizationResult {
+export function evaluateResourcePolicy(document: PolicyDocument, principal: string | PrincipalIdentity, action: string, resource: string, context: AuthorizationContext = {}, source: PolicySource = resourcePolicySource(action.split(":")[0], resource, document)): AuthorizationResult {
   const identity = typeof principal === "string" ? { principalArn: principal } : principal;
-  let allowed = false; let basis: ResourceGrantBasis | undefined; const matchedStatements: string[] = [];
-  if (policyDocumentValidationError(document, "resource")) return { decision: "implicitDeny", reason: "Resource policy is malformed", matchedStatements };
-  for (const statement of values(document.Statement) as PolicyStatement[]) {
-    if (!statementMatches(statement, action, resource, context)) continue;
+  let allowed = false; let denied = false; let basis: ResourceGrantBasis | undefined; const matchedStatements: string[] = []; const entries: PolicyProvenanceEntry[] = [];
+  const policy: SourcedPolicy = { document, source, layer: "resource" };
+  if (policyDocumentValidationError(document, "resource")) return { decision: "implicitDeny", reason: "Resource policy is malformed", matchedStatements, ...boundProvenance([{ source, layer: "resource", matched: false, status: "invalid" }]) };
+  for (const [index, statement] of (values(document.Statement) as PolicyStatement[]).entries()) {
     const principals = principalValues(statement.Principal); const notPrincipals = principalValues(statement.NotPrincipal);
     const matches = principals.filter(value => resourcePrincipalMatches(value, identity.principalArn, identity.roleArn));
     const principalMatches = statement.Principal === undefined ? !notPrincipals.some(value => resourcePrincipalMatches(value, identity.principalArn, identity.roleArn)) : matches.length > 0;
-    if (!principalMatches) continue;
-    matchedStatements.push(statement.Sid ?? `${statement.Effect}:${matchedStatements.length + 1}`); if (statement.Effect === "Deny") return { decision: "explicitDeny", reason: "A resource policy explicitly denies the action", matchedStatements }; if (statement.Effect === "Allow") { allowed = true; for (const match of matches) { const candidate = classifyResourceGrant(match, identity); if (!basis || grantRank[candidate] > grantRank[basis]) basis = candidate; } }
+    const matched = statementMatches(statement, action, resource, context) && principalMatches; entries.push(statementProvenance(policy, statement, index, matched));
+    if (!matched) continue;
+    matchedStatements.push(statement.Sid ?? `${statement.Effect}:${matchedStatements.length + 1}`);
+    if (statement.Effect === "Deny") denied = true;
+    if (statement.Effect === "Allow") { allowed = true; for (const match of matches) { const candidate = classifyResourceGrant(match, identity); if (!basis || grantRank[candidate] > grantRank[basis]) basis = candidate; } }
   }
-  return allowed ? { decision: "allowed", reason: "A resource policy allows the action", matchedStatements, grantBasis: basis ?? "wildcard" } : { decision: "implicitDeny", reason: "No applicable resource policy Allow statement was found", matchedStatements };
+  return { decision: denied ? "explicitDeny" : allowed ? "allowed" : "implicitDeny", reason: denied ? "A resource policy explicitly denies the action" : allowed ? "A resource policy allows the action" : "No applicable resource policy Allow statement was found", matchedStatements, ...(!denied && allowed ? { grantBasis: basis ?? "wildcard" } : {}), ...boundProvenance(entries) };
 }
 
 export function evaluateAuthorization(iam: IamState, principal: PrincipalContext, action: string, resource: string, context: AuthorizationContext): AuthorizationResult {
@@ -180,10 +206,7 @@ export function evaluateAuthorization(iam: IamState, principal: PrincipalContext
       : principal.userName ? iam.users[principal.userName] : undefined;
     if (!user) return { decision: "implicitDeny", reason: "The IAM user no longer exists", matchedStatements: [] };
     const groups = Object.values(iam.groups).filter(group => group.userNames.includes(user.userName));
-    const managed = [...user.attachedPolicyArns, ...groups.flatMap(group => group.attachedPolicyArns)]
-      .map(arn => iam.policies[arn]?.versions[iam.policies[arn]?.defaultVersionId]?.document)
-      .filter(Boolean);
-    const documents = [...Object.values(user.inlinePolicies), ...groups.flatMap(group => Object.values(group.inlinePolicies)), ...managed];
+    const documents = [...entityPolicies(iam, user, "user"), ...groups.flatMap(group => entityPolicies(iam, group, "group"))];
     const identity = evaluateDocuments(documents, action, resource, {
       "aws:PrincipalArn": user.arn,
       "aws:PrincipalAccount": principal.accountId,
@@ -193,42 +216,44 @@ export function evaluateAuthorization(iam: IamState, principal: PrincipalContext
       ...Object.fromEntries(Object.entries(user.tags).map(([key, value]) => [`aws:PrincipalTag/${key}`, value])),
       ...context,
     });
-    const policy = user.permissionsBoundaryArn ? iam.policies[user.permissionsBoundaryArn] : undefined;
-    const boundary = user.permissionsBoundaryArn ? policy
-      ? evaluateDocuments([policy.versions[policy.defaultVersionId].document], action, resource, context)
-      : { decision: "implicitDeny" as const, reason: "Permissions boundary was not found", matchedStatements: [] } : undefined;
+    const boundary = user.permissionsBoundaryArn ? evaluateDocuments([managedPolicy(iam, user.permissionsBoundaryArn, "boundary", user.arn, "user")], action, resource, context) : undefined;
     const layers: AuthorizationLayers = { identity, ...(boundary ? { boundary } : {}) };
-    if (identity.decision === "explicitDeny") return { ...identity, layers };
-    if (boundary?.decision === "explicitDeny") return { ...boundary, reason: `Permissions boundary: ${boundary.reason}`, layers };
-    if (identity.decision !== "allowed") return { ...identity, layers };
-    if (boundary && boundary.decision !== "allowed") return { ...boundary, reason: `Permissions boundary: ${boundary.reason}`, layers };
-    return { ...identity, layers };
+    if (identity.decision === "explicitDeny") return withLayerProvenance({ ...identity, layers });
+    if (boundary?.decision === "explicitDeny") return withLayerProvenance({ ...boundary, reason: `Permissions boundary: ${boundary.reason}`, layers });
+    if (identity.decision !== "allowed") return withLayerProvenance({ ...identity, layers });
+    if (boundary && boundary.decision !== "allowed") return withLayerProvenance({ ...boundary, reason: `Permissions boundary: ${boundary.reason}`, layers });
+    return withLayerProvenance({ ...identity, layers });
   }
   const session = iam.sessions[principal.accessKeyId]; if (!session) return { decision: "implicitDeny", reason: "The principal has no identity policies", matchedStatements: [] };
   const role = iam.roles[session.roleName]; if (!role) return { decision: "implicitDeny", reason: "The session role no longer exists", matchedStatements: [] };
-  const documents = [...Object.values(role.inlinePolicies), ...role.attachedPolicyArns.map(arn => iam.policies[arn]?.versions[iam.policies[arn]?.defaultVersionId]?.document).filter(Boolean)]; const identity = evaluateDocuments(documents, action, resource, context);
+  const documents = entityPolicies(iam, role, "role"); const identity = evaluateDocuments(documents, action, resource, context);
   const sessionDocuments = session.sessionPolicies?.length
     ? session.sessionPolicies
     : session.sessionPolicy
       ? [session.sessionPolicy]
       : [];
-  const sessionLayers = sessionDocuments.map(document => evaluateDocuments([document], action, resource, context));
-  const limited = sessionLayers.length
-    ? sessionLayers.find(layer => layer.decision === "explicitDeny")
-      ?? (sessionLayers.every(layer => layer.decision === "allowed")
-        ? { decision: "allowed" as const, reason: "Every session policy allows the action", matchedStatements: sessionLayers.flatMap(layer => layer.matchedStatements) }
-        : { decision: "implicitDeny" as const, reason: "A session policy does not allow the action", matchedStatements: sessionLayers.flatMap(layer => layer.matchedStatements) })
-    : undefined;
-  const policy = role.permissionsBoundaryArn ? iam.policies[role.permissionsBoundaryArn] : undefined;
-  const boundary = role.permissionsBoundaryArn ? policy ? evaluateDocuments([policy.versions[policy.defaultVersionId].document], action, resource, context) : { decision: "implicitDeny" as const, reason: "Permissions boundary was not found", matchedStatements: [] } : undefined;
+  const sessionLayers = sessionDocuments.map((document, index) => {
+    const origins = !session.sessionPolicies?.length ? session.sessionPolicyOrigins : undefined;
+    const policies: SourcedPolicy[] = origins?.length
+      ? origins.map(origin => ({ document: { ...document, Statement: values(document.Statement).slice(origin.statementOffset, origin.statementOffset + origin.statementCount) as PolicyStatement[] }, layer: "session", source: { ...origin.source, entityArn: session.principalArn, entityType: "session" } }))
+      : [{ document, layer: "session", source: { kind: "session", entityArn: session.principalArn, entityType: "session", policyName: `session-policy-${index}`, revision: policyRevision(document) } }];
+    return evaluateDocuments(policies, action, resource, context);
+  });
+  const limited = sessionLayers.length ? {
+    ...(sessionLayers.find(layer => layer.decision === "explicitDeny") ?? (sessionLayers.every(layer => layer.decision === "allowed")
+      ? { decision: "allowed" as const, reason: "Every session policy allows the action", matchedStatements: sessionLayers.flatMap(layer => layer.matchedStatements) }
+      : { decision: "implicitDeny" as const, reason: "A session policy does not allow the action", matchedStatements: sessionLayers.flatMap(layer => layer.matchedStatements) })),
+    ...mergeProvenance(...sessionLayers),
+  } : undefined;
+  const boundary = role.permissionsBoundaryArn ? evaluateDocuments([managedPolicy(iam, role.permissionsBoundaryArn, "boundary", role.arn, "role")], action, resource, context) : undefined;
   const layers: AuthorizationLayers = { identity, ...(limited ? { session: limited } : {}), ...(boundary ? { boundary } : {}) };
-  if (identity.decision === "explicitDeny") return { ...identity, layers };
-  if (limited?.decision === "explicitDeny") return { ...limited, reason: `Session policy: ${limited.reason}`, layers };
-  if (boundary?.decision === "explicitDeny") return { ...boundary, reason: `Permissions boundary: ${boundary.reason}`, layers };
-  if (identity.decision !== "allowed") return { ...identity, layers };
-  if (limited && limited.decision !== "allowed") return { ...limited, reason: `Session policy: ${limited.reason}`, layers };
-  if (boundary && boundary.decision !== "allowed") return { ...boundary, reason: `Permissions boundary: ${boundary.reason}`, layers };
-  return { ...identity, layers };
+  if (identity.decision === "explicitDeny") return withLayerProvenance({ ...identity, layers });
+  if (limited?.decision === "explicitDeny") return withLayerProvenance({ ...limited, reason: `Session policy: ${limited.reason}`, layers });
+  if (boundary?.decision === "explicitDeny") return withLayerProvenance({ ...boundary, reason: `Permissions boundary: ${boundary.reason}`, layers });
+  if (identity.decision !== "allowed") return withLayerProvenance({ ...identity, layers });
+  if (limited && limited.decision !== "allowed") return withLayerProvenance({ ...limited, reason: `Session policy: ${limited.reason}`, layers });
+  if (boundary && boundary.decision !== "allowed") return withLayerProvenance({ ...boundary, reason: `Permissions boundary: ${boundary.reason}`, layers });
+  return withLayerProvenance({ ...identity, layers });
 }
 
 function principalValues(principal: PolicyStatement["Principal"]): string[] { if (typeof principal === "string") return [principal]; if (Array.isArray(principal)) return principal; if (!principal) return []; return Object.values(principal).flatMap(values).map(String); }
@@ -239,14 +264,18 @@ function resourcePrincipalMatches(expected: string, actual: string, issuerRoleAr
   if (issuerRoleArn && wildcard(expected, issuerRoleArn)) return true;
   const role = expected.match(/^arn:aws:iam::(\d{12}):role\/(.+)$/); const session = actual.match(/^arn:aws:sts::(\d{12}):assumed-role\/(.+)\/[^/]+$/); return Boolean(role && session && role[1] === session[1] && role[2] === session[2]);
 }
-export function evaluateTrust(document: PolicyDocument, principal: string | PrincipalIdentity, action: string, context: AuthorizationContext): AuthorizationResult {
+export function evaluateTrust(document: PolicyDocument, principal: string | PrincipalIdentity, action: string, context: AuthorizationContext, source: PolicySource = { kind: "standalone", revision: policyRevision(document) }): AuthorizationResult {
   const principalArn = typeof principal === "string" ? principal : principal.principalArn;
   const issuerRoleArn = typeof principal === "string" ? undefined : principal.roleArn;
-  let allowed = false; const matchedStatements: string[] = [];
-  if (policyDocumentValidationError(document, "trust")) return { decision: "implicitDeny", reason: "Trust policy is malformed", matchedStatements };
-  for (const statement of values(document.Statement) as PolicyStatement[]) {
-    if (statement.Action !== undefined && !matchesList(statement.Action, action, true)) continue; const principals = principalValues(statement.Principal); const notPrincipals = principalValues(statement.NotPrincipal); const matches = statement.Principal !== undefined ? principals.some(value => resourcePrincipalMatches(value, principalArn, issuerRoleArn)) : !notPrincipals.some(value => resourcePrincipalMatches(value, principalArn, issuerRoleArn)); if (!matches || !conditionMatches(statement.Condition, context)) continue;
-    matchedStatements.push(statement.Sid ?? `${statement.Effect}:${matchedStatements.length + 1}`); if (statement.Effect === "Deny") return { decision: "explicitDeny", reason: "Trust policy explicitly denies AssumeRole", matchedStatements }; if (statement.Effect === "Allow") allowed = true;
+  let allowed = false; let denied = false; const matchedStatements: string[] = []; const entries: PolicyProvenanceEntry[] = [];
+  if (policyDocumentValidationError(document, "trust")) return { decision: "implicitDeny", reason: "Trust policy is malformed", matchedStatements, ...boundProvenance([{ source, layer: "trust", matched: false, status: "invalid" }]) };
+  for (const [index, statement] of (values(document.Statement) as PolicyStatement[]).entries()) {
+    const principals = principalValues(statement.Principal); const notPrincipals = principalValues(statement.NotPrincipal);
+    const matches = statement.Principal !== undefined ? principals.some(value => resourcePrincipalMatches(value, principalArn, issuerRoleArn)) : !notPrincipals.some(value => resourcePrincipalMatches(value, principalArn, issuerRoleArn));
+    const matched = !(statement.Action !== undefined && !matchesList(statement.Action, action, true)) && matches && conditionMatches(statement.Condition, context);
+    entries.push(statementProvenance({ document, source, layer: "trust" }, statement, index, matched));
+    if (!matched) continue;
+    matchedStatements.push(statement.Sid ?? `${statement.Effect}:${matchedStatements.length + 1}`); if (statement.Effect === "Deny") denied = true; if (statement.Effect === "Allow") allowed = true;
   }
-  return allowed ? { decision: "allowed", reason: "Trust policy allows the principal", matchedStatements } : { decision: "implicitDeny", reason: "Trust policy does not allow the principal", matchedStatements };
+  return { decision: denied ? "explicitDeny" : allowed ? "allowed" : "implicitDeny", reason: denied ? "Trust policy explicitly denies AssumeRole" : allowed ? "Trust policy allows the principal" : "Trust policy does not allow the principal", matchedStatements, ...boundProvenance(entries) };
 }

@@ -228,6 +228,8 @@ Application looks up users by email without scanning the full table.
 
 Charts and controls for DynamoDB CloudWatch metrics: consumed capacity, throttled requests, errors, latency, and related series. Scope can be the table or a specific GSI.
 
+Consumed read/write capacity uses execution accounting, including item size, read consistency, evaluated rows before filters, index work and transaction factors. Table series include LSIs; GSIs have separate series. Native and PartiQL batch/transaction work contributes once per outer request across all affected tables, even with `ReturnConsumedCapacity` omitted or `NONE`. Request latency and its sample count remain separate from capacity units. Metrics use the existing local JSON-byte capacity model, not AWS billing; publication is best effort and cannot turn a committed write into a reported failure. Cached idempotent responses do not charge again.
+
 ##### Why use it
 
 In AWS, metrics reveal hot partitions, throttling, error spikes, and capacity headroom. Alarms on `UserErrors`, `SystemErrors`, and `ThrottledRequests` drive operational response.

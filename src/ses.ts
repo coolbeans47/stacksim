@@ -1814,8 +1814,8 @@ export class SesService implements SesProtocolExecutor {
     let identity: SesIdentityState | undefined;
     try { identity = this.state.identities[canonicalIdentity(arn.slice(prefix.length)).canonical]; } catch { return []; }
     if (!identity) return [];
-    return Object.values(identity.policies).flatMap(policy => {
-      try { return [JSON.parse(policy)]; } catch { return []; }
+    return Object.entries(identity.policies).flatMap(([policyName, policy]) => {
+      try { return [{ policyName, document: JSON.parse(policy) }]; } catch { return []; }
     });
   }
 

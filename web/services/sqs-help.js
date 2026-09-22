@@ -44,7 +44,7 @@ const help = {
   redrive: {
     level: "Supported locally",
     description: "A redrive policy sends a repeatedly received message to a dead-letter queue after its receive count exceeds the configured maximum. Use it to isolate poison messages that workers cannot process without blocking normal work, and choose a destination with the same Standard or FIFO queue type.",
-    support: "Redrive policies, receive counting, compatible queue-type validation, durable cross-queue moves, payload and attribute preservation, FIFO group behavior, Lambda failure paths, metrics, source discovery, and restart recovery are active. StartMessageMoveTask and related managed message-move operations remain unavailable.",
+    support: "Redrive policies, receive counting, compatible queue-type validation, durable cross-queue moves, payload and attribute preservation, FIFO group behavior, Lambda failure paths, metrics, source discovery, and restart recovery are active. Start/list/cancel message-move tasks, original or custom destinations, velocity controls, bounded history, and restart recovery are available. Completion confirms movement; verify application processing in consumer logs. KMS and VPC endpoint dependencies remain unavailable.",
   },
   redriveAllow: {
     level: "Supported locally",

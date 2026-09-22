@@ -14,9 +14,11 @@ export const metadata = {
 
 const inspectLimit = 64 * 1024;
 let activePoll;
+let moveHistoryTimer;
 let receivedMessages = [];
 
 function stopPolling() {
+  clearTimeout(moveHistoryTimer); moveHistoryTimer = undefined;
   if (activePoll) activePoll.abort();
   activePoll = undefined;
 }
@@ -392,6 +394,35 @@ async function deadLetterPage(context, name) {
   const fifo = attributes.FifoQueue === "true"; const candidates = catalog.filter(candidate => candidate.name !== name && (candidate.attributes.FifoQueue === "true") === fifo); const targetName = queueNameFromArn(redrive.deadLetterTargetArn);
   setQueueChrome(context, name, "Dead-letter queue");
   context.main.innerHTML = `<div class="page-width sqs-dead-letter">${pageHeader("Dead-letter queue", `Retry and poison-message routing for ${escapeHtml(name)}.`)}${queueTabs(name, "dead-letter")}<div class="sqs-dlq-grid"><section class="card"><div class="card-header"><h2>Redrive policy</h2><button class="button" data-configure-redrive>Configure</button></div><div class="card-body">${redrive.deadLetterTargetArn ? `<dl class="key-value"><dt>Dead-letter queue</dt><dd><a href="#/sqs/queues/${encodeURIComponent(targetName)}/dead-letter">${escapeHtml(targetName)}</a></dd><dt>Queue ARN</dt><dd class="mono">${escapeHtml(redrive.deadLetterTargetArn)}</dd><dt>Maximum receives</dt><dd>${escapeHtml(redrive.maxReceiveCount)}</dd></dl>` : emptyState("↳", "No dead-letter queue", "Configure a queue to receive messages after repeated unsuccessful deliveries.")}</div></section><section class="card"><div class="card-header"><h2>Redrive allow policy</h2><button class="button" data-configure-redrive-allow>Configure</button></div><div class="card-body"><dl class="key-value"><dt>Permission</dt><dd>${escapeHtml(allow.redrivePermission || "allowAll")}</dd><dt>Allowed source queues</dt><dd>${(allow.sourceQueueArns ?? []).length ? (allow.sourceQueueArns ?? []).map(arn => `<span class="mono">${escapeHtml(arn)}</span>`).join("<br>") : "All same-account queues in this Region"}</dd></dl></div></section></div><section class="card"><div class="card-header"><h2>Source queues <span class="muted">(${sourceUrls.length})</span></h2></div><div class="table-wrap">${sourceUrls.length ? `<table><thead><tr><th>Queue</th><th>Queue URL</th></tr></thead><tbody>${sourceUrls.map(url => `<tr><td><a href="#/sqs/queues/${encodeURIComponent(queueNameFromUrl(url))}/dead-letter">${escapeHtml(queueNameFromUrl(url))}</a></td><td class="mono">${escapeHtml(url)}</td></tr>`).join("")}</tbody></table>` : emptyState("↳", "No source queues", "No queue currently uses this queue as its dead-letter queue.")}</div></section><div class="alert info"><strong>Receive-count diagnostics</strong><br>Poll messages on the Send and receive messages tab to inspect ApproximateReceiveCount. Messages move only after they exceed the configured maximum receive count.</div></div>`;
+  const panel = document.createElement("section"); panel.className = "card";
+  panel.innerHTML = `<div class="card-header"><h2>DLQ redrive tasks</h2><button class="button primary" data-start-move ${sourceUrls.length ? "" : "disabled"}>Start DLQ redrive</button><button class="button" data-refresh-moves>Refresh tasks</button></div><div class="card-body"><p>Completion means messages reached their destination queue. Check the consumer's logs to verify successful application processing.</p><p class="muted">Up to 10 recent tasks. Counts are approximate. Cancellation leaves committed messages at the destination. Requires task permissions and receive/delete/get-attributes on this DLQ, plus send on destinations. KMS and VPC endpoint dependencies are unavailable.</p><div data-move-history aria-live="polite">Loading tasks…</div></div>`;
+  context.main.querySelector(".sqs-dead-letter").append(panel);
+  const refreshMoves = async () => {
+    clearTimeout(moveHistoryTimer);
+    if (!panel.isConnected) return;
+    const history = panel.querySelector("[data-move-history]");
+    try {
+      const { Results = [] } = await sqs("ListMessageMoveTasks", { SourceArn: attributes.QueueArn, MaxResults: 10 });
+      if (!panel.isConnected) return;
+      panel.querySelector("[data-start-move]").disabled = !sourceUrls.length || Results.some(task => ["RUNNING", "CANCELLING"].includes(task.Status));
+      history.innerHTML = Results.length ? `<div class="table-wrap"><table><thead><tr><th>Started</th><th>Status</th><th>Destination</th><th>Approx. moved / initial</th><th>Max. messages/sec</th><th>Failure reason</th><th>Action</th></tr></thead><tbody>${Results.map(task => `<tr><td>${escapeHtml(new Date(task.StartedTimestamp).toLocaleString())}</td><td>${escapeHtml(task.Status)}</td><td>${task.DestinationArn ? `<a href="#/sqs/queues/${encodeURIComponent(queueNameFromArn(task.DestinationArn))}/messages">${escapeHtml(queueNameFromArn(task.DestinationArn))}</a>` : "Original source queue(s)"}</td><td>${integer(task.ApproximateNumberOfMessagesMoved)} / ${integer(task.ApproximateNumberOfMessagesToMove)}</td><td>${task.MaxNumberOfMessagesPerSecond ?? "System optimized (local)"}</td><td>${escapeHtml(task.FailureReason ?? "—")}</td><td>${task.TaskHandle ? `<button class="button" data-cancel-move="${escapeHtml(task.TaskHandle)}">Cancel DLQ redrive</button>` : "—"}</td></tr>`).join("")}</tbody></table></div>` : "No redrive tasks yet.";
+      history.querySelectorAll("[data-cancel-move]").forEach(button => button.addEventListener("click", async () => {
+        button.disabled = true;
+        try { await sqs("CancelMessageMoveTask", { TaskHandle: button.dataset.cancelMove }); context.toast("Redrive cancellation requested"); await refreshMoves(); }
+        catch (error) { button.disabled = false; context.toast(error.message); }
+      }));
+      if (Results.some(task => ["RUNNING", "CANCELLING"].includes(task.Status))) moveHistoryTimer = setTimeout(refreshMoves, 1000);
+    } catch (error) { history.textContent = `Unable to list redrive tasks: ${error.message}. Listing requires sqs:ListMessageMoveTasks and sqs:GetQueueAttributes.`; }
+  };
+  panel.querySelector("[data-refresh-moves]").addEventListener("click", refreshMoves);
+  panel.querySelector("[data-start-move]").addEventListener("click", () => context.showModal("Start DLQ redrive", `<div class="field"><label for="move-mode">Destination mode</label><select id="move-mode" name="moveMode"><option value="original">Original source queue(s)</option><option value="custom">Custom destination</option></select></div><div class="field"><label for="move-destination">Custom destination</label><select id="move-destination" name="destination"><option value="">Original source queue(s)</option>${candidates.map(candidate => `<option value="${escapeHtml(candidate.attributes.QueueArn)}">Custom: ${escapeHtml(candidate.name)}</option>`).join("")}</select><span class="hint">Original destinations come from each message's DLQ metadata. For direct sends or legacy messages, choose a custom destination.</span></div><div class="field"><label for="move-velocity">Maximum messages per second</label><input id="move-velocity" name="velocity" type="number" min="1" max="500" step="1" placeholder="System optimized"><span class="hint">Leave blank for the local system-optimized rate, or enter an integer from 1 to 500. Start small while watching consumer logs.</span></div><p>Messages get new transport IDs and enqueue times. Use a stable application key for idempotency.</p>`, "Redrive messages", async data => {
+    const destination = data.get("moveMode") === "custom" ? String(data.get("destination") ?? "") : "";
+    if (data.get("moveMode") === "custom" && !destination) throw new Error("Choose a custom destination queue.");
+    const velocity = String(data.get("velocity") ?? "").trim();
+    if (velocity && (!Number.isInteger(Number(velocity)) || Number(velocity) < 1 || Number(velocity) > 500)) throw new Error("Velocity must be an integer from 1 to 500.");
+    await sqs("StartMessageMoveTask", { SourceArn: attributes.QueueArn, ...(destination ? { DestinationArn: destination } : {}), ...(velocity ? { MaxNumberOfMessagesPerSecond: Number(velocity) } : {}) }); context.toast("DLQ redrive started");
+  }));
+  await refreshMoves();
   document.querySelector("[data-configure-redrive]")?.addEventListener("click", () => context.showModal("Configure dead-letter queue", `<div class="field"><label>Dead-letter queue</label><select name="target"><option value="">Not configured</option>${candidates.map(candidate => `<option value="${escapeHtml(candidate.attributes.QueueArn)}" ${candidate.attributes.QueueArn === redrive.deadLetterTargetArn ? "selected" : ""}>${escapeHtml(candidate.name)}</option>`).join("")}</select>${candidates.length ? "" : `<span class="hint">Create another ${fifo ? "FIFO" : "Standard"} queue before configuring redrive.</span>`}</div><div class="field"><label>Maximum receives</label><input name="maximum" type="number" min="1" max="1000" value="${escapeHtml(redrive.maxReceiveCount || "10")}" required><span class="hint">A message moves after its receive count exceeds this value.</span></div>`, "Save", async data => {
     const target = String(data.get("target") || ""); const RedrivePolicy = target ? JSON.stringify({ deadLetterTargetArn: target, maxReceiveCount: String(Number(data.get("maximum"))) }) : "";
     await sqs("SetQueueAttributes", { QueueUrl: queue.url, Attributes: { RedrivePolicy } }); context.toast(target ? "Dead-letter queue configured" : "Dead-letter queue removed");

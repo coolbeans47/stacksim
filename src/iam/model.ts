@@ -62,6 +62,6 @@ export function normalizeIamState(value: any, now = Date.now(), accountId = "000
     roles: Object.fromEntries(Object.entries({ ...seeded.roles, ...(value?.roles ?? {}) }).map(([name, entity]) => [name, normalizeEntity(entity, true)])),
     policies: customerPolicies,
     sessions,
-    authorizationDecisions: value?.authorizationDecisions ?? [],
+    authorizationDecisions: (value?.authorizationDecisions ?? []).slice(-1_000).map((decision: IamState["authorizationDecisions"][number]) => decision.provenance === undefined ? { ...decision, provenanceUnavailable: true } : decision),
   };
 }

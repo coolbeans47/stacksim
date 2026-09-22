@@ -1,6 +1,8 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { AwsError } from "../errors.js";
+import type { SqsMoveTask } from "./move-task.js";
 import type { StateStore } from "../state.js";
 import type { ServiceIntegrationAttemptState } from "../types.js";
 import type { SqsMessageAttributeValue } from "./md5.js";
@@ -26,10 +28,12 @@ export interface SqsStoredMessage {
   currentReceiptHandle?: string;
   invisibleUntil?: number;
   deadLetteredAt?: number;
+  deadLetterSourceArn?: string;
   transferId?: string;
   messageGroupId?: string;
   messageDeduplicationId?: string;
   sequenceNumber?: string;
+  queueOrder?: string;
   leaseMutationVersion?: number;
   /** Truthful public SSE-SQS state when this message was accepted; local AEAD remains private and always on. */
   sqsManagedSse?: boolean;
@@ -58,6 +62,8 @@ export interface SqsQueueData {
   nextSequenceNumber?: string;
   fairGroupCursor?: string;
   integrationAttempts?: Record<string, ServiceIntegrationAttemptState>;
+  moveTasks?: SqsMoveTask[];
+  lastTransferId?: string;
 }
 
 interface EncryptedEnvelope {
@@ -73,6 +79,11 @@ interface MoveRecord {
   sourceArn: string;
   destinationArn: string;
   message?: SqsStoredMessage;
+  sourceMessageId?: string;
+  taskHandle?: string;
+  nextMoveAt?: number;
+  nextSequenceNumber?: string;
+  deduplication?: Record<string, SqsDeduplicationRecord>;
 }
 
 function isMissing(error: unknown): boolean {
@@ -90,6 +101,15 @@ export class SqsStorage {
   private readonly cache = new Map<string, SqsQueueData>();
   private serial = Promise.resolve();
   private started = false;
+  private startPromise?: Promise<void>;
+  private recoveryRequired = false;
+  private static readonly stores = new WeakMap<StateStore, SqsStorage>();
+
+  static forStore(store: StateStore): SqsStorage {
+    let storage = this.stores.get(store);
+    if (!storage) { storage = new SqsStorage(store); this.stores.set(store, storage); }
+    return storage;
+  }
 
   constructor(private readonly store: StateStore) {
     this.root = resolve(store.root, "data", "sqs", "queues");
@@ -98,6 +118,12 @@ export class SqsStorage {
 
   async start(): Promise<void> {
     if (this.started) return;
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this.initialize();
+    return this.startPromise;
+  }
+
+  private async initialize(): Promise<void> {
     this.encryptionKey();
     await mkdir(this.blobsRoot, { recursive: true, mode: 0o700 });
     await this.lock(async () => { await this.recoverMoves(); await this.sweepOrphanPayloads(); });
@@ -163,39 +189,90 @@ export class SqsStorage {
     return this.decrypt<SqsStoredMessagePayload>(encoded, `sqs:blob:${blobId}`);
   }
 
-  /**
-   * Moves one message with a durable intent. Recovery idempotently completes a
-   * prepared move before the service begins accepting requests.
-   */
+  /** Serializes queue admission with movement, receipts, purge and task checkpoints. */
+  async addMoveTask(task: SqsMoveTask, validate?: () => void): Promise<void> {
+    await this.lock(async () => {
+      validate?.();
+      let active = 0;
+      for (const account of Object.values(this.store.state.accounts)) for (const region of Object.values(account.regions)) {
+        for (const queue of Object.values(region.sqsQueues ?? {})) {
+          if (queue.queueArn.split(":")[4] !== task.SourceArn.split(":")[4]) continue;
+          const tasks = (await this.loadQueue(queue.queueArn)).moveTasks ?? [];
+          const running = tasks.filter(item => item.Status === "RUNNING" || item.Status === "CANCELLING");
+          if (queue.queueArn === task.SourceArn && running.length) throw new AwsError("UnsupportedOperation", "Only one active message movement task is allowed per source queue.", 400);
+          active += running.length;
+        }
+      }
+      if (active >= 100) throw new AwsError("RequestThrottled", "At most 100 active redrive tasks are allowed per account.", 400);
+      const source = structuredClone(await this.loadQueue(task.SourceArn));
+      task.ApproximateNumberOfMessagesToMove = Object.values(source.messages).filter(message => message.retentionUntil > task.StartedTimestamp).length;
+      source.moveTasks = [task, ...(source.moveTasks ?? [])].slice(0, 10);
+      await this.saveQueue(source);
+    });
+  }
+
+  /** A single durable intent gates all queue access until both sides and progress reconcile. */
   async moveMessage(
     sourceArn: string,
     destinationArn: string,
     messageId: string,
     transform: (message: SqsStoredMessage, transferId: string, destination: SqsQueueData) => SqsStoredMessage,
+    options: { eligible?: (message: SqsStoredMessage) => boolean; taskHandle?: string; nextMoveAt?: number; validate?: () => void } = {},
   ): Promise<boolean> {
     return this.lock(async () => {
+      options.validate?.();
       const source = structuredClone(await this.loadQueue(sourceArn));
       const current = source.messages[messageId];
-      if (!current) return false;
+      if (!current || options.eligible && !options.eligible(current)) return false;
+      if (options.taskHandle && source.moveTasks?.find(task => task.TaskHandle === options.taskHandle)?.Status !== "RUNNING") return false;
       const transferId = randomUUID();
       const destination = structuredClone(await this.loadQueue(destinationArn));
+      const before = { ...destination.deduplication };
       const moved = transform(structuredClone(current), transferId, destination);
-      const prepared: MoveRecord = { id: transferId, stage: "prepared", sourceArn, destinationArn, message: moved };
+      const deduplication = Object.fromEntries(Object.entries(destination.deduplication ?? {}).filter(([key, value]) => before[key] !== value));
+      const prepared: MoveRecord = { id: transferId, stage: "prepared", sourceArn, destinationArn, message: moved, sourceMessageId: messageId,
+        taskHandle: options.taskHandle, nextMoveAt: options.nextMoveAt, nextSequenceNumber: destination.nextSequenceNumber, deduplication };
+      this.recoveryRequired = true;
       await this.appendMove(prepared);
-
-      const alreadyMoved = Object.values(destination.messages).some(message => message.transferId === transferId);
-      if (!alreadyMoved) destination.messages[moved.messageId] = moved;
-      await this.saveQueue(destination);
-
-      delete source.messages[messageId];
-      await this.saveQueue(source);
-      await this.appendMove({ id: transferId, stage: "committed", sourceArn, destinationArn });
+      await this.completeMove(prepared);
+      await this.clearMoves();
+      this.recoveryRequired = false;
       return true;
     });
   }
 
+  private async completeMove(record: MoveRecord): Promise<void> {
+    if (!record.message) return;
+    const source = structuredClone(await this.loadQueue(record.sourceArn));
+    const destination = structuredClone(await this.loadQueue(record.destinationArn));
+    if (destination.lastTransferId !== record.id && !Object.values(destination.messages).some(message => message.transferId === record.id)) {
+      destination.messages[record.message.messageId] = record.message;
+      destination.lastTransferId = record.id;
+      if (record.nextSequenceNumber) destination.nextSequenceNumber = record.nextSequenceNumber;
+      destination.deduplication = { ...destination.deduplication, ...record.deduplication };
+      await this.saveQueue(destination);
+    }
+    const sourceId = record.sourceMessageId ?? record.message.messageId;
+    if (source.messages[sourceId]) {
+      delete source.messages[sourceId];
+      const task = source.moveTasks?.find(task => task.TaskHandle === record.taskHandle);
+      if (task) { task.ApproximateNumberOfMessagesMoved++; task.nextMoveAt = record.nextMoveAt!; task.leaseUntil = undefined; }
+      await this.saveQueue(source);
+    }
+    await this.appendMove({ id: record.id, stage: "committed", sourceArn: record.sourceArn, destinationArn: record.destinationArn });
+  }
+
+  private async clearMoves(): Promise<void> {
+    await this.atomicWrite(resolve(this.root, "moves.journal"), "");
+  }
+
   private async lock<T>(operation: () => Promise<T>): Promise<T> {
-    const running = this.serial.catch(() => undefined).then(operation);
+    const running = this.serial.catch(() => undefined).then(async () => {
+      try {
+        if (this.recoveryRequired) { await this.recoverMoves(); this.recoveryRequired = false; }
+        return await operation();
+      } catch (error) { this.cache.clear(); throw error; }
+    });
     this.serial = running.then(() => undefined, () => undefined);
     return running;
   }
@@ -254,9 +331,9 @@ export class SqsStorage {
     loaded.nextSequenceNumber ??= "1";
     loaded.integrationAttempts ??= {};
     for (const message of Object.values(loaded.messages)) {
-      if (!message.sequenceNumber) continue;
+      if (!message.sequenceNumber && !message.queueOrder) continue;
       try {
-        const following = BigInt(message.sequenceNumber) + 1n;
+        const following = BigInt(message.queueOrder ?? message.sequenceNumber!) + 1n;
         if (following > BigInt(loaded.nextSequenceNumber)) loaded.nextSequenceNumber = following.toString();
       } catch { /* Ignore legacy/corrupt optional sequence metadata here. */ }
     }
@@ -287,21 +364,8 @@ export class SqsStorage {
       if (record.stage === "prepared") pending.set(record.id, record);
       else pending.delete(record.id);
     }
-    for (const record of pending.values()) {
-      if (!record.message) continue;
-      const source = structuredClone(await this.loadQueue(record.sourceArn));
-      const destination = structuredClone(await this.loadQueue(record.destinationArn));
-      const exists = Object.values(destination.messages).some(message => message.transferId === record.id);
-      if (!exists) {
-        destination.messages[record.message.messageId] = record.message;
-        await this.saveQueue(destination);
-      }
-      if (source.messages[record.message.messageId]) {
-        delete source.messages[record.message.messageId];
-        await this.saveQueue(source);
-      }
-      await this.appendMove({ id: record.id, stage: "committed", sourceArn: record.sourceArn, destinationArn: record.destinationArn });
-    }
+    for (const record of pending.values()) await this.completeMove(record);
+    if (records.length) await this.clearMoves();
   }
 
   private async sweepOrphanPayloads(): Promise<void> {
