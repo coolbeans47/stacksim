@@ -1,3 +1,6 @@
+import { RE2JS } from "re2js";
+import type { CognitoRestAuthorizerVerifier, CognitoRestAuthorizerVerification } from "./cognito/gateway.js";
+import type { AppSyncAuthenticationType, AppSyncUserPoolConfig } from "./types.js";
 import { trustPolicySource } from "./iam/provenance.js";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -92,6 +95,7 @@ const APPSYNC_SCALAR_SDL = APPSYNC_SCALARS.map(name => `scalar ${name}`).join("\
 const APPSYNC_AUTH_DIRECTIVE_SDL = [
   "directive @aws_api_key on OBJECT | FIELD_DEFINITION",
   "directive @aws_iam on OBJECT | FIELD_DEFINITION",
+  "directive @aws_cognito_user_pools on OBJECT | FIELD_DEFINITION",
   "directive @aws_subscribe(mutations: [String!]!) on FIELD_DEFINITION",
 ].join("\n");
 
@@ -116,7 +120,32 @@ export interface AppSyncIamHooks {
   ): Promise<AppSyncIamAuthorizationResult>;
 }
 
-type GraphqlAuthorizationMode = "API_KEY" | "AWS_IAM";
+type GraphqlAuthorizationMode = AppSyncAuthenticationType;
+
+interface CognitoAuthorization {
+  verified: CognitoRestAuthorizerVerification;
+  userPoolArn: string;
+  cacheVersion: string;
+  identityKey: string;
+  defaultAction: "ALLOW" | "DENY";
+}
+
+function cognitoResolverIdentity(auth: CognitoAuthorization, sourceIp: string[]): Record<string, unknown> {
+  const claims = auth.verified.claims;
+  return {
+    sub: claims.sub, issuer: claims.iss,
+    username: claims.username, claims: structuredClone(claims), sourceIp,
+    defaultAuthStrategy: auth.defaultAction,
+  };
+}
+
+function modeActive(api: AppSyncGraphqlApiState, mode: GraphqlAuthorizationMode): boolean {
+  return api.authenticationType === mode || api.additionalAuthenticationProviders.some(provider => provider.authenticationType === mode);
+}
+
+function authType(mode: GraphqlAuthorizationMode): string {
+  return mode === "AWS_IAM" ? "IAM Authorization" : mode === "AMAZON_COGNITO_USER_POOLS" ? "User Pool Authorization" : "API Key Authorization";
+}
 
 export const APPSYNC_REALTIME_LIMITS = Object.freeze({
   connectionsPerRegion: 100,
@@ -143,7 +172,8 @@ export const APPSYNC_REALTIME_LIMITS = Object.freeze({
 
 type RealtimeAuth =
   | { mode: "API_KEY"; keyId: string; identityKey: string }
-  | { mode: "AWS_IAM"; principal: PrincipalContext; identityKey: string };
+  | { mode: "AWS_IAM"; principal: PrincipalContext; identityKey: string }
+  | ({ mode: "AMAZON_COGNITO_USER_POOLS" } & CognitoAuthorization);
 
 interface RealtimeRegistration {
   id: string;
@@ -355,20 +385,16 @@ function realtimeFilterMatches(filter: Record<string, unknown> | undefined, valu
   return true;
 }
 
-function authDirectiveNames(type: GraphQLObjectType, fieldName: string): Set<string> {
-  const field = type.getFields()[fieldName];
-  const fieldNames = field?.astNode?.directives?.map(directive => directive.name.value) ?? [];
-  if (fieldNames.some(name => name === "aws_api_key" || name === "aws_iam")) return new Set(fieldNames);
-  const typeNames = [type.astNode, ...(type.extensionASTNodes ?? [])]
-    .flatMap(node => node?.directives?.map(directive => directive.name.value) ?? []);
-  return new Set(typeNames);
-}
-
-function schemaAllowsMode(type: GraphQLObjectType, fieldName: string, mode: GraphqlAuthorizationMode): boolean {
+function schemaAllowsMode(type: GraphQLObjectType, fieldName: string, mode: GraphqlAuthorizationMode, api: AppSyncGraphqlApiState): boolean {
   if (fieldName.startsWith("__")) return true;
-  const directives = authDirectiveNames(type, fieldName);
-  if (mode === "AWS_IAM") return directives.has("aws_iam");
-  return directives.size === 0 || directives.has("aws_api_key");
+  const names = new Set(["aws_api_key", "aws_iam", "aws_cognito_user_pools"]);
+  const fieldDirectives = type.getFields()[fieldName]?.astNode?.directives?.filter(directive => names.has(directive.name.value)) ?? [];
+  const directives = fieldDirectives.length ? fieldDirectives : [type.astNode, ...(type.extensionASTNodes ?? [])]
+    .flatMap(node => node?.directives?.filter(directive => names.has(directive.name.value)) ?? []);
+  if (!directives.length) return mode === api.authenticationType
+    && (mode !== "AMAZON_COGNITO_USER_POOLS" || api.userPoolConfig?.defaultAction !== "DENY");
+  const directive = mode === "AWS_IAM" ? "aws_iam" : mode === "API_KEY" ? "aws_api_key" : "aws_cognito_user_pools";
+  return directives.some(value => value.name.value === directive);
 }
 
 function controlJson(res: ServerResponse, value: unknown, status = 200): void {
@@ -684,6 +710,7 @@ export class AppSyncService {
     ) => Promise<PrincipalContext>,
     private readonly telemetry?: TelemetryBus,
     private readonly iamHooks?: AppSyncIamHooks,
+    private readonly cognito?: CognitoRestAuthorizerVerifier & { cacheVersion(allowedUserPoolArns: string[]): string },
   ) {
     this.materials = new EncryptedMaterialStore(store.root, "appsync");
     this.realtimeServer = new WebSocketServer({
@@ -740,7 +767,8 @@ export class AppSyncService {
     return createHash("sha256").update(JSON.stringify({
       apiGeneration: api.generation,
       authenticationType: api.authenticationType,
-      additional: api.additionalAuthenticationProviders.map(provider => provider.authenticationType).sort(),
+      userPoolConfig: api.userPoolConfig,
+      additional: api.additionalAuthenticationProviders,
     })).digest("hex");
   }
 
@@ -786,6 +814,7 @@ export class AppSyncService {
       if (!Number.isFinite(requestTime) || Math.abs(this.clock.now() - requestTime) > 5 * 60_000) {
         throw new AwsError("RequestExpired", "The realtime authorization request has expired.", 401);
       }
+      if (!modeActive(api, "API_KEY")) throw new AwsError("UnauthorizedException", "API_KEY is not active for this API.", 401);
       const key = await this.findKey(api, headers["x-api-key"]);
       if (!key || key.expires <= Math.floor(this.clock.now() / 1000)) {
         throw new AwsError("UnauthorizedException", "You are not authorized to make this call.", 401);
@@ -796,7 +825,11 @@ export class AppSyncService {
         identityKey: createHash("sha256").update(`API_KEY\0${api.apiId}\0${key.keyId}`).digest("hex"),
       };
     }
-    if (!api.additionalAuthenticationProviders.some(provider => provider.authenticationType === "AWS_IAM")
+    if (!/^AWS4-HMAC-SHA256\s/i.test(headers.authorization)) {
+      if (Object.keys(headers).some(name => !["host", "authorization", "x-amz-user-agent"].includes(name))) throw new AwsError("UnauthorizedException", "The Cognito realtime authorization header is invalid.", 401);
+      return { mode: "AMAZON_COGNITO_USER_POOLS", ...await this.authenticateCognito(api, headers.authorization) };
+    }
+    if (!modeActive(api, "AWS_IAM")
       || !this.iamHooks) throw new AwsError("UnauthorizedException", "AWS_IAM is not active for this API.", 401);
     const allowed = new Set([
       "accept", "accept-encoding", "amz-sdk-invocation-id", "amz-sdk-request", "authorization",
@@ -953,6 +986,10 @@ export class AppSyncService {
       const key = api.apiKeys[auth.keyId];
       return Boolean(key && key.expires > Math.floor(this.clock.now() / 1000));
     }
+    if (auth.mode === "AMAZON_COGNITO_USER_POOLS") {
+      if (auth.verified.expiresAt <= this.clock.now() || !this.cognito) return false;
+      try { return this.cognito.cacheVersion([auth.userPoolArn]) === auth.cacheVersion; } catch { return false; }
+    }
     return Boolean(this.iamHooks?.identityValid(auth.principal));
   }
 
@@ -1062,7 +1099,7 @@ export class AppSyncService {
       const frozenLinks: Record<string, string> = { onCreateTodo: "createTodo", onUpdateTodo: "updateTodo", onDeleteTodo: "deleteTodo" };
       const expectedLink = frozenLinks[root.fieldName];
       const fieldDefinition = subscriptionType.getFields()[root.fieldName];
-      if (!fieldDefinition || !expectedLink || fieldDefinition.args.some(argument => argument.name !== "filter")) {
+      if (!fieldDefinition || !expectedLink || fieldDefinition.args.some(argument => argument.name !== "filter" && argument.name !== "owner")) {
         throw new AwsError("UnsupportedOperation", "The subscription field or arguments are outside the frozen AMX-08 surface.", 400);
       }
       const subscribeDirective = fieldDefinition.astNode?.directives?.find(directive => directive.name.value === "aws_subscribe");
@@ -1073,24 +1110,32 @@ export class AppSyncService {
       if (mutationLinks.length !== 1 || mutationLinks[0] !== expectedLink) {
         throw new AwsError("UnsupportedOperation", "The subscription mutation link is outside the frozen AMX-08 surface.", 400);
       }
-      if (!schemaAllowsMode(subscriptionType, root.fieldName, auth.mode)) throw new AwsError("UnauthorizedException", "Not Authorized to access this subscription field.", 401);
+      if (!schemaAllowsMode(subscriptionType, root.fieldName, auth.mode, api)) throw new AwsError("UnauthorizedException", "Not Authorized to access this subscription field.", 401);
       if (auth.mode === "AWS_IAM") await this.authorizeRealtimeField(api, subscriptionType.name, root.fieldName, auth.principal, connection.id);
       let args: Record<string, unknown>;
       try { args = getArgumentValues(fieldDefinition, root.field, variableValues) as Record<string, unknown>; }
       catch (error) { throw new AwsError("GraphQLValidationException", error instanceof Error ? error.message : "Subscription arguments are invalid.", 400); }
-      if (Object.keys(args).some(name => name !== "filter")) throw new AwsError("UnsupportedOperation", "The subscription argument is not supported.", 400);
+      if (Object.keys(args).some(name => name !== "filter" && name !== "owner")) throw new AwsError("UnsupportedOperation", "The subscription argument is not supported.", 400);
       const resolver = api.resolvers[this.resolverKey(subscriptionType.name, root.fieldName)];
       if (!resolver || resolver.kind !== "PIPELINE") throw new AwsError("ResolverNotFound", "The generated subscription pipeline resolver is required.", 400);
       const evaluation = await this.executePipelineResolver(api, resolver, {
         arguments: structuredClone(args), source: null,
-        identity: auth.mode === "AWS_IAM" ? iamResolverIdentity(auth.principal, []) : null,
+        identity: auth.mode === "AWS_IAM" ? iamResolverIdentity(auth.principal, []) : auth.mode === "AMAZON_COGNITO_USER_POOLS" ? cognitoResolverIdentity(auth, []) : null,
         stash: {}, request: { headers: {} },
         info: { fieldName: root.fieldName, parentTypeName: subscriptionType.name, variables: structuredClone(input.variables ?? {}) },
-        authType: auth.mode === "AWS_IAM" ? "IAM Authorization" : "API Key Authorization",
+        authType: authType(auth.mode),
         authorizationScope: auth.identityKey,
       });
       if (evaluation.appendedErrors.length) throw new AwsError("MappingTemplate", evaluation.appendedErrors[0].message, 400);
-      const filter = evaluation.subscriptionFilter === undefined ? undefined : evaluation.subscriptionFilter;
+      let filter = evaluation.subscriptionFilter === undefined ? undefined : evaluation.subscriptionFilter;
+      // Basic subscription arguments still constrain delivery when a generated
+      // owner function authorizes its explicit owner argument without an enhanced
+      // filter. This is AppSync argument matching, independent of model rules.
+      const basicArguments = Object.entries(args).filter(([name, value]) => name !== "filter" && value !== null && value !== undefined);
+      if (basicArguments.length) {
+        const basic = Object.fromEntries(basicArguments.map(([name, value]) => [name, { eq: value }]));
+        filter = filter === undefined ? basic : { and: [filter, basic] };
+      }
       if (filter !== undefined && !validObject(filter)) throw new AwsError("UnsupportedOperation", "The generated subscription filter is invalid.", 400);
       const registration: RealtimeRegistration = {
         id, apiId: api.apiId, apiGeneration: api.generation, schemaGeneration: api.schema.generation,
@@ -1108,7 +1153,7 @@ export class AppSyncService {
       this.realtimeSignal({ signal: "registration-admit", apiId: api.apiId, connectionId: connection.id, registrationId: id, authenticationType: auth.mode });
       void this.publishMetric(api.apiId, "RealtimeSubscriptionRegistrationAdmission", 1, "Count", { AuthenticationType: auth.mode });
     } catch (error) {
-      const aws = error instanceof AwsError ? error : new AwsError("BadRequestException", error instanceof Error ? error.message : "The subscription registration failed.", 400);
+      const aws = error instanceof AwsError ? error : error instanceof AppSyncVtlError ? new AwsError(error.errorType, error.message, 400) : new AwsError("BadRequestException", "The subscription registration failed.", 400);
       reject(aws.message, aws.code);
     }
   }
@@ -1287,7 +1332,7 @@ export class AppSyncService {
         }
         const schema = this.compiledSchema(api);
         const subscriptionType = schema.getSubscriptionType();
-        if (!subscriptionType || !schemaAllowsMode(subscriptionType, registration.fieldName, registration.auth.mode)) {
+        if (!subscriptionType || !schemaAllowsMode(subscriptionType, registration.fieldName, registration.auth.mode, api)) {
           this.dropRealtimeRegistration(connection, registration, "The subscription is no longer authorized.", "UnauthorizedException");
           continue;
         }
@@ -1313,6 +1358,10 @@ export class AppSyncService {
           operationName: registration.operationName,
           variableValues: registration.variables,
           rootValue: { [registration.fieldName]: structuredClone(value) },
+          fieldResolver: (source, args, context, info) => {
+            if (!schemaAllowsMode(info.parentType, info.fieldName, registration.auth.mode, api)) throw new GraphQLError(`Not Authorized to access ${info.fieldName} on type ${info.parentType.name}`, { extensions: { errorType: "Unauthorized" } });
+            return defaultFieldResolver(source, args, context, info);
+          },
         });
         this.enqueueRealtimeData(connection, registration, {
           id: registration.id,
@@ -1730,18 +1779,19 @@ export class AppSyncService {
     const hasIamAuthorization = (typeof req.headers.authorization === "string"
       && /^AWS4-HMAC-SHA256\s/i.test(req.headers.authorization))
       || url?.searchParams.get("X-Amz-Algorithm") === "AWS4-HMAC-SHA256";
-    if (suppliedKey !== undefined && hasIamAuthorization) {
+    if (suppliedKey !== undefined && (hasIamAuthorization || req.headers.authorization !== undefined)) {
       return this.graphqlFailure(res, apiId, startedAt, 401, "UnauthorizedException", "Specify exactly one authorization mode.");
     }
     let authorizationMode: GraphqlAuthorizationMode;
     let principal: PrincipalContext | undefined;
+    let cognitoAuth: CognitoAuthorization | undefined;
     if (typeof suppliedKey === "string") {
-      if (!(await this.validApiKey(liveApi, suppliedKey))) {
+      if (!modeActive(liveApi, "API_KEY") || !(await this.validApiKey(liveApi, suppliedKey))) {
         return this.graphqlFailure(res, apiId, startedAt, 401, "UnauthorizedException", "You are not authorized to make this call.", "API_KEY");
       }
       authorizationMode = "API_KEY";
     } else if (hasIamAuthorization
-      && liveApi.additionalAuthenticationProviders.some(provider => provider.authenticationType === "AWS_IAM")
+      && modeActive(liveApi, "AWS_IAM")
       && this.iamHooks && url) {
       try {
         principal = await this.iamHooks.authenticate(req, url);
@@ -1761,6 +1811,10 @@ export class AppSyncService {
         return this.graphqlFailure(res, apiId, startedAt, 403, "AccessDeniedException", "Cross-account AppSync GraphQL access is not supported.", "AWS_IAM");
       }
       authorizationMode = "AWS_IAM";
+    } else if (!hasIamAuthorization && typeof req.headers.authorization === "string") {
+      try { cognitoAuth = await this.authenticateCognito(liveApi, req.headers.authorization); }
+      catch { return this.graphqlFailure(res, apiId, startedAt, 401, "UnauthorizedException", "You are not authorized to make this call.", "AMAZON_COGNITO_USER_POOLS"); }
+      authorizationMode = "AMAZON_COGNITO_USER_POOLS";
     } else {
       return this.graphqlFailure(res, apiId, startedAt, 401, "UnauthorizedException", "You are not authorized to make this call.", hasIamAuthorization ? "AWS_IAM" : undefined);
     }
@@ -1901,7 +1955,7 @@ export class AppSyncService {
       const deniedRootFields = new Set<string>();
       const selectedFields = selectedRootFieldNames(document, operation, variables);
       for (const fieldName of selectedFields) {
-        if (!schemaAllowsMode(rootType, fieldName, authorizationMode)) {
+        if (!schemaAllowsMode(rootType, fieldName, authorizationMode, api)) {
           deniedRootFields.add(`${rootType.name}.${fieldName}`);
           continue;
         }
@@ -1935,7 +1989,7 @@ export class AppSyncService {
         schema.getMutationType()?.name,
       ].filter((value): value is string => Boolean(value)));
       const fieldResolver: GraphQLFieldResolver<unknown, Record<string, never>> = async (source, args, _context, info) => {
-        if (!schemaAllowsMode(info.parentType, info.fieldName, authorizationMode)
+        if (!schemaAllowsMode(info.parentType, info.fieldName, authorizationMode, api)
           || deniedRootFields.has(`${info.parentType.name}.${info.fieldName}`)) {
           throw new GraphQLError(`Not Authorized to access ${info.fieldName} on type ${info.parentType.name}`, {
             extensions: { errorType: "Unauthorized" },
@@ -1963,7 +2017,7 @@ export class AppSyncService {
           source: source === undefined ? null : structuredClone(source),
           identity: authorizationMode === "AWS_IAM" && principal
             ? iamResolverIdentity(principal, [req.socket.remoteAddress?.replace(/^::ffff:/, "") ?? ""])
-            : null,
+            : cognitoAuth ? cognitoResolverIdentity(cognitoAuth, [req.socket.remoteAddress?.replace(/^::ffff:/, "") ?? ""]) : null,
           stash: {},
           request: { headers: resolverHeaders(req) },
           info: {
@@ -1971,11 +2025,11 @@ export class AppSyncService {
             parentTypeName: info.parentType.name,
             variables: input.variables === undefined ? {} : structuredClone(input.variables),
           },
-          authType: authorizationMode === "AWS_IAM" ? "IAM Authorization" : "API Key Authorization",
+          authType: authType(authorizationMode),
           authorizationScope: createHash("sha256").update(
             authorizationMode === "AWS_IAM"
               ? `AWS_IAM\0${principal?.principalArn ?? ""}`
-              : `API_KEY\0${suppliedKey ?? ""}`,
+              : cognitoAuth ? cognitoAuth.identityKey : `API_KEY\0${suppliedKey ?? ""}`,
           ).digest("hex"),
         };
         try {
@@ -2172,6 +2226,7 @@ export class AppSyncService {
       name: api.name,
       apiId: api.apiId,
       authenticationType: api.authenticationType,
+      ...(api.userPoolConfig ? { userPoolConfig: structuredClone(api.userPoolConfig) } : {}),
       ...(api.additionalAuthenticationProviders.length
         ? { additionalAuthenticationProviders: api.additionalAuthenticationProviders.map(provider => ({ ...provider })) }
         : {}),
@@ -2189,14 +2244,55 @@ export class AppSyncService {
     };
   }
 
-  private validateApiConfiguration(input: Record<string, unknown>, create: boolean): {
+  private cognitoPoolArn(config: AppSyncUserPoolConfig): string {
+    const partition = this.region.startsWith("cn-") ? "aws-cn" : this.region.startsWith("us-gov-") ? "aws-us-gov" : "aws";
+    return `arn:${partition}:cognito-idp:${config.awsRegion}:${this.store.accountId}:userpool/${config.userPoolId}`;
+  }
+
+  private async authenticateCognito(api: AppSyncGraphqlApiState, authorization: string): Promise<CognitoAuthorization> {
+    const config = api.authenticationType === "AMAZON_COGNITO_USER_POOLS" ? api.userPoolConfig
+      : api.additionalAuthenticationProviders.find(provider => provider.authenticationType === "AMAZON_COGNITO_USER_POOLS")?.userPoolConfig;
+    if (!config || !this.cognito) throw new AwsError("UnauthorizedException", "Cognito authorization is not active for this API.", 401);
+    try {
+      const userPoolArn = this.cognitoPoolArn(config);
+      // The pinned Amplify 6.20 GraphQL client supplies an access token. ID tokens
+      // belong to the separate Identity Pool login flow and are not admitted here.
+      const verified = await this.cognito.verify({ token: authorization.replace(/^Bearer /i, ""), allowedUserPoolArns: [userPoolArn], expectedUse: "access" });
+      const client = verified.claims.client_id;
+      if (typeof client !== "string" || (config.appIdClientRegex && !RE2JS.compile(config.appIdClientRegex).matcher(client).find())) throw new Error();
+      if (typeof verified.claims.username !== "string") throw new Error();
+      const cacheVersion = verified.cacheVersion;
+      if (this.cognito.cacheVersion([userPoolArn]) !== cacheVersion) throw new Error();
+      return { verified, userPoolArn, cacheVersion, defaultAction: config.defaultAction ?? "ALLOW",
+        identityKey: createHash("sha256").update(`COGNITO\0${api.apiId}\0${userPoolArn}\0${client}\0${verified.claims.sub}`).digest("hex") };
+    } catch { throw new AwsError("UnauthorizedException", "You are not authorized to make this call.", 401); }
+  }
+
+  private async validateUserPoolConfig(value: unknown, isDefault: boolean): Promise<AppSyncUserPoolConfig> {
+    if (!validObject(value)) throw new AwsError("BadRequestException", "Cognito userPoolConfig is required.", 400);
+    rejectUnknown(value, ["userPoolId", "awsRegion", "appIdClientRegex", ...(isDefault ? ["defaultAction"] : [])]);
+    const userPoolId = requireString(value.userPoolId, "userPoolId", 128);
+    const awsRegion = requireString(value.awsRegion, "awsRegion", 64);
+    if (awsRegion !== this.region || !new RegExp(`^${this.region}_[A-Za-z0-9]{9}$`).test(userPoolId)) throw new AwsError("BadRequestException", "The Cognito pool must belong to this API's account and Region.", 400);
+    if (isDefault && value.defaultAction !== "ALLOW" && value.defaultAction !== "DENY") throw new AwsError("BadRequestException", "Cognito defaultAction must be ALLOW or DENY.", 400);
+    const appIdClientRegex = value.appIdClientRegex === undefined ? undefined : requireString(value.appIdClientRegex, "appIdClientRegex", 512);
+    if (appIdClientRegex) { try { RE2JS.compile(appIdClientRegex); } catch { throw new AwsError("BadRequestException", "appIdClientRegex must be a valid RE2 expression.", 400); } }
+    const config: AppSyncUserPoolConfig = { userPoolId, awsRegion, ...(appIdClientRegex ? { appIdClientRegex } : {}), ...(isDefault ? { defaultAction: value.defaultAction as "ALLOW" | "DENY" } : {}) };
+    try { if (!this.cognito) throw new Error(); await this.cognito.cacheVersion([this.cognitoPoolArn(config)]); }
+    catch { throw new AwsError("BadRequestException", "The configured local Cognito user pool is unavailable.", 400); }
+    return config;
+  }
+
+  private async validateApiConfiguration(input: Record<string, unknown>, create: boolean): Promise<{
     name: string;
+    authenticationType: AppSyncAuthenticationType;
+    userPoolConfig?: AppSyncUserPoolConfig;
     ownerContact?: string;
     introspectionConfig: "ENABLED" | "DISABLED";
     queryDepthLimit: 0;
     resolverCountLimit: 0;
-    additionalAuthenticationProviders: Array<{ authenticationType: "AWS_IAM" }>;
-  } {
+    additionalAuthenticationProviders: AppSyncGraphqlApiState["additionalAuthenticationProviders"];
+  }> {
     rejectUnknown(input, create
       ? [
         "name", "authenticationType", "logConfig", "userPoolConfig", "openIDConnectConfig",
@@ -2211,32 +2307,24 @@ export class AppSyncService {
         "resolverCountLimit", "enhancedMetricsConfig",
       ]);
     const name = requireString(input.name, "name", 65_536);
-    if (input.authenticationType !== "API_KEY") {
-      throw new AwsError("BadRequestException", "APS-P0-006 supports only API_KEY authorization.", 400);
-    }
-    let additionalAuthenticationProviders: Array<{ authenticationType: "AWS_IAM" }> = [];
+    const modes = ["API_KEY", "AWS_IAM", "AMAZON_COGNITO_USER_POOLS"];
+    if (!modes.includes(String(input.authenticationType))) throw new AwsError("BadRequestException", "Only API_KEY, AWS_IAM and local Cognito authorization are implemented.", 400);
+    const authenticationType = input.authenticationType as AppSyncAuthenticationType;
+    const userPoolConfig = authenticationType === "AMAZON_COGNITO_USER_POOLS" ? await this.validateUserPoolConfig(input.userPoolConfig, true) : undefined;
+    if (!userPoolConfig && input.userPoolConfig !== undefined) throw new AwsError("BadRequestException", "userPoolConfig requires Cognito default authorization.", 400);
+    const additionalAuthenticationProviders: AppSyncGraphqlApiState["additionalAuthenticationProviders"] = [];
     if (input.additionalAuthenticationProviders !== undefined) {
-      if (!Array.isArray(input.additionalAuthenticationProviders)
-        || input.additionalAuthenticationProviders.length > 1
-        || (input.additionalAuthenticationProviders.length === 1
-          && (!validObject(input.additionalAuthenticationProviders[0])
-            || Object.keys(input.additionalAuthenticationProviders[0]).length !== 1
-            || input.additionalAuthenticationProviders[0].authenticationType !== "AWS_IAM"))) {
-        throw new AwsError(
-          "BadRequestException",
-          "AMX-06 supports an empty list or exactly one additional AWS_IAM authorization provider.",
-          400,
-        );
+      if (!Array.isArray(input.additionalAuthenticationProviders) || input.additionalAuthenticationProviders.length > 2) throw new AwsError("BadRequestException", "At most two distinct additional authorization modes are supported.", 400);
+      const seen = new Set([authenticationType]);
+      for (const provider of input.additionalAuthenticationProviders) {
+        if (!validObject(provider) || !modes.includes(String(provider.authenticationType)) || seen.has(provider.authenticationType as AppSyncAuthenticationType)) throw new AwsError("BadRequestException", "Authorization modes must be supported and unique.", 400);
+        rejectUnknown(provider, ["authenticationType", ...(provider.authenticationType === "AMAZON_COGNITO_USER_POOLS" ? ["userPoolConfig"] : [])]);
+        const authenticationType = provider.authenticationType as AppSyncAuthenticationType;
+        seen.add(authenticationType);
+        additionalAuthenticationProviders.push({ authenticationType, ...(authenticationType === "AMAZON_COGNITO_USER_POOLS" ? { userPoolConfig: await this.validateUserPoolConfig(provider.userPoolConfig, false) } : {}) });
       }
-      additionalAuthenticationProviders = input.additionalAuthenticationProviders.length
-        ? [{ authenticationType: "AWS_IAM" }]
-        : [];
     }
-    if (input.userPoolConfig !== undefined
-      || input.openIDConnectConfig !== undefined
-      || input.lambdaAuthorizerConfig !== undefined) {
-      throw new AwsError("BadRequestException", "Cognito, OIDC, and Lambda authorization modes are not implemented.", 400);
-    }
+    if (input.openIDConnectConfig !== undefined || input.lambdaAuthorizerConfig !== undefined) throw new AwsError("BadRequestException", "OIDC and Lambda authorization modes are not implemented.", 400);
     if (input.logConfig !== undefined || input.enhancedMetricsConfig !== undefined || input.xrayEnabled === true) {
       throw new AwsError("BadRequestException", "AppSync logging, enhanced metrics, and X-Ray are not implemented.", 400);
     }
@@ -2266,6 +2354,8 @@ export class AppSyncService {
     const ownerContact = input.ownerContact === undefined ? undefined : requireString(input.ownerContact, "ownerContact", 256);
     return {
       name,
+      authenticationType,
+      ...(userPoolConfig ? { userPoolConfig } : {}),
       ...(ownerContact === undefined ? {} : { ownerContact }),
       introspectionConfig: input.introspectionConfig === "DISABLED" ? "DISABLED" : "ENABLED",
       queryDepthLimit: 0,
@@ -2275,7 +2365,7 @@ export class AppSyncService {
   }
 
   private async createGraphqlApi(input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const configuration = this.validateApiConfiguration(input, true);
+    const configuration = await this.validateApiConfiguration(input, true);
     const tags = input.tags === undefined ? {} : validateTags(input.tags);
     return this.store.withMutationLock(`appsync:${this.store.accountId}:${this.region}`, async () => {
       if (Object.keys(this.state.graphqlApis).length >= API_LIMIT) {
@@ -2289,7 +2379,8 @@ export class AppSyncService {
         generation: randomUUID(),
         arn: `arn:aws:appsync:${this.region}:${this.store.accountId}:apis/${apiId}`,
         name: configuration.name,
-        authenticationType: "API_KEY",
+        authenticationType: configuration.authenticationType,
+        ...(configuration.userPoolConfig ? { userPoolConfig: configuration.userPoolConfig } : {}),
         additionalAuthenticationProviders: configuration.additionalAuthenticationProviders,
         uris: this.apiUris(apiId),
         tags,
@@ -2318,10 +2409,13 @@ export class AppSyncService {
   }
 
   private async updateGraphqlApi(apiId: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const configuration = this.validateApiConfiguration(input, false);
+    const configuration = await this.validateApiConfiguration(input, false);
     return this.store.withMutationLock(`appsync:${this.store.accountId}:${this.region}:${apiId}`, async () => {
       const api = this.requireApi(apiId);
       api.name = configuration.name;
+      api.authenticationType = configuration.authenticationType;
+      if (configuration.userPoolConfig) api.userPoolConfig = configuration.userPoolConfig;
+      else delete api.userPoolConfig;
       api.additionalAuthenticationProviders = configuration.additionalAuthenticationProviders;
       api.introspectionConfig = configuration.introspectionConfig;
       api.queryDepthLimit = configuration.queryDepthLimit;
@@ -2452,13 +2546,14 @@ export class AppSyncService {
   }
 
   private validateSchemaDefinition(api: AppSyncGraphqlApiState, definition: string): GraphQLSchema {
-    if (/@aws_(?:cognito_user_pools|lambda|oidc|auth)\b/.test(definition)) {
+    if (/@aws_(?:lambda|oidc|auth)\b/.test(definition)) {
       throw new Error("The schema references an authorization mode that is not implemented.");
     }
     if (/@aws_iam\b/.test(definition)
-      && !api.additionalAuthenticationProviders.some(provider => provider.authenticationType === "AWS_IAM")) {
+      && !modeActive(api, "AWS_IAM")) {
       throw new Error("The schema references AWS_IAM but the API does not activate that additional authorization mode.");
     }
+    if (/@aws_cognito_user_pools\b/.test(definition) && !modeActive(api, "AMAZON_COGNITO_USER_POOLS")) throw new Error("The schema references Cognito but the API does not activate that authorization mode.");
     const schema = buildSchema(`${APPSYNC_SCALAR_SDL}\n${APPSYNC_AUTH_DIRECTIVE_SDL}\n${definition}`);
     configureAppSyncScalars(schema);
     const errors = validateSchema(schema);

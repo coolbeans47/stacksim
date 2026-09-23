@@ -2,7 +2,7 @@
 
 This guide explains every panel in the StackSim AppSync console: what each setting does, why you would use it in real AWS workloads, and how it maps to production AWS AppSync behavior.
 
-StackSim models GraphQL APIs with API-key and IAM authorization, SDL schemas, VTL unit resolvers, NONE and DynamoDB data sources, local HTTP and WebSocket endpoints, and metrics. Cognito, Lambda, HTTP, OpenSearch, and other data sources remain unavailable.
+StackSim models GraphQL APIs with API-key, IAM, and local Cognito access-token authorization, SDL schemas, VTL unit resolvers, NONE and DynamoDB data sources, local HTTP and WebSocket endpoints, and metrics. Lambda, HTTP, OpenSearch, and other data sources remain unavailable. The console create form stays API-key-only; deploy the pinned Auth fixtures for Cognito APIs.
 
 ---
 
@@ -37,7 +37,7 @@ Filterable table of API names with links to detail. **Create API** opens the cre
 
 #### How it works in StackSim
 
-API lifecycle, local HTTP and realtime endpoints, API-key and IAM authorization, schema execution, VTL resolvers, metrics, and tags are active. Console creates API-key APIs only.
+API lifecycle, local HTTP and realtime endpoints, API-key, IAM, and local Cognito access-token authorization, schema execution, VTL resolvers, metrics, and tags are active. Console creates API-key APIs only.
 
 ---
 
@@ -119,11 +119,11 @@ Key-value table; **Manage tags**.
 
 | Feature | StackSim behavior |
 |---------|-------------------|
-| Authorization | API key, IAM |
+| Authorization | API key, IAM, local Cognito access tokens |
 | Data sources | NONE, DynamoDB |
 | Resolvers | VTL UNIT only |
 | APPSYNC_JS / pipeline | Unavailable |
-| Cognito / OIDC / Lambda auth | Unavailable |
+| Cognito / OIDC / Lambda auth | Pinned local Cognito access-token subset; OIDC/Lambda unavailable |
 | Custom domains | Unavailable |
 | Realtime | Local WebSocket; no replay outbox |
 
@@ -139,3 +139,7 @@ Key-value table; **Manage tags**.
 - [S3 console guide](./s3-console-guide.md) — static site hosting for GraphQL clients
 - [CloudWatch console guide](./cloudwatch-console-guide.md) — API metrics
 - [Developer guide](./developer-guide.md) — GraphQL application patterns
+
+## Two-user ownership lesson
+
+Use [Authenticated notes](../examples/amplify-auth-notes/README.md) to inspect the generated User Pool API, unchanged owner pipeline functions, DynamoDB conditions, and authorized subscriptions. Native Cognito directives admit the credential mode; generated authorization enforces the record owner. The console does not store bearer tokens. [Gap 3 closeout](gap-3-authenticated-app-closeout.md) records the exact tested scope.

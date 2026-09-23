@@ -1,0 +1,24 @@
+{
+  "version": "1.5",
+  "owner": "unmodified @aws-amplify/client-config output generator invoked by ampx",
+  "requiredTopLevel": [
+    "version",
+    "auth"
+  ],
+  "authFieldNames": [
+    "aws_region",
+    "user_pool_id",
+    "user_pool_client_id",
+    "identity_pool_id",
+    "mfa_methods",
+    "standard_required_attributes",
+    "username_attributes",
+    "user_verification_types",
+    "groups",
+    "mfa_configuration",
+    "password_policy",
+    "unauthenticated_identities_enabled"
+  ],
+  "authority": "CloudFormation Ref/GetAtt and root/nested Outputs; no synthetic resource IDs or rewritten output file",
+  "endpointFieldsEmittedByAuthSchema": []
+}

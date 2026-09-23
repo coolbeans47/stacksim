@@ -99,6 +99,13 @@ test("bootstrap manager creates the reduced CDK contract durably and idempotentl
     assert.deepEqual(statements(image.inlinePolicies[CDK_BOOTSTRAP_POLICY_NAME]), [{ Sid: "ImagePublishingUnavailable", Effect: "Deny", Action: "ecr:*", Resource: "*" }]);
 
     const execution = context.store.ensureAccount().iam.roles[names.roleNames.cloudFormationExecution];
+    const companion = context.store.ensureAccount().iam.policies[`arn:aws:iam::${ACCOUNT}:policy/${CDK_BOOTSTRAP_COGNITO_POLICY_NAME}`];
+    const companionDocument = companion.versions[companion.defaultVersionId].document;
+    assert.ok(JSON.stringify(companionDocument).length <= 6_144, "the managed policy remains inside the real IAM size bound");
+    assert.deepEqual(statements(companionDocument).find(statement => statement.Sid === "ManageAmplifyBucketCors"), {
+      Sid: "ManageAmplifyBucketCors", Effect: "Allow", Action: ["s3:DeleteBucketCORS", "s3:GetBucketCORS", "s3:PutBucketCORS"],
+      Resource: ["arn:aws:s3:::amplify-stacksimamplifygen2datafixture-*", "arn:aws:s3:::amplify-stacksimamplifygen2authdataownerfixture-*", "arn:aws:s3:::amplify-stacksimamplifygen2authdataiamfixture-*"],
+    });
     assert.deepEqual(statements(execution.assumeRolePolicyDocument).map(statement => statement.Action), ["sts:AssumeRole"], "the CloudFormation service role does not need TagSession trust");
     const executionDocument = execution.inlinePolicies[CDK_BOOTSTRAP_POLICY_NAME];
     assert.deepEqual(actions(executionDocument, "ManageIamResources"), [

@@ -1,0 +1,2571 @@
+{
+  "schemaVersion": 1,
+  "verifiedOn": "2026-09-23",
+  "command": "node --test dist/test/amplify-gen2-auth.test.js",
+  "verification": {
+    "node": "v22.13.0",
+    "platform": "darwin",
+    "architecture": "arm64",
+    "fixtureLifecyclesPassed": 3,
+    "failed": 0
+  },
+  "prerequisite": {
+    "milestone": "AMX-M2 prerequisite rerun for scoped AMX-19",
+    "toolchain": {
+      "cliNodeVersion": "22.13.0",
+      "captureNodeVersion": "22.13.0",
+      "platform": "darwin",
+      "architecture": "arm64"
+    },
+    "commands": [
+      "node scripts/capture-amplify-gen2-evidence.mjs --bootstrap --auth-enforce --appsync-tls --repeat --delete --output .tmp/amx10-repeat-public.json",
+      "node scripts/capture-amplify-gen2-evidence.mjs --bootstrap --auth-enforce --appsync-tls --watch-edit --second-identifier --delete --recreate --output .tmp/amx10-watch-public.json"
+    ],
+    "proof": {
+      "repeatPassed": true,
+      "scalarDirectLambdaInvokes": 2,
+      "scalarFallback": true,
+      "apiKeyFallback": true,
+      "unsupportedSynthesisRetainsBackendAndOutput": true,
+      "secondIdentifierPreserved": true,
+      "deleted": true,
+      "bootstrapPreserved": true,
+      "unrelatedPreserved": true,
+      "staleOutputRejected": true,
+      "sameIdentifierRecreationAfterCooldownPassed": true,
+      "recreationClientWorkflowPassed": true,
+      "cleanupSucceeded": true,
+      "publicSecretScanPassed": true
+    },
+    "matrixVerification": {
+      "tests": 2,
+      "passed": 2,
+      "failed": 0,
+      "source": "Existing frozen AMX10 assertions evaluated against fresh captures; protected historical corpus digests still verified",
+      "command": "node --test dist/test/amplify-amx10-evidence.test.js",
+      "environment": {
+        "STACKSIM_AMX10_LIVE_REPEAT_PATH": ".tmp/amx10-repeat-public.json",
+        "STACKSIM_AMX10_LIVE_WATCH_PATH": ".tmp/amx10-watch-public.json"
+      }
+    },
+    "qualification": "Same-identifier recreation waits the later Parameter Store contract's documented 30-second cooldown. Original immediate attempt was rejected correctly and retained separately; no simulator production behavior changed.",
+    "cooldownWaitMs": 30000,
+    "productionChanges": "none",
+    "harnessChanges": "Wait documented 30s cooldown; require CLI output-written marker plus a new CREATE_COMPLETE root; redact API-key ownership index suffix in public capture",
+    "frozenCorpusChanges": "none",
+    "captureSha256": {
+      "amx10-repeat-public.json": "0bbf0f99a223dc928455456c99ba3e2f5207ee9419f6ed2880607984c14449e9",
+      "amx10-watch-public.json": "a0443fe75255ebf3dad459480d0b893fa9e691580548206a1269056252fd7c56"
+    }
+  },
+  "fixtures": [
+    {
+      "fixtureId": "amplify-gen2-auth-email",
+      "node": "v22.13.0",
+      "platform": "darwin",
+      "cliUnmodified": true,
+      "frontendUnmodified": true,
+      "outputKeys": [
+        "auth",
+        "version"
+      ],
+      "authOutputKeys": [
+        "aws_region",
+        "groups",
+        "identity_pool_id",
+        "mfa_configuration",
+        "mfa_methods",
+        "password_policy",
+        "standard_required_attributes",
+        "unauthenticated_identities_enabled",
+        "user_pool_client_id",
+        "user_pool_id",
+        "user_verification_types",
+        "username_attributes"
+      ],
+      "outputVersion": "1.5",
+      "deployed": true,
+      "client": {
+        "endpointOverrides": true,
+        "mode": "auth",
+        "guest": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "localSignOut": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "repeat": true,
+      "update": true,
+      "rollback": true,
+      "rollbackClient": {
+        "endpointOverrides": true,
+        "mode": "auth",
+        "guest": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "localSignOut": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "twoSandboxes": true,
+      "secondClient": {
+        "endpointOverrides": true,
+        "mode": "auth",
+        "guest": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "localSignOut": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "restartClient": {
+        "endpointOverrides": true,
+        "mode": "auth",
+        "guest": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "localSignOut": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "secondStale": {
+        "endpointOverrides": true,
+        "mode": "stale",
+        "staleOutputsRejected": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          }
+        ]
+      },
+      "firstAfterSecondDelete": {
+        "endpointOverrides": true,
+        "mode": "auth",
+        "guest": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "localSignOut": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "firstStale": {
+        "endpointOverrides": true,
+        "mode": "stale",
+        "staleOutputsRejected": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          }
+        ]
+      },
+      "cleanup": true,
+      "delete": true
+    },
+    {
+      "fixtureId": "amplify-gen2-auth-data-owner",
+      "node": "v22.13.0",
+      "platform": "darwin",
+      "cliUnmodified": true,
+      "frontendUnmodified": true,
+      "outputKeys": [
+        "auth",
+        "data",
+        "version"
+      ],
+      "authOutputKeys": [
+        "aws_region",
+        "groups",
+        "identity_pool_id",
+        "mfa_configuration",
+        "mfa_methods",
+        "password_policy",
+        "standard_required_attributes",
+        "unauthenticated_identities_enabled",
+        "user_pool_client_id",
+        "user_pool_id",
+        "user_verification_types",
+        "username_attributes"
+      ],
+      "outputVersion": "1.5",
+      "deployed": true,
+      "client": {
+        "endpointOverrides": true,
+        "mode": "owner",
+        "guest": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "ownerCrud": true,
+        "ownerSpoofDenied": true,
+        "ownerPagination": true,
+        "ownerRealtime": true,
+        "ownerRealtimeSessions": "sequential-reconnect",
+        "userSwitch": true,
+        "localSignOut": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "repeat": true,
+      "update": true,
+      "rollback": true,
+      "rollbackClient": {
+        "endpointOverrides": true,
+        "mode": "owner",
+        "guest": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "ownerCrud": true,
+        "ownerSpoofDenied": true,
+        "ownerPagination": true,
+        "ownerRealtime": true,
+        "ownerRealtimeSessions": "sequential-reconnect",
+        "userSwitch": true,
+        "localSignOut": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "twoSandboxes": true,
+      "secondClient": {
+        "endpointOverrides": true,
+        "mode": "owner",
+        "guest": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "ownerCrud": true,
+        "ownerSpoofDenied": true,
+        "ownerPagination": true,
+        "ownerRealtime": true,
+        "ownerRealtimeSessions": "sequential-reconnect",
+        "userSwitch": true,
+        "localSignOut": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/3f257f343c047ca21f3e59e513",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "restartClient": {
+        "endpointOverrides": true,
+        "mode": "owner",
+        "guest": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "ownerCrud": true,
+        "ownerSpoofDenied": true,
+        "ownerPagination": true,
+        "ownerRealtime": true,
+        "ownerRealtimeSessions": "sequential-reconnect",
+        "userSwitch": true,
+        "localSignOut": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "secondStale": {
+        "endpointOverrides": true,
+        "mode": "stale",
+        "staleOutputsRejected": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          }
+        ]
+      },
+      "firstAfterSecondDelete": {
+        "endpointOverrides": true,
+        "mode": "owner",
+        "guest": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "ownerCrud": true,
+        "ownerSpoofDenied": true,
+        "ownerPagination": true,
+        "ownerRealtime": true,
+        "ownerRealtimeSessions": "sequential-reconnect",
+        "userSwitch": true,
+        "localSignOut": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/graphql/eu-west-1/ad772ec5e2420704d5661d2592",
+            "tokenUse": "access"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "firstStale": {
+        "endpointOverrides": true,
+        "mode": "stale",
+        "staleOutputsRejected": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          }
+        ]
+      },
+      "cleanup": true,
+      "delete": true
+    },
+    {
+      "fixtureId": "amplify-gen2-auth-data-iam",
+      "node": "v22.13.0",
+      "platform": "darwin",
+      "cliUnmodified": true,
+      "frontendUnmodified": true,
+      "outputKeys": [
+        "auth",
+        "data",
+        "version"
+      ],
+      "authOutputKeys": [
+        "aws_region",
+        "groups",
+        "identity_pool_id",
+        "mfa_configuration",
+        "mfa_methods",
+        "password_policy",
+        "standard_required_attributes",
+        "unauthenticated_identities_enabled",
+        "user_pool_client_id",
+        "user_pool_id",
+        "user_verification_types",
+        "username_attributes"
+      ],
+      "outputVersion": "1.5",
+      "deployed": true,
+      "client": {
+        "endpointOverrides": true,
+        "mode": "iam",
+        "guest": true,
+        "guestDataDenied": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "guestIdentityPromoted": true,
+        "iamData": true,
+        "signOutGuestFallback": true,
+        "priorCredentialsRetainValidity": true,
+        "returningGuestLogin": true,
+        "localSignOut": true,
+        "sameSessionSigning": true,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "repeat": true,
+      "update": true,
+      "rollback": true,
+      "rollbackClient": {
+        "endpointOverrides": true,
+        "mode": "iam",
+        "guest": true,
+        "guestDataDenied": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "guestIdentityPromoted": true,
+        "iamData": true,
+        "signOutGuestFallback": true,
+        "priorCredentialsRetainValidity": true,
+        "returningGuestLogin": true,
+        "localSignOut": true,
+        "sameSessionSigning": true,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "twoSandboxes": true,
+      "secondClient": {
+        "endpointOverrides": true,
+        "mode": "iam",
+        "guest": true,
+        "guestDataDenied": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "guestIdentityPromoted": true,
+        "adjacentResourceDenied": true,
+        "iamData": true,
+        "signOutGuestFallback": true,
+        "priorCredentialsRetainValidity": true,
+        "returningGuestLogin": true,
+        "localSignOut": true,
+        "sameSessionSigning": true,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/graphql/eu-west-1/73d6ba521b719b4b13691c9ff7"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "restartClient": {
+        "endpointOverrides": true,
+        "mode": "iam",
+        "guest": true,
+        "guestDataDenied": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "guestIdentityPromoted": true,
+        "iamData": true,
+        "signOutGuestFallback": true,
+        "priorCredentialsRetainValidity": true,
+        "returningGuestLogin": true,
+        "localSignOut": true,
+        "sameSessionSigning": true,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "secondStale": {
+        "endpointOverrides": true,
+        "mode": "stale",
+        "staleOutputsRejected": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          }
+        ]
+      },
+      "firstAfterSecondDelete": {
+        "endpointOverrides": true,
+        "mode": "iam",
+        "guest": true,
+        "guestDataDenied": true,
+        "srpSignIn": true,
+        "confirmSignUp": true,
+        "refresh": true,
+        "guestIdentityPromoted": true,
+        "iamData": true,
+        "signOutGuestFallback": true,
+        "priorCredentialsRetainValidity": true,
+        "returningGuestLogin": true,
+        "localSignOut": true,
+        "sameSessionSigning": true,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "SignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "ConfirmSignUp"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "GetTokensFromRefreshToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RespondToAuthChallenge"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/graphql/eu-west-1/64f6498124c216eeefd788aa3b"
+          },
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "RevokeToken"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetId"
+          },
+          {
+            "path": "/_stacksim/cognito-identity/eu-west-1/sdk",
+            "action": "GetCredentialsForIdentity"
+          }
+        ]
+      },
+      "firstStale": {
+        "endpointOverrides": true,
+        "mode": "stale",
+        "staleOutputsRejected": true,
+        "sameSessionSigning": false,
+        "clientRequests": [
+          {
+            "path": "/_stacksim/cognito-idp/eu-west-1/sdk",
+            "action": "InitiateAuth"
+          }
+        ]
+      },
+      "cleanup": true,
+      "delete": true
+    }
+  ]
+}

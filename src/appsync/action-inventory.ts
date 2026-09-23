@@ -57,12 +57,12 @@ export const APPSYNC_AMX_06_PERMISSION_ACTION = Object.freeze({
 
 /** AMX-08 is a data-plane protocol surface and adds no AppSync SDK command. */
 export const APPSYNC_AMX_08_REALTIME_SURFACE = Object.freeze({
-  phase: "AMX-08 (APS-07 API_KEY/AWS_IAM generated subset)",
+  phase: "AMX-08/13C (APS-07 API_KEY/AWS_IAM/Cognito generated subset)",
   endpoint: "REALTIME",
   subprotocol: "graphql-ws",
   clientMessages: Object.freeze(["connection_init", "start", "stop"]),
   serverMessages: Object.freeze(["connection_ack", "connection_error", "start_ack", "data", "ka", "complete", "error"]),
-  authorizationModes: Object.freeze(["API_KEY", "AWS_IAM"]),
+  authorizationModes: Object.freeze(["API_KEY", "AWS_IAM", "AMAZON_COGNITO_USER_POOLS"]),
   subscriptionFields: Object.freeze(["onCreateTodo", "onUpdateTodo", "onDeleteTodo"]),
   filterOperators: Object.freeze([
     "eq", "ne", "le", "lt", "ge", "gt", "contains", "notContains", "between", "beginsWith", "in", "notIn", "and", "or",
@@ -74,7 +74,19 @@ export const APPSYNC_AMX_08_REALTIME_SURFACE = Object.freeze({
   ]),
   persistence: "process-local-no-replay",
   addsSdkAction: false,
-  future: Object.freeze(["Cognito", "Lambda", "OIDC", "enhanced filters", "invalidation", "AppSync Events"]),
+  future: Object.freeze(["Lambda", "OIDC", "enhanced filters", "invalidation", "AppSync Events"]),
+});
+
+/** Pinned Amplify 6.20 access-token contract; Identity Pools separately consume ID tokens. */
+export const APPSYNC_AMX_13_COGNITO_SURFACE = Object.freeze({
+  phase: "AMX-13B/C (APS-06 local Cognito subset)",
+  authenticationType: "AMAZON_COGNITO_USER_POOLS",
+  tokenUse: "access",
+  verifier: "authoritative-in-process-no-JWKS-network",
+  ownerAuthorization: "unchanged-generated-VTL-and-DynamoDB",
+  nativeDirective: "aws_cognito_user_pools",
+  offlineJwtRevocation: false,
+  future: Object.freeze(["ID-token AppSync authorization", "static groups", "dynamic groups", "external OIDC", "Lambda authorizers"]),
 });
 
 const APS_09 = [

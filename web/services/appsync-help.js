@@ -4,7 +4,7 @@ const help = {
   apis: {
     level: "Supported locally",
     description: "A GraphQL API exposes one typed endpoint where clients request exactly the fields they need. Its schema defines the contract, resolvers connect fields to data, and authorization decides which callers may execute operations.",
-    support: "API lifecycle, local HTTP and realtime endpoints, API-key and IAM authorization, schema execution, VTL resolvers, metrics, and tags are active. The console creates API-key APIs; Cognito, Lambda, and OIDC authorization are unavailable.",
+    support: "API lifecycle, local HTTP and realtime endpoints, API-key and IAM authorization, schema execution, VTL resolvers, metrics, and tags are active. The console creates API-key APIs; Local Cognito access-token authorization is available through the pinned Auth fixtures; Lambda and OIDC authorization are unavailable.",
   },
   apiConfiguration: {
     level: "Partial",
@@ -14,7 +14,7 @@ const help = {
   apiDetails: {
     level: "Partial",
     description: "API details control service-wide identity and access behavior. Introspection lets tooling discover the active schema, while the authorization mode determines which credentials clients must present before GraphQL execution.",
-    support: "Names, owner contact, introspection, API-key authorization, and supported IAM authorization are enforced locally. Cognito user pools, Lambda and OIDC authorizers, WAF, custom domains, merged APIs, and AppSync Events are unavailable.",
+    support: "Names, owner contact, introspection, API-key authorization, supported IAM authorization, and access-token authorization from local Cognito user pools are enforced locally. Lambda and OIDC authorizers, WAF, custom domains, merged APIs, and AppSync Events are unavailable.",
   },
   schema: {
     level: "Supported locally",

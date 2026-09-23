@@ -12,6 +12,7 @@ import {
   APPSYNC_AMX_05_ACTIONS,
   APPSYNC_AMX_06_PERMISSION_ACTION,
   APPSYNC_AMX_08_REALTIME_SURFACE,
+  APPSYNC_AMX_13_COGNITO_SURFACE,
 } from "../src/appsync/action-inventory.js";
 
 test("AppSync inventory matches the pinned 74-command SDK, 32 control actions, and AMX-06 GraphQL permission action", () => {
@@ -46,7 +47,9 @@ test("AppSync inventory matches the pinned 74-command SDK, 32 control actions, a
     resource: "arn:aws:appsync:${Region}:${Account}:apis/${GraphQLAPIId}/types/${TypeName}/fields/${FieldName}",
   });
   assert.equal(APPSYNC_AMX_08_REALTIME_SURFACE.addsSdkAction, false);
-  assert.deepEqual(APPSYNC_AMX_08_REALTIME_SURFACE.authorizationModes, ["API_KEY", "AWS_IAM"]);
+  assert.deepEqual(APPSYNC_AMX_08_REALTIME_SURFACE.authorizationModes, ["API_KEY", "AWS_IAM", "AMAZON_COGNITO_USER_POOLS"]);
   assert.deepEqual(APPSYNC_AMX_08_REALTIME_SURFACE.subscriptionFields, ["onCreateTodo", "onUpdateTodo", "onDeleteTodo"]);
   assert.equal(APPSYNC_AMX_08_REALTIME_SURFACE.persistence, "process-local-no-replay");
+  assert.equal(APPSYNC_AMX_13_COGNITO_SURFACE.tokenUse, "access");
+  assert.equal(APPSYNC_AMX_13_COGNITO_SURFACE.offlineJwtRevocation, false);
 });

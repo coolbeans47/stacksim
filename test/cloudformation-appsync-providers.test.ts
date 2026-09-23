@@ -52,7 +52,8 @@ test("APS-03 and AMX-05 providers use the authoritative AppSync service for unit
     const byType = new Map(providers.map(provider => [provider.typeName, provider]));
 
     const api = byType.get("AWS::AppSync::GraphQLApi")!;
-    assert.ok(api.validate({ Name: "provider-test", AuthenticationType: "AWS_IAM" }, context("Api")).length);
+    assert.deepEqual(api.validate({ Name: "provider-test", AuthenticationType: "AWS_IAM" }, context("Api")), []);
+    assert.ok(api.validate({ Name: "provider-test", AuthenticationType: "OPENID_CONNECT" }, context("Api")).length);
     assert.ok(api.validate({ Name: "provider-test", AuthenticationType: "API_KEY", AdditionalAuthenticationProviders: [{ AuthenticationType: "AMAZON_COGNITO_USER_POOLS" }] }, context("Api")).length);
     const apiModel = api.canonicalize({
       Name: "provider-test",

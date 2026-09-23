@@ -67,11 +67,31 @@ test("APS-P0-002 through APS-P0-004 provide durable API, schema, tag, and key li
     }))).graphqlApi!;
     assert.notEqual(first.apiId, second.apiId);
     assert.deepEqual((await otherRegion.send(new ListGraphqlApisCommand({}))).graphqlApis, []);
+    const iamDefault = (await client.send(new CreateGraphqlApiCommand({
+      name: "iam-default",
+      authenticationType: "AWS_IAM",
+    }))).graphqlApi!;
+    assert.equal(iamDefault.authenticationType, "AWS_IAM");
+    assert.equal((await client.send(new GetGraphqlApiCommand({
+      apiId: iamDefault.apiId,
+    }))).graphqlApi?.authenticationType, "AWS_IAM");
+    await client.send(new DeleteGraphqlApiCommand({ apiId: iamDefault.apiId }));
     await assert.rejects(
-      client.send(new CreateGraphqlApiCommand({ name: "unsupported-default", authenticationType: "AWS_IAM" })),
+      client.send(new CreateGraphqlApiCommand({
+        name: "missing-cognito-config",
+        authenticationType: "API_KEY",
+        additionalAuthenticationProviders: [{ authenticationType: "AMAZON_COGNITO_USER_POOLS" }],
+      })),
       (error: any) => error.name === "BadRequestException",
     );
-    for (const authenticationType of ["AMAZON_COGNITO_USER_POOLS", "AWS_LAMBDA", "OPENID_CONNECT"] as const) {
+    for (const authenticationType of ["AWS_LAMBDA", "OPENID_CONNECT"] as const) {
+      await assert.rejects(
+        client.send(new CreateGraphqlApiCommand({
+          name: `unsupported-default-${authenticationType}`,
+          authenticationType,
+        })),
+        (error: any) => error.name === "BadRequestException",
+      );
       await assert.rejects(
         client.send(new CreateGraphqlApiCommand({
           name: `unsupported-${authenticationType}`,

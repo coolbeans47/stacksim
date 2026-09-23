@@ -1,0 +1,8 @@
+type Todo @model @auth(rules: [{allow: private, provider: identityPool}])
+{
+  title: String!
+  description: String
+  priority: Int
+  completed: Boolean
+  dueAt: AWSDateTime
+}

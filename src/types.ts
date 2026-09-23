@@ -2649,6 +2649,8 @@ export interface CognitoUserState {
   createdAt: number;
   updatedAt: number;
   attributes: Record<string, CognitoUserAttributeState>;
+  /** Kept separate until a verification-bound email update is confirmed. */
+  pendingAttributeValues?: Record<string, CognitoUserAttributeState>;
   password: CognitoPasswordHashState;
   passwordHistory: CognitoPasswordHashState[];
   passwordChangedAt: number;
@@ -2842,6 +2844,7 @@ export interface CognitoUserPoolConfigurationState {
   policies: { passwordPolicy: CognitoPasswordPolicyState };
   deletionProtection: "ACTIVE" | "INACTIVE";
   autoVerifiedAttributes: "email"[];
+  userAttributeUpdateSettings?: { attributesRequireVerificationBeforeUpdate: "email"[] };
   aliasAttributes: "email"[];
   usernameAttributes: "email"[];
   usernameConfiguration: { caseSensitive: boolean };
@@ -2917,6 +2920,7 @@ export interface CognitoAppClientState {
     | "ALLOW_REFRESH_TOKEN_AUTH"
     | "ALLOW_USER_SRP_AUTH"
     | "ALLOW_ADMIN_USER_PASSWORD_AUTH"
+    | "ALLOW_CUSTOM_AUTH"
   >;
   refreshTokenValidity: number;
   accessTokenValidity: number;
@@ -3222,6 +3226,8 @@ export interface CognitoIdentityPoolState {
     authenticated?: string;
     unauthenticated?: string;
   };
+  /** Frozen Amplify no-group Token mapping, keyed by User Pool provider:client. */
+  roleMappings?: Record<string, { Type: "Token"; AmbiguousRoleResolution: "AuthenticatedRole" }>;
   tags: Record<string, string>;
   identities: Record<string, CognitoIdentityRecordState>;
   /** `${providerName}\0${subject}` → Identity ID */
@@ -3521,13 +3527,23 @@ export interface AppSyncFunctionState {
   revision: number;
 }
 
+export interface AppSyncUserPoolConfig {
+  userPoolId: string;
+  awsRegion: string;
+  appIdClientRegex?: string;
+  defaultAction?: "ALLOW" | "DENY";
+}
+
+export type AppSyncAuthenticationType = "API_KEY" | "AWS_IAM" | "AMAZON_COGNITO_USER_POOLS";
+
 export interface AppSyncGraphqlApiState {
   apiId: string;
   generation: string;
   arn: string;
   name: string;
-  authenticationType: "API_KEY";
-  additionalAuthenticationProviders: Array<{ authenticationType: "AWS_IAM" }>;
+  authenticationType: AppSyncAuthenticationType;
+  userPoolConfig?: AppSyncUserPoolConfig;
+  additionalAuthenticationProviders: Array<{ authenticationType: AppSyncAuthenticationType; userPoolConfig?: AppSyncUserPoolConfig }>;
   uris: Record<"GRAPHQL" | "REALTIME", string>;
   tags: Record<string, string>;
   xrayEnabled: false;

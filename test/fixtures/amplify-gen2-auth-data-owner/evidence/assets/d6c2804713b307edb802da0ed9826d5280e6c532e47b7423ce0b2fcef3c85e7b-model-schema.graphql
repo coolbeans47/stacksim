@@ -1,0 +1,9 @@
+type Todo @model @auth(rules: [{allow: owner, ownerField: "owner"}])
+{
+  title: String!
+  description: String
+  priority: Int
+  completed: Boolean
+  dueAt: AWSDateTime
+  owner: String @auth(rules: [{allow: owner, operations: [read, delete], ownerField: "owner"}])
+}

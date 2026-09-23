@@ -1,0 +1,34 @@
+{
+  "version": "54.0.0",
+  "files": {
+    "f9354a51f53842e807bccbfff8f97ade3cfd7d0dfdd7b263b066a0ad716c7ff3": {
+      "displayName": "auth Nested Stack Template",
+      "source": {
+        "path": "amplifystacksimamplifygen2authemailfixtureamx13sandboxfa26efee32authDC5CF1EF.nested.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "current_account-current_region-82c99841": {
+          "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}",
+          "objectKey": "f9354a51f53842e807bccbfff8f97ade3cfd7d0dfdd7b263b066a0ad716c7ff3.json",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-${AWS::Region}"
+        }
+      }
+    },
+    "185dc4ec6ec03f36ccd85d8b1731fc042cf32fea9abecdbc68c61ca2309385ab": {
+      "displayName": "amplify-stacksimamplifygen2authemailfixture-amx13-sandbox-fa26efee32 Template",
+      "source": {
+        "path": "amplify-stacksimamplifygen2authemailfixture-amx13-sandbox-fa26efee32.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "current_account-current_region-230ce07d": {
+          "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}",
+          "objectKey": "185dc4ec6ec03f36ccd85d8b1731fc042cf32fea9abecdbc68c61ca2309385ab.json",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-${AWS::Region}"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

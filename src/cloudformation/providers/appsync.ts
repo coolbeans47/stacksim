@@ -1,3 +1,4 @@
+import { RE2JS } from "re2js";
 import { createHash } from "node:crypto";
 import type { AppSyncService } from "../../appsync.js";
 import { AwsError } from "../../errors.js";
@@ -44,6 +45,7 @@ const apiSchema: ProviderSchema = Object.freeze({
   properties: Object.freeze({
     Name: Object.freeze({ valueType: "string", required: true, updateBehavior: "MUTABLE" }),
     AuthenticationType: Object.freeze({ valueType: "string", required: true, updateBehavior: "MUTABLE" }),
+    UserPoolConfig: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
     AdditionalAuthenticationProviders: Object.freeze({ valueType: "array", updateBehavior: "MUTABLE" }),
     Tags: Object.freeze({ valueType: "array", updateBehavior: "MUTABLE" }),
     XrayEnabled: Object.freeze({ valueType: "boolean", updateBehavior: "MUTABLE" }),
@@ -226,23 +228,31 @@ function exactObject(
 function validateApi(properties: unknown): ProviderValidationIssue[] {
   const issues = validateTop(properties, apiSchema);
   if (!cfn10Record(properties)) return issues;
-  if (properties.AuthenticationType !== "API_KEY") cfn10Issue(issues, "Properties.AuthenticationType", "Only API_KEY authorization is supported");
+  const modes = ["API_KEY", "AWS_IAM", "AMAZON_COGNITO_USER_POOLS"];
+  if (!modes.includes(String(properties.AuthenticationType))) cfn10Issue(issues, "Properties.AuthenticationType", "Only API_KEY, AWS_IAM and local Cognito authorization are supported");
+  const poolConfig = (value: unknown, path: string, isDefault: boolean) => {
+    if (!exactObject(value, path, ["UserPoolId", "AwsRegion", "AppIdClientRegex", ...(isDefault ? ["DefaultAction"] : [])], issues)) return;
+    for (const name of ["UserPoolId", "AwsRegion"]) if (typeof value[name] !== "string") cfn10Issue(issues, `${path}.${name}`, `${name} is required`);
+    if (value.AppIdClientRegex !== undefined && typeof value.AppIdClientRegex !== "string") cfn10Issue(issues, `${path}.AppIdClientRegex`, "AppIdClientRegex must be a string");
+    if (typeof value.AppIdClientRegex === "string") {
+      try { RE2JS.compile(value.AppIdClientRegex); } catch { cfn10Issue(issues, `${path}.AppIdClientRegex`, "AppIdClientRegex must be a valid RE2 expression"); }
+    }
+    if (isDefault && !["ALLOW", "DENY"].includes(String(value.DefaultAction))) cfn10Issue(issues, `${path}.DefaultAction`, "DefaultAction must be ALLOW or DENY");
+  };
+  if (properties.AuthenticationType === "AMAZON_COGNITO_USER_POOLS") poolConfig(properties.UserPoolConfig, "Properties.UserPoolConfig", true);
+  else if (properties.UserPoolConfig !== undefined) cfn10Issue(issues, "Properties.UserPoolConfig", "UserPoolConfig requires Cognito default authorization");
   if (properties.AdditionalAuthenticationProviders !== undefined) {
-    if (!Array.isArray(properties.AdditionalAuthenticationProviders)
-      || properties.AdditionalAuthenticationProviders.length > 1
-      || (properties.AdditionalAuthenticationProviders.length === 1
-        && (!exactObject(
-          properties.AdditionalAuthenticationProviders[0],
-          "Properties.AdditionalAuthenticationProviders[0]",
-          ["AuthenticationType"],
-          issues,
-        )
-        || properties.AdditionalAuthenticationProviders[0].AuthenticationType !== "AWS_IAM"))) {
-      cfn10Issue(
-        issues,
-        "Properties.AdditionalAuthenticationProviders",
-        "AMX-06 supports an empty list or exactly [{ AuthenticationType: AWS_IAM }]",
-      );
+    if (!Array.isArray(properties.AdditionalAuthenticationProviders) || properties.AdditionalAuthenticationProviders.length > 2) cfn10Issue(issues, "Properties.AdditionalAuthenticationProviders", "At most two distinct additional authorization modes are supported");
+    else {
+      const seen = new Set([properties.AuthenticationType]);
+      properties.AdditionalAuthenticationProviders.forEach((provider: Model, index: number) => {
+        const path = `Properties.AdditionalAuthenticationProviders[${index}]`;
+        if (!exactObject(provider, path, ["AuthenticationType", "UserPoolConfig"], issues)) return;
+        if (!modes.includes(String(provider.AuthenticationType)) || seen.has(provider.AuthenticationType)) cfn10Issue(issues, path, "Authorization modes must be supported and unique");
+        seen.add(provider.AuthenticationType);
+        if (provider.AuthenticationType === "AMAZON_COGNITO_USER_POOLS") poolConfig(provider.UserPoolConfig, `${path}.UserPoolConfig`, false);
+        else if (provider.UserPoolConfig !== undefined) cfn10Issue(issues, `${path}.UserPoolConfig`, "UserPoolConfig requires Cognito authorization");
+      });
     }
   }
   if (properties.XrayEnabled !== undefined && properties.XrayEnabled !== false) cfn10Issue(issues, "Properties.XrayEnabled", "X-Ray is not supported");
@@ -328,12 +338,25 @@ async function assetText(inline: unknown, location: unknown, readAsset: ReadAsse
   return bytes.toString("utf8");
 }
 
+function poolInput(value: Model): Model {
+  return { userPoolId: value.UserPoolId, awsRegion: value.AwsRegion,
+    ...(value.DefaultAction === undefined ? {} : { defaultAction: value.DefaultAction }),
+    ...(value.AppIdClientRegex === undefined ? {} : { appIdClientRegex: value.AppIdClientRegex }) };
+}
+function poolModel(value: Model): Model {
+  return { UserPoolId: value.userPoolId, AwsRegion: value.awsRegion,
+    ...(value.defaultAction === undefined ? {} : { DefaultAction: value.defaultAction }),
+    ...(value.appIdClientRegex === undefined ? {} : { AppIdClientRegex: value.appIdClientRegex }) };
+}
+
 function apiInput(model: Model, context: ProviderContext): Model {
   return {
     name: model.Name,
     authenticationType: model.AuthenticationType,
+    ...(model.UserPoolConfig ? { userPoolConfig: poolInput(model.UserPoolConfig) } : {}),
     additionalAuthenticationProviders: (model.AdditionalAuthenticationProviders ?? []).map((provider: Model) => ({
       authenticationType: provider.AuthenticationType,
+      ...(provider.UserPoolConfig ? { userPoolConfig: poolInput(provider.UserPoolConfig) } : {}),
     })),
     tags: cfn10TagMap(cfn10Tags(model.Tags), context),
     xrayEnabled: model.XrayEnabled ?? false,
@@ -350,9 +373,11 @@ function apiModel(value: Model): Model {
   return cfn10Stable({
     Name: value.name,
     AuthenticationType: value.authenticationType,
+    ...(value.userPoolConfig ? { UserPoolConfig: poolModel(value.userPoolConfig) } : {}),
     ...((value.additionalAuthenticationProviders ?? []).length ? {
       AdditionalAuthenticationProviders: value.additionalAuthenticationProviders.map((provider: Model) => ({
         AuthenticationType: provider.authenticationType,
+        ...(provider.userPoolConfig ? { UserPoolConfig: poolModel(provider.userPoolConfig) } : {}),
       })),
     } : {}),
     XrayEnabled: Boolean(value.xrayEnabled),

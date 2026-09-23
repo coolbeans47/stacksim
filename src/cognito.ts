@@ -268,7 +268,6 @@ const SRP_N = BigInt(`0x${[
   "FFFFFFFFFFFF",
 ].join("")}`);
 const SRP_G = 2n;
-const SRP_BYTES = Math.ceil(SRP_N.toString(16).length / 2);
 
 function srpHash(...parts: Array<string | Buffer>): Buffer {
   const hash = createHash("sha256");
@@ -277,7 +276,11 @@ function srpHash(...parts: Array<string | Buffer>): Buffer {
 }
 
 function srpPad(value: bigint): Buffer {
-  const hex = value.toString(16).padStart(SRP_BYTES * 2, "0");
+  // Cognito hashes the minimal positive signed integer representation, not
+  // an N-width buffer (the unmodified Amplify SRP client uses getPaddedHex).
+  let hex = value.toString(16);
+  if (hex.length % 2) hex = `0${hex}`;
+  else if (parseInt(hex[0], 16) >= 8) hex = `00${hex}`;
   return Buffer.from(hex, "hex");
 }
 
@@ -301,7 +304,7 @@ function srpCredential(pool: CognitoUserPoolState, username: string, password: s
   salt: string;
   verifier: string;
 } {
-  const salt = randomBytes(16);
+  const salt = srpPad(BigInt(`0x${randomBytes(16).toString("hex")}`));
   const identity = srpHash(`${pool.id.split("_")[1]}${username}:${password}`);
   const x = BigInt(`0x${srpHash(salt, identity).toString("hex")}`);
   identity.fill(0);
@@ -440,6 +443,9 @@ function poolConfigurationView(configuration: CognitoUserPoolConfigurationState)
     },
     DeletionProtection: configuration.deletionProtection,
     AutoVerifiedAttributes: [...configuration.autoVerifiedAttributes],
+    ...(configuration.userAttributeUpdateSettings ? { UserAttributeUpdateSettings: {
+      AttributesRequireVerificationBeforeUpdate: [...configuration.userAttributeUpdateSettings.attributesRequireVerificationBeforeUpdate],
+    } } : {}),
     AliasAttributes: [...configuration.aliasAttributes],
     UsernameAttributes: [...configuration.usernameAttributes],
     UsernameConfiguration: { CaseSensitive: configuration.usernameConfiguration.caseSensitive },
@@ -1878,6 +1884,9 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     purpose: CognitoDeliveryIntentState["purpose"],
   ): CognitoDeliveryIntentState {
     const issuedAt = this.clock.now();
+    const email = purpose === "ATTRIBUTE_VERIFICATION"
+      ? user.pendingAttributeValues?.email ?? user.attributes.email
+      : user.attributes.email;
     const intent: CognitoDeliveryIntentState = {
       id: randomBytes(16).toString("base64url"),
       purpose,
@@ -1891,7 +1900,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         ? {
             targetAttribute: {
               name: "email" as const,
-              canonicalValue: cognitoEmail(user.attributes.email.value).canonical,
+              canonicalValue: cognitoEmail(email.value).canonical,
             },
           }
         : {}),
@@ -1904,7 +1913,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         source: pool.configuration.emailConfiguration.emailSendingAccount === "DEVELOPER"
           ? pool.configuration.emailConfiguration.from!
           : "no-reply@verificationemail.com",
-        destination: user.attributes.email.value,
+        destination: email.value,
         ...(pool.configuration.emailConfiguration.replyToEmailAddress
           ? { replyTo: pool.configuration.emailConfiguration.replyToEmailAddress }
           : {}),
@@ -1957,7 +1966,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     user: CognitoUserState,
   ): boolean {
     if (intent.purpose !== "ATTRIBUTE_VERIFICATION") return true;
-    const current = user.attributes.email;
+    const current = user.pendingAttributeValues?.email ?? user.attributes.email;
     if (!current) return false;
     const target = intent.targetAttribute?.canonicalValue
       ?? cognitoEmail(intent.message.destination).canonical;
@@ -6967,12 +6976,20 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       }
       const previousAttributes = structuredClone(user.attributes);
       const previousVerificationIntentId = user.activeAttributeVerificationIntentIds.email;
+      const previousPending = structuredClone(user.pendingAttributeValues);
       const previousVerificationIntent = previousVerificationIntentId
         ? this.state.deliveryIntents[previousVerificationIntentId]
         : undefined;
       const previousVerificationStatus = previousVerificationIntent?.status;
       try {
         ({ emailChanged } = await this.updateAttributes(pool, user, input.UserAttributes, false));
+        if (emailChanged && pool.configuration.userAttributeUpdateSettings?.attributesRequireVerificationBeforeUpdate.includes("email")) {
+          user.pendingAttributeValues = { ...user.pendingAttributeValues, email: user.attributes.email };
+          if (previousAttributes.email) user.attributes.email = previousAttributes.email;
+          else delete user.attributes.email;
+        } else if (emailChanged) {
+          delete user.pendingAttributeValues?.email;
+        }
         if (emailChanged && pool.configuration.autoVerifiedAttributes.includes("email")) {
           if (previousVerificationIntent && ["PENDING_DELIVERY", "DELIVERED"].includes(previousVerificationIntent.status)) {
             previousVerificationIntent.status = "SUPERSEDED";
@@ -6986,6 +7003,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         }
       } catch (error) {
         user.attributes = previousAttributes;
+        user.pendingAttributeValues = previousPending;
         if (previousVerificationIntent && previousVerificationStatus) {
           previousVerificationIntent.status = previousVerificationStatus;
         }
@@ -7005,7 +7023,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     return {
       CodeDeliveryDetailsList: intentId
         ? [{
-            Destination: maskEmail(this.adminUser(this.pool(context.pool.id), context.user.username).attributes.email.value),
+            Destination: maskEmail(this.state.deliveryIntents[intentId].message.destination),
             DeliveryMedium: "EMAIL",
             AttributeName: "email",
           }]
@@ -7020,16 +7038,32 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     stringRecord(input.ClientMetadata, "ClientMetadata");
     const pool = this.pool(input.UserPoolId);
     const user = this.adminUser(pool, input.Username);
-    return this.exclusive(async () => {
+    let intentId: string | undefined;
+    await this.exclusive(async () => {
       const currentPool = this.pool(pool.id);
       const current = this.adminUser(currentPool, user.username);
       const previousAttributes = structuredClone(current.attributes);
+      const previousPending = structuredClone(current.pendingAttributeValues);
       const previousAliasIndex = { ...currentPool.aliasIndex };
       const oldAlias = current.attributes.email?.verified
         ? cognitoEmail(current.attributes.email.value).canonical
         : undefined;
       try {
-        await this.updateAttributes(currentPool, current, input.UserAttributes, true);
+        const { emailChanged } = await this.updateAttributes(currentPool, current, input.UserAttributes, true);
+        if (emailChanged && !current.attributes.email?.verified
+          && currentPool.configuration.userAttributeUpdateSettings?.attributesRequireVerificationBeforeUpdate.includes("email")) {
+          current.pendingAttributeValues = { ...current.pendingAttributeValues, email: current.attributes.email };
+          if (previousAttributes.email) current.attributes.email = previousAttributes.email;
+          else delete current.attributes.email;
+          const deliveryClient = { id: "CLIENT_ID_NOT_APPLICABLE" } as CognitoAppClientState;
+          const intent = this.newDeliveryIntent(currentPool, deliveryClient, current, "ATTRIBUTE_VERIFICATION");
+          await this.applyCustomMessage(currentPool, deliveryClient, current, intent,
+            stringRecord(input.ClientMetadata, "ClientMetadata"), { triggerClient: undefined });
+          this.state.deliveryIntents[intent.id] = intent;
+          intentId = intent.id;
+        } else if (input.UserAttributes?.some((attribute: any) => attribute.Name === "email" || attribute.Name === "email_verified")) {
+          delete current.pendingAttributeValues?.email;
+        }
         const newAlias = current.attributes.email?.verified
           ? cognitoEmail(current.attributes.email.value).canonical
           : undefined;
@@ -7043,7 +7077,9 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         }
       } catch (error) {
         current.attributes = previousAttributes;
+        current.pendingAttributeValues = previousPending;
         currentPool.aliasIndex = previousAliasIndex;
+        if (intentId) delete this.state.deliveryIntents[intentId];
         throw error;
       }
       current.updatedAt = this.clock.now();
@@ -7052,6 +7088,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       await this.store.save();
       return {};
     });
+    if (intentId && await this.deliverIntent(intentId) !== "DELIVERED") {
+      throw new AwsError("CodeDeliveryFailureException", "Failed to deliver the attribute verification code.");
+    }
+    return {};
   }
 
   private async deleteAttributes(
@@ -7075,6 +7115,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         if (pool.aliasIndex[alias] === user.sub) delete pool.aliasIndex[alias];
       }
       delete user.attributes[name];
+      delete user.pendingAttributeValues?.[name];
     }
   }
 
@@ -7151,7 +7192,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
     return {
       CodeDeliveryDetails: {
-        Destination: maskEmail(context.user.attributes.email.value),
+        Destination: maskEmail(this.state.deliveryIntents[intentId!].message.destination),
         DeliveryMedium: "EMAIL",
         AttributeName: "email",
       },
@@ -7192,14 +7233,18 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         await this.store.save();
         throw new AwsError("CodeMismatchException", "Invalid verification code provided.");
       }
-      if (!user.attributes.email) throw new AwsError("InvalidParameterException", "User has no email attribute.");
-      user.attributes.email.verified = true;
+      const verifiedEmail = user.pendingAttributeValues?.email ?? user.attributes.email;
+      if (!verifiedEmail) throw new AwsError("InvalidParameterException", "User has no email attribute.");
       if (pool.configuration.aliasAttributes.includes("email")) {
-        const alias = cognitoEmail(user.attributes.email.value).canonical;
+        const alias = cognitoEmail(verifiedEmail.value).canonical;
         const owner = pool.aliasIndex[alias];
         if (owner && owner !== user.sub) throw new AwsError("AliasExistsException", "Email alias exists.");
+        const oldAlias = user.attributes.email && cognitoEmail(user.attributes.email.value).canonical;
+        if (oldAlias && oldAlias !== alias && pool.aliasIndex[oldAlias] === user.sub) delete pool.aliasIndex[oldAlias];
         pool.aliasIndex[alias] = user.sub;
       }
+      user.attributes.email = { ...verifiedEmail, verified: true };
+      delete user.pendingAttributeValues?.email;
       user.activeAttributeVerificationIntentIds.email = "";
       delete user.activeAttributeVerificationIntentIds.email;
       user.updatedAt = this.clock.now();
@@ -10874,10 +10919,12 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       requiredScopes: input.requiredScopes,
       }),
       userPoolArn: pool.arn,
+      // Bind the proof to the exact in-process signing generation used above.
+      cacheVersion: this.cacheVersion([pool.arn]),
     };
   }
 
-  async cacheVersion(allowedUserPoolArns: string[]): Promise<string> {
+  cacheVersion(allowedUserPoolArns: string[]): string {
     const versions = allowedUserPoolArns.map(value => {
       const parsed = parseCognitoUserPoolArn(value);
       if (
@@ -10916,7 +10963,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     clientId: string;
     token: string;
     serverSideTokenCheck: boolean;
-  }): { sub: string; originJti?: string } {
+  }): { sub: string; originJti?: string; hasRoleClaims: boolean } {
     const pool = this.state.pools[input.userPoolId];
     if (!pool || !pool.clients[input.clientId]) {
       throw new AwsError("NotAuthorizedException", "Invalid login token.");
@@ -10956,6 +11003,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         }
       }
     }
-    return { sub, ...(originJti ? { originJti } : {}) };
+    return {
+      sub,
+      ...(originJti ? { originJti } : {}),
+      hasRoleClaims: verified.claims["cognito:preferred_role"] !== undefined || verified.claims["cognito:roles"] !== undefined,
+    };
   }
 }

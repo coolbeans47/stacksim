@@ -1,0 +1,13 @@
+{
+  "attempts": [],
+  "isolation": {
+    "amplifyTelemetry": "AMPLIFY_DISABLE_TELEMETRY=1",
+    "amplifyNoticesEndpoint": "isolated approved loopback via AMPLIFY_BACKEND_NOTICES_ENDPOINT",
+    "amplifyConfigRoot": "fresh APPDATA temporary directory",
+    "cdkTelemetry": "CDK_DISABLE_CLI_TELEMETRY=true",
+    "cdkVersionCheck": "CDK_DISABLE_VERSION_CHECK=true",
+    "npmUpdateNotifier": "npm_config_update_notifier=false",
+    "instanceMetadata": "AWS_EC2_METADATA_DISABLED=true",
+    "networkTripwire": "network-tripwire.cjs; loopback proxy and notices ports only"
+  }
+}

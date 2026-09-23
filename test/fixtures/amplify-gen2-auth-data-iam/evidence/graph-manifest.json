@@ -1,0 +1,5319 @@
+{
+  "templates": [
+    {
+      "kind": "root",
+      "sourceFile": "amplify-stacksimamplifygen2authdataiamfixture-amx13-sandbox-15739da633.template.json",
+      "sha256": "b437e8b1b6f45f770dfc58903f3906134c7c0c1421ac099e172a10e628e78da7",
+      "bytes": 13593,
+      "files": 1
+    },
+    {
+      "kind": "auth",
+      "sourceFile": "amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authA031268F.nested.template.json",
+      "sha256": "178c10f5e76080b602dd0a8d0bb1504e2ac69c1f1aa23d5b90f2e98bdf529902",
+      "bytes": 13016,
+      "files": 1
+    },
+    {
+      "kind": "data",
+      "sourceFile": "amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633data52FB6DA9.nested.template.json",
+      "sha256": "6a21d051942cbc75652aaeb8c9d03ade3f6eb127a543b55f76e6629d2b73deba",
+      "bytes": 42156,
+      "files": 1
+    },
+    {
+      "kind": "table-manager",
+      "sourceFile": "amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataAmplifyTableManager08687D1B.nested.template.json",
+      "sha256": "938ce65721d1dac4dd7bd33f6d2bb5aacf121ec4509cbe6bbac8fc62c6b5cf09",
+      "bytes": 17128,
+      "files": 1
+    },
+    {
+      "kind": "todo",
+      "sourceFile": "amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataTodo1F080F6D.nested.template.json",
+      "sha256": "9336fc580fa74718c2897efdc8cd456e98141c54dea5331915380647e4821170",
+      "bytes": 74008,
+      "files": 1
+    }
+  ],
+  "resources": [
+    {
+      "template": "root",
+      "logicalId": "auth179371D7",
+      "type": "AWS::CloudFormation::Stack",
+      "properties": {
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ],
+        "TemplateURL": {
+          "Fn::Join": [
+            "",
+            [
+              "https://s3.",
+              {
+                "Ref": "AWS::Region"
+              },
+              ".",
+              {
+                "Ref": "AWS::URLSuffix"
+              },
+              "/",
+              {
+                "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+              },
+              "/be55c5e4b51218ffb6ad8d53865253468c776bf604cb355412cf3ef2ed843643.json"
+            ]
+          ]
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "root",
+      "logicalId": "data7552DF31",
+      "type": "AWS::CloudFormation::Stack",
+      "properties": {
+        "Parameters": {
+          "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthUserPoolA90A679FRef": {
+            "Fn::GetAtt": [
+              "auth179371D7",
+              "Outputs.amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthUserPoolA90A679FRef"
+            ]
+          },
+          "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthauthenticatedUserRole65205F46Ref": {
+            "Fn::GetAtt": [
+              "auth179371D7",
+              "Outputs.amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthauthenticatedUserRole65205F46Ref"
+            ]
+          },
+          "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthunauthenticatedUserRoleF3651D95Ref": {
+            "Fn::GetAtt": [
+              "auth179371D7",
+              "Outputs.amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthunauthenticatedUserRoleF3651D95Ref"
+            ]
+          },
+          "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthIdentityPoolBC64B1BERef": {
+            "Fn::GetAtt": [
+              "auth179371D7",
+              "Outputs.amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthIdentityPoolBC64B1BERef"
+            ]
+          }
+        },
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ],
+        "TemplateURL": {
+          "Fn::Join": [
+            "",
+            [
+              "https://s3.",
+              {
+                "Ref": "AWS::Region"
+              },
+              ".",
+              {
+                "Ref": "AWS::URLSuffix"
+              },
+              "/",
+              {
+                "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+              },
+              "/35e80ff05074d84b9dcc21d520dab8be278c9d815e2fa4d0cdbd65f483399891.json"
+            ]
+          ]
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "root",
+      "logicalId": "CDKMetadata",
+      "type": "AWS::CDK::Metadata",
+      "properties": {
+        "Analytics": "v2:deflate64:H4sIAAAAAAAA/zPSMzIz1TNQTCwv1k1OydbNyUzSqw4uSUzO1nFOy/MvLSkoLQGxwEK1Onn5Kal6WcX6ZUZGeobGegaKWcWZmbpFpXklmbmpekEQGgCqPJD8VAAAAA=="
+      },
+      "dependsOn": [],
+      "deletionPolicy": null,
+      "updateReplacePolicy": null
+    },
+    {
+      "template": "auth",
+      "logicalId": "amplifyAuthUserPool4BA7F805",
+      "type": "AWS::Cognito::UserPool",
+      "properties": {
+        "AccountRecoverySetting": {
+          "RecoveryMechanisms": [
+            {
+              "Name": "verified_email",
+              "Priority": 1
+            }
+          ]
+        },
+        "AdminCreateUserConfig": {
+          "AllowAdminCreateUserOnly": false
+        },
+        "AutoVerifiedAttributes": [
+          "email"
+        ],
+        "EmailVerificationMessage": "The verification code to your new account is {####}",
+        "EmailVerificationSubject": "Verify your new account",
+        "Policies": {
+          "PasswordPolicy": {
+            "MinimumLength": 8,
+            "RequireLowercase": true,
+            "RequireNumbers": true,
+            "RequireSymbols": true,
+            "RequireUppercase": true
+          }
+        },
+        "Schema": [
+          {
+            "Mutable": true,
+            "Name": "email",
+            "Required": true
+          }
+        ],
+        "SmsVerificationMessage": "The verification code to your new account is {####}",
+        "UserAttributeUpdateSettings": {
+          "AttributesRequireVerificationBeforeUpdate": [
+            "email"
+          ]
+        },
+        "UserPoolTags": {
+          "amplify:deployment-type": "sandbox",
+          "amplify:friendly-name": "amplifyAuth",
+          "created-by": "amplify"
+        },
+        "UsernameAttributes": [
+          "email"
+        ],
+        "UsernameConfiguration": {
+          "CaseSensitive": false
+        },
+        "VerificationMessageTemplate": {
+          "DefaultEmailOption": "CONFIRM_WITH_CODE",
+          "EmailMessage": "The verification code to your new account is {####}",
+          "EmailSubject": "Verify your new account",
+          "SmsMessage": "The verification code to your new account is {####}"
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "auth",
+      "logicalId": "amplifyAuthUserPoolAppClient2626C6F8",
+      "type": "AWS::Cognito::UserPoolClient",
+      "properties": {
+        "AllowedOAuthFlows": [
+          "code"
+        ],
+        "AllowedOAuthFlowsUserPoolClient": true,
+        "AllowedOAuthScopes": [
+          "profile",
+          "phone",
+          "email",
+          "openid",
+          "aws.cognito.signin.user.admin"
+        ],
+        "CallbackURLs": [
+          "https://example.com"
+        ],
+        "ExplicitAuthFlows": [
+          "ALLOW_CUSTOM_AUTH",
+          "ALLOW_USER_SRP_AUTH",
+          "ALLOW_REFRESH_TOKEN_AUTH"
+        ],
+        "PreventUserExistenceErrors": "ENABLED",
+        "SupportedIdentityProviders": [
+          "COGNITO"
+        ],
+        "UserPoolId": {
+          "Ref": "amplifyAuthUserPool4BA7F805"
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "auth",
+      "logicalId": "amplifyAuthIdentityPool3FDE84CC",
+      "type": "AWS::Cognito::IdentityPool",
+      "properties": {
+        "AllowUnauthenticatedIdentities": true,
+        "CognitoIdentityProviders": [
+          {
+            "ClientId": {
+              "Ref": "amplifyAuthUserPoolAppClient2626C6F8"
+            },
+            "ProviderName": {
+              "Fn::Join": [
+                "",
+                [
+                  "cognito-idp.",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  ".amazonaws.com/",
+                  {
+                    "Ref": "amplifyAuthUserPool4BA7F805"
+                  }
+                ]
+              ]
+            }
+          }
+        ],
+        "IdentityPoolTags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyAuth"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ],
+        "SupportedLoginProviders": {}
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "auth",
+      "logicalId": "amplifyAuthauthenticatedUserRoleD8DA3689",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
+                "StringEquals": {
+                  "cognito-identity.amazonaws.com:aud": {
+                    "Ref": "amplifyAuthIdentityPool3FDE84CC"
+                  }
+                },
+                "ForAnyValue:StringLike": {
+                  "cognito-identity.amazonaws.com:amr": "authenticated"
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Federated": "cognito-identity.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyAuth"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "auth",
+      "logicalId": "amplifyAuthunauthenticatedUserRole2B524D9E",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
+                "StringEquals": {
+                  "cognito-identity.amazonaws.com:aud": {
+                    "Ref": "amplifyAuthIdentityPool3FDE84CC"
+                  }
+                },
+                "ForAnyValue:StringLike": {
+                  "cognito-identity.amazonaws.com:amr": "unauthenticated"
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Federated": "cognito-identity.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyAuth"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "auth",
+      "logicalId": "amplifyAuthIdentityPoolRoleAttachment045F17C8",
+      "type": "AWS::Cognito::IdentityPoolRoleAttachment",
+      "properties": {
+        "IdentityPoolId": {
+          "Ref": "amplifyAuthIdentityPool3FDE84CC"
+        },
+        "RoleMappings": {
+          "UserPoolWebClientRoleMapping": {
+            "AmbiguousRoleResolution": "AuthenticatedRole",
+            "IdentityProvider": {
+              "Fn::Join": [
+                "",
+                [
+                  "cognito-idp.",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  ".amazonaws.com/",
+                  {
+                    "Ref": "amplifyAuthUserPool4BA7F805"
+                  },
+                  ":",
+                  {
+                    "Ref": "amplifyAuthUserPoolAppClient2626C6F8"
+                  }
+                ]
+              ]
+            },
+            "Type": "Token"
+          }
+        },
+        "Roles": {
+          "unauthenticated": {
+            "Fn::GetAtt": [
+              "amplifyAuthunauthenticatedUserRole2B524D9E",
+              "Arn"
+            ]
+          },
+          "authenticated": {
+            "Fn::GetAtt": [
+              "amplifyAuthauthenticatedUserRoleD8DA3689",
+              "Arn"
+            ]
+          }
+        }
+      },
+      "dependsOn": [
+        "amplifyAuthIdentityPool3FDE84CC",
+        "amplifyAuthUserPoolAppClient2626C6F8"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "auth",
+      "logicalId": "CDKMetadata",
+      "type": "AWS::CDK::Metadata",
+      "properties": {
+        "Analytics": "v2:deflate64:H4sIAAAAAAAA/02LwQrCMBBEv6X3dK0RvUtPXkQqniUmq25NN9CsFgn5dylS7Wlm3sxo0Js1VIUZYmndo/R0gbTHKOiOYuxDmSGekw03JgmQThH7Qwhe1Vf++cnUnpBlXv3JziELyXs6z3MTPG5FjL13yJIVmQ7SCMfhqDlnxcEhtHHx0hqWK6iKNhKV/ZOFOoTmqx/w2KxxzgAAAA=="
+      },
+      "dependsOn": [],
+      "deletionPolicy": null,
+      "updateReplacePolicy": null
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataGraphQLAPI42A6FA33",
+      "type": "AWS::AppSync::GraphQLApi",
+      "properties": {
+        "AdditionalAuthenticationProviders": [
+          {
+            "AuthenticationType": "AWS_IAM"
+          }
+        ],
+        "AuthenticationType": "AMAZON_COGNITO_USER_POOLS",
+        "Name": "amplifyData",
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ],
+        "UserPoolConfig": {
+          "AwsRegion": {
+            "Ref": "AWS::Region"
+          },
+          "DefaultAction": "ALLOW",
+          "UserPoolId": {
+            "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthUserPoolA90A679FRef"
+          }
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataGraphQLAPITransformerSchemaFF50A789",
+      "type": "AWS::AppSync::GraphQLSchema",
+      "properties": {
+        "ApiId": {
+          "Fn::GetAtt": [
+            "amplifyDataGraphQLAPI42A6FA33",
+            "ApiId"
+          ]
+        },
+        "DefinitionS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/f7c1e0be788a7a9d1d2396d980fb6cbccd85e73cdede6d9fd90a8917431244e9.graphql"
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataGraphQLAPINONEDS684BF699",
+      "type": "AWS::AppSync::DataSource",
+      "properties": {
+        "ApiId": {
+          "Fn::GetAtt": [
+            "amplifyDataGraphQLAPI42A6FA33",
+            "ApiId"
+          ]
+        },
+        "Description": "None Data Source for Pipeline functions",
+        "Name": "NONE_DS",
+        "Type": "NONE"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataAmplifyTableManagerNestedStackAmplifyTableManagerNestedStackResource86290833",
+      "type": "AWS::CloudFormation::Stack",
+      "properties": {
+        "Parameters": {
+          "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId": {
+            "Fn::GetAtt": [
+              "amplifyDataGraphQLAPI42A6FA33",
+              "ApiId"
+            ]
+          }
+        },
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ],
+        "TemplateURL": {
+          "Fn::Join": [
+            "",
+            [
+              "https://s3.",
+              {
+                "Ref": "AWS::Region"
+              },
+              ".",
+              {
+                "Ref": "AWS::URLSuffix"
+              },
+              "/",
+              {
+                "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+              },
+              "/98cc6ed479661c985358193491652eefb91425fadcb471b7ca2d4afd901603a7.json"
+            ]
+          ]
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataTodoNestedStackTodoNestedStackResource551CEA56",
+      "type": "AWS::CloudFormation::Stack",
+      "properties": {
+        "Parameters": {
+          "DynamoDBModelTableReadIOPS": {
+            "Ref": "DynamoDBModelTableReadIOPS"
+          },
+          "DynamoDBModelTableWriteIOPS": {
+            "Ref": "DynamoDBModelTableWriteIOPS"
+          },
+          "DynamoDBBillingMode": {
+            "Ref": "DynamoDBBillingMode"
+          },
+          "DynamoDBEnablePointInTimeRecovery": {
+            "Ref": "DynamoDBEnablePointInTimeRecovery"
+          },
+          "DynamoDBEnableServerSideEncryption": {
+            "Ref": "DynamoDBEnableServerSideEncryption"
+          },
+          "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataAmplifyTableManagerNestedStackAmplifyTableManagerNestedStackResource747BC3DFOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da63D3A77C9D": {
+            "Fn::GetAtt": [
+              "amplifyDataAmplifyTableManagerNestedStackAmplifyTableManagerNestedStackResource86290833",
+              "Outputs.amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataAmplifyTableManagerTableManagerCustomProviderframeworkonEvent1CD86F9FArn"
+            ]
+          },
+          "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId": {
+            "Fn::GetAtt": [
+              "amplifyDataGraphQLAPI42A6FA33",
+              "ApiId"
+            ]
+          },
+          "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name": {
+            "Fn::GetAtt": [
+              "amplifyDataGraphQLAPINONEDS684BF699",
+              "Name"
+            ]
+          },
+          "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthauthenticatedUserRole65205F46Ref": {
+            "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthauthenticatedUserRole65205F46Ref"
+          },
+          "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthunauthenticatedUserRoleF3651D95Ref": {
+            "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthunauthenticatedUserRoleF3651D95Ref"
+          },
+          "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthIdentityPoolBC64B1BERef": {
+            "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthIdentityPoolBC64B1BERef"
+          }
+        },
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ],
+        "TemplateURL": {
+          "Fn::Join": [
+            "",
+            [
+              "https://s3.",
+              {
+                "Ref": "AWS::Region"
+              },
+              ".",
+              {
+                "Ref": "AWS::URLSuffix"
+              },
+              "/",
+              {
+                "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+              },
+              "/eb6dacb26b74afc5c1ac136984919d61eb6fe9e34f22a3e287d55f2fd18fe0d2.json"
+            ]
+          ]
+        }
+      },
+      "dependsOn": [
+        "amplifyDataGraphQLAPITransformerSchemaFF50A789"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataAuthRolePolicy01567A5654",
+      "type": "AWS::IAM::ManagedPolicy",
+      "properties": {
+        "Description": "",
+        "Path": "/",
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "appsync:GraphQL",
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Sub": [
+                    "arn:${AWS::Partition}:appsync:${AWS::Region}:${AWS::AccountId}:apis/${apiId}/types/${typeName}/*",
+                    {
+                      "apiId": {
+                        "Fn::GetAtt": [
+                          "amplifyDataGraphQLAPI42A6FA33",
+                          "ApiId"
+                        ]
+                      },
+                      "typeName": "Todo"
+                    }
+                  ]
+                },
+                {
+                  "Fn::Sub": [
+                    "arn:${AWS::Partition}:appsync:${AWS::Region}:${AWS::AccountId}:apis/${apiId}/types/${typeName}/fields/${fieldName}",
+                    {
+                      "apiId": {
+                        "Fn::GetAtt": [
+                          "amplifyDataGraphQLAPI42A6FA33",
+                          "ApiId"
+                        ]
+                      },
+                      "typeName": "Query",
+                      "fieldName": "getTodo"
+                    }
+                  ]
+                },
+                {
+                  "Fn::Sub": [
+                    "arn:${AWS::Partition}:appsync:${AWS::Region}:${AWS::AccountId}:apis/${apiId}/types/${typeName}/fields/${fieldName}",
+                    {
+                      "apiId": {
+                        "Fn::GetAtt": [
+                          "amplifyDataGraphQLAPI42A6FA33",
+                          "ApiId"
+                        ]
+                      },
+                      "typeName": "Query",
+                      "fieldName": "listTodos"
+                    }
+                  ]
+                },
+                {
+                  "Fn::Sub": [
+                    "arn:${AWS::Partition}:appsync:${AWS::Region}:${AWS::AccountId}:apis/${apiId}/types/${typeName}/fields/${fieldName}",
+                    {
+                      "apiId": {
+                        "Fn::GetAtt": [
+                          "amplifyDataGraphQLAPI42A6FA33",
+                          "ApiId"
+                        ]
+                      },
+                      "typeName": "Mutation",
+                      "fieldName": "createTodo"
+                    }
+                  ]
+                },
+                {
+                  "Fn::Sub": [
+                    "arn:${AWS::Partition}:appsync:${AWS::Region}:${AWS::AccountId}:apis/${apiId}/types/${typeName}/fields/${fieldName}",
+                    {
+                      "apiId": {
+                        "Fn::GetAtt": [
+                          "amplifyDataGraphQLAPI42A6FA33",
+                          "ApiId"
+                        ]
+                      },
+                      "typeName": "Mutation",
+                      "fieldName": "updateTodo"
+                    }
+                  ]
+                },
+                {
+                  "Fn::Sub": [
+                    "arn:${AWS::Partition}:appsync:${AWS::Region}:${AWS::AccountId}:apis/${apiId}/types/${typeName}/fields/${fieldName}",
+                    {
+                      "apiId": {
+                        "Fn::GetAtt": [
+                          "amplifyDataGraphQLAPI42A6FA33",
+                          "ApiId"
+                        ]
+                      },
+                      "typeName": "Mutation",
+                      "fieldName": "deleteTodo"
+                    }
+                  ]
+                },
+                {
+                  "Fn::Sub": [
+                    "arn:${AWS::Partition}:appsync:${AWS::Region}:${AWS::AccountId}:apis/${apiId}/types/${typeName}/fields/${fieldName}",
+                    {
+                      "apiId": {
+                        "Fn::GetAtt": [
+                          "amplifyDataGraphQLAPI42A6FA33",
+                          "ApiId"
+                        ]
+                      },
+                      "typeName": "Subscription",
+                      "fieldName": "onCreateTodo"
+                    }
+                  ]
+                },
+                {
+                  "Fn::Sub": [
+                    "arn:${AWS::Partition}:appsync:${AWS::Region}:${AWS::AccountId}:apis/${apiId}/types/${typeName}/fields/${fieldName}",
+                    {
+                      "apiId": {
+                        "Fn::GetAtt": [
+                          "amplifyDataGraphQLAPI42A6FA33",
+                          "ApiId"
+                        ]
+                      },
+                      "typeName": "Subscription",
+                      "fieldName": "onUpdateTodo"
+                    }
+                  ]
+                },
+                {
+                  "Fn::Sub": [
+                    "arn:${AWS::Partition}:appsync:${AWS::Region}:${AWS::AccountId}:apis/${apiId}/types/${typeName}/fields/${fieldName}",
+                    {
+                      "apiId": {
+                        "Fn::GetAtt": [
+                          "amplifyDataGraphQLAPI42A6FA33",
+                          "ApiId"
+                        ]
+                      },
+                      "typeName": "Subscription",
+                      "fieldName": "onDeleteTodo"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Roles": [
+          {
+            "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthauthenticatedUserRole65205F46Ref"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA",
+      "type": "AWS::S3::Bucket",
+      "properties": {
+        "CorsConfiguration": {
+          "CorsRules": [
+            {
+              "AllowedHeaders": [
+                "*"
+              ],
+              "AllowedMethods": [
+                "GET",
+                "HEAD"
+              ],
+              "AllowedOrigins": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "https://",
+                      {
+                        "Ref": "AWS::Region"
+                      },
+                      ".console.aws.amazon.com/amplify"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "aws-cdk:auto-delete-objects",
+            "Value": "true"
+          },
+          {
+            "Key": "aws-cdk:cr-owned:84ed1ef8",
+            "Value": "true"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucketPolicyF1C1C548",
+      "type": "AWS::S3::BucketPolicy",
+      "properties": {
+        "Bucket": {
+          "Ref": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA"
+        },
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "s3:PutBucketPolicy",
+                "s3:GetBucket*",
+                "s3:List*",
+                "s3:DeleteObject*"
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+                    "Arn"
+                  ]
+                }
+              },
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2012-10-17"
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucketAutoDeleteObjectsCustomResource437F26F5",
+      "type": "Custom::S3AutoDeleteObjects",
+      "properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F",
+            "Arn"
+          ]
+        },
+        "BucketName": {
+          "Ref": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA"
+        }
+      },
+      "dependsOn": [
+        "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucketPolicyF1C1C548"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsDeploymentAwsCliLayerE322F905",
+      "type": "AWS::Lambda::LayerVersion",
+      "properties": {
+        "Content": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          },
+          "S3Key": "98f62bef9320f8c0a0a7be21d7c746f069131f196f51ffe3008a6bb730b368ec.zip"
+        },
+        "Description": "/opt/awscli/aws"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsDeploymentCustomResource1536MiB21775929",
+      "type": "Custom::CDKBucketDeployment",
+      "properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBC5D8AB21",
+            "Arn"
+          ]
+        },
+        "SourceBucketNames": [
+          {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          }
+        ],
+        "SourceObjectKeys": [
+          "5662817c1c84cc87e71babada235746e684b1ca5f99b2924a3a8ca4aab958514.zip"
+        ],
+        "SourceMarkers": [
+          {}
+        ],
+        "DestinationBucketName": {
+          "Ref": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA"
+        },
+        "WaitForDistributionInvalidation": true,
+        "Prune": true,
+        "OutputObjectKeys": true,
+        "DestinationBucketArn": {
+          "Fn::GetAtt": [
+            "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA",
+            "Arn"
+          ]
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F",
+      "type": "AWS::Lambda::Function",
+      "properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          },
+          "S3Key": "faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6.zip"
+        },
+        "Timeout": 900,
+        "MemorySize": 128,
+        "Handler": "index.handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Description": {
+          "Fn::Join": [
+            "",
+            [
+              "Lambda function for auto-deleting objects in ",
+              {
+                "Ref": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA"
+              },
+              " S3 bucket."
+            ]
+          ]
+        }
+      },
+      "dependsOn": [
+        "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBServiceRoleA41FC8C2",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+              ]
+            ]
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBServiceRoleDefaultPolicyFF1C635B",
+      "type": "AWS::IAM::Policy",
+      "properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "s3:GetObject*",
+                "s3:GetBucket*",
+                "s3:List*"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":s3:::",
+                      {
+                        "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":s3:::",
+                      {
+                        "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            },
+            {
+              "Action": [
+                "s3:GetObject*",
+                "s3:GetBucket*",
+                "s3:List*",
+                "s3:DeleteObject*",
+                "s3:PutObject",
+                "s3:PutObjectLegalHold",
+                "s3:PutObjectRetention",
+                "s3:PutObjectTagging",
+                "s3:PutObjectVersionTagging",
+                "s3:Abort*"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            },
+            {
+              "Action": [
+                "s3:GetObject*",
+                "s3:GetBucket*",
+                "s3:List*",
+                "s3:DeleteObject*",
+                "s3:PutObject",
+                "s3:PutObjectLegalHold",
+                "s3:PutObjectRetention",
+                "s3:PutObjectTagging",
+                "s3:PutObjectVersionTagging",
+                "s3:Abort*"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "modelIntrospectionSchemaBucketF566B665",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "modelIntrospectionSchemaBucketF566B665",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBServiceRoleDefaultPolicyFF1C635B",
+        "Roles": [
+          {
+            "Ref": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBServiceRoleA41FC8C2"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBC5D8AB21",
+      "type": "AWS::Lambda::Function",
+      "properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          },
+          "S3Key": "97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f.zip"
+        },
+        "Environment": {
+          "Variables": {
+            "AWS_CA_BUNDLE": "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+          }
+        },
+        "Handler": "index.handler",
+        "Layers": [
+          {
+            "Ref": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsDeploymentAwsCliLayerE322F905"
+          }
+        ],
+        "MemorySize": 1536,
+        "Role": {
+          "Fn::GetAtt": [
+            "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBServiceRoleA41FC8C2",
+            "Arn"
+          ]
+        },
+        "Runtime": "python3.13",
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ],
+        "Timeout": 900
+      },
+      "dependsOn": [
+        "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBServiceRoleDefaultPolicyFF1C635B",
+        "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBServiceRoleA41FC8C2"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "modelIntrospectionSchemaBucketF566B665",
+      "type": "AWS::S3::Bucket",
+      "properties": {
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "aws-cdk:auto-delete-objects",
+            "Value": "true"
+          },
+          {
+            "Key": "aws-cdk:cr-owned:ec6a6a4a",
+            "Value": "true"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "modelIntrospectionSchemaBucketPolicy4DAB0D15",
+      "type": "AWS::S3::BucketPolicy",
+      "properties": {
+        "Bucket": {
+          "Ref": "modelIntrospectionSchemaBucketF566B665"
+        },
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "s3:*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "modelIntrospectionSchemaBucketF566B665",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "modelIntrospectionSchemaBucketF566B665",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            },
+            {
+              "Action": [
+                "s3:PutBucketPolicy",
+                "s3:GetBucket*",
+                "s3:List*",
+                "s3:DeleteObject*"
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+                    "Arn"
+                  ]
+                }
+              },
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "modelIntrospectionSchemaBucketF566B665",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "modelIntrospectionSchemaBucketF566B665",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2012-10-17"
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "modelIntrospectionSchemaBucketAutoDeleteObjectsCustomResourceFE57309F",
+      "type": "Custom::S3AutoDeleteObjects",
+      "properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F",
+            "Arn"
+          ]
+        },
+        "BucketName": {
+          "Ref": "modelIntrospectionSchemaBucketF566B665"
+        }
+      },
+      "dependsOn": [
+        "modelIntrospectionSchemaBucketPolicy4DAB0D15"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "modelIntrospectionSchemaBucketDeploymentAwsCliLayer13C432F7",
+      "type": "AWS::Lambda::LayerVersion",
+      "properties": {
+        "Content": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          },
+          "S3Key": "98f62bef9320f8c0a0a7be21d7c746f069131f196f51ffe3008a6bb730b368ec.zip"
+        },
+        "Description": "/opt/awscli/aws"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "modelIntrospectionSchemaBucketDeploymentCustomResource1536MiB104B97EC",
+      "type": "Custom::CDKBucketDeployment",
+      "properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBC5D8AB21",
+            "Arn"
+          ]
+        },
+        "SourceBucketNames": [
+          {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          }
+        ],
+        "SourceObjectKeys": [
+          "e9afc30fa011966f2a3a75bff5c1d967dbc5e92a90c81b9c15da17030d9fb283.zip"
+        ],
+        "SourceMarkers": [
+          {}
+        ],
+        "DestinationBucketName": {
+          "Ref": "modelIntrospectionSchemaBucketF566B665"
+        },
+        "WaitForDistributionInvalidation": true,
+        "Prune": true,
+        "OutputObjectKeys": true
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "AMPLIFYDATAGRAPHQLENDPOINTParameter1C2CBB16",
+      "type": "AWS::SSM::Parameter",
+      "properties": {
+        "Name": "/amplify/resource_reference/stacksimamplifygen2authdataiamfixture/amx13-sandbox-15739da633/AMPLIFY_DATA_GRAPHQL_ENDPOINT",
+        "Tags": {
+          "amplify:deployment-type": "sandbox",
+          "created-by": "amplify"
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "amplifyDataGraphQLAPI42A6FA33",
+            "GraphQLUrl"
+          ]
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "AMPLIFYDATAMODELINTROSPECTIONSCHEMABUCKETNAMEParameter47BF4F44",
+      "type": "AWS::SSM::Parameter",
+      "properties": {
+        "Name": "/amplify/resource_reference/stacksimamplifygen2authdataiamfixture/amx13-sandbox-15739da633/AMPLIFY_DATA_MODEL_INTROSPECTION_SCHEMA_BUCKET_NAME",
+        "Tags": {
+          "amplify:deployment-type": "sandbox",
+          "created-by": "amplify"
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "modelIntrospectionSchemaBucketF566B665"
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "AMPLIFYDATAMODELINTROSPECTIONSCHEMAKEYParameterB6AEAE8A",
+      "type": "AWS::SSM::Parameter",
+      "properties": {
+        "Name": "/amplify/resource_reference/stacksimamplifygen2authdataiamfixture/amx13-sandbox-15739da633/AMPLIFY_DATA_MODEL_INTROSPECTION_SCHEMA_KEY",
+        "Tags": {
+          "amplify:deployment-type": "sandbox",
+          "created-by": "amplify"
+        },
+        "Type": "String",
+        "Value": "modelIntrospectionSchema.json"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "AMPLIFYDATADEFAULTNAMEParameterE7C23CC4",
+      "type": "AWS::SSM::Parameter",
+      "properties": {
+        "Name": "/amplify/resource_reference/stacksimamplifygen2authdataiamfixture/amx13-sandbox-15739da633/AMPLIFY_DATA_DEFAULT_NAME",
+        "Tags": {
+          "amplify:deployment-type": "sandbox",
+          "created-by": "amplify"
+        },
+        "Type": "String",
+        "Value": "amplifyData"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "CDKMetadata",
+      "type": "AWS::CDK::Metadata",
+      "properties": {
+        "Analytics": "v2:deflate64:H4sIAAAAAAAA/6VSy24bMQz8lvgsK4mN9NDbZo3kkofrBXIpCoPW0hvaemxEbVxD2H8vtKofaU9BTuQMOcRQ1EROvt3IqwvY8VjV27GmlYxPyAHrKoDaigWy67xCATteRmhb3lsl472H9vVNFy3dAqMo13ZgfjwULZ2hSr2iAfHkLM4gQJVHlWt7Qr0gMDI+goUG67nTpPap4yOxcHrQDfHUlLNe8FTG205tMSQ2Zz/jyNBvsqPvo/Pt0h48lUOJZW4tuuBmqDHg82qDKvCoF19S/xK5dHJ6jj/hLAuqAAEN2k8a+1988JWOll5tGWtstdun8l/R7EgIYMbAskihFxrMqgYZy7V9gD36F/RMzoqKbKMxOHvXWRUSc0zK9ZHsBbORsQqebDMHDwYD+uGGB9D3CeZvV3YcnDl+vnT5Q559LHXysIQdK02y2HGpabAlBrtVgIZs82H+P0Pn3r1TjT6/hXU1yg1fvk8m8noqry42TDT2nQ1kUC5y/ANDj+66LgMAAA=="
+      },
+      "dependsOn": [],
+      "deletionPolicy": null,
+      "updateReplacePolicy": null
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyManagedTableIsCompleteRoleF825222C",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+              ]
+            ]
+          }
+        ],
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "dynamodb:CreateTable",
+                    "dynamodb:UpdateTable",
+                    "dynamodb:DeleteTable",
+                    "dynamodb:DescribeTable",
+                    "dynamodb:DescribeContinuousBackups",
+                    "dynamodb:DescribeTimeToLive",
+                    "dynamodb:UpdateContinuousBackups",
+                    "dynamodb:UpdateTimeToLive",
+                    "dynamodb:TagResource",
+                    "dynamodb:UntagResource",
+                    "dynamodb:ListTagsOfResource"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Sub": [
+                      "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*-${apiId}-${envName}",
+                      {
+                        "apiId": {
+                          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+                        },
+                        "envName": "NONE"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "Action": "lambda:ListTags",
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Sub": [
+                      "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*TableManager*",
+                      {}
+                    ]
+                  }
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "CreateUpdateDeleteTablesPolicy"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyManagedTableOnEventRoleB4E71DEA",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+              ]
+            ]
+          }
+        ],
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "dynamodb:CreateTable",
+                    "dynamodb:UpdateTable",
+                    "dynamodb:DeleteTable",
+                    "dynamodb:DescribeTable",
+                    "dynamodb:DescribeContinuousBackups",
+                    "dynamodb:DescribeTimeToLive",
+                    "dynamodb:UpdateContinuousBackups",
+                    "dynamodb:UpdateTimeToLive",
+                    "dynamodb:TagResource",
+                    "dynamodb:UntagResource",
+                    "dynamodb:ListTagsOfResource"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Sub": [
+                      "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*-${apiId}-${envName}",
+                      {
+                        "apiId": {
+                          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+                        },
+                        "envName": "NONE"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "Action": "lambda:ListTags",
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Sub": [
+                      "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*TableManager*",
+                      {}
+                    ]
+                  }
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "CreateUpdateDeleteTablesPolicy"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyManagedTableOnEventRoleDefaultPolicyF6DABCB6",
+      "type": "AWS::IAM::Policy",
+      "properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "states:StartExecution",
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "AmplifyTableWaiterStateMachine060600BC"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "AmplifyManagedTableOnEventRoleDefaultPolicyF6DABCB6",
+        "Roles": [
+          {
+            "Ref": "AmplifyManagedTableOnEventRoleB4E71DEA"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "TableManagerCustomProviderframeworkonEvent1DFC2ECC",
+      "type": "AWS::Lambda::Function",
+      "properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          },
+          "S3Key": "f2c5bec0e463cae18d0bf683be5923ae6bd676a06af1a994bdfa076a66ac07d6.zip"
+        },
+        "Description": "AmplifyManagedTable - onEvent (amplify-stacksimamplifygen2authdataiamfixture-amx13-sandbox-15739da633/data/amplifyData/AmplifyTableManager/TableManagerCustomProvider)",
+        "Environment": {
+          "Variables": {
+            "WAITER_STATE_MACHINE_ARN": {
+              "Ref": "AmplifyTableWaiterStateMachine060600BC"
+            }
+          }
+        },
+        "Handler": "amplify-table-manager-handler.onEvent",
+        "Role": {
+          "Fn::GetAtt": [
+            "AmplifyManagedTableOnEventRoleB4E71DEA",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ],
+        "Timeout": 840
+      },
+      "dependsOn": [
+        "AmplifyManagedTableOnEventRoleDefaultPolicyF6DABCB6",
+        "AmplifyManagedTableOnEventRoleB4E71DEA"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "TableManagerCustomProviderframeworkisComplete2E51021B",
+      "type": "AWS::Lambda::Function",
+      "properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          },
+          "S3Key": "f2c5bec0e463cae18d0bf683be5923ae6bd676a06af1a994bdfa076a66ac07d6.zip"
+        },
+        "Description": "AmplifyManagedTable - isComplete (amplify-stacksimamplifygen2authdataiamfixture-amx13-sandbox-15739da633/data/amplifyData/AmplifyTableManager/TableManagerCustomProvider)",
+        "Handler": "amplify-table-manager-handler.isComplete",
+        "Role": {
+          "Fn::GetAtt": [
+            "AmplifyManagedTableIsCompleteRoleF825222C",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ],
+        "Timeout": 840
+      },
+      "dependsOn": [
+        "AmplifyManagedTableIsCompleteRoleF825222C"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyTableWaiterStateMachineRole470BE899",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "states.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyTableWaiterStateMachineRoleDefaultPolicy89F3836A",
+      "type": "AWS::IAM::Policy",
+      "properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "lambda:InvokeFunction",
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "TableManagerCustomProviderframeworkisComplete2E51021B",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "TableManagerCustomProviderframeworkisComplete2E51021B",
+                          "Arn"
+                        ]
+                      },
+                      ":*"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "AmplifyTableWaiterStateMachineRoleDefaultPolicy89F3836A",
+        "Roles": [
+          {
+            "Ref": "AmplifyTableWaiterStateMachineRole470BE899"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyTableWaiterStateMachine060600BC",
+      "type": "AWS::StepFunctions::StateMachine",
+      "properties": {
+        "DefinitionString": {
+          "Fn::Join": [
+            "",
+            [
+              "{\"StartAt\":\"framework-isComplete-task\",\"States\":{\"framework-isComplete-task\":{\"End\":true,\"Retry\":[{\"ErrorEquals\":[\"States.ALL\"],\"IntervalSeconds\":10,\"MaxAttempts\":360,\"BackoffRate\":1}],\"Type\":\"Task\",\"Resource\":\"",
+              {
+                "Fn::GetAtt": [
+                  "TableManagerCustomProviderframeworkisComplete2E51021B",
+                  "Arn"
+                ]
+              },
+              "\"}}}"
+            ]
+          ]
+        },
+        "RoleArn": {
+          "Fn::GetAtt": [
+            "AmplifyTableWaiterStateMachineRole470BE899",
+            "Arn"
+          ]
+        }
+      },
+      "dependsOn": [
+        "AmplifyTableWaiterStateMachineRoleDefaultPolicy89F3836A",
+        "AmplifyTableWaiterStateMachineRole470BE899"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "CDKMetadata",
+      "type": "AWS::CDK::Metadata",
+      "properties": {
+        "Analytics": "v2:deflate64:H4sIAAAAAAAA/zWNyw6CMBBFv8V9GbFE92Li0hj4ADK0IymPNmFaiWn67wbQ1Tk3Z3ElyMsZ8gMunCk9ZKNpIT6IPenaoxoELtxEgxPEyo0kbi+78elGoz7r3C2JEadWI8R7sMobZ9f29yS4aJCZPMN1heACyqAG8iUyJVERuzArElutPXbGdtvZLyRhnSbo+fiWEk4F5IeejcnmYL2ZCKqdX3N/65vPAAAA"
+      },
+      "dependsOn": [],
+      "deletionPolicy": null,
+      "updateReplacePolicy": null
+    },
+    {
+      "template": "todo",
+      "logicalId": "TodoTable",
+      "type": "Custom::AmplifyDynamoDBTable",
+      "properties": {
+        "ServiceToken": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataAmplifyTableManagerNestedStackAmplifyTableManagerNestedStackResource747BC3DFOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da63D3A77C9D"
+        },
+        "tableName": {
+          "Fn::Join": [
+            "",
+            [
+              "Todo-",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+              },
+              "-NONE"
+            ]
+          ]
+        },
+        "attributeDefinitions": [
+          {
+            "attributeName": "id",
+            "attributeType": "S"
+          }
+        ],
+        "keySchema": [
+          {
+            "attributeName": "id",
+            "keyType": "HASH"
+          }
+        ],
+        "provisionedThroughput": {
+          "Fn::If": [
+            "ShouldUsePayPerRequestBilling",
+            {
+              "Ref": "AWS::NoValue"
+            },
+            {
+              "ReadCapacityUnits": {
+                "Ref": "DynamoDBModelTableReadIOPS"
+              },
+              "WriteCapacityUnits": {
+                "Ref": "DynamoDBModelTableWriteIOPS"
+              }
+            }
+          ]
+        },
+        "sseSpecification": {
+          "sseEnabled": false
+        },
+        "streamSpecification": {
+          "streamViewType": "NEW_AND_OLD_IMAGES"
+        },
+        "deletionProtectionEnabled": false,
+        "allowDestructiveGraphqlSchemaUpdates": true,
+        "replaceTableUponGsiUpdate": true,
+        "pointInTimeRecoverySpecification": {
+          "Fn::If": [
+            "ShouldUsePointInTimeRecovery",
+            {
+              "PointInTimeRecoveryEnabled": true
+            },
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "billingMode": {
+          "Fn::If": [
+            "ShouldUsePayPerRequestBilling",
+            "PAY_PER_REQUEST",
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "TodoIAMRole2DA8E66E",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "appsync.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "dynamodb:BatchGetItem",
+                    "dynamodb:BatchWriteItem",
+                    "dynamodb:PutItem",
+                    "dynamodb:DeleteItem",
+                    "dynamodb:GetItem",
+                    "dynamodb:Scan",
+                    "dynamodb:Query",
+                    "dynamodb:UpdateItem",
+                    "dynamodb:ConditionCheckItem",
+                    "dynamodb:DescribeTable",
+                    "dynamodb:GetRecords",
+                    "dynamodb:GetShardIterator"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::Sub": [
+                        "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${tablename}",
+                        {
+                          "tablename": {
+                            "Fn::Join": [
+                              "",
+                              [
+                                "Todo-",
+                                {
+                                  "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+                                },
+                                "-NONE"
+                              ]
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "Fn::Sub": [
+                        "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${tablename}/*",
+                        {
+                          "tablename": {
+                            "Fn::Join": [
+                              "",
+                              [
+                                "Todo-",
+                                {
+                                  "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+                                },
+                                "-NONE"
+                              ]
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "DynamoDBAccess"
+          }
+        ],
+        "RoleName": {
+          "Fn::Join": [
+            "",
+            [
+              "TodoIAMRolecfd440-",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+              },
+              "-NONE"
+            ]
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "TodoDataSource",
+      "type": "AWS::AppSync::DataSource",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DynamoDBConfig": {
+          "AwsRegion": {
+            "Ref": "AWS::Region"
+          },
+          "TableName": {
+            "Fn::Select": [
+              1,
+              {
+                "Fn::Split": [
+                  "/",
+                  {
+                    "Fn::Select": [
+                      5,
+                      {
+                        "Fn::Split": [
+                          ":",
+                          {
+                            "Fn::GetAtt": [
+                              "TodoTable",
+                              "TableArn"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "Name": "TodoTable",
+        "ServiceRoleArn": {
+          "Fn::GetAtt": [
+            "TodoIAMRole2DA8E66E",
+            "Arn"
+          ]
+        },
+        "Type": "AMAZON_DYNAMODB"
+      },
+      "dependsOn": [
+        "TodoIAMRole2DA8E66E"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "QuerygetTodoauth0FunctionQuerygetTodoauth0FunctionAppSyncFunction846D8436",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "QuerygetTodoauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/9b561003e5304fa8152afcd8f5ea6c30566aa9a9e3f0fa5758b046d7278e2281.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "QuerygetTodopostAuth0FunctionQuerygetTodopostAuth0FunctionAppSyncFunction6BE14593",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "QuerygetTodopostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "QueryGetTodoDataResolverFnQueryGetTodoDataResolverFnAppSyncFunctionE2B57DAD",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Fn::GetAtt": [
+            "TodoDataSource",
+            "Name"
+          ]
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "QueryGetTodoDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/08f4d557693d96c1a4efba0f9dc91330e4b19772fd5477c156468843e3d9cb5e.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/4c6a2d29f01c6091bd1d9afe16e5849d456c96f17c3b215938c8067399532719.vtl"
+        }
+      },
+      "dependsOn": [
+        "TodoDataSource"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "GetTodoResolver",
+      "type": "AWS::AppSync::Resolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "FieldName": "getTodo",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "QuerygetTodoauth0FunctionQuerygetTodoauth0FunctionAppSyncFunction846D8436",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "QuerygetTodopostAuth0FunctionQuerygetTodopostAuth0FunctionAppSyncFunction6BE14593",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "QueryGetTodoDataResolverFnQueryGetTodoDataResolverFnAppSyncFunctionE2B57DAD",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Query\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"getTodo\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"AMAZON_DYNAMODB\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n$util.qr($ctx.stash.put(\"tableName\", \"",
+              {
+                "Fn::Select": [
+                  1,
+                  {
+                    "Fn::Split": [
+                      "/",
+                      {
+                        "Fn::Select": [
+                          5,
+                          {
+                            "Fn::Split": [
+                              ":",
+                              {
+                                "Fn::GetAtt": [
+                                  "TodoTable",
+                                  "TableArn"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"authRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthauthenticatedUserRole65205F46Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"unauthRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthunauthenticatedUserRoleF3651D95Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"identityPoolId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthIdentityPoolBC64B1BERef"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Query"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "QuerylistTodosauth0FunctionQuerylistTodosauth0FunctionAppSyncFunction7D761961",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "QuerylistTodosauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/9b561003e5304fa8152afcd8f5ea6c30566aa9a9e3f0fa5758b046d7278e2281.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "QuerylistTodospostAuth0FunctionQuerylistTodospostAuth0FunctionAppSyncFunction154D8577",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "QuerylistTodospostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "QueryListTodosDataResolverFnQueryListTodosDataResolverFnAppSyncFunctionF825FE47",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Fn::GetAtt": [
+            "TodoDataSource",
+            "Name"
+          ]
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "QueryListTodosDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/9fcbe070ecd3023c5bf5b966fa9584757db9762eef123bad0820bd87591b2174.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/cc01911d0269d4080ea57505dc445dfc315ef7ad85d3d9d4ea1357858bff451d.vtl"
+        }
+      },
+      "dependsOn": [
+        "TodoDataSource"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "ListTodoResolver",
+      "type": "AWS::AppSync::Resolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "FieldName": "listTodos",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "QuerylistTodosauth0FunctionQuerylistTodosauth0FunctionAppSyncFunction7D761961",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "QuerylistTodospostAuth0FunctionQuerylistTodospostAuth0FunctionAppSyncFunction154D8577",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "QueryListTodosDataResolverFnQueryListTodosDataResolverFnAppSyncFunctionF825FE47",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Query\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"listTodos\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"AMAZON_DYNAMODB\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n$util.qr($ctx.stash.put(\"tableName\", \"",
+              {
+                "Fn::Select": [
+                  1,
+                  {
+                    "Fn::Split": [
+                      "/",
+                      {
+                        "Fn::Select": [
+                          5,
+                          {
+                            "Fn::Split": [
+                              ":",
+                              {
+                                "Fn::GetAtt": [
+                                  "TodoTable",
+                                  "TableArn"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"authRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthauthenticatedUserRole65205F46Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"unauthRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthunauthenticatedUserRoleF3651D95Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"identityPoolId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthIdentityPoolBC64B1BERef"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Query"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationcreateTodoinit0FunctionMutationcreateTodoinit0FunctionAppSyncFunction54DE5B8B",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationcreateTodoinit0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/a183ddccbd956316c38ef97177b8f088ef0826f62023323f5ae6053d348ccffc.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationcreateTodoauth0FunctionMutationcreateTodoauth0FunctionAppSyncFunction21817E36",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationcreateTodoauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/8d5baec70f401f8dcf3263f133f3df93567e39a43b3b735765618a180eaccab5.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationcreateTodopostAuth0FunctionMutationcreateTodopostAuth0FunctionAppSyncFunctionED59EB9F",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationcreateTodopostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationCreateTodoDataResolverFnMutationCreateTodoDataResolverFnAppSyncFunction900EC5CF",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Fn::GetAtt": [
+            "TodoDataSource",
+            "Name"
+          ]
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationCreateTodoDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/2bf64327ca5682da4be84d0d16440204e25abc3a221195b41f2d21dfa432e5ab.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249.vtl"
+        }
+      },
+      "dependsOn": [
+        "TodoDataSource"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "CreateTodoResolver",
+      "type": "AWS::AppSync::Resolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "FieldName": "createTodo",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "MutationcreateTodoinit0FunctionMutationcreateTodoinit0FunctionAppSyncFunction54DE5B8B",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationcreateTodoauth0FunctionMutationcreateTodoauth0FunctionAppSyncFunction21817E36",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationcreateTodopostAuth0FunctionMutationcreateTodopostAuth0FunctionAppSyncFunctionED59EB9F",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationCreateTodoDataResolverFnMutationCreateTodoDataResolverFnAppSyncFunction900EC5CF",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Mutation\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"createTodo\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"AMAZON_DYNAMODB\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n$util.qr($ctx.stash.put(\"tableName\", \"",
+              {
+                "Fn::Select": [
+                  1,
+                  {
+                    "Fn::Split": [
+                      "/",
+                      {
+                        "Fn::Select": [
+                          5,
+                          {
+                            "Fn::Split": [
+                              ":",
+                              {
+                                "Fn::GetAtt": [
+                                  "TodoTable",
+                                  "TableArn"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"authRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthauthenticatedUserRole65205F46Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"unauthRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthunauthenticatedUserRoleF3651D95Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"identityPoolId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthIdentityPoolBC64B1BERef"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Mutation"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationupdateTodoinit0FunctionMutationupdateTodoinit0FunctionAppSyncFunction1B95BB19",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationupdateTodoinit0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/06db846fd14e6fc371f22b12b5545ba8e2dbfeda85d8c8d586c71c282166657b.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationupdateTodoauth0FunctionMutationupdateTodoauth0FunctionAppSyncFunction1E4A3112",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Fn::GetAtt": [
+            "TodoDataSource",
+            "Name"
+          ]
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationupdateTodoauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/1f5fed297da9c32ae3af922bf3a38ccf23b956078887d16891ec06c20c64722c.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/29b3b89722d570fcdd1fc0c8b13d37567676e84713957929ca1fb216cf2a8112.vtl"
+        }
+      },
+      "dependsOn": [
+        "TodoDataSource"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationupdateTodopostAuth0FunctionMutationupdateTodopostAuth0FunctionAppSyncFunction50C507D7",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationupdateTodopostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationUpdateTodoDataResolverFnMutationUpdateTodoDataResolverFnAppSyncFunctionBC238C49",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Fn::GetAtt": [
+            "TodoDataSource",
+            "Name"
+          ]
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationUpdateTodoDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/474bf0776ec2164a13191d1a0a9e057154931e4918fea5086f49850d02a5371b.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249.vtl"
+        }
+      },
+      "dependsOn": [
+        "TodoDataSource"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "UpdateTodoResolver",
+      "type": "AWS::AppSync::Resolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "FieldName": "updateTodo",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "MutationupdateTodoinit0FunctionMutationupdateTodoinit0FunctionAppSyncFunction1B95BB19",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationupdateTodoauth0FunctionMutationupdateTodoauth0FunctionAppSyncFunction1E4A3112",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationupdateTodopostAuth0FunctionMutationupdateTodopostAuth0FunctionAppSyncFunction50C507D7",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationUpdateTodoDataResolverFnMutationUpdateTodoDataResolverFnAppSyncFunctionBC238C49",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Mutation\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"updateTodo\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"AMAZON_DYNAMODB\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n$util.qr($ctx.stash.put(\"tableName\", \"",
+              {
+                "Fn::Select": [
+                  1,
+                  {
+                    "Fn::Split": [
+                      "/",
+                      {
+                        "Fn::Select": [
+                          5,
+                          {
+                            "Fn::Split": [
+                              ":",
+                              {
+                                "Fn::GetAtt": [
+                                  "TodoTable",
+                                  "TableArn"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"authRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthauthenticatedUserRole65205F46Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"unauthRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthunauthenticatedUserRoleF3651D95Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"identityPoolId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthIdentityPoolBC64B1BERef"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Mutation"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationdeleteTodoauth0FunctionMutationdeleteTodoauth0FunctionAppSyncFunctionC82C218C",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Fn::GetAtt": [
+            "TodoDataSource",
+            "Name"
+          ]
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationdeleteTodoauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/1f5fed297da9c32ae3af922bf3a38ccf23b956078887d16891ec06c20c64722c.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/93422a84067033ef2403fd051d86465bc5be6c6fc4651ae956d2feb2c6b93190.vtl"
+        }
+      },
+      "dependsOn": [
+        "TodoDataSource"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationdeleteTodopostAuth0FunctionMutationdeleteTodopostAuth0FunctionAppSyncFunction483271A2",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationdeleteTodopostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "MutationDeleteTodoDataResolverFnMutationDeleteTodoDataResolverFnAppSyncFunction3879153F",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Fn::GetAtt": [
+            "TodoDataSource",
+            "Name"
+          ]
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "MutationDeleteTodoDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/4f7907d1209a2c9953a0c053df402c634e359546d70c7cc5c2e8e21ea734880f.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249.vtl"
+        }
+      },
+      "dependsOn": [
+        "TodoDataSource"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "DeleteTodoResolver",
+      "type": "AWS::AppSync::Resolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "FieldName": "deleteTodo",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "MutationdeleteTodoauth0FunctionMutationdeleteTodoauth0FunctionAppSyncFunctionC82C218C",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationdeleteTodopostAuth0FunctionMutationdeleteTodopostAuth0FunctionAppSyncFunction483271A2",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "MutationDeleteTodoDataResolverFnMutationDeleteTodoDataResolverFnAppSyncFunction3879153F",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Mutation\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"deleteTodo\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"AMAZON_DYNAMODB\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n$util.qr($ctx.stash.put(\"tableName\", \"",
+              {
+                "Fn::Select": [
+                  1,
+                  {
+                    "Fn::Split": [
+                      "/",
+                      {
+                        "Fn::Select": [
+                          5,
+                          {
+                            "Fn::Split": [
+                              ":",
+                              {
+                                "Fn::GetAtt": [
+                                  "TodoTable",
+                                  "TableArn"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"authRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthauthenticatedUserRole65205F46Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"unauthRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthunauthenticatedUserRoleF3651D95Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"identityPoolId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthIdentityPoolBC64B1BERef"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Mutation"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononCreateTodoauth0FunctionSubscriptiononCreateTodoauth0FunctionAppSyncFunction042EF9E1",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptiononCreateTodoauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/e4f777e6b0065673c8cf5b9458839baf440e2fd63c1eca6e85e40935a217cd5d.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononCreateTodopostAuth0FunctionSubscriptiononCreateTodopostAuth0FunctionAppSyncFunction18E34C4E",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptiononCreateTodopostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptionOnCreateTodoDataResolverFnSubscriptionOnCreateTodoDataResolverFnAppSyncFunction462A70C9",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptionOnCreateTodoDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/fe3c43ada4b9d681a5e2312663ef7a73386424d73b73e51f8e2e9d4b50f7c502.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/e0cff47fb007f0bbf2a4e43ca256d6aa7ec109821769fd79fa7c5e83f0e7f9fc.vtl"
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononCreateTodoResolver",
+      "type": "AWS::AppSync::Resolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "FieldName": "onCreateTodo",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "SubscriptiononCreateTodoauth0FunctionSubscriptiononCreateTodoauth0FunctionAppSyncFunction042EF9E1",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "SubscriptiononCreateTodopostAuth0FunctionSubscriptiononCreateTodopostAuth0FunctionAppSyncFunction18E34C4E",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "SubscriptionOnCreateTodoDataResolverFnSubscriptionOnCreateTodoDataResolverFnAppSyncFunction462A70C9",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Subscription\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"onCreateTodo\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"NONE\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n\n$util.qr($ctx.stash.put(\"authRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthauthenticatedUserRole65205F46Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"unauthRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthunauthenticatedUserRoleF3651D95Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"identityPoolId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthIdentityPoolBC64B1BERef"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Subscription"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononUpdateTodoauth0FunctionSubscriptiononUpdateTodoauth0FunctionAppSyncFunction80D0DFA3",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptiononUpdateTodoauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/e4f777e6b0065673c8cf5b9458839baf440e2fd63c1eca6e85e40935a217cd5d.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononUpdateTodopostAuth0FunctionSubscriptiononUpdateTodopostAuth0FunctionAppSyncFunction04445BC7",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptiononUpdateTodopostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptionOnUpdateTodoDataResolverFnSubscriptionOnUpdateTodoDataResolverFnAppSyncFunction523DF0E4",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptionOnUpdateTodoDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/fe3c43ada4b9d681a5e2312663ef7a73386424d73b73e51f8e2e9d4b50f7c502.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/e0cff47fb007f0bbf2a4e43ca256d6aa7ec109821769fd79fa7c5e83f0e7f9fc.vtl"
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononUpdateTodoResolver",
+      "type": "AWS::AppSync::Resolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "FieldName": "onUpdateTodo",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "SubscriptiononUpdateTodoauth0FunctionSubscriptiononUpdateTodoauth0FunctionAppSyncFunction80D0DFA3",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "SubscriptiononUpdateTodopostAuth0FunctionSubscriptiononUpdateTodopostAuth0FunctionAppSyncFunction04445BC7",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "SubscriptionOnUpdateTodoDataResolverFnSubscriptionOnUpdateTodoDataResolverFnAppSyncFunction523DF0E4",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Subscription\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"onUpdateTodo\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"NONE\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n\n$util.qr($ctx.stash.put(\"authRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthauthenticatedUserRole65205F46Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"unauthRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthunauthenticatedUserRoleF3651D95Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"identityPoolId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthIdentityPoolBC64B1BERef"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Subscription"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononDeleteTodoauth0FunctionSubscriptiononDeleteTodoauth0FunctionAppSyncFunctionF69F2220",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptiononDeleteTodoauth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/e4f777e6b0065673c8cf5b9458839baf440e2fd63c1eca6e85e40935a217cd5d.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononDeleteTodopostAuth0FunctionSubscriptiononDeleteTodopostAuth0FunctionAppSyncFunctionE131CBE7",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptiononDeleteTodopostAuth0Function",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl"
+        },
+        "ResponseMappingTemplate": "$util.toJson({})"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptionOnDeleteTodoDataResolverFnSubscriptionOnDeleteTodoDataResolverFnAppSyncFunction3E641E8C",
+      "type": "AWS::AppSync::FunctionConfiguration",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "DataSourceName": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPINONEDSDB9CF706Name"
+        },
+        "FunctionVersion": "2018-05-29",
+        "Name": "SubscriptionOnDeleteTodoDataResolverFn",
+        "RequestMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/fe3c43ada4b9d681a5e2312663ef7a73386424d73b73e51f8e2e9d4b50f7c502.vtl"
+        },
+        "ResponseMappingTemplateS3Location": {
+          "Fn::Sub": "s3://cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}/e0cff47fb007f0bbf2a4e43ca256d6aa7ec109821769fd79fa7c5e83f0e7f9fc.vtl"
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "SubscriptiononDeleteTodoResolver",
+      "type": "AWS::AppSync::Resolver",
+      "properties": {
+        "ApiId": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+        },
+        "FieldName": "onDeleteTodo",
+        "Kind": "PIPELINE",
+        "PipelineConfig": {
+          "Functions": [
+            {
+              "Fn::GetAtt": [
+                "SubscriptiononDeleteTodoauth0FunctionSubscriptiononDeleteTodoauth0FunctionAppSyncFunctionF69F2220",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "SubscriptiononDeleteTodopostAuth0FunctionSubscriptiononDeleteTodopostAuth0FunctionAppSyncFunctionE131CBE7",
+                "FunctionId"
+              ]
+            },
+            {
+              "Fn::GetAtt": [
+                "SubscriptionOnDeleteTodoDataResolverFnSubscriptionOnDeleteTodoDataResolverFnAppSyncFunction3E641E8C",
+                "FunctionId"
+              ]
+            }
+          ]
+        },
+        "RequestMappingTemplate": {
+          "Fn::Join": [
+            "",
+            [
+              "$util.qr($ctx.stash.put(\"typeName\", \"Subscription\"))\n$util.qr($ctx.stash.put(\"fieldName\", \"onDeleteTodo\"))\n$util.qr($ctx.stash.put(\"conditions\", []))\n$util.qr($ctx.stash.put(\"metadata\", {}))\n$util.qr($ctx.stash.metadata.put(\"dataSourceType\", \"NONE\"))\n$util.qr($ctx.stash.metadata.put(\"apiId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"connectionAttributes\", {}))\n\n$util.qr($ctx.stash.put(\"authRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthauthenticatedUserRole65205F46Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"unauthRole\", \"arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":sts::",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":assumed-role/",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthunauthenticatedUserRoleF3651D95Ref"
+              },
+              "/CognitoIdentityCredentials\"))\n$util.qr($ctx.stash.put(\"identityPoolId\", \"",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthIdentityPoolBC64B1BERef"
+              },
+              "\"))\n$util.qr($ctx.stash.put(\"adminRoles\", []))\n$util.toJson({})"
+            ]
+          ]
+        },
+        "ResponseMappingTemplate": "$util.toJson($ctx.prev.result)",
+        "TypeName": "Subscription"
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "CDKMetadata",
+      "type": "AWS::CDK::Metadata",
+      "properties": {
+        "Analytics": "v2:deflate64:H4sIAAAAAAAA/1WOwW6DMAyGn6X31OtA230F7bhNsHtlEoNSwEGx06pCvPsEnTrt9PuTP9l/BtnrCxx2eJW9df1+8A3MHyRKrla0vSla/sKIIynFFYrAzqsPbCqSkKIlUyTRMP5hy48Zr3Ka3Y1xDK6Bb2wGOqKQ8TjCXIXhboeBFoPTJDe2MJebXjYlKtaPk//pPbFdSxSBW9+liFuj38/DheJiJD+hCKnA2xpGcjgm25OuBZbV/Uw6JTXbulbsPHeL4eAIzvJ0yTJ4zuGwO4v3+5hY/UhQ3fMHtkDVdDYBAAA="
+      },
+      "dependsOn": [],
+      "deletionPolicy": null,
+      "updateReplacePolicy": null
+    }
+  ],
+  "outputs": [
+    {
+      "template": "root",
+      "name": "deploymentType",
+      "definition": {
+        "Value": "sandbox"
+      }
+    },
+    {
+      "template": "root",
+      "name": "region",
+      "definition": {
+        "Value": {
+          "Ref": "AWS::Region"
+        }
+      }
+    },
+    {
+      "template": "root",
+      "name": "userPoolId",
+      "definition": {
+        "Value": {
+          "Fn::GetAtt": [
+            "auth179371D7",
+            "Outputs.amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthUserPoolA90A679FRef"
+          ]
+        }
+      }
+    },
+    {
+      "template": "root",
+      "name": "webClientId",
+      "definition": {
+        "Value": {
+          "Fn::GetAtt": [
+            "auth179371D7",
+            "Outputs.amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthUserPoolAppClient62CA8624Ref"
+          ]
+        }
+      }
+    },
+    {
+      "template": "root",
+      "name": "identityPoolId",
+      "definition": {
+        "Value": {
+          "Fn::GetAtt": [
+            "auth179371D7",
+            "Outputs.amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthIdentityPoolBC64B1BERef"
+          ]
+        }
+      }
+    },
+    {
+      "template": "root",
+      "name": "authRegion",
+      "definition": {
+        "Value": {
+          "Ref": "AWS::Region"
+        }
+      }
+    },
+    {
+      "template": "root",
+      "name": "allowUnauthenticatedIdentities",
+      "definition": {
+        "Value": "true"
+      }
+    },
+    {
+      "template": "root",
+      "name": "signupAttributes",
+      "definition": {
+        "Value": "[\"email\"]"
+      }
+    },
+    {
+      "template": "root",
+      "name": "usernameAttributes",
+      "definition": {
+        "Value": "[\"email\"]"
+      }
+    },
+    {
+      "template": "root",
+      "name": "verificationMechanisms",
+      "definition": {
+        "Value": "[\"email\"]"
+      }
+    },
+    {
+      "template": "root",
+      "name": "passwordPolicyMinLength",
+      "definition": {
+        "Value": "8"
+      }
+    },
+    {
+      "template": "root",
+      "name": "passwordPolicyRequirements",
+      "definition": {
+        "Value": "[\"REQUIRES_NUMBERS\",\"REQUIRES_LOWERCASE\",\"REQUIRES_UPPERCASE\",\"REQUIRES_SYMBOLS\"]"
+      }
+    },
+    {
+      "template": "root",
+      "name": "mfaConfiguration",
+      "definition": {
+        "Value": "OFF"
+      }
+    },
+    {
+      "template": "root",
+      "name": "mfaTypes",
+      "definition": {
+        "Value": "[]"
+      }
+    },
+    {
+      "template": "root",
+      "name": "passwordlessOptions",
+      "definition": {
+        "Value": ""
+      }
+    },
+    {
+      "template": "root",
+      "name": "socialProviders",
+      "definition": {
+        "Value": ""
+      }
+    },
+    {
+      "template": "root",
+      "name": "oauthCognitoDomain",
+      "definition": {
+        "Value": ""
+      }
+    },
+    {
+      "template": "root",
+      "name": "oauthScope",
+      "definition": {
+        "Value": "[\"profile\",\"phone\",\"email\",\"openid\",\"aws.cognito.signin.user.admin\"]"
+      }
+    },
+    {
+      "template": "root",
+      "name": "oauthRedirectSignIn",
+      "definition": {
+        "Value": "https://example.com"
+      }
+    },
+    {
+      "template": "root",
+      "name": "oauthRedirectSignOut",
+      "definition": {
+        "Value": ""
+      }
+    },
+    {
+      "template": "root",
+      "name": "oauthResponseType",
+      "definition": {
+        "Value": "code"
+      }
+    },
+    {
+      "template": "root",
+      "name": "oauthClientId",
+      "definition": {
+        "Value": {
+          "Fn::GetAtt": [
+            "auth179371D7",
+            "Outputs.amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthUserPoolAppClient62CA8624Ref"
+          ]
+        }
+      }
+    },
+    {
+      "template": "root",
+      "name": "groups",
+      "definition": {
+        "Value": "[]"
+      }
+    },
+    {
+      "template": "root",
+      "name": "awsAppsyncApiId",
+      "definition": {
+        "Value": {
+          "Fn::GetAtt": [
+            "data7552DF31",
+            "Outputs.amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+          ]
+        }
+      }
+    },
+    {
+      "template": "root",
+      "name": "awsAppsyncApiEndpoint",
+      "definition": {
+        "Value": {
+          "Fn::GetAtt": [
+            "data7552DF31",
+            "Outputs.amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338GraphQLUrl"
+          ]
+        }
+      }
+    },
+    {
+      "template": "root",
+      "name": "awsAppsyncAuthenticationType",
+      "definition": {
+        "Value": "AMAZON_COGNITO_USER_POOLS"
+      }
+    },
+    {
+      "template": "root",
+      "name": "awsAppsyncRegion",
+      "definition": {
+        "Value": {
+          "Ref": "AWS::Region"
+        }
+      }
+    },
+    {
+      "template": "root",
+      "name": "amplifyApiModelSchemaS3Uri",
+      "definition": {
+        "Value": {
+          "Fn::Join": [
+            "",
+            [
+              "s3://",
+              {
+                "Fn::Select": [
+                  0,
+                  {
+                    "Fn::Split": [
+                      "/",
+                      {
+                        "Fn::Select": [
+                          5,
+                          {
+                            "Fn::Split": [
+                              ":",
+                              {
+                                "Fn::GetAtt": [
+                                  "data7552DF31",
+                                  "Outputs.amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsDeploymentCustomResource1536MiBA02CBD52DestinationBucketArn"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "/model-schema.graphql"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "template": "root",
+      "name": "awsAppsyncAdditionalAuthenticationTypes",
+      "definition": {
+        "Value": "AWS_IAM"
+      }
+    },
+    {
+      "template": "auth",
+      "name": "amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthUserPoolA90A679FRef",
+      "definition": {
+        "Value": {
+          "Ref": "amplifyAuthUserPool4BA7F805"
+        }
+      }
+    },
+    {
+      "template": "auth",
+      "name": "amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthUserPoolAppClient62CA8624Ref",
+      "definition": {
+        "Value": {
+          "Ref": "amplifyAuthUserPoolAppClient2626C6F8"
+        }
+      }
+    },
+    {
+      "template": "auth",
+      "name": "amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthIdentityPoolBC64B1BERef",
+      "definition": {
+        "Value": {
+          "Ref": "amplifyAuthIdentityPool3FDE84CC"
+        }
+      }
+    },
+    {
+      "template": "auth",
+      "name": "amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthauthenticatedUserRole65205F46Ref",
+      "definition": {
+        "Value": {
+          "Ref": "amplifyAuthauthenticatedUserRoleD8DA3689"
+        }
+      }
+    },
+    {
+      "template": "auth",
+      "name": "amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthunauthenticatedUserRoleF3651D95Ref",
+      "definition": {
+        "Value": {
+          "Ref": "amplifyAuthunauthenticatedUserRole2B524D9E"
+        }
+      }
+    },
+    {
+      "template": "data",
+      "name": "amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId",
+      "definition": {
+        "Value": {
+          "Fn::GetAtt": [
+            "amplifyDataGraphQLAPI42A6FA33",
+            "ApiId"
+          ]
+        }
+      }
+    },
+    {
+      "template": "data",
+      "name": "amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338GraphQLUrl",
+      "definition": {
+        "Value": {
+          "Fn::GetAtt": [
+            "amplifyDataGraphQLAPI42A6FA33",
+            "GraphQLUrl"
+          ]
+        }
+      }
+    },
+    {
+      "template": "data",
+      "name": "amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsDeploymentCustomResource1536MiBA02CBD52DestinationBucketArn",
+      "definition": {
+        "Value": {
+          "Fn::GetAtt": [
+            "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsDeploymentCustomResource1536MiB21775929",
+            "DestinationBucketArn"
+          ]
+        }
+      }
+    },
+    {
+      "template": "table-manager",
+      "name": "amplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataAmplifyTableManagerTableManagerCustomProviderframeworkonEvent1CD86F9FArn",
+      "definition": {
+        "Value": {
+          "Fn::GetAtt": [
+            "TableManagerCustomProviderframeworkonEvent1DFC2ECC",
+            "Arn"
+          ]
+        }
+      }
+    },
+    {
+      "template": "todo",
+      "name": "GetAttTodoTableStreamArn",
+      "definition": {
+        "Description": "Your DynamoDB table StreamArn.",
+        "Value": {
+          "Fn::GetAtt": [
+            "TodoTable",
+            "TableStreamArn"
+          ]
+        },
+        "Export": {
+          "Name": {
+            "Fn::Join": [
+              ":",
+              [
+                {
+                  "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+                },
+                "GetAtt:TodoTable:StreamArn"
+              ]
+            ]
+          }
+        }
+      }
+    },
+    {
+      "template": "todo",
+      "name": "GetAttTodoTableName",
+      "definition": {
+        "Description": "Your DynamoDB table name.",
+        "Value": {
+          "Fn::Join": [
+            "",
+            [
+              "Todo-",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+              },
+              "-NONE"
+            ]
+          ]
+        },
+        "Export": {
+          "Name": {
+            "Fn::Join": [
+              ":",
+              [
+                {
+                  "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+                },
+                "GetAtt:TodoTable:Name"
+              ]
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "iamEdges": [
+    {
+      "template": "auth",
+      "logicalId": "amplifyAuthauthenticatedUserRoleD8DA3689",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
+                "StringEquals": {
+                  "cognito-identity.amazonaws.com:aud": {
+                    "Ref": "amplifyAuthIdentityPool3FDE84CC"
+                  }
+                },
+                "ForAnyValue:StringLike": {
+                  "cognito-identity.amazonaws.com:amr": "authenticated"
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Federated": "cognito-identity.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyAuth"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "auth",
+      "logicalId": "amplifyAuthunauthenticatedUserRole2B524D9E",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
+                "StringEquals": {
+                  "cognito-identity.amazonaws.com:aud": {
+                    "Ref": "amplifyAuthIdentityPool3FDE84CC"
+                  }
+                },
+                "ForAnyValue:StringLike": {
+                  "cognito-identity.amazonaws.com:amr": "unauthenticated"
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Federated": "cognito-identity.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyAuth"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBServiceRoleA41FC8C2",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+              ]
+            ]
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBServiceRoleDefaultPolicyFF1C635B",
+      "type": "AWS::IAM::Policy",
+      "properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "s3:GetObject*",
+                "s3:GetBucket*",
+                "s3:List*"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":s3:::",
+                      {
+                        "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":s3:::",
+                      {
+                        "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            },
+            {
+              "Action": [
+                "s3:GetObject*",
+                "s3:GetBucket*",
+                "s3:List*",
+                "s3:DeleteObject*",
+                "s3:PutObject",
+                "s3:PutObjectLegalHold",
+                "s3:PutObjectRetention",
+                "s3:PutObjectTagging",
+                "s3:PutObjectVersionTagging",
+                "s3:Abort*"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            },
+            {
+              "Action": [
+                "s3:GetObject*",
+                "s3:GetBucket*",
+                "s3:List*",
+                "s3:DeleteObject*",
+                "s3:PutObject",
+                "s3:PutObjectLegalHold",
+                "s3:PutObjectRetention",
+                "s3:PutObjectTagging",
+                "s3:PutObjectVersionTagging",
+                "s3:Abort*"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "modelIntrospectionSchemaBucketF566B665",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "modelIntrospectionSchemaBucketF566B665",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBServiceRoleDefaultPolicyFF1C635B",
+        "Roles": [
+          {
+            "Ref": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBServiceRoleA41FC8C2"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyManagedTableIsCompleteRoleF825222C",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+              ]
+            ]
+          }
+        ],
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "dynamodb:CreateTable",
+                    "dynamodb:UpdateTable",
+                    "dynamodb:DeleteTable",
+                    "dynamodb:DescribeTable",
+                    "dynamodb:DescribeContinuousBackups",
+                    "dynamodb:DescribeTimeToLive",
+                    "dynamodb:UpdateContinuousBackups",
+                    "dynamodb:UpdateTimeToLive",
+                    "dynamodb:TagResource",
+                    "dynamodb:UntagResource",
+                    "dynamodb:ListTagsOfResource"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Sub": [
+                      "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*-${apiId}-${envName}",
+                      {
+                        "apiId": {
+                          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+                        },
+                        "envName": "NONE"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "Action": "lambda:ListTags",
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Sub": [
+                      "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*TableManager*",
+                      {}
+                    ]
+                  }
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "CreateUpdateDeleteTablesPolicy"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyManagedTableOnEventRoleB4E71DEA",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+              ]
+            ]
+          }
+        ],
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "dynamodb:CreateTable",
+                    "dynamodb:UpdateTable",
+                    "dynamodb:DeleteTable",
+                    "dynamodb:DescribeTable",
+                    "dynamodb:DescribeContinuousBackups",
+                    "dynamodb:DescribeTimeToLive",
+                    "dynamodb:UpdateContinuousBackups",
+                    "dynamodb:UpdateTimeToLive",
+                    "dynamodb:TagResource",
+                    "dynamodb:UntagResource",
+                    "dynamodb:ListTagsOfResource"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Sub": [
+                      "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*-${apiId}-${envName}",
+                      {
+                        "apiId": {
+                          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+                        },
+                        "envName": "NONE"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "Action": "lambda:ListTags",
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Sub": [
+                      "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*TableManager*",
+                      {}
+                    ]
+                  }
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "CreateUpdateDeleteTablesPolicy"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyManagedTableOnEventRoleDefaultPolicyF6DABCB6",
+      "type": "AWS::IAM::Policy",
+      "properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "states:StartExecution",
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "AmplifyTableWaiterStateMachine060600BC"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "AmplifyManagedTableOnEventRoleDefaultPolicyF6DABCB6",
+        "Roles": [
+          {
+            "Ref": "AmplifyManagedTableOnEventRoleB4E71DEA"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyTableWaiterStateMachineRole470BE899",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "states.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "table-manager",
+      "logicalId": "AmplifyTableWaiterStateMachineRoleDefaultPolicy89F3836A",
+      "type": "AWS::IAM::Policy",
+      "properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "lambda:InvokeFunction",
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "TableManagerCustomProviderframeworkisComplete2E51021B",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "TableManagerCustomProviderframeworkisComplete2E51021B",
+                          "Arn"
+                        ]
+                      },
+                      ":*"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "AmplifyTableWaiterStateMachineRoleDefaultPolicy89F3836A",
+        "Roles": [
+          {
+            "Ref": "AmplifyTableWaiterStateMachineRole470BE899"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "TodoIAMRole2DA8E66E",
+      "type": "AWS::IAM::Role",
+      "properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "appsync.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "dynamodb:BatchGetItem",
+                    "dynamodb:BatchWriteItem",
+                    "dynamodb:PutItem",
+                    "dynamodb:DeleteItem",
+                    "dynamodb:GetItem",
+                    "dynamodb:Scan",
+                    "dynamodb:Query",
+                    "dynamodb:UpdateItem",
+                    "dynamodb:ConditionCheckItem",
+                    "dynamodb:DescribeTable",
+                    "dynamodb:GetRecords",
+                    "dynamodb:GetShardIterator"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::Sub": [
+                        "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${tablename}",
+                        {
+                          "tablename": {
+                            "Fn::Join": [
+                              "",
+                              [
+                                "Todo-",
+                                {
+                                  "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+                                },
+                                "-NONE"
+                              ]
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "Fn::Sub": [
+                        "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${tablename}/*",
+                        {
+                          "tablename": {
+                            "Fn::Join": [
+                              "",
+                              [
+                                "Todo-",
+                                {
+                                  "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+                                },
+                                "-NONE"
+                              ]
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "DynamoDBAccess"
+          }
+        ],
+        "RoleName": {
+          "Fn::Join": [
+            "",
+            [
+              "TodoIAMRolecfd440-",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+              },
+              "-NONE"
+            ]
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ]
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    }
+  ],
+  "customResources": [
+    {
+      "template": "data",
+      "logicalId": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucketAutoDeleteObjectsCustomResource437F26F5",
+      "type": "Custom::S3AutoDeleteObjects",
+      "properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F",
+            "Arn"
+          ]
+        },
+        "BucketName": {
+          "Ref": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA"
+        }
+      },
+      "dependsOn": [
+        "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucketPolicyF1C1C548"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsDeploymentCustomResource1536MiB21775929",
+      "type": "Custom::CDKBucketDeployment",
+      "properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBC5D8AB21",
+            "Arn"
+          ]
+        },
+        "SourceBucketNames": [
+          {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          }
+        ],
+        "SourceObjectKeys": [
+          "5662817c1c84cc87e71babada235746e684b1ca5f99b2924a3a8ca4aab958514.zip"
+        ],
+        "SourceMarkers": [
+          {}
+        ],
+        "DestinationBucketName": {
+          "Ref": "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA"
+        },
+        "WaitForDistributionInvalidation": true,
+        "Prune": true,
+        "OutputObjectKeys": true,
+        "DestinationBucketArn": {
+          "Fn::GetAtt": [
+            "amplifyDataAmplifyCodegenAssetsAmplifyCodegenAssetsBucket9CCB4ACA",
+            "Arn"
+          ]
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "modelIntrospectionSchemaBucketAutoDeleteObjectsCustomResourceFE57309F",
+      "type": "Custom::S3AutoDeleteObjects",
+      "properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F",
+            "Arn"
+          ]
+        },
+        "BucketName": {
+          "Ref": "modelIntrospectionSchemaBucketF566B665"
+        }
+      },
+      "dependsOn": [
+        "modelIntrospectionSchemaBucketPolicy4DAB0D15"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "data",
+      "logicalId": "modelIntrospectionSchemaBucketDeploymentCustomResource1536MiB104B97EC",
+      "type": "Custom::CDKBucketDeployment",
+      "properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C1536MiBC5D8AB21",
+            "Arn"
+          ]
+        },
+        "SourceBucketNames": [
+          {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          }
+        ],
+        "SourceObjectKeys": [
+          "e9afc30fa011966f2a3a75bff5c1d967dbc5e92a90c81b9c15da17030d9fb283.zip"
+        ],
+        "SourceMarkers": [
+          {}
+        ],
+        "DestinationBucketName": {
+          "Ref": "modelIntrospectionSchemaBucketF566B665"
+        },
+        "WaitForDistributionInvalidation": true,
+        "Prune": true,
+        "OutputObjectKeys": true
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "todo",
+      "logicalId": "TodoTable",
+      "type": "Custom::AmplifyDynamoDBTable",
+      "properties": {
+        "ServiceToken": {
+          "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataAmplifyTableManagerNestedStackAmplifyTableManagerNestedStackResource747BC3DFOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da63D3A77C9D"
+        },
+        "tableName": {
+          "Fn::Join": [
+            "",
+            [
+              "Todo-",
+              {
+                "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633dataamplifyDataGraphQLAPI81EC2338ApiId"
+              },
+              "-NONE"
+            ]
+          ]
+        },
+        "attributeDefinitions": [
+          {
+            "attributeName": "id",
+            "attributeType": "S"
+          }
+        ],
+        "keySchema": [
+          {
+            "attributeName": "id",
+            "keyType": "HASH"
+          }
+        ],
+        "provisionedThroughput": {
+          "Fn::If": [
+            "ShouldUsePayPerRequestBilling",
+            {
+              "Ref": "AWS::NoValue"
+            },
+            {
+              "ReadCapacityUnits": {
+                "Ref": "DynamoDBModelTableReadIOPS"
+              },
+              "WriteCapacityUnits": {
+                "Ref": "DynamoDBModelTableWriteIOPS"
+              }
+            }
+          ]
+        },
+        "sseSpecification": {
+          "sseEnabled": false
+        },
+        "streamSpecification": {
+          "streamViewType": "NEW_AND_OLD_IMAGES"
+        },
+        "deletionProtectionEnabled": false,
+        "allowDestructiveGraphqlSchemaUpdates": true,
+        "replaceTableUponGsiUpdate": true,
+        "pointInTimeRecoverySpecification": {
+          "Fn::If": [
+            "ShouldUsePointInTimeRecovery",
+            {
+              "PointInTimeRecoveryEnabled": true
+            },
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "billingMode": {
+          "Fn::If": [
+            "ShouldUsePayPerRequestBilling",
+            "PAY_PER_REQUEST",
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    }
+  ],
+  "cognito": [
+    {
+      "template": "auth",
+      "logicalId": "amplifyAuthUserPool4BA7F805",
+      "type": "AWS::Cognito::UserPool",
+      "properties": {
+        "AccountRecoverySetting": {
+          "RecoveryMechanisms": [
+            {
+              "Name": "verified_email",
+              "Priority": 1
+            }
+          ]
+        },
+        "AdminCreateUserConfig": {
+          "AllowAdminCreateUserOnly": false
+        },
+        "AutoVerifiedAttributes": [
+          "email"
+        ],
+        "EmailVerificationMessage": "The verification code to your new account is {####}",
+        "EmailVerificationSubject": "Verify your new account",
+        "Policies": {
+          "PasswordPolicy": {
+            "MinimumLength": 8,
+            "RequireLowercase": true,
+            "RequireNumbers": true,
+            "RequireSymbols": true,
+            "RequireUppercase": true
+          }
+        },
+        "Schema": [
+          {
+            "Mutable": true,
+            "Name": "email",
+            "Required": true
+          }
+        ],
+        "SmsVerificationMessage": "The verification code to your new account is {####}",
+        "UserAttributeUpdateSettings": {
+          "AttributesRequireVerificationBeforeUpdate": [
+            "email"
+          ]
+        },
+        "UserPoolTags": {
+          "amplify:deployment-type": "sandbox",
+          "amplify:friendly-name": "amplifyAuth",
+          "created-by": "amplify"
+        },
+        "UsernameAttributes": [
+          "email"
+        ],
+        "UsernameConfiguration": {
+          "CaseSensitive": false
+        },
+        "VerificationMessageTemplate": {
+          "DefaultEmailOption": "CONFIRM_WITH_CODE",
+          "EmailMessage": "The verification code to your new account is {####}",
+          "EmailSubject": "Verify your new account",
+          "SmsMessage": "The verification code to your new account is {####}"
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "auth",
+      "logicalId": "amplifyAuthUserPoolAppClient2626C6F8",
+      "type": "AWS::Cognito::UserPoolClient",
+      "properties": {
+        "AllowedOAuthFlows": [
+          "code"
+        ],
+        "AllowedOAuthFlowsUserPoolClient": true,
+        "AllowedOAuthScopes": [
+          "profile",
+          "phone",
+          "email",
+          "openid",
+          "aws.cognito.signin.user.admin"
+        ],
+        "CallbackURLs": [
+          "https://example.com"
+        ],
+        "ExplicitAuthFlows": [
+          "ALLOW_CUSTOM_AUTH",
+          "ALLOW_USER_SRP_AUTH",
+          "ALLOW_REFRESH_TOKEN_AUTH"
+        ],
+        "PreventUserExistenceErrors": "ENABLED",
+        "SupportedIdentityProviders": [
+          "COGNITO"
+        ],
+        "UserPoolId": {
+          "Ref": "amplifyAuthUserPool4BA7F805"
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "auth",
+      "logicalId": "amplifyAuthIdentityPool3FDE84CC",
+      "type": "AWS::Cognito::IdentityPool",
+      "properties": {
+        "AllowUnauthenticatedIdentities": true,
+        "CognitoIdentityProviders": [
+          {
+            "ClientId": {
+              "Ref": "amplifyAuthUserPoolAppClient2626C6F8"
+            },
+            "ProviderName": {
+              "Fn::Join": [
+                "",
+                [
+                  "cognito-idp.",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  ".amazonaws.com/",
+                  {
+                    "Ref": "amplifyAuthUserPool4BA7F805"
+                  }
+                ]
+              ]
+            }
+          }
+        ],
+        "IdentityPoolTags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyAuth"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ],
+        "SupportedLoginProviders": {}
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    },
+    {
+      "template": "auth",
+      "logicalId": "amplifyAuthIdentityPoolRoleAttachment045F17C8",
+      "type": "AWS::Cognito::IdentityPoolRoleAttachment",
+      "properties": {
+        "IdentityPoolId": {
+          "Ref": "amplifyAuthIdentityPool3FDE84CC"
+        },
+        "RoleMappings": {
+          "UserPoolWebClientRoleMapping": {
+            "AmbiguousRoleResolution": "AuthenticatedRole",
+            "IdentityProvider": {
+              "Fn::Join": [
+                "",
+                [
+                  "cognito-idp.",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  ".amazonaws.com/",
+                  {
+                    "Ref": "amplifyAuthUserPool4BA7F805"
+                  },
+                  ":",
+                  {
+                    "Ref": "amplifyAuthUserPoolAppClient2626C6F8"
+                  }
+                ]
+              ]
+            },
+            "Type": "Token"
+          }
+        },
+        "Roles": {
+          "unauthenticated": {
+            "Fn::GetAtt": [
+              "amplifyAuthunauthenticatedUserRole2B524D9E",
+              "Arn"
+            ]
+          },
+          "authenticated": {
+            "Fn::GetAtt": [
+              "amplifyAuthauthenticatedUserRoleD8DA3689",
+              "Arn"
+            ]
+          }
+        }
+      },
+      "dependsOn": [
+        "amplifyAuthIdentityPool3FDE84CC",
+        "amplifyAuthUserPoolAppClient2626C6F8"
+      ],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    }
+  ],
+  "appSyncAuthorization": [
+    {
+      "template": "data",
+      "logicalId": "amplifyDataGraphQLAPI42A6FA33",
+      "type": "AWS::AppSync::GraphQLApi",
+      "properties": {
+        "AdditionalAuthenticationProviders": [
+          {
+            "AuthenticationType": "AWS_IAM"
+          }
+        ],
+        "AuthenticationType": "AMAZON_COGNITO_USER_POOLS",
+        "Name": "amplifyData",
+        "Tags": [
+          {
+            "Key": "amplify:deployment-type",
+            "Value": "sandbox"
+          },
+          {
+            "Key": "amplify:friendly-name",
+            "Value": "amplifyData"
+          },
+          {
+            "Key": "created-by",
+            "Value": "amplify"
+          }
+        ],
+        "UserPoolConfig": {
+          "AwsRegion": {
+            "Ref": "AWS::Region"
+          },
+          "DefaultAction": "ALLOW",
+          "UserPoolId": {
+            "Ref": "referencetoamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authNestedStackauthNestedStackResource67947D4EOutputsamplifystacksimamplifygen2authdataiamfixtureamx13sandbox15739da633authamplifyAuthUserPoolA90A679FRef"
+          }
+        }
+      },
+      "dependsOn": [],
+      "deletionPolicy": "Delete",
+      "updateReplacePolicy": "Delete"
+    }
+  ]
+}

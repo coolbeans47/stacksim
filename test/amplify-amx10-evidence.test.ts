@@ -7,7 +7,11 @@ import { canonicalTextSha256 } from "./support/frozen-text.js";
 const evidenceRoot = resolve("test/fixtures/amplify-gen2-data/evidence");
 
 async function json(name: string): Promise<any> {
-  return JSON.parse(await readFile(join(evidenceRoot, name), "utf8"));
+  const livePath = name === "amx10-repeat.json" ? process.env.STACKSIM_AMX10_LIVE_REPEAT_PATH
+    : name === "amx10-watch-edit.json" ? process.env.STACKSIM_AMX10_LIVE_WATCH_PATH : undefined;
+  // Reuse the frozen assertions for freshly captured prerequisite evidence.
+  // Protected historical manifests are still checked from evidenceRoot below.
+  return JSON.parse(await readFile(livePath ? resolve(livePath) : join(evidenceRoot, name), "utf8"));
 }
 
 function allTrue(value: any): boolean {

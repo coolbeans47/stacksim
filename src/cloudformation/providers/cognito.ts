@@ -66,6 +66,7 @@ export const COGNITO_USER_POOL_SCHEMA: ProviderSchema = Object.freeze({
     Policies: objectProperty("MUTABLE"),
     DeletionProtection: stringProperty("MUTABLE"),
     AutoVerifiedAttributes: arrayProperty("MUTABLE"),
+    UserAttributeUpdateSettings: objectProperty("MUTABLE"),
     AliasAttributes: arrayProperty("REPLACEMENT"),
     UsernameAttributes: arrayProperty("REPLACEMENT"),
     UsernameConfiguration: objectProperty("REPLACEMENT"),
@@ -246,7 +247,7 @@ const USER_POOL_MUTABLE = Object.freeze([
   "Policies", "DeletionProtection", "AutoVerifiedAttributes", "AdminCreateUserConfig",
   "AccountRecoverySetting", "EmailConfiguration", "EmailVerificationMessage",
   "EmailVerificationSubject", "VerificationMessageTemplate", "MfaConfiguration",
-  "EnabledMfas", "LambdaConfig", "UserPoolTier",
+  "EnabledMfas", "LambdaConfig", "UserPoolTier", "UserAttributeUpdateSettings",
 ]);
 
 const COGNITO_OWNER_TAG = "stacksim:cloudformation:owner";
@@ -313,6 +314,15 @@ function userPoolIssues(properties: unknown): ProviderValidationIssue[] {
     issues.push(issue("Properties.UsernameAttributes", "AliasAttributes and UsernameAttributes are mutually exclusive"));
   }
   exactObject(properties.UsernameConfiguration, ["CaseSensitive"], "Properties.UsernameConfiguration", issues);
+  exactObject(properties.UserAttributeUpdateSettings, ["AttributesRequireVerificationBeforeUpdate"], "Properties.UserAttributeUpdateSettings", issues);
+  if (properties.UserAttributeUpdateSettings !== undefined) {
+    const values = properties.UserAttributeUpdateSettings?.AttributesRequireVerificationBeforeUpdate;
+    if (values !== undefined && (!Array.isArray(values) || values.some((value: unknown) => value !== "email") || new Set(values).size !== values.length)) {
+      issues.push(issue("Properties.UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate", "Only the email verification-before-update setting is supported"));
+    } else if (values?.includes("email") && !properties.AutoVerifiedAttributes?.includes("email")) {
+      issues.push(issue("Properties.UserAttributeUpdateSettings", "Verification before update requires AutoVerifiedAttributes to include email"));
+    }
+  }
   exactObject(properties.Policies, ["PasswordPolicy"], "Properties.Policies", issues);
   if (record(properties.Policies?.PasswordPolicy)) {
     cfn10ExactKeys(properties.Policies.PasswordPolicy, [
@@ -416,6 +426,10 @@ function canonicalTags(value: unknown): Readonly<Record<string, string>> {
   ));
 }
 
+function canonicalSchemaAttribute(attribute: Json): Json {
+  return { AttributeDataType: "String", DeveloperOnlyAttribute: false, Mutable: true, Required: false, ...attribute };
+}
+
 function canonicalUserPool(properties: unknown, context: ProviderContext): Model {
   const issues = userPoolIssues(properties);
   cfn10ThrowIssues(issues);
@@ -428,6 +442,7 @@ function canonicalUserPool(properties: unknown, context: ProviderContext): Model
     Policies: { PasswordPolicy: { ...passwordPolicyDefaults, ...password } },
     DeletionProtection: input.DeletionProtection ?? "INACTIVE",
     AutoVerifiedAttributes: [...(input.AutoVerifiedAttributes ?? [])].sort(),
+    UserAttributeUpdateSettings: { AttributesRequireVerificationBeforeUpdate: [...(input.UserAttributeUpdateSettings?.AttributesRequireVerificationBeforeUpdate ?? [])].sort() },
     AliasAttributes: [...(input.AliasAttributes ?? [])].sort(),
     UsernameAttributes: [...(input.UsernameAttributes ?? [])].sort(),
     UsernameConfiguration: { CaseSensitive: input.UsernameConfiguration?.CaseSensitive ?? true },
@@ -439,7 +454,7 @@ function canonicalUserPool(properties: unknown, context: ProviderContext): Model
         EmailMessage: input.AdminCreateUserConfig?.InviteMessageTemplate?.EmailMessage ?? "Your username is {username} and temporary password is {####}.",
       },
     },
-    Schema: cfn10Stable(input.Schema ?? []),
+    Schema: cfn10Stable((input.Schema ?? []).map(canonicalSchemaAttribute)),
     AccountRecoverySetting: cfn10Stable(input.AccountRecoverySetting ?? { RecoveryMechanisms: [{ Name: "verified_email", Priority: 1 }] }),
     EmailConfiguration: cfn10Stable(input.EmailConfiguration ?? { EmailSendingAccount: "COGNITO_DEFAULT" }),
     VerificationMessageTemplate: cfn10Stable({
@@ -570,6 +585,7 @@ function poolModel(raw: Json, tags: Record<string, string>): Model {
     Policies: raw.Policies,
     DeletionProtection: raw.DeletionProtection,
     AutoVerifiedAttributes: raw.AutoVerifiedAttributes ?? [],
+    UserAttributeUpdateSettings: raw.UserAttributeUpdateSettings ?? { AttributesRequireVerificationBeforeUpdate: [] },
     AliasAttributes: raw.AliasAttributes ?? [],
     UsernameAttributes: raw.UsernameAttributes ?? [],
     UsernameConfiguration: raw.UsernameConfiguration,
@@ -688,7 +704,7 @@ function createPoolProvider(service: CognitoService): ProductionResourceProvider
         const desiredSchema = new Map((desired.Schema as Json[]).map(attribute => [attribute.Name, attribute]));
         for (const existing of previous.Schema as Json[]) {
           const next = desiredSchema.get(existing.Name);
-          if (!next || !cfn10Same(existing, next)) {
+          if (!next || !cfn10Same(canonicalSchemaAttribute(existing), canonicalSchemaAttribute(next))) {
             throw new AwsError(
               "RequiresReplacement",
               `Schema attribute ${existing.Name} cannot be removed or changed in place`,

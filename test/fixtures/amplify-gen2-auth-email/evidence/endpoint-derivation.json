@@ -1,0 +1,78 @@
+{
+  "pinnedLibrary": "aws-amplify@6.20.0",
+  "userPool": {
+    "default": "derived regional public cognito-idp hostname",
+    "supportedOverride": "Auth.Cognito.userPoolEndpoint",
+    "route": "/_stacksim/cognito-idp/<region>/sdk",
+    "source": "@aws-amplify/core/dist/esm/singleton/Auth/types.d.ts"
+  },
+  "identityPool": {
+    "default": "derived regional public cognito-identity hostname",
+    "supportedOverride": "Auth.Cognito.identityPoolEndpoint",
+    "route": "/_stacksim/cognito-identity/<region>/sdk",
+    "source": "@aws-amplify/core/dist/esm/singleton/Auth/types.d.ts"
+  },
+  "appSyncHttp": {
+    "configuration": "CLI-written data.url",
+    "source": "official amplify_outputs.json"
+  },
+  "appSyncRealtime": {
+    "configuration": "derived WSS peer of data.url with /realtime path",
+    "source": "@aws-amplify/api-graphql/dist/esm/Providers/AWSWebSocketProvider/authHeaders.mjs"
+  },
+  "browserCors": {
+    "cognitoSdkPreflightHeaders": [
+      "content-type",
+      "x-amz-target",
+      "x-amz-user-agent",
+      "cache-control"
+    ],
+    "cacheControl": "no-store is emitted by the unmodified pinned browser Auth client; admitted only by scoped local SDK alias CORS"
+  },
+  "configurationBoundary": "Configure from unmodified CLI-written outputs, then set the two public typed Cognito endpoint overrides in runtime Amplify configuration. AWS_ENDPOINT_URL does not configure these frontend clients.",
+  "observedNetworkProof": "AMX-13C/14 integration evidence; synthesis evidence does not claim frontend requests occurred",
+  "sourceProof": [
+    {
+      "path": "@aws-amplify/core/dist/esm/singleton/Auth/types.d.ts",
+      "sha256": "dad2d00a81bf8dcdc8a1f0afa70886ed05f51272b0e513c3c3bb978c3f0fe0c0",
+      "bytes": 6906,
+      "files": 1
+    },
+    {
+      "path": "@aws-amplify/api-graphql/dist/esm/internals/graphqlAuth.mjs",
+      "sha256": "00c078b3b8f1d1e85201e036780c310cd5f0a66c5a6777a6fc75fbb50b131e4d",
+      "bytes": 2236,
+      "files": 1
+    },
+    {
+      "path": "@aws-amplify/api-graphql/dist/esm/Providers/AWSWebSocketProvider/authHeaders.mjs",
+      "sha256": "9f13139bb3424d65ee43ede71eaa703cde7375cf5bc4ab2b404eb6eee4c9c5f1",
+      "bytes": 3484,
+      "files": 1
+    },
+    {
+      "path": "aws-amplify/node_modules/@aws-amplify/auth/dist/esm/providers/cognito/credentialsProvider/IdentityIdProvider.mjs",
+      "sha256": "307a17f75866a7f841e8f3883f8974442de50f9ee823e0b92e579cb1b50ffc10",
+      "bytes": 2990,
+      "files": 1
+    },
+    {
+      "path": "aws-amplify/node_modules/@aws-amplify/auth/dist/esm/providers/cognito/credentialsProvider/credentialsProvider.mjs",
+      "sha256": "78229d01037ba2115cd8f0377226f3426ba951c71e26dc162ef3922445afc322",
+      "bytes": 9032,
+      "files": 1
+    },
+    {
+      "path": "@aws-amplify/client-config/lib/client-config-contributor/client_config_contributor_v1.js",
+      "sha256": "9c3f5861a3509fdc74871b158180083fffe01954ed191b7925a71f5dda12ab8c",
+      "bytes": 80306,
+      "files": 1
+    },
+    {
+      "path": "@aws-amplify/client-config/lib/client-config-schema/client_config_v1.5.d.ts",
+      "sha256": "9d905557b5b0e75c75b57cfb36495382642117863fa06980e5e6c7d83b5c6944",
+      "bytes": 8880,
+      "files": 1
+    }
+  ]
+}

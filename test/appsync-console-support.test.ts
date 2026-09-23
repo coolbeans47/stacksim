@@ -93,13 +93,26 @@ test("APS-P0-013 and APS-P0-014 bound GraphQL diagnostics, redact secrets, and p
 
     const queryMarker = "privateQueryMarker";
     const overDepth = `{ ${Array.from({ length: 76 }, () => `${queryMarker}: echo(value: "x") {`).join(" ")} __typename ${"}".repeat(76)} }`;
-    const rejected = await fetch(api.uris!.GRAPHQL!, {
+    const ambiguousAuth = await fetch(api.uris!.GRAPHQL!, {
       method: "POST",
       headers: {
         authorization: "must-never-appear",
         "content-type": "application/json",
         "x-api-key": key,
       },
+      body: JSON.stringify({ query: overDepth, variables: { secretValue } }),
+    });
+    assert.equal(ambiguousAuth.status, 401);
+    const ambiguousAuthText = await ambiguousAuth.text();
+    assert.match(ambiguousAuthText, /UnauthorizedException/);
+    assert.match(ambiguousAuthText, /Specify exactly one authorization mode/);
+    assert.doesNotMatch(ambiguousAuthText, /QueryLimitExceeded|must-never-appear|sensitive-variable/);
+    assert.doesNotMatch(ambiguousAuthText, new RegExp(queryMarker));
+    assert.doesNotMatch(ambiguousAuthText, new RegExp(key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+    const rejected = await fetch(api.uris!.GRAPHQL!, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": key },
       body: JSON.stringify({ query: overDepth, variables: { secretValue } }),
     });
     assert.equal(rejected.status, 400);
@@ -166,8 +179,8 @@ test("APS-P0-013 and APS-P0-014 bound GraphQL diagnostics, redact secrets, and p
         Period: 60,
         Statistics: ["Sum"],
       }))).Datapoints?.[0].Sum;
-    assert.equal(await sum("GraphQLRequestCount"), 6);
-    assert.equal(await sum("4XXError"), 5);
+    assert.equal(await sum("GraphQLRequestCount"), 7);
+    assert.equal(await sum("4XXError"), 6);
     assert.equal(await sum("ResolverRequestCount"), 6);
 
     const listed = (await cloudwatch.send(new ListMetricsCommand({

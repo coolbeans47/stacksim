@@ -54,7 +54,7 @@ export interface CognitoRestAuthorizerVerifier {
     audienceExpression?: string;
     requiredScopes?: string[];
   }): Promise<CognitoRestAuthorizerVerification>;
-  cacheVersion(allowedUserPoolArns: string[]): Promise<string>;
+  cacheVersion(allowedUserPoolArns: string[]): Promise<string> | string;
 }
 
 export class CognitoRestTokenError extends Error {
@@ -179,7 +179,8 @@ export function verifyCognitoRestToken(
   if (issuer !== cognitoIssuer(region, pool.id)) throw new CognitoRestTokenError();
   const ring = pool.signingKeys[input.expectedUse];
   const kid = parsed.header.kid;
-  if (typeof kid !== "string" || !ring.keys[kid] || ring.keys[kid].tokenUse !== input.expectedUse) {
+  if (typeof kid !== "string" || !ring.keys[kid] || ring.keys[kid].tokenUse !== input.expectedUse
+    || ring.keys[kid].retireAfter !== undefined && ring.keys[kid].retireAfter! <= nowMs) {
     throw new CognitoRestTokenError();
   }
   try {
@@ -232,7 +233,7 @@ export function verifyCognitoRestToken(
   return {
     claims: boundedClaims(parsed.claims),
     scopes,
-    expiresAt: expiresAt * 1_000,
+    expiresAt: Math.min(expiresAt * 1_000, ring.keys[kid].retireAfter ?? Infinity),
     cacheVersion: signingKeysEtag(pool.signingKeys),
   };
 }
@@ -243,6 +244,7 @@ export function cognitoPoolCacheVersion(pool: CognitoUserPoolState): string {
     .update(pool.arn)
     .update("\0")
     .update(signingKeysEtag(pool.signingKeys))
+    .update(JSON.stringify([pool.signingKeys.id, pool.signingKeys.access].flatMap(ring => Object.values(ring.keys).map(key => [key.kid, key.retireAfter ?? null])).sort()))
     .digest("hex");
 }
 

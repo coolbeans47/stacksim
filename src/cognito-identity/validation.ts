@@ -1,4 +1,5 @@
 import { AwsError } from "../errors.js";
+import type { CognitoIdentityPoolState } from "../types.js";
 import {
   IDENTITY_POOL_NAME_MAX_BYTES,
   MAX_LOGINS,
@@ -9,7 +10,6 @@ import {
 
 const REJECTED_POOL_FIELDS = [
   "DeveloperProviderName",
-  "SupportedLoginProviders",
   "SamlProviderARNs",
   "OpenIdConnectProviderARNs",
   "CognitoEvents",
@@ -22,6 +22,11 @@ export function rejectUnsupportedPoolFields(input: Record<string, unknown>): voi
     if (input[field] !== undefined) {
       throw new AwsError("InvalidParameterException", `${field} is not supported.`);
     }
+  }
+  if (input.SupportedLoginProviders !== undefined
+    && (!input.SupportedLoginProviders || typeof input.SupportedLoginProviders !== "object"
+      || Array.isArray(input.SupportedLoginProviders) || Object.keys(input.SupportedLoginProviders).length)) {
+    throw new AwsError("InvalidParameterException", "Only an empty SupportedLoginProviders map is supported.");
   }
   if (input.AllowClassicFlow === true) {
     throw new AwsError("InvalidParameterException", "AllowClassicFlow is not supported.");
@@ -164,4 +169,23 @@ export function identityPoolRoles(value: unknown): { authenticated?: string; una
   const authenticated = record.authenticated === undefined ? undefined : requiredString(record.authenticated, "Roles.authenticated", 20, 2048);
   const unauthenticated = record.unauthenticated === undefined ? undefined : requiredString(record.unauthenticated, "Roles.unauthenticated", 20, 2048);
   return { ...(authenticated ? { authenticated } : {}), ...(unauthenticated ? { unauthenticated } : {}) };
+}
+
+/** The pinned Amplify graph emits a single no-group Token fallback mapping. */
+export function identityPoolRoleMappings(value: unknown): NonNullable<CognitoIdentityPoolState["roleMappings"]> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length > 1) {
+    throw new AwsError("InvalidParameterException", "Only one User Pool Token role mapping is supported.");
+  }
+  const mappings: NonNullable<CognitoIdentityPoolState["roleMappings"]> = {};
+  for (const [provider, entry] of Object.entries(value)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)
+      || Object.keys(entry).some(key => key !== "Type" && key !== "AmbiguousRoleResolution")
+      || (entry as Record<string, unknown>).Type !== "Token"
+      || (entry as Record<string, unknown>).AmbiguousRoleResolution !== "AuthenticatedRole") {
+      throw new AwsError("InvalidParameterException", "Only Token role mappings with AuthenticatedRole fallback are supported.");
+    }
+    mappings[provider] = { Type: "Token", AmbiguousRoleResolution: "AuthenticatedRole" };
+  }
+  return mappings;
 }

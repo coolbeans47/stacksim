@@ -503,6 +503,16 @@ test("S3 bucket-policy provider recognizes the exact semantic CloudFront OAC and
     };
     const legacyAutoDeleteOnly = { Bucket: bucket.BucketName, PolicyDocument: { Version: "2012-10-17", Statement: [autoDelete] } };
     assert.equal(policyProvider.validate(legacyAutoDeleteOnly, context("WebBucketPolicy")).length, 0, "the existing exact generated auto-delete-only profile remains supported");
+    for (const application of ["authdataowner", "authdataiam"]) {
+      const principal = `arn:aws:iam::${accountId}:role/amplify-stacksimamplifygen2${application}fixture-amx13-0123456789ab`;
+      const generated = structuredClone(legacyAutoDeleteOnly);
+      generated.PolicyDocument.Statement[0].Principal.AWS = principal;
+      assert.equal(policyProvider.validate(generated, context("WebBucketPolicy")).length, 0, "the frozen Auth+Data helper role name is admitted");
+      for (const invalid of [principal.replace(accountId, "999999999999"), principal.replace(application, "authsocial"), principal.replace("arn:aws:", "arn:aws-cn:")]) {
+        generated.PolicyDocument.Statement[0].Principal.AWS = invalid;
+        assert.ok(policyProvider.validate(generated, context("WebBucketPolicy")).some(issue => issue.message.includes("same-account generated provider role")));
+      }
+    }
     const supplied = { Bucket: bucket.BucketName, PolicyDocument: { Version: "2012-10-17", Statement: [oac, autoDelete, tls] } };
     assert.equal(policyProvider.validate(supplied, context("WebBucketPolicy")).length, 0);
     const policy = policyProvider.canonicalize(supplied, context("WebBucketPolicy"));

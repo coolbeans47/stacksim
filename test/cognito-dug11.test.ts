@@ -54,7 +54,6 @@ const N = BigInt(`0x${[
   "FFFFFFFFFFFF",
 ].join("")}`);
 const G = 2n;
-const BYTES = 384;
 const MAX_DEVICES = 50;
 
 function endpoint(simulator: StackSim): string {
@@ -83,7 +82,10 @@ function pow(base: bigint, exponent: bigint): bigint {
 }
 
 function pad(value: bigint): Buffer {
-  return Buffer.from(value.toString(16).padStart(BYTES * 2, "0"), "hex");
+  let hex = value.toString(16);
+  if (hex.length % 2) hex = `0${hex}`;
+  else if (parseInt(hex[0], 16) >= 8) hex = `00${hex}`;
+  return Buffer.from(hex, "hex");
 }
 
 function hash(...values: Array<string | Buffer>): Buffer {

@@ -134,7 +134,8 @@ export function decodeDeviceVerifierMaterial(passwordVerifier: string, salt: str
   }
   if (
     verifierBytes.length < 1
-    || verifierBytes.length > 384
+    || verifierBytes.length > 385
+    || (verifierBytes.length === 385 && verifierBytes[0] !== 0)
     || saltBytes.length < 1
     || saltBytes.length > 128
     || passwordVerifier !== verifierBytes.toString("base64")

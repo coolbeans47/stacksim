@@ -4,6 +4,7 @@ import { createServer as createSecureServer, type Server as HttpsServer } from "
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import amplifyAuthCapabilities from "../docs/generated/amplify-auth-capabilities.json" with { type: "json" };
 import { Readable } from "node:stream";
 import { ApiGatewayService } from "./apigateway.js";
 import { ApiGatewayV2Service, type HttpApiJwtJwks } from "./apigateway-v2.js";
@@ -109,6 +110,8 @@ function booleanEnvironment(name: string): boolean | undefined {
 const COGNITO_SDK_ENDPOINT_PATH = /^\/_stacksim\/cognito-idp\/([a-z]{2}(?:-gov)?-[a-z]+-\d)\/sdk\/?$/;
 const COGNITO_IDENTITY_SDK_ENDPOINT_PATH = /^\/_stacksim\/cognito-identity\/([a-z]{2}(?:-gov)?-[a-z]+-\d)\/sdk\/?$/;
 const COGNITO_SDK_CORS_ALLOW_HEADERS = [
+  // Unmodified Amplify 6.20 browser Auth clients send cache-control: no-store.
+  "cache-control",
   "content-type",
   "x-amz-target",
   "x-amz-user-agent",
@@ -677,7 +680,7 @@ export class StackSim {
         res.setHeader("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
         return res.end(`<!doctype html><html><head><meta charset="utf-8"><title>SNS unsubscribe</title></head><body><main><h1>${completed ? "Subscription removed" : "Invalid unsubscribe link"}</h1><p>${completed ? "The local SNS subscription was removed." : "This unsubscribe link is invalid, expired, or already used."}</p></main></body></html>`);
       }
-      if (req.method === "GET" && url.pathname === "/_stacksim/health") return json(res, { status: "ok", services: ["cloudformation", "cloudfront", "lambda", "stepfunctions", "apigateway", "appsync", "dynamodb", "rds", "s3", "sqs", "sns", "ssm", "secretsmanager", "eventbridge", "scheduler", "logs", "cloudwatch", "iam", "sts", "ses", "cognito-idp", "cognito-identity", "xray"], cloudfront: { status: "available", distributions: this.cloudfront.consoleSnapshot().distributions.length, viewers: this.cloudfront.listLocalViewers() }, xray: services.xray.health(), rds: this.rdsManager.metadata(), region, requestId: currentRequestId });
+      if (req.method === "GET" && url.pathname === "/_stacksim/health") return json(res, { status: "ok", services: ["cloudformation", "cloudfront", "lambda", "stepfunctions", "apigateway", "appsync", "dynamodb", "rds", "s3", "sqs", "sns", "ssm", "secretsmanager", "eventbridge", "scheduler", "logs", "cloudwatch", "iam", "sts", "ses", "cognito-idp", "cognito-identity", "xray"], compatibility: { amplifyGen2Auth: amplifyAuthCapabilities }, cloudfront: { status: "available", distributions: this.cloudfront.consoleSnapshot().distributions.length, viewers: this.cloudfront.listLocalViewers() }, xray: services.xray.health(), rds: this.rdsManager.metadata(), region, requestId: currentRequestId });
       if (req.method === "GET" && url.pathname === "/_stacksim/api/console-config") return json(res, { authMode: this.authMode, region, bootId: this.bootId });
       if (url.pathname.startsWith("/_stacksim/api/")) {
         try {
@@ -1092,6 +1095,7 @@ export class StackSim {
             context,
           }, currentRequestId),
         },
+        cognito,
       );
       const stepfunctions = new StepFunctionsService(this.store, region, this.clock, this.scheduler, lambda, telemetry, this.authMode, this.random, this.stepFunctionsLimits, input => eventbridge.publishServiceEvent(input), { caCertificatePath: this.customResourceCallbacks.caCertificatePath, port: () => this.customResourceCallbacks.port() }, { dynamodb, sqs, sns, eventbridge });
       eventbridge.setStepFunctionsService(stepfunctions);

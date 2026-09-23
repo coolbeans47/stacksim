@@ -1,7 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, lstatSync, readdirSync } from "node:fs";
 import { copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { backup, DatabaseSync, type SQLInputValue, type SQLOutputValue, type StatementColumnMetadata } from "node:sqlite";
+import * as sqlite from "node:sqlite";
+import { DatabaseSync, type SQLInputValue, type SQLOutputValue, type StatementColumnMetadata } from "node:sqlite";
 import { basename, join, parse, relative, resolve, sep } from "node:path";
 import mysql from "mysql2";
 import {
@@ -311,7 +312,12 @@ export class EmbeddedSqliteProvider implements RdsEngineProvider {
       assertSafeDatabaseFiles(sourcePath, true);
       const destinationPath = join(target, fileName);
       const source = new DatabaseSync(sourcePath, { readOnly: true });
-      try { await backup(source, destinationPath); }
+      try {
+        // backup was added after our Node 22.13 minimum. SQLite's own snapshot
+        // operation also includes committed WAL data and binds the target path.
+        if (typeof sqlite.backup === "function") await sqlite.backup(source, destinationPath);
+        else source.prepare("VACUUM INTO ?").run(destinationPath);
+      }
       finally { source.close(); }
       const handle = await open(destinationPath, "r+");
       try { await handle.sync(); }
