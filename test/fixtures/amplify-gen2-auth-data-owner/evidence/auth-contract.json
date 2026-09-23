@@ -1,0 +1,50 @@
+{
+  "phase": "AMX-13A frozen generated contract; runtime/integration evidence is recorded separately",
+  "authorizationRule": "allow.owner()",
+  "ownerFieldRule": "owner: a.string().authorization(allow => [allow.owner().to(['read','delete'])]); owner is stamped by unchanged generated authorization; explicit create/update owner input is denied, and owners can delete their records",
+  "client": {
+    "package": "aws-amplify",
+    "version": "6.20.0",
+    "auth": [
+      "signUp",
+      "confirmSignUp",
+      "signIn (USER_SRP_AUTH)",
+      "fetchAuthSession (forceRefresh)",
+      "signOut (local)"
+    ],
+    "data": [
+      "Todo.create",
+      "Todo.get",
+      "Todo.list",
+      "Todo.update",
+      "Todo.delete",
+      "Todo.onCreate",
+      "Todo.onUpdate",
+      "Todo.onDelete"
+    ]
+  },
+  "expectedClientToken": {
+    "userPoolData": "access token (@aws-amplify/api-graphql graphqlAuth.mjs and realtime authHeaders.mjs)",
+    "identityPoolLogin": "ID token (Logins provider binding)"
+  },
+  "guestCredentials": true,
+  "guestDataRule": false,
+  "generatedUserPoolPropertyClosure": [
+    "UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate=['email']",
+    "ExplicitAuthFlows includes ALLOW_CUSTOM_AUTH; CUSTOM_AUTH invocation remains fail-closed without its separately implemented trigger flow"
+  ],
+  "generatedIdentityPropertyClosure": [
+    "SupportedLoginProviders={} is an empty provider set",
+    "RoleMappings.UserPoolWebClientRoleMapping uses Token/AuthenticatedRole"
+  ],
+  "normalization": "No template/asset normalization: these three graphs contain no time-dependent API key.",
+  "outputs": "Root Metadata AWS::Amplify::Platform and nested output definitions are frozen verbatim; actual CLI-written outputs belong to AMX-14.",
+  "exclusions": [
+    "social providers",
+    "custom authentication challenge execution",
+    "group rules",
+    "Storage",
+    "user Functions",
+    "Hosting"
+  ]
+}

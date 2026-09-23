@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -21,10 +21,13 @@ import {
 } from "@aws-sdk/client-cognito-identity";
 import {
   AdminCreateUserCommand,
+  AdminAddUserToGroupCommand,
+  AdminDisableUserCommand,
   AdminSetUserPasswordCommand,
   CognitoIdentityProviderClient,
   CreateUserPoolClientCommand,
   CreateUserPoolCommand,
+  CreateGroupCommand,
   InitiateAuthCommand,
 } from "@aws-sdk/client-cognito-identity-provider";
 import {
@@ -34,6 +37,7 @@ import {
 } from "@aws-sdk/client-iam";
 import { AssumeRoleCommand, GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { CURRENT_SCHEMA_VERSION } from "../src/migrations/v1-to-v2.js";
+import { TestClock } from "../src/core/clock.js";
 import { evaluateAuthorization } from "../src/iam/evaluator.js";
 import { StackSim } from "../src/server.js";
 
@@ -372,11 +376,12 @@ test("CID-01 identity pools implement official-client control, public GetId/GetC
       headers: {
         origin: "http://localhost:3000",
         "access-control-request-method": "POST",
-        "access-control-request-headers": "content-type,x-amz-target",
+        "access-control-request-headers": "cache-control,content-type,x-amz-target",
       },
     });
     assert.equal(preflight.status, 204);
     assert.equal(preflight.headers.get("access-control-allow-origin"), "http://localhost:3000");
+    assert.ok(preflight.headers.get("access-control-allow-headers")?.split(/,\s*/).includes("cache-control"));
 
     await identity.send(new UpdateIdentityPoolCommand({
       IdentityPoolId: poolId,
@@ -418,6 +423,278 @@ test("CID-01 identity pools persist across restart and never mint credentials fr
     assert.equal(described.IdentityPoolName, "persist-pool");
     restored.destroy();
   } finally {
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  }
+});
+
+test("AUD-CID-01 failed guest promotion leaves identity, index, session and vault unchanged", async t => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cognito-identity-atomic-"));
+  let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "off" });
+  try {
+    await simulator.start();
+    const login = await userPoolLogin(simulator);
+    const logins = { [providerName(login.userPoolId)]: login.idToken };
+    const created = await simulator.cognitoIdentity.CreateIdentityPool({
+      IdentityPoolName: "atomic-link",
+      AllowUnauthenticatedIdentities: true,
+      CognitoIdentityProviders: [{ ProviderName: providerName(login.userPoolId), ClientId: login.clientId }],
+    });
+    const poolId = String(created.IdentityPoolId);
+    const roles = await attachRoles(simulator, poolId, { guests: true });
+    const guestIds: string[] = [];
+    for (const failure of ["missing-role", "denied-trust", "vault-write", "state-save"] as const) {
+      await t.test(failure, async () => {
+        const pool = simulator.store.regionState(region).cognitoIdentity.pools[poolId];
+        const guest = await simulator.cognitoIdentity.GetId({ IdentityPoolId: poolId });
+        const guestId = String(guest.IdentityId);
+        guestIds.push(guestId);
+        const guestCredentials = await simulator.cognitoIdentity.GetCredentialsForIdentity({ IdentityId: guestId });
+        const guestAccessKey = (guestCredentials.Credentials as { AccessKeyId: string }).AccessKeyId;
+        const identityBefore = structuredClone(pool.identities[guestId]);
+        const indexBefore = structuredClone(pool.loginIndex);
+        const revisionBefore = simulator.store.regionState(region).cognitoIdentity.revision;
+        const sessionsBefore = Object.keys(simulator.store.ensureAccount().iam.sessions).sort();
+        const vault = simulator.store.credentialStore!;
+        const vaultBefore = vault.ids().sort();
+        const filesBefore = (await readdir(vault.recordsDirectory)).sort();
+        const role = Object.values(simulator.store.ensureAccount().iam.roles).find(candidate => candidate.arn === roles.authenticated)!;
+        const trustBefore = role.assumeRolePolicyDocument;
+        const save = simulator.store.save;
+        const put = vault.put;
+        if (failure === "missing-role") delete pool.roles!.authenticated;
+        if (failure === "denied-trust") role.assumeRolePolicyDocument = JSON.parse(trustDocument(poolId, "unauthenticated"));
+        if (failure === "vault-write") vault.put = async (binding, secret) => {
+          await put.call(vault, binding, secret);
+          throw new Error("Injected vault write failure");
+        };
+        if (failure === "state-save") simulator.store.save = async () => { throw new Error("Injected state save failure"); };
+        try {
+          await assert.rejects(
+            simulator.cognitoIdentity.GetCredentialsForIdentity({ IdentityId: guestId, Logins: logins }),
+            (error: any) => failure === "missing-role" || failure === "denied-trust"
+              ? error.code === "InvalidIdentityPoolConfigurationException"
+              : /^Injected /.test(error.message),
+          );
+          assert.deepEqual(pool.identities[guestId], identityBefore);
+          assert.deepEqual(pool.loginIndex, indexBefore);
+          assert.equal(simulator.store.regionState(region).cognitoIdentity.revision, revisionBefore);
+          assert.deepEqual(Object.keys(simulator.store.ensureAccount().iam.sessions).sort(), sessionsBefore);
+          assert.deepEqual(vault.ids().sort(), vaultBefore);
+          assert.deepEqual((await readdir(vault.recordsDirectory)).sort(), filesBefore);
+          assert.equal(simulator.store.ensureAccount().iam.sessions[guestAccessKey].cognitoIdentity?.authClass, "unauthenticated");
+        } finally {
+          simulator.store.save = save;
+          vault.put = put;
+          pool.roles!.authenticated = roles.authenticated;
+          role.assumeRolePolicyDocument = trustBefore;
+        }
+        // A later successful mutation must not make a rejected transition durable.
+        await simulator.cognitoIdentity.TagResource({ ResourceArn: simulator.cognitoIdentity.resourceArn(poolId), Tags: { lastFailure: failure } });
+        const persisted = JSON.parse(await readFile(simulator.store.file, "utf8"));
+        const storedPool = persisted.accounts[accountId].regions[region].cognitoIdentity.pools[poolId];
+        assert.deepEqual(storedPool.identities[guestId], identityBefore);
+        assert.deepEqual(storedPool.loginIndex, indexBefore);
+        assert.deepEqual(Object.keys(persisted.accounts[accountId].iam.sessions).sort(), sessionsBefore);
+        assert.ok(await simulator.cognitoIdentity.GetCredentialsForIdentity({ IdentityId: guestId }));
+      });
+    }
+    const sessionsBeforeRestart = Object.keys(simulator.store.ensureAccount().iam.sessions).sort();
+    const vaultBeforeRestart = simulator.store.credentialStore!.ids().sort();
+    await simulator.stop();
+    simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "off" });
+    await simulator.start();
+    const restored = simulator.store.regionState(region).cognitoIdentity.pools[poolId];
+    assert.deepEqual(restored.loginIndex, {});
+    for (const guestId of guestIds) {
+      assert.equal(restored.identities[guestId].authClass, "unauthenticated");
+      assert.deepEqual(restored.identities[guestId].logins, {});
+    }
+    assert.deepEqual(Object.keys(simulator.store.ensureAccount().iam.sessions).sort(), sessionsBeforeRestart);
+    assert.deepEqual(simulator.store.credentialStore!.ids().sort(), vaultBeforeRestart);
+
+    // Retrying a failed link keeps its ID; a later unlinked guest resolves to
+    // that canonical authenticated identity without stealing the login.
+    const linked = await simulator.cognitoIdentity.GetCredentialsForIdentity({ IdentityId: guestIds[0], Logins: logins });
+    assert.equal(linked.IdentityId, guestIds[0]);
+    assert.equal((await simulator.cognitoIdentity.GetId({ IdentityPoolId: poolId, Logins: logins })).IdentityId, guestIds[0]);
+    const canonicalBefore = structuredClone(restored.identities[guestIds[0]]);
+    const merged = await simulator.cognitoIdentity.GetCredentialsForIdentity({ IdentityId: guestIds[1], Logins: logins });
+    assert.equal(merged.IdentityId, guestIds[0]);
+    assert.equal(restored.identities[guestIds[1]], undefined);
+    assert.deepEqual(restored.identities[guestIds[0]], canonicalBefore);
+    const persisted = JSON.parse(await readFile(simulator.store.file, "utf8"));
+    assert.equal(persisted.accounts[accountId].regions[region].cognitoIdentity.pools[poolId].identities[guestIds[0]].authClass, "authenticated");
+    const linkedAccessKey = (linked.Credentials as { AccessKeyId: string }).AccessKeyId;
+    assert.equal(persisted.accounts[accountId].iam.sessions[linkedAccessKey].cognitoIdentity.authClass, "authenticated");
+  } finally {
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  }
+});
+
+test("enhanced repeat login merges only an unlinked guest, atomically, and retains issued guest credentials", async t => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cognito-identity-merge-"));
+  const clock = new TestClock(Date.now());
+  let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "enforce", clock });
+  try {
+    await simulator.start();
+    const login = await userPoolLogin(simulator);
+    const provider = providerName(login.userPoolId);
+    const logins = { [provider]: login.idToken };
+    const poolId = String((await simulator.cognitoIdentity.CreateIdentityPool({
+      IdentityPoolName: "repeat-login", AllowUnauthenticatedIdentities: true,
+      CognitoIdentityProviders: [{ ProviderName: provider, ClientId: login.clientId }],
+    })).IdentityPoolId);
+    const roles = await attachRoles(simulator, poolId, { guests: true });
+    const canonicalId = String((await simulator.cognitoIdentity.GetId({ IdentityPoolId: poolId, Logins: logins })).IdentityId);
+    const guestId = String((await simulator.cognitoIdentity.GetId({ IdentityPoolId: poolId })).IdentityId);
+    const guestCredential = (await simulator.cognitoIdentity.GetCredentialsForIdentity({ IdentityId: guestId })).Credentials as any;
+    for (const failure of ["denied-trust", "vault-write", "state-save"] as const) {
+      await t.test(failure, async () => {
+        const pool = simulator.store.regionState(region).cognitoIdentity.pools[poolId];
+        const before = structuredClone(pool);
+        const sessionsBefore = structuredClone(simulator.store.ensureAccount().iam.sessions);
+        const vault = simulator.store.credentialStore!;
+        const vaultBefore = vault.ids().sort();
+        const filesBefore = (await readdir(vault.recordsDirectory)).sort();
+        const role = Object.values(simulator.store.ensureAccount().iam.roles).find(item => item.arn === roles.authenticated)!;
+        const trust = role.assumeRolePolicyDocument;
+        const put = vault.put;
+        const save = simulator.store.save;
+        if (failure === "denied-trust") role.assumeRolePolicyDocument = JSON.parse(trustDocument(poolId, "unauthenticated"));
+        if (failure === "vault-write") vault.put = async (binding, secret) => { await put.call(vault, binding, secret); throw new Error("Injected vault failure"); };
+        if (failure === "state-save") simulator.store.save = async () => { throw new Error("Injected save failure"); };
+        try {
+          await assert.rejects(simulator.cognitoIdentity.GetCredentialsForIdentity({ IdentityId: guestId, Logins: logins }),
+            (error: any) => failure === "denied-trust" ? error.code === "InvalidIdentityPoolConfigurationException" : /^Injected /.test(error.message));
+          assert.deepEqual(pool, before, "source guest and canonical login remain unchanged");
+          assert.deepEqual(simulator.store.ensureAccount().iam.sessions, sessionsBefore);
+          assert.deepEqual(vault.ids().sort(), vaultBefore);
+          assert.deepEqual((await readdir(vault.recordsDirectory)).sort(), filesBefore);
+        } finally { role.assumeRolePolicyDocument = trust; vault.put = put; simulator.store.save = save; }
+        await simulator.cognitoIdentity.TagResource({ ResourceArn: simulator.cognitoIdentity.resourceArn(poolId), Tags: { after: failure } });
+        await simulator.stop();
+        simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "enforce", clock });
+        await simulator.start();
+        const restored = simulator.store.regionState(region).cognitoIdentity.pools[poolId];
+        assert.deepEqual(restored.identities, before.identities);
+        assert.deepEqual(restored.loginIndex, before.loginIndex);
+        assert.deepEqual(simulator.store.ensureAccount().iam.sessions, JSON.parse(JSON.stringify(sessionsBefore)));
+        assert.deepEqual(simulator.store.credentialStore!.ids().sort(), vaultBefore);
+        clock.advance(1000);
+      });
+    }
+    const canonical = structuredClone(simulator.store.regionState(region).cognitoIdentity.pools[poolId].identities[canonicalId]);
+    const merged = await simulator.cognitoIdentity.GetCredentialsForIdentity({ IdentityId: guestId, Logins: logins });
+    assert.equal(merged.IdentityId, canonicalId);
+    const pool = simulator.store.regionState(region).cognitoIdentity.pools[poolId];
+    assert.equal(pool.identities[guestId], undefined);
+    assert.deepEqual(pool.identities[canonicalId], canonical);
+    const session = simulator.store.ensureAccount().iam.sessions[(merged.Credentials as any).AccessKeyId];
+    assert.equal(session.cognitoIdentity?.identityId, canonicalId);
+    await assert.rejects(simulator.cognitoIdentity.GetCredentialsForIdentity({ IdentityId: guestId }), (error: any) => error.code === "ResourceNotFoundException");
+    const retainedGuest = new STSClient({ endpoint: endpoint(simulator), region, credentials: {
+      accessKeyId: guestCredential.AccessKeyId, secretAccessKey: guestCredential.SecretKey, sessionToken: guestCredential.SessionToken,
+    } });
+    try { assert.ok((await retainedGuest.send(new GetCallerIdentityCommand({}))).Arn); } finally { retainedGuest.destroy(); }
+    const idp = idpClient(simulator);
+    let otherToken: string;
+    try {
+      await idp.send(new AdminCreateUserCommand({ UserPoolId: login.userPoolId, Username: "other@example.test", MessageAction: "SUPPRESS", UserAttributes: [{ Name: "email", Value: "other@example.test" }] }));
+      await idp.send(new AdminSetUserPasswordCommand({ UserPoolId: login.userPoolId, Username: "other@example.test", Password: password, Permanent: true }));
+      otherToken = (await idp.send(new InitiateAuthCommand({ ClientId: login.clientId, AuthFlow: "USER_PASSWORD_AUTH", AuthParameters: { USERNAME: "other@example.test", PASSWORD: password } }))).AuthenticationResult!.IdToken!;
+    } finally { idp.destroy(); }
+    const otherId = String((await simulator.cognitoIdentity.GetId({ IdentityPoolId: poolId, Logins: { [provider]: otherToken } })).IdentityId);
+    await assert.rejects(simulator.cognitoIdentity.GetCredentialsForIdentity({ IdentityId: otherId, Logins: logins }), (error: any) => error.code === "ResourceConflictException");
+    await simulator.stop();
+    simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "enforce", clock });
+    await simulator.start();
+    const repeatGuest = String((await simulator.cognitoIdentity.GetId({ IdentityPoolId: poolId })).IdentityId);
+    assert.equal((await simulator.cognitoIdentity.GetCredentialsForIdentity({ IdentityId: repeatGuest, Logins: logins })).IdentityId, canonicalId);
+    assert.equal((await simulator.cognitoIdentity.GetId({ IdentityPoolId: poolId, Logins: logins })).IdentityId, canonicalId);
+  } finally { await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }); }
+});
+
+test("AMX-14 generated Token fallback mapping persists and preserves offline ID-token semantics", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cognito-identity-mapping-"));
+  const clock = new TestClock(Date.now());
+  let simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "off", clock });
+  let identity: CognitoIdentityClient | undefined;
+  let idp: CognitoIdentityProviderClient | undefined;
+  try {
+    await simulator.start();
+    const login = await userPoolLogin(simulator);
+    identity = identityClient(simulator);
+    idp = idpClient(simulator);
+    const provider = providerName(login.userPoolId);
+    const binding = { ProviderName: provider, ClientId: login.clientId };
+    const logins = { [provider]: login.idToken };
+    const created = await identity.send(new CreateIdentityPoolCommand({
+      IdentityPoolName: "generated-mapping",
+      AllowUnauthenticatedIdentities: true,
+      CognitoIdentityProviders: [binding],
+      SupportedLoginProviders: {},
+    }));
+    const poolId = created.IdentityPoolId!;
+    const roles = await attachRoles(simulator, poolId, { guests: true });
+    const mappings = { [`${provider}:${login.clientId}`]: { Type: "Token" as const, AmbiguousRoleResolution: "AuthenticatedRole" as const } };
+    await identity.send(new SetIdentityPoolRolesCommand({ IdentityPoolId: poolId, Roles: roles, RoleMappings: mappings }));
+    assert.deepEqual((await identity.send(new GetIdentityPoolRolesCommand({ IdentityPoolId: poolId }))).RoleMappings, mappings);
+
+    const guest = await identity.send(new GetIdCommand({ IdentityPoolId: poolId }));
+    const linked = await identity.send(new GetCredentialsForIdentityCommand({ IdentityId: guest.IdentityId, Logins: logins }));
+    const session = simulator.store.ensureAccount().iam.sessions[linked.Credentials!.AccessKeyId!];
+    assert.equal(session.roleArn, roles.authenticated);
+    assert.equal(session.cognitoIdentity?.identityId, guest.IdentityId);
+    assert.equal(session.cognitoIdentity?.authClass, "authenticated");
+    const poolBefore = structuredClone(simulator.store.regionState(region).cognitoIdentity.pools[poolId]);
+    for (const invalidMappings of [
+      { [`${provider}:wrong-client`]: { Type: "Token", AmbiguousRoleResolution: "AuthenticatedRole" } },
+      { [`${provider}:${login.clientId}`]: { Type: "Rules", AmbiguousRoleResolution: "AuthenticatedRole" } },
+      { [`${provider}:${login.clientId}`]: { Type: "Token", AmbiguousRoleResolution: "Deny" } },
+    ]) {
+      await assert.rejects(identity.send(new SetIdentityPoolRolesCommand({ IdentityPoolId: poolId, Roles: roles, RoleMappings: invalidMappings as any })),
+        (error: any) => error.name === "InvalidParameterException");
+      assert.deepEqual(simulator.store.regionState(region).cognitoIdentity.pools[poolId], poolBefore);
+    }
+    // A real signed token carrying group role claims must not silently select
+    // the fallback role; that selection remains outside this frozen fixture.
+    await idp.send(new CreateGroupCommand({ UserPoolId: login.userPoolId, GroupName: "role-selection", RoleArn: roles.authenticated }));
+    await idp.send(new AdminAddUserToGroupCommand({ UserPoolId: login.userPoolId, Username: "user@example.test", GroupName: "role-selection" }));
+    const groupLogin = await idp.send(new InitiateAuthCommand({ ClientId: login.clientId, AuthFlow: "USER_PASSWORD_AUTH", AuthParameters: { USERNAME: "user@example.test", PASSWORD: password } }));
+    const sessionsBeforeDeniedToken = Object.keys(simulator.store.ensureAccount().iam.sessions);
+    await assert.rejects(identity.send(new GetCredentialsForIdentityCommand({ IdentityId: guest.IdentityId, Logins: { [provider]: groupLogin.AuthenticationResult!.IdToken! } })),
+      (error: any) => error.name === "NotAuthorizedException");
+    assert.deepEqual(Object.keys(simulator.store.ensureAccount().iam.sessions), sessionsBeforeDeniedToken);
+
+    await idp.send(new AdminDisableUserCommand({ UserPoolId: login.userPoolId, Username: "user@example.test" }));
+    // Disabling a user does not revoke an already issued offline JWT.
+    assert.ok((await identity.send(new GetCredentialsForIdentityCommand({ IdentityId: guest.IdentityId, Logins: logins }))).Credentials);
+    identity.destroy();
+    idp.destroy();
+    await simulator.stop();
+    simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "off", clock });
+    await simulator.start();
+    identity = identityClient(simulator);
+    assert.deepEqual((await identity.send(new GetIdentityPoolRolesCommand({ IdentityPoolId: poolId }))).RoleMappings, mappings);
+    assert.ok((await identity.send(new GetCredentialsForIdentityCommand({ IdentityId: guest.IdentityId, Logins: logins }))).Credentials);
+    await identity.send(new UpdateIdentityPoolCommand({
+      IdentityPoolId: poolId, IdentityPoolName: "generated-mapping", AllowUnauthenticatedIdentities: true,
+      CognitoIdentityProviders: [{ ...binding, ServerSideTokenCheck: true }],
+    }));
+    await assert.rejects(identity.send(new GetCredentialsForIdentityCommand({ IdentityId: guest.IdentityId, Logins: logins })),
+      (error: any) => error.name === "NotAuthorizedException");
+    await identity.send(new UpdateIdentityPoolCommand({
+      IdentityPoolId: poolId, IdentityPoolName: "generated-mapping", AllowUnauthenticatedIdentities: true,
+      CognitoIdentityProviders: [binding],
+    }));
+    clock.advance(3_600_001);
+    await assert.rejects(identity.send(new GetCredentialsForIdentityCommand({ IdentityId: guest.IdentityId, Logins: logins })),
+      (error: any) => error.name === "NotAuthorizedException");
+  } finally {
+    identity?.destroy();
+    idp?.destroy();
     await simulator.stop().catch(() => undefined);
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }

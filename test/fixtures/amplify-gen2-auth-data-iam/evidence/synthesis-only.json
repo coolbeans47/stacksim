@@ -1,0 +1,41 @@
+{
+  "command": "node <Node 22.13.0> <unchanged ampx.js> sandbox --once --identifier amx13",
+  "nodeVersion": "22.13.0",
+  "packageManager": "npm@11.9.0",
+  "captureToolchain": {
+    "cliNodeVersion": "22.13.0",
+    "captureNodeVersion": "22.13.0",
+    "platform": "darwin",
+    "architecture": "arm64"
+  },
+  "fixture": "amplify-gen2-auth-data-iam",
+  "result": {
+    "code": 0,
+    "signal": null
+  },
+  "stateAfterRun": {
+    "stacks": 0,
+    "buckets": 1,
+    "functions": 0,
+    "tables": 0,
+    "appsyncApis": 0
+  },
+  "workloadMutation": false,
+  "networkHostClasses": [
+    "approved-loopback"
+  ],
+  "firstBlockedMutation": {
+    "phase": "sandbox-once",
+    "service": "cloudformation",
+    "action": "CreateStack",
+    "method": "POST",
+    "path": "/",
+    "signingName": "cloudformation",
+    "account": "000000000000",
+    "region": "eu-west-1",
+    "hostClass": "approved-loopback",
+    "assumedRole": "arn:aws:iam::000000000000:role/cdk-hnb659fds-deploy-role-000000000000-eu-west-1",
+    "resultClass": "blocked:synthesis-only-no-workload-mutation"
+  },
+  "originalArtifactsAreRewritten": false
+}

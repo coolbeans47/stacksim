@@ -12,5 +12,5 @@
     "resolveJsonModule": true
   },
   "include": ["src/**/*.ts", "examples/**/*.ts", "test/**/*.ts"],
-  "exclude": ["test/fixtures/amplify-gen2-data/**/*", "examples/amplify-todo/**/*"]
+  "exclude": ["test/fixtures/amplify-gen2-data/**/*", "test/fixtures/amplify-gen2-auth-email/**/*", "test/fixtures/amplify-gen2-auth-data-owner/**/*", "test/fixtures/amplify-gen2-auth-data-iam/**/*", "examples/amplify-todo/**/*"]
 }

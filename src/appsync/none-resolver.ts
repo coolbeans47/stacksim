@@ -1,5 +1,6 @@
 import { AwsError } from "../errors.js";
 import {
+  AppSyncVtlError,
   evaluateAppSyncVtl,
   validateAppSyncVtl,
   type AppSyncVtlContext,
@@ -49,6 +50,7 @@ export function validateNoneResolverTemplates(requestTemplate: string, responseT
     const evaluated = evaluateAppSyncVtl(requestTemplate, context, 0);
     if (!evaluated.returned) requestDocument(evaluated);
   } catch (error) {
+    if (error instanceof AppSyncVtlError && error.errorType === "Unauthorized") return;
     throw new AwsError(
       "BadRequestException",
       error instanceof Error ? error.message : "The NONE resolver mapping templates are invalid.",

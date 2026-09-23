@@ -30,7 +30,7 @@ The Cognito service in StackSim has a left navigation bar with these top-level a
 
 Opening a user pool shows tabs: **Overview**, **Users**, **Groups**, **App clients**, **Managed login**, **Sign-in**, and **Self-service sign-up**.
 
-StackSim implements **Cognito User Pools** and a CID-01 **Cognito Identity Pools** slice (enhanced `GetId` / `GetCredentialsForIdentity`, User Pool ID-token login, and two CloudFormation types). Classic flow, role mappings, social IdPs, developer identities, and Amplify default Auth are not available.
+StackSim implements **Cognito User Pools** and a CID-01 **Cognito Identity Pools** slice (enhanced `GetId` / `GetCredentialsForIdentity`, User Pool ID-token login, and two CloudFormation types). The pinned authenticated learning fixtures also admit the generated no-group Token/AuthenticatedRole mapping. Classic flow, other role mappings, social IdPs, and developer identities remain unavailable.
 
 ---
 
@@ -798,7 +798,7 @@ Lambda triggers execute on supported lifecycle events when ARNs are configured a
 
 | Feature | StackSim behavior |
 |---------|-------------------|
-| Cognito Identity Pools | Separate service: enhanced GetId/GetCredentialsForIdentity, User Pool ID tokens, guest identities when enabled; classic flow, role mappings, and Amplify default Auth are unavailable |
+| Cognito Identity Pools | Separate service: enhanced GetId/GetCredentialsForIdentity, User Pool ID tokens, guest identities when enabled; the exact generated no-group mapping is admitted; classic flow and other role mappings are unavailable |
 | SMS MFA / SMS verification | Unavailable |
 | External email delivery | Never sent; use SES Inbox |
 | Client secrets | Write-only; console shows existence only |
@@ -825,3 +825,7 @@ Lambda triggers execute on supported lifecycle events when ARNs are configured a
 - [AWS CLI cookbook](./aws-cli-cookbook.md) — CLI examples for Cognito operations
 - [SES console guide](./ses-console-guide.md) — verification and password-reset mail in the Inbox
 - [Lambda console guide](./lambda-console-guide.md) — Cognito trigger targets
+
+## Authenticated application lesson
+
+[Authenticated notes](../examples/amplify-auth-notes/README.md) uses the pinned unmodified Amplify client for sign-up, confirmation, SRP, refresh, and local sign-out. Open the SES Inbox using the console administrator session to read each verification code, then enter it in the app. Keep passwords, tokens, codes, and temporary credentials out of diagnostic screenshots. User Pool tokens establish identity, Identity Pools issue temporary AWS credentials, IAM gates service resources, and generated owner conditions isolate records. See [the closeout](gap-3-authenticated-app-closeout.md) for offline revocation semantics and exact limits.

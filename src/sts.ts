@@ -81,6 +81,7 @@ export class StsService {
     sessionPolicies?: PolicyDocument[];
     skipPackedPolicyCheck?: boolean;
     cognitoIdentity?: LocalCredentialState["cognitoIdentity"];
+    stateTransition?: { commit(): void; rollback(): void };
   }): Promise<{
     AccessKeyId: string;
     SecretAccessKey: string;
@@ -105,7 +106,6 @@ export class StsService {
       const secretAccessKey = randomCredential("", 32, 40); const issuedAt = this.clock.now(); const expiration = issuedAt + duration * 1000; const assumedRoleId = `${role.roleId}:${sessionName}`; const arn = `arn:aws:sts::${this.store.accountId}:assumed-role/${role.roleName}/${sessionName}`; const tokenPayload = Buffer.from(JSON.stringify({ accessKeyId, expiration, arn })).toString("base64url"); const signature = createHmac("sha256", this.store.state.installation.paginationSecret).update(tokenPayload).digest("base64url"); const sessionToken = `${tokenPayload}.${signature}`;
       const credentialId = randomUUID();
       if (!this.store.credentialStore) throw new AwsError("InternalFailure", "The IAM credential store is unavailable", 500);
-      await this.store.credentialStore.put({ credentialId, type: "sts-session", accountId: this.store.accountId, ownerId: assumedRoleId, accessKeyId }, { secretAccessKey, sessionToken });
       const persisted: LocalCredentialState = {
         accessKeyId, credentialId, principalArn: arn, principalId: assumedRoleId, roleArn: role.arn, roleName: role.roleName, sessionName, issuedAt, expiration, sourceIdentity, sessionPolicy,
         ...(input.sessionPolicyOrigins ? { sessionPolicyOrigins: structuredClone(input.sessionPolicyOrigins) } : {}),
@@ -114,12 +114,23 @@ export class StsService {
         sessionTags, transitiveTagKeys: resultingTransitiveTagKeys,
         ...(input.cognitoIdentity ? { cognitoIdentity: structuredClone(input.cognitoIdentity) } : {}),
       };
-      this.store.ensureAccount().iam.sessions[accessKeyId] = persisted;
+      let transitionStarted = false;
       try {
+        await this.store.credentialStore.put({ credentialId, type: "sts-session", accountId: this.store.accountId, ownerId: assumedRoleId, accessKeyId }, { secretAccessKey, sessionToken });
+        this.store.ensureAccount().iam.sessions[accessKeyId] = persisted;
+        // Identity linking and the session must appear in the same state write.
+        // The transition is synchronous, after trust and vault admission, so a
+        // rejected credential request cannot leave a promoted guest behind.
+        transitionStarted = true;
+        input.stateTransition?.commit();
         await this.store.save();
       } catch (error) {
-        delete this.store.ensureAccount().iam.sessions[accessKeyId];
-        await this.store.credentialStore.delete(credentialId).catch(() => undefined);
+        try {
+          if (transitionStarted) input.stateTransition?.rollback();
+        } finally {
+          delete this.store.ensureAccount().iam.sessions[accessKeyId];
+          await this.store.credentialStore.delete(credentialId).catch(() => undefined);
+        }
         throw error;
       }
       return { AccessKeyId: accessKeyId, SecretAccessKey: secretAccessKey, SessionToken: sessionToken, Expiration: new Date(expiration), AssumedRoleUser: { AssumedRoleId: assumedRoleId, Arn: arn } };
@@ -137,6 +148,7 @@ export class StsService {
     trustContext: Record<string, unknown>;
     sessionPolicies?: PolicyDocument[];
     cognitoIdentity: NonNullable<LocalCredentialState["cognitoIdentity"]>;
+    stateTransition?: { commit(): void; rollback(): void };
   }): Promise<{ AccessKeyId: string; SecretKey: string; SessionToken: string; Expiration: number }> {
     const role = Object.values(this.store.ensureAccount().iam.roles).find(item => item.arn === input.roleArn);
     if (!role) throw new AwsError("InvalidIdentityPoolConfigurationException", "Invalid identity pool configuration: role is not available.");
@@ -160,6 +172,7 @@ export class StsService {
       sessionPolicies: input.sessionPolicies,
       skipPackedPolicyCheck: Boolean(input.sessionPolicies?.length),
       cognitoIdentity: input.cognitoIdentity,
+      stateTransition: input.stateTransition,
     });
     return {
       AccessKeyId: issued.AccessKeyId,

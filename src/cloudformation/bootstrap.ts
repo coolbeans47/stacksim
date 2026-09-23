@@ -26,7 +26,7 @@ export const CDK_BOOTSTRAP_QUALIFIER = "hnb659fds";
 // permissions backed by StackSim's bounded providers; they do not advertise
 // the cumulative upstream version 30 template.
 export const CDK_BOOTSTRAP_COMPATIBILITY_VERSION = 23;
-export const CDK_BOOTSTRAP_POLICY_REVISION = 20;
+export const CDK_BOOTSTRAP_POLICY_REVISION = 21;
 export const CDK_BOOTSTRAP_VERSION_PARAMETER = `/cdk-bootstrap/${CDK_BOOTSTRAP_QUALIFIER}/version`;
 export const CDK_BOOTSTRAP_POLICY_NAME = "stacksim-cdk-bootstrap";
 export const CDK_BOOTSTRAP_COGNITO_POLICY_NAME = "stacksim-cdk-bootstrap-cognito";
@@ -457,14 +457,12 @@ function executionPolicy(bucketName: string, accountId: string, region: string):
 }
 
 function amx04ExecutionPolicy(accountId: string, region: string): PolicyDocument {
+  const applications = ["stacksimamplifygen2datafixture", "stacksimamplifygen2authdataownerfixture", "stacksimamplifygen2authdataiamfixture"];
   const parameterPrefix = `arn:aws:ssm:${region}:${accountId}:parameter/amplify/resource_reference/stacksimamplifygen2datafixture/*-sandbox-*/`;
   return { Version: "2012-10-17", Statement: [
-    { Sid: "ManageAmplifyBucketCors", Effect: "Allow", Action: ["s3:DeleteBucketCORS", "s3:GetBucketCORS", "s3:PutBucketCORS"], Resource: "arn:aws:s3:::amplify-stacksimamplifygen2datafixture-*" },
+    { Sid: "ManageAmplifyBucketCors", Effect: "Allow", Action: ["s3:DeleteBucketCORS", "s3:GetBucketCORS", "s3:PutBucketCORS"], Resource: applications.map(application => `arn:aws:s3:::amplify-${application}-*`) },
     { Sid: "ManageAmplifyResourceReferenceParameters", Effect: "Allow", Action: ["ssm:AddTagsToResource", "ssm:DeleteParameter", "ssm:GetParameter", "ssm:ListTagsForResource", "ssm:PutParameter", "ssm:RemoveTagsFromResource"], Resource: [
-      `${parameterPrefix}AMPLIFY_DATA_GRAPHQL_ENDPOINT`,
-      `${parameterPrefix}AMPLIFY_DATA_MODEL_INTROSPECTION_SCHEMA_BUCKET_NAME`,
-      `${parameterPrefix}AMPLIFY_DATA_MODEL_INTROSPECTION_SCHEMA_KEY`,
-      `${parameterPrefix}AMPLIFY_DATA_DEFAULT_NAME`,
+      `${parameterPrefix}AMPLIFY_DATA_GRAPHQL_ENDPOINT`, `${parameterPrefix}AMPLIFY_DATA_MODEL_INTROSPECTION_SCHEMA_BUCKET_NAME`, `${parameterPrefix}AMPLIFY_DATA_MODEL_INTROSPECTION_SCHEMA_KEY`, `${parameterPrefix}AMPLIFY_DATA_DEFAULT_NAME`,
     ] },
   ] };
 }

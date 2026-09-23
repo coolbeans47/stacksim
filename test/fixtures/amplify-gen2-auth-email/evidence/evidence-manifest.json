@@ -1,0 +1,97 @@
+{
+  "format": 1,
+  "phase": "AMX-13A",
+  "fixture": "amplify-gen2-auth-email",
+  "files": [
+    {
+      "path": "asset-manifest.json",
+      "sha256": "004e431fb17a16d55c6335d59ab6df288c53c595c24b0b61ad37084de4648457",
+      "bytes": 1546,
+      "files": 1
+    },
+    {
+      "path": "assets-manifest.json",
+      "sha256": "f296a2ab21ec2116204227b0c9b81485280910f9b286dda92b104367144fcb0f",
+      "bytes": 1810,
+      "files": 1
+    },
+    {
+      "path": "auth-contract.json",
+      "sha256": "400009e5c9ec618cb9afd4d357a38a6646aed401bd10c243dd66a9527628da80",
+      "bytes": 1515,
+      "files": 1
+    },
+    {
+      "path": "aws-call-trace.json",
+      "sha256": "c90038616c8475d4c61865041878ea4037ffbd6dee098862d31231239a7a5a2d",
+      "bytes": 12165,
+      "files": 1
+    },
+    {
+      "path": "cloud-assembly.json",
+      "sha256": "9a926a780c63288b14f1a38f16bf2d02494a57ac97acd520d135bd68aab5f185",
+      "bytes": 27775,
+      "files": 1
+    },
+    {
+      "path": "dependency-manifest.json",
+      "sha256": "bacdf9f00c93cf41efbaf55f034627960daf533c574823b519edebeade18b441",
+      "bytes": 394560,
+      "files": 1
+    },
+    {
+      "path": "endpoint-derivation.json",
+      "sha256": "ee9a18b40d65175b754a1adeaf73cfaa401d5e4e67700723b918a292f761fcb5",
+      "bytes": 3218,
+      "files": 1
+    },
+    {
+      "path": "fixture-source-manifest.json",
+      "sha256": "0946e248c645cb50c02dfd2f1d9846981e721721baef56a49f4108aad59a6b47",
+      "bytes": 1030,
+      "files": 1
+    },
+    {
+      "path": "graph-manifest.json",
+      "sha256": "3e6e0b9be0cf3ca09d3b213e1aed04782b437aae9645c18e32865d9650fa299c",
+      "bytes": 24036,
+      "files": 1
+    },
+    {
+      "path": "optional-network.json",
+      "sha256": "14b10a444b4888efd1a0195037f85be044a5387346d1de22faf75abd5efe9070",
+      "bytes": 572,
+      "files": 1
+    },
+    {
+      "path": "output-contract.json",
+      "sha256": "02b2be930c7ba5c94e5d281586b6fbca54e9282eb31a353ca963e12bb02587b8",
+      "bytes": 658,
+      "files": 1
+    },
+    {
+      "path": "repeat-synthesis.json",
+      "sha256": "cfd67cffb48ef2925f4dedafccace3b98f020bde683587ca516bd24fd8602a29",
+      "bytes": 142,
+      "files": 1
+    },
+    {
+      "path": "synthesis-only.json",
+      "sha256": "6c03522c8bb28a8ae7446d967a45500f82d1f5af632a4cf1d492af7a6bf05546",
+      "bytes": 1109,
+      "files": 1
+    },
+    {
+      "path": "templates/auth.json",
+      "sha256": "53752360a7a87f3abe73572c6e22a1a0d2416b0ce853920d9a0d30c115198995",
+      "bytes": 12594,
+      "files": 1
+    },
+    {
+      "path": "templates/root.json",
+      "sha256": "185dc4ec6ec03f36ccd85d8b1731fc042cf32fea9abecdbc68c61ca2309385ab",
+      "bytes": 9057,
+      "files": 1
+    }
+  ]
+}

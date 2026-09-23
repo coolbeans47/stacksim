@@ -485,15 +485,27 @@ const CREATE_POOL_FIELDS = [
   "UsernameAttributes", "EmailVerificationMessage", "EmailVerificationSubject", "SmsVerificationMessage", "VerificationMessageTemplate",
   "EmailConfiguration", "AdminCreateUserConfig", "Schema", "UsernameConfiguration",
   "AccountRecoverySetting", "UserPoolTier", "MfaConfiguration", "EnabledMfas", "LambdaConfig",
-  "UserPoolTags", "DeviceConfiguration",
+  "UserPoolTags", "DeviceConfiguration", "UserAttributeUpdateSettings",
 ] as const;
 
 const UPDATE_POOL_FIELDS = [
   "UserPoolId", "PoolName", "Policies", "DeletionProtection", "AutoVerifiedAttributes",
   "EmailVerificationMessage", "EmailVerificationSubject", "SmsVerificationMessage", "VerificationMessageTemplate",
   "EmailConfiguration", "AdminCreateUserConfig", "AccountRecoverySetting", "UserPoolTier",
-  "MfaConfiguration", "EnabledMfas", "LambdaConfig", "DeviceConfiguration",
+  "MfaConfiguration", "EnabledMfas", "LambdaConfig", "DeviceConfiguration", "UserAttributeUpdateSettings",
 ] as const;
+
+function attributeUpdateSettings(input: Record<string, any>): CognitoUserPoolConfigurationState["userAttributeUpdateSettings"] {
+  if (input.UserAttributeUpdateSettings === undefined) return undefined;
+  const value = object(input.UserAttributeUpdateSettings, "UserAttributeUpdateSettings");
+  rejectUnknown(value, ["AttributesRequireVerificationBeforeUpdate"], "UserAttributeUpdateSettings");
+  const attributes = emailOnlyArray(value.AttributesRequireVerificationBeforeUpdate, "UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate");
+  const autoVerified = emailOnlyArray(input.AutoVerifiedAttributes, "AutoVerifiedAttributes");
+  if (attributes.some(name => !autoVerified.includes(name))) {
+    throw new AwsError("InvalidParameterException", "Verification before update requires an auto-verified attribute.");
+  }
+  return { attributesRequireVerificationBeforeUpdate: attributes };
+}
 
 function phaseThreeConfiguration(input: Record<string, any>): Pick<
   CognitoUserPoolConfigurationState,
@@ -604,6 +616,7 @@ export function createPoolConfiguration(
     policies: passwordPolicy(input.Policies),
     deletionProtection,
     autoVerifiedAttributes: emailOnlyArray(input.AutoVerifiedAttributes, "AutoVerifiedAttributes"),
+    userAttributeUpdateSettings: attributeUpdateSettings(input),
     aliasAttributes,
     usernameAttributes,
     usernameConfiguration: { caseSensitive },
@@ -664,6 +677,7 @@ export function updatePoolConfiguration(
           return input.DeletionProtection;
         })(),
     autoVerifiedAttributes: emailOnlyArray(input.AutoVerifiedAttributes, "AutoVerifiedAttributes"),
+    userAttributeUpdateSettings: attributeUpdateSettings(input),
     adminCreateUserConfig: adminCreateUserConfig(input.AdminCreateUserConfig),
     accountRecoverySetting: accountRecovery(input.AccountRecoverySetting),
     emailConfiguration: email,
@@ -856,6 +870,9 @@ export function clientConfiguration(
     "ALLOW_REFRESH_TOKEN_AUTH",
     "ALLOW_USER_SRP_AUTH",
     "ALLOW_ADMIN_USER_PASSWORD_AUTH",
+    // The pinned default Amplify client emits this alongside SRP/refresh.
+    // Custom-challenge invocation remains rejected by InitiateAuth.
+    "ALLOW_CUSTOM_AUTH",
   ].includes(flow))) {
     throw new AwsError(
       "InvalidParameterException",

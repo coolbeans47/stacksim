@@ -1,0 +1,21 @@
+{
+  "name": "stacksim-amplify-auth-notes",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Learn private records, Cognito sign-in and Identity Pool credentials with pinned Amplify clients",
+  "engines": { "node": ">=22.13.0" },
+  "scripts": {
+    "start": "vite",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "backend:install": "node scripts/ampx-local.mjs install",
+    "deploy": "node scripts/ampx-local.mjs deploy all",
+    "deploy:owner": "node scripts/ampx-local.mjs deploy owner",
+    "deploy:iam": "node scripts/ampx-local.mjs deploy iam",
+    "backend:delete": "node scripts/ampx-local.mjs delete all"
+  },
+  "dependencies": { "aws-amplify": "6.20.0", "react": "19.1.1", "react-dom": "19.1.1" },
+  "devDependencies": { "@vitejs/plugin-react": "6.0.4", "vite": "8.1.5" }
+}

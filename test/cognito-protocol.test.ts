@@ -278,7 +278,7 @@ test("regional Cognito SDK alias scopes configured origins without replacing loo
       headers: {
         origin: allowedOrigin,
         "access-control-request-method": "POST",
-        "access-control-request-headers": "content-type,x-amz-target,x-amz-user-agent,amz-sdk-invocation-id,amz-sdk-request",
+        "access-control-request-headers": "cache-control,content-type,x-amz-target,x-amz-user-agent,amz-sdk-invocation-id,amz-sdk-request",
       },
     });
     assert.equal(preflight.status, 204);
@@ -293,6 +293,7 @@ test("regional Cognito SDK alias scopes configured origins without replacing loo
       .map(value => value.trim().toLowerCase())
       .filter(Boolean));
     assert.deepEqual(allowedHeaders, new Set([
+      "cache-control",
       "content-type",
       "x-amz-target",
       "x-amz-user-agent",

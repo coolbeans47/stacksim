@@ -28,6 +28,7 @@ import {
   cognitoIdentityProviders,
   identityPoolName,
   identityPoolRoles,
+  identityPoolRoleMappings,
   loginsMap,
   rejectUnsupportedPoolFields,
   requiredBoolean,
@@ -312,15 +313,14 @@ export class CognitoIdentityService {
     return {
       IdentityPoolId: pool.id,
       Roles: { ...(pool.roles ?? {}) },
+      ...(pool.roleMappings ? { RoleMappings: structuredClone(pool.roleMappings) } : {}),
     };
   }
 
   async SetIdentityPoolRoles(input: Record<string, any>): Promise<Record<string, unknown>> {
-    if (input.RoleMappings !== undefined) {
-      throw new AwsError("InvalidParameterException", "RoleMappings is not supported.");
-    }
     const id = requiredString(input.IdentityPoolId, "IdentityPoolId", 1, MAX_IDENTITY_ID_LENGTH);
     const roles = identityPoolRoles(input.Roles);
+    const roleMappings = identityPoolRoleMappings(input.RoleMappings);
     if (roles.authenticated) this.sameAccountRole(roles.authenticated, "Roles.authenticated");
     if (roles.unauthenticated) this.sameAccountRole(roles.unauthenticated, "Roles.unauthenticated");
     return this.exclusive(async () => {
@@ -328,7 +328,12 @@ export class CognitoIdentityService {
       if (Object.keys(roles).length && pool.allowUnauthenticatedIdentities && !roles.unauthenticated) {
         throw new AwsError("InvalidParameterException", "Roles.unauthenticated is required when unauthenticated identities are enabled.");
       }
+      if (Object.keys(roleMappings).some(provider => !pool.cognitoIdentityProviders.some(binding => `${binding.providerName}:${binding.clientId}` === provider))
+        || Object.keys(roleMappings).length && !roles.authenticated) {
+        throw new AwsError("InvalidParameterException", "Token role mappings require an attached User Pool client and authenticated role.");
+      }
       pool.roles = Object.keys(roles).length ? roles : undefined;
+      pool.roleMappings = Object.keys(roleMappings).length ? roleMappings : undefined;
       pool.updatedAt = this.clock.now();
       this.state.revision += 1;
       await this.store.save();
@@ -399,6 +404,12 @@ export class CognitoIdentityService {
       token: logins[providerName],
       serverSideTokenCheck: binding.serverSideTokenCheck,
     });
+    const mapping = pool.roleMappings?.[`${binding.providerName}:${binding.clientId}`];
+    if (mapping && verified.hasRoleClaims) {
+      // The generated no-group graph uses AuthenticatedRole when the ID token
+      // contains no role claims. Group/preferred-role selection is not admitted.
+      throw new AwsError("NotAuthorizedException", "Token role claims are not supported by this identity pool role mapping.");
+    }
     return { providerName, subject: verified.sub, serverSideTokenCheck: binding.serverSideTokenCheck };
   }
 
@@ -449,12 +460,13 @@ export class CognitoIdentityService {
     if (input.CustomRoleArn !== undefined) {
       throw new AwsError("InvalidParameterException", "CustomRoleArn is not supported.");
     }
-    const identityId = this.assertIdentityId(input.IdentityId);
+    const requestedIdentityId = this.assertIdentityId(input.IdentityId);
     const logins = loginsMap(input.Logins);
     return this.exclusive(async () => {
+      let identityId = requestedIdentityId;
       const pool = Object.values(this.state.pools).find(candidate => candidate.identities[identityId]);
       if (!pool) throw new AwsError("ResourceNotFoundException", "IdentityId is invalid.");
-      const identity = pool.identities[identityId];
+      let identity = pool.identities[identityId];
       const verified = this.verifyLogins(pool, logins);
       if (!verified) {
         if (!pool.allowUnauthenticatedIdentities || identity.authClass !== "unauthenticated") {
@@ -484,25 +496,32 @@ export class CognitoIdentityService {
         });
         return { IdentityId: identityId, Credentials: credentials };
       }
-      const existingOwner = pool.loginIndex[loginIndexKey(verified.providerName, verified.subject)];
+      const indexKey = loginIndexKey(verified.providerName, verified.subject);
+      const existingOwner = pool.loginIndex[indexKey];
+      let mergedGuest: CognitoIdentityRecordState | undefined;
       if (existingOwner && existingOwner !== identityId) {
-        throw new AwsError("ResourceConflictException", "The login is already linked to a different identity.");
+        const canonical = pool.identities[existingOwner];
+        if (identity.authClass !== "unauthenticated" || Object.keys(identity.logins).length !== 0
+          || canonical?.authClass !== "authenticated" || canonical.logins[verified.providerName] !== verified.subject) {
+          throw new AwsError("ResourceConflictException", "The login is already linked to a different identity.");
+        }
+        // An unlinked guest may resolve to an existing verified login. Preserve
+        // that login's parent identity and retire the guest only with issuance.
+        mergedGuest = identity;
+        identityId = existingOwner;
+        identity = canonical;
       }
-      if (identity.authClass === "unauthenticated") {
-        identity.authClass = "authenticated";
-        identity.logins[verified.providerName] = verified.subject;
-        pool.loginIndex[loginIndexKey(verified.providerName, verified.subject)] = identityId;
-      } else if (identity.logins[verified.providerName] && identity.logins[verified.providerName] !== verified.subject) {
+      if (identity.authClass === "authenticated"
+        && identity.logins[verified.providerName] !== verified.subject) {
         throw new AwsError("NotAuthorizedException", "Invalid login token.");
-      } else {
-        identity.logins[verified.providerName] = verified.subject;
-        pool.loginIndex[loginIndexKey(verified.providerName, verified.subject)] = identityId;
       }
-      identity.updatedAt = this.clock.now();
       const roleArn = pool.roles?.authenticated;
       if (!roleArn) {
         throw new AwsError("InvalidIdentityPoolConfigurationException", "Invalid identity pool configuration.");
       }
+      const previousIdentity = structuredClone(identity);
+      const previousUpdatedAt = pool.updatedAt;
+      const previousRevision = this.state.revision;
       const credentials = await this.sts.issueCognitoIdentityCredentials({
         roleArn,
         sessionName: identityId.replace(/:/g, "_").slice(0, 64),
@@ -519,10 +538,29 @@ export class CognitoIdentityService {
           provider: verified.providerName,
           roleArn,
         },
+        stateTransition: {
+          commit: () => {
+            if (mergedGuest) {
+              delete pool.identities[requestedIdentityId];
+            } else {
+              identity.authClass = "authenticated";
+              identity.logins[verified.providerName] = verified.subject;
+              identity.updatedAt = this.clock.now();
+              pool.loginIndex[indexKey] = identityId;
+            }
+            pool.updatedAt = this.clock.now();
+            this.state.revision += 1;
+          },
+          rollback: () => {
+            Object.assign(identity, previousIdentity);
+            if (mergedGuest) pool.identities[requestedIdentityId] = mergedGuest;
+            if (existingOwner === undefined) delete pool.loginIndex[indexKey];
+            else pool.loginIndex[indexKey] = existingOwner;
+            pool.updatedAt = previousUpdatedAt;
+            this.state.revision = previousRevision;
+          },
+        },
       });
-      pool.updatedAt = this.clock.now();
-      this.state.revision += 1;
-      await this.store.save();
       return { IdentityId: identityId, Credentials: credentials };
     });
   }

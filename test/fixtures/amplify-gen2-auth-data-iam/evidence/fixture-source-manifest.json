@@ -1,0 +1,46 @@
+{
+  "files": [
+    {
+      "path": ".node-version",
+      "sha256": "88029f8a967e9b0a57e49328ab94fa6d74e07946e2b5d33626c82d0dc6e93d81",
+      "bytes": 8,
+      "files": 1
+    },
+    {
+      "path": "package.json",
+      "sha256": "2aa4ad645f117f476daaba9d2ef371c4f08db553aaae574c8eca819892aea839",
+      "bytes": 454,
+      "files": 1
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "9d6200acb57784f92f95e2c40dfb449e60874460324de3ee9e5495d89925a6ce",
+      "bytes": 729589,
+      "files": 1
+    },
+    {
+      "path": "tsconfig.json",
+      "sha256": "c0ece07074272cd834e7b2203ff469e556efc5ccf61f8d46b15ffc5d0b592d64",
+      "bytes": 276,
+      "files": 1
+    },
+    {
+      "path": "amplify/auth/resource.ts",
+      "sha256": "02e811f52d58d3058272effe460e6920d09daa47c73a9dd3d575ce012cd87fa1",
+      "bytes": 119,
+      "files": 1
+    },
+    {
+      "path": "amplify/backend.ts",
+      "sha256": "e1c1bf7a3857001c0edb5bd4a707362bc07e7a78b0157d2a1ff97c3e546d2725",
+      "bytes": 172,
+      "files": 1
+    },
+    {
+      "path": "amplify/data/resource.ts",
+      "sha256": "4a938cd61dd7b5945579ff33a9d847813e1bcd327be02a50925bf84e2593cf9a",
+      "bytes": 525,
+      "files": 1
+    }
+  ]
+}

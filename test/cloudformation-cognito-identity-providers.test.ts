@@ -105,6 +105,14 @@ test("CID-01 CloudFormation providers register Identity Pool and RoleAttachment 
       IdentityPoolId: "eu-west-1:00000000-0000-0000-0000-000000000000",
       RoleMappings: { rules: {} },
     }, context("Mapped")).some(issue => issue.path.includes("RoleMappings")));
+    assert.ok(poolProvider.validate({ AllowUnauthenticatedIdentities: true, SupportedLoginProviders: { "accounts.google.com": "external" } }, context("Social")).some(issue => issue.path.includes("SupportedLoginProviders")));
+    for (const mapping of [
+      { IdentityProvider: "provider:client", Type: "Rules", AmbiguousRoleResolution: "AuthenticatedRole" },
+      { IdentityProvider: "provider:client", Type: "Token", AmbiguousRoleResolution: "Deny" },
+      { IdentityProvider: "provider:client", Type: "Token", AmbiguousRoleResolution: "AuthenticatedRole", RulesConfiguration: { Rules: [] } },
+    ]) {
+      assert.ok(attachmentProvider.validate({ IdentityPoolId: "pool", RoleMappings: { Generated: mapping } }, context("MappingBoundary")).some(issue => issue.path.includes("RoleMappings")));
+    }
 
     const createdPool = await idp.send(new CreateUserPoolCommand({
       PoolName: "cfn-identity-users",
@@ -128,7 +136,8 @@ test("CID-01 CloudFormation providers register Identity Pool and RoleAttachment 
         ClientId: clientId,
         ServerSideTokenCheck: false,
       }],
-      IdentityPoolTags: { env: "test" },
+      IdentityPoolTags: [{ Key: "env", Value: "test" }],
+      SupportedLoginProviders: {},
     }, context("Pool"));
     const poolCreated = await poolProvider.create(poolDesired, context("Pool"));
     assert.equal(poolCreated.status, "SUCCESS", JSON.stringify(poolCreated));
@@ -148,17 +157,29 @@ test("CID-01 CloudFormation providers register Identity Pool and RoleAttachment 
       AssumeRolePolicyDocument: trust(poolId, "authenticated"),
     }));
     const roleArn = `arn:aws:iam::${accountId}:role/cfn-identity-auth`;
+    const mappingProvider = `${providerName}:${clientId}`;
     const attachmentDesired = attachmentProvider.canonicalize({
       IdentityPoolId: poolId,
       Roles: { authenticated: roleArn },
+      RoleMappings: { UserPoolWebClientRoleMapping: {
+        Type: "Token", AmbiguousRoleResolution: "AuthenticatedRole", IdentityProvider: mappingProvider,
+      } },
     }, context("Roles"));
     const attachmentCreated = await attachmentProvider.create(attachmentDesired, context("Roles"));
     assert.equal(attachmentCreated.status, "SUCCESS", JSON.stringify(attachmentCreated));
     if (attachmentCreated.status !== "SUCCESS") return;
     assert.equal(attachmentProvider.ref(attachmentCreated.model), poolId);
     assert.equal(attachmentProvider.getAtt(attachmentCreated.model, "Id"), poolId);
-    const roles = await simulator.cognitoIdentity.executeCloudFormationControl("GetIdentityPoolRoles", { IdentityPoolId: poolId }) as { Roles?: { authenticated?: string } };
-    assert.equal(roles.Roles?.authenticated, roleArn);
+    const roles = await simulator.cognitoIdentity.executeCloudFormationControl("GetIdentityPoolRoles", { IdentityPoolId: poolId });
+    assert.equal((roles.Roles as { authenticated?: string })?.authenticated, roleArn);
+    assert.deepEqual(roles.RoleMappings, { [mappingProvider]: { Type: "Token", AmbiguousRoleResolution: "AuthenticatedRole" } });
+    const attachmentRead = await attachmentProvider.read(poolId, context("Roles"));
+    assert.equal(attachmentRead.status, "SUCCESS");
+    if (attachmentRead.status === "SUCCESS") assert.deepEqual(attachmentRead.model.properties, attachmentDesired);
+    const withoutMapping = attachmentProvider.canonicalize({ IdentityPoolId: poolId, Roles: { authenticated: roleArn } }, context("Roles"));
+    assert.equal((await attachmentProvider.update(poolId, attachmentDesired, withoutMapping, context("Roles"))).status, "SUCCESS");
+    assert.equal((await simulator.cognitoIdentity.GetIdentityPoolRoles({ IdentityPoolId: poolId })).RoleMappings, undefined);
+    assert.equal((await attachmentProvider.update(poolId, withoutMapping, attachmentDesired, context("Roles"))).status, "SUCCESS");
 
     const renamed = poolProvider.canonicalize({
       AllowUnauthenticatedIdentities: false,

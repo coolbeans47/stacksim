@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-09-23T08:56:00.488Z",
+  "node": "v22.13.0",
+  "platform": "darwin",
+  "browser": {
+    "name": "Chromium",
+    "version": "149.0.7827.55"
+  },
+  "client": {
+    "awsAmplify": "6.20.0",
+    "react": "19.1.1",
+    "vite": "8.1.5"
+  },
+  "deployment": {
+    "cli": "@aws-amplify/backend-cli@1.9.0",
+    "identifier": "authnotes",
+    "fixtures": [
+      "amplify-gen2-auth-data-owner",
+      "amplify-gen2-auth-data-iam"
+    ],
+    "generatedOutputsUnchanged": true,
+    "authMode": "enforce"
+  },
+  "tls": {
+    "method": "Temporary simulator certificate public-key pin for this browser process",
+    "globalTlsVerificationDisabled": false
+  },
+  "checks": {
+    "signUpThroughUi": true,
+    "confirmFromExistingSesInbox": true,
+    "srpSignIn": true,
+    "ownerCreateReadUpdateDelete": true,
+    "simultaneousOwnerProfiles": true,
+    "foreignGetUpdateDeleteDenied": true,
+    "ownerAuthorizedRealtime": true,
+    "foreignRealtimeNotDelivered": true,
+    "refreshReconnectReceivesEvent": true,
+    "localSignOutClearsView": true,
+    "sameProfileUserSwitch": true,
+    "existingUserFreshGuestResolutionAfterRestart": true,
+    "iamCreateReadUpdateDelete": true,
+    "iamAuthorizedRealtime": true,
+    "iamGuestDeniedBeforeAndAfterSignOut": true,
+    "iamAdjacentOwnerApiDenied": true,
+    "iamRepeatSignIn": true
+  },
+  "network": {
+    "observedBrowserHosts": [
+      "127.0.0.1"
+    ],
+    "regionalSdkPaths": [
+      "/_stacksim/cognito-identity/eu-west-1/sdk",
+      "/_stacksim/cognito-idp/eu-west-1/sdk",
+      "/graphql/<region>/<generated-api>"
+    ],
+    "unexpectedPageErrors": 0
+  },
+  "notes": [
+    "Sign-up and SES confirmation were exercised in the initial browser session; the repeat session reused those registered users after simulator restart.",
+    "Request bodies, headers, passwords, confirmation codes, JWTs and AWS credentials are not included.",
+    "No browser request interception, dependency patching or output rewriting was used."
+  ]
+}

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer, request } from "node:http";
 import { cp, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
@@ -10,8 +10,16 @@ import { CloudFormationClient, CreateStackCommand, DeleteStackCommand, DescribeS
 import { StackSim } from "../dist/src/server.js";
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const baselineFixture = join(sourceRoot, "test", "fixtures", "amplify-gen2-data");
+const fixtureOption = process.argv.indexOf("--fixture");
+const baselineFixture = fixtureOption >= 0
+  ? resolve(process.argv[fixtureOption + 1])
+  : join(sourceRoot, "test", "fixtures", "amplify-gen2-data");
 let fixture = baselineFixture;
+const nodeOption = process.argv.indexOf("--node-executable");
+const nodeExecutable = nodeOption >= 0 ? resolve(process.argv[nodeOption + 1]) : process.execPath;
+const runtimeProbe = spawnSync(nodeExecutable, ["--version"], { encoding: "utf8", windowsHide: true });
+if (runtimeProbe.status !== 0) throw new Error("Unable to read the selected CLI Node runtime version");
+const cliNodeVersion = runtimeProbe.stdout.trim().replace(/^v/, "");
 const tripwire = join(sourceRoot, "test", "fixtures", "cdk", "network-tripwire.cjs");
 const region = "eu-west-1";
 const accountId = "000000000000";
@@ -295,6 +303,7 @@ async function run() {
     const packageManager = JSON.parse(await readFile(join(fixture, "package.json"), "utf8")).packageManager.replace("@", "/");
     let env = {
       ...inherited,
+      PATH: `${dirname(nodeExecutable)}${process.platform === "win32" ? ";" : ":"}${inherited.PATH ?? ""}`,
       AWS_ACCESS_KEY_ID: "admin",
       AWS_SECRET_ACCESS_KEY: "password",
       AWS_REGION: region,
@@ -347,7 +356,7 @@ async function run() {
     }
     let watchEvidence;
     const runCli = () => new Promise((resolvePromise, reject) => {
-      const child = spawn(process.execPath, [cli, "sandbox", ...(watchEdit ? [] : ["--once"]), "--identifier", identifier], {
+      const child = spawn(nodeExecutable, [cli, "sandbox", ...(watchEdit ? [] : ["--once"]), "--identifier", identifier], {
         cwd: fixture,
         env,
         shell: false,
@@ -408,7 +417,8 @@ async function run() {
             cloudFormationTemplateDigestUnchanged: afterRoot?.templateDigest === beforeRoot?.templateDigest,
             outputRewritten: afterOutput !== beforeOutput,
             calls: calls.slice(beforeCalls),
-            ownership: simulator.store.regionState(region).cloudformation.resourceOwnership,
+            ownership: Object.fromEntries(Object.entries(simulator.store.regionState(region).cloudformation.resourceOwnership)
+              .map(([key, value]) => [key.startsWith("appsync:api-key:") ? key.replace(/:[^:]+$/, ":<redacted>") : key, value])),
             drift: simulator.store.regionState(region).cloudformation.hotswapDrift,
             operations: simulator.store.regionState(region).cloudformation.hotswapOperations,
           };
@@ -685,6 +695,11 @@ async function run() {
         secondIdentifierPreserved: secondIdentifier ? Object.values(afterDelete.cloudformation.stacks).some(stack => !stack.parentId && stack.stackName.includes(secondIdentifier) && stack.stackStatus === "CREATE_COMPLETE") : undefined,
       };
       if (watchEdit && process.argv.includes("--recreate")) {
+        // Parameter Store's reviewed same-name tombstone applies to a new
+        // CloudFormation generation too. Preserve that service boundary rather
+        // than relying on how long an unrelated CLI command happens to take.
+        const recreationCooldownWaitMs = 30_000;
+        await new Promise(resolvePromise => setTimeout(resolvePromise, recreationCooldownWaitMs));
         phase = "same-identifier-recreate";
         const recreateResult = await new Promise((resolvePromise, reject) => {
           const child = spawn(process.execPath, [cli, "sandbox", "--once", "--identifier", identifier], { cwd: fixture, env, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -692,11 +707,15 @@ async function run() {
           child.stdout.on("data", chunk => stdout.push(Buffer.from(chunk))); child.stderr.on("data", chunk => stderr.push(Buffer.from(chunk)));
           child.once("error", reject); child.once("close", (code, signal) => resolvePromise({ code, signal, stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") }));
         });
-        if (recreateResult.code !== 0) throw new Error(`Same-identifier recreation failed: ${recreateResult.stderr || recreateResult.stdout}`);
+        if (recreateResult.code !== 0 || !/File written: amplify_outputs\.json/.test(recreateResult.stdout)) {
+          throw new Error(`Same-identifier recreation did not write a stabilized output: ${recreateResult.stderr || recreateResult.stdout}`);
+        }
         const recreatedRoot = Object.values(simulator.store.regionState(region).cloudformation.stacks).find(stack => !stack.parentId && stack.stackName.includes(identifier) && stack.stackStatus === "CREATE_COMPLETE");
+        if (!recreatedRoot || recreatedRoot.stackId === deploymentStack.stackId) throw new Error("Same-identifier recreation did not create a new completed root stack");
         const recreatedOutput = JSON.parse(await readFile(generatedOutputPath, "utf8"));
         const recreatedClientUse = await exerciseAmplifyClient(recreatedOutput, simulator, "amx10-recreated");
         deletion.recreation = {
+          cooldownWaitMs: recreationCooldownWaitMs,
           result: recreateResult,
           oldRootStackId: deploymentStack.stackId,
           newRootStackId: recreatedRoot?.stackId,
@@ -715,6 +734,7 @@ async function run() {
       }
     }
     const evidence = {
+      toolchain: { cliNodeVersion, captureNodeVersion: process.versions.node, platform: process.platform, architecture: process.arch },
       mode: synthesisOnly ? "synthesis-only" : authEnforce ? "credential-enforced-transport" : "first-failing-deployment",
       result,
       repeatResult,

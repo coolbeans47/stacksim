@@ -71,7 +71,7 @@ function validSid(value: unknown): value is string {
 
 function autoDeleteRoleArn(value: unknown, context?: ProviderContext): boolean {
   if (typeof value !== "string") return false;
-  const match = value.match(/^arn:([a-z0-9-]+):iam::(\d{12}):role\/(?:[A-Za-z0-9+=,.@_-]*CustomS3AutoDelete[A-Za-z0-9+=,.@_-]*|amplify-stacksimamplifygen2datafixture-[A-Za-z0-9-]+-[a-f0-9]{12})$/);
+  const match = value.match(/^arn:([a-z0-9-]+):iam::(\d{12}):role\/(?:[A-Za-z0-9+=,.@_-]*CustomS3AutoDelete[A-Za-z0-9+=,.@_-]*|amplify-stacksimamplifygen2(?:data|authdataowner|authdataiam)fixture-[A-Za-z0-9-]+-[a-f0-9]{12})$/);
   return Boolean(match && (!context || match[1] === context.partition && match[2] === context.accountId));
 }
 

@@ -1,0 +1,247 @@
+{
+  "format": 1,
+  "phase": "AMX-13A",
+  "fixture": "amplify-gen2-auth-data-iam",
+  "files": [
+    {
+      "path": "asset-manifest.json",
+      "sha256": "6bb5402251b94b0f65630240a763f01f0cc4c39240a244cf3f183e18a2831329",
+      "bytes": 23793,
+      "files": 1
+    },
+    {
+      "path": "assets-manifest.json",
+      "sha256": "a4454efdcc1794788c6b5f71bcf8da3541bc452ccf987276fd83cbd777349dc1",
+      "bytes": 27276,
+      "files": 1
+    },
+    {
+      "path": "assets/06db846fd14e6fc371f22b12b5545ba8e2dbfeda85d8c8d586c71c282166657b.vtl",
+      "sha256": "0140a28b1c5d13ee37a69d841b9762c8fc694c48d8bf652f6a1c78873adc87e8",
+      "bytes": 350,
+      "files": 1
+    },
+    {
+      "path": "assets/08f4d557693d96c1a4efba0f9dc91330e4b19772fd5477c156468843e3d9cb5e.vtl",
+      "sha256": "e89cfb26233f47073a95604efd936fdab7d3296ffc5929656f5656c91a84f676",
+      "bytes": 1208,
+      "files": 1
+    },
+    {
+      "path": "assets/1f5fed297da9c32ae3af922bf3a38ccf23b956078887d16891ec06c20c64722c.vtl",
+      "sha256": "6e162a95640c4a8a9fabc38c8b017c87439ab49b392b0089bfb1c362321ddad0",
+      "bytes": 394,
+      "files": 1
+    },
+    {
+      "path": "assets/29b3b89722d570fcdd1fc0c8b13d37567676e84713957929ca1fb216cf2a8112.vtl",
+      "sha256": "4b7c2ddab6b83c4233c336a022c837adecfc18a5b3ed2a5a92a194e6ccc1a7c1",
+      "bytes": 1629,
+      "files": 1
+    },
+    {
+      "path": "assets/2bf64327ca5682da4be84d0d16440204e25abc3a221195b41f2d21dfa432e5ab.vtl",
+      "sha256": "816b56b10da7deb19bc3d061529603bc3e4c4f6c7abb09ace0f7cc8417a8fc8a",
+      "bytes": 2238,
+      "files": 1
+    },
+    {
+      "path": "assets/474bf0776ec2164a13191d1a0a9e057154931e4918fea5086f49850d02a5371b.vtl",
+      "sha256": "0c6a3d9ed1d168b9f3f151daf7746d9544c12d96ae6d0f5664031a7fd1235e5f",
+      "bytes": 4371,
+      "files": 1
+    },
+    {
+      "path": "assets/4c6a2d29f01c6091bd1d9afe16e5849d456c96f17c3b215938c8067399532719.vtl",
+      "sha256": "3f59bdf6ce29bb866d20b80de1033fe605c519a935a4a48313344ec9c3981b08",
+      "bytes": 381,
+      "files": 1
+    },
+    {
+      "path": "assets/4f7907d1209a2c9953a0c053df402c634e359546d70c7cc5c2e8e21ea734880f.vtl",
+      "sha256": "c7125e4d9d0343961a8665049296c35aed4220e3128b53d9941f773da527634c",
+      "bytes": 1847,
+      "files": 1
+    },
+    {
+      "path": "assets/5662817c1c84cc87e71babada235746e684b1ca5f99b2924a3a8ca4aab958514-model-schema.graphql",
+      "sha256": "472075ab8e37b84c3824c62a44138bc7ca28da3e14f64354111a6d86ebae00e4",
+      "bytes": 174,
+      "files": 1
+    },
+    {
+      "path": "assets/8d5baec70f401f8dcf3263f133f3df93567e39a43b3b735765618a180eaccab5.vtl",
+      "sha256": "f8bb4c02587e058dd5f20b70cf2a06a63513fa77c59be3151cf1d9717589761f",
+      "bytes": 1181,
+      "files": 1
+    },
+    {
+      "path": "assets/93422a84067033ef2403fd051d86465bc5be6c6fc4651ae956d2feb2c6b93190.vtl",
+      "sha256": "a77026c78416658723cc2d7a14f377f2afeb43eaeb9fbf9bab48e2e7db52f5ea",
+      "bytes": 827,
+      "files": 1
+    },
+    {
+      "path": "assets/9b561003e5304fa8152afcd8f5ea6c30566aa9a9e3f0fa5758b046d7278e2281.vtl",
+      "sha256": "07125a3945cb3afe6423deab4af40bff93809661d66599207a22a8cae6b38a58",
+      "bytes": 937,
+      "files": 1
+    },
+    {
+      "path": "assets/9fcbe070ecd3023c5bf5b966fa9584757db9762eef123bad0820bd87591b2174.vtl",
+      "sha256": "d465836395626ef0ea84366d111e3f2e68445cda8145f7bd0d558eebabdacabd",
+      "bytes": 1794,
+      "files": 1
+    },
+    {
+      "path": "assets/a183ddccbd956316c38ef97177b8f088ef0826f62023323f5ae6053d348ccffc.vtl",
+      "sha256": "0b21ad5c230ec3fda3bf68049d992f55d1fca8e6a12032aad86115f83db0d479",
+      "bytes": 475,
+      "files": 1
+    },
+    {
+      "path": "assets/c1721bcd774e27c514d3454b5be4f9bdd094c0161b57ddf053d618e3b0086a77.vtl",
+      "sha256": "cef4ef4aa3f3f97c3ed8c7e2bf6acd1821405f33f4457840247725612b344494",
+      "bytes": 378,
+      "files": 1
+    },
+    {
+      "path": "assets/cc01911d0269d4080ea57505dc445dfc315ef7ad85d3d9d4ea1357858bff451d.vtl",
+      "sha256": "54f3cee8f80896a9a5c7799810f2c32575445ab5681432ea5fd784e5e5c82a7c",
+      "bytes": 169,
+      "files": 1
+    },
+    {
+      "path": "assets/e0cff47fb007f0bbf2a4e43ca256d6aa7ec109821769fd79fa7c5e83f0e7f9fc.vtl",
+      "sha256": "a95a848d61227d2208f59481faa82321f0cf19821e9bdf3de7c8d34101538628",
+      "bytes": 249,
+      "files": 1
+    },
+    {
+      "path": "assets/e4f777e6b0065673c8cf5b9458839baf440e2fd63c1eca6e85e40935a217cd5d.vtl",
+      "sha256": "d5177d33424ab98b212b93e75701216c0720c5247f3b61fbde0556f90488e365",
+      "bytes": 2113,
+      "files": 1
+    },
+    {
+      "path": "assets/e9afc30fa011966f2a3a75bff5c1d967dbc5e92a90c81b9c15da17030d9fb283-modelIntrospectionSchema.json",
+      "sha256": "d48856bb8202a089a4c41cdb9b118ecd4bb72585638e2cdc220329c03207bce1",
+      "bytes": 3215,
+      "files": 1
+    },
+    {
+      "path": "assets/f4a52b72209a9dfa197b5e7367a5c378c5bb86de6e29ddd9e48b49a3fe54b249.vtl",
+      "sha256": "6483ee775c0280187a9884184f1c7d1d8fa0807f743a85a774e39f12563ee952",
+      "bytes": 222,
+      "files": 1
+    },
+    {
+      "path": "assets/f7c1e0be788a7a9d1d2396d980fb6cbccd85e73cdede6d9fd90a8917431244e9.graphql",
+      "sha256": "6afc702a9d4a98baae2301e181d6a37bc28164e0f3ce49ff4f7ccbe58a7ae975",
+      "bytes": 4592,
+      "files": 1
+    },
+    {
+      "path": "assets/fe3c43ada4b9d681a5e2312663ef7a73386424d73b73e51f8e2e9d4b50f7c502.vtl",
+      "sha256": "7d4c412d7cb73a01ba41593bcc007187adb3590c6cc175ae7db7416660d54f4f",
+      "bytes": 148,
+      "files": 1
+    },
+    {
+      "path": "auth-contract.json",
+      "sha256": "2d778693546f180d6135745ea30f195b0926a984ba5b7c76f7e4b7b29b03117f",
+      "bytes": 1721,
+      "files": 1
+    },
+    {
+      "path": "aws-call-trace.json",
+      "sha256": "5aebcce8f2bca151648117f6b094289e7f8b3e7007a65745493b2621448ad36a",
+      "bytes": 68870,
+      "files": 1
+    },
+    {
+      "path": "cloud-assembly.json",
+      "sha256": "1650ff311c3934054afc28fe9782d0bc2a93f7cd773f0c434eceb73ba5514b57",
+      "bytes": 27791,
+      "files": 1
+    },
+    {
+      "path": "dependency-manifest.json",
+      "sha256": "bacdf9f00c93cf41efbaf55f034627960daf533c574823b519edebeade18b441",
+      "bytes": 394560,
+      "files": 1
+    },
+    {
+      "path": "endpoint-derivation.json",
+      "sha256": "ee9a18b40d65175b754a1adeaf73cfaa401d5e4e67700723b918a292f761fcb5",
+      "bytes": 3218,
+      "files": 1
+    },
+    {
+      "path": "fixture-source-manifest.json",
+      "sha256": "0eaaf3b7a5f2c65eb33e2dea9e7aa37aac31ae4fd1feb10ec3c509e9beab4317",
+      "bytes": 1206,
+      "files": 1
+    },
+    {
+      "path": "graph-manifest.json",
+      "sha256": "491efa45ca162624d0a75221471aa31d03ec159ad860940325dd0ee66cb59778",
+      "bytes": 181525,
+      "files": 1
+    },
+    {
+      "path": "optional-network.json",
+      "sha256": "14b10a444b4888efd1a0195037f85be044a5387346d1de22faf75abd5efe9070",
+      "bytes": 572,
+      "files": 1
+    },
+    {
+      "path": "output-contract.json",
+      "sha256": "871b77a958ae221c5a70c741d3cc037ea44709f281a8aa6eba6255dd4673a6c5",
+      "bytes": 670,
+      "files": 1
+    },
+    {
+      "path": "repeat-synthesis.json",
+      "sha256": "dcaaf65cb96cc27c0b7afd360cad8fde7311cde7baf7be1942efd68c530c1f76",
+      "bytes": 143,
+      "files": 1
+    },
+    {
+      "path": "synthesis-only.json",
+      "sha256": "c4dc21456fe63b5fb1bbea26d2b09613d7e8ca826ff8ef339c6a9b69923d0b32",
+      "bytes": 1112,
+      "files": 1
+    },
+    {
+      "path": "templates/auth.json",
+      "sha256": "178c10f5e76080b602dd0a8d0bb1504e2ac69c1f1aa23d5b90f2e98bdf529902",
+      "bytes": 13016,
+      "files": 1
+    },
+    {
+      "path": "templates/data.json",
+      "sha256": "6a21d051942cbc75652aaeb8c9d03ade3f6eb127a543b55f76e6629d2b73deba",
+      "bytes": 42156,
+      "files": 1
+    },
+    {
+      "path": "templates/root.json",
+      "sha256": "b437e8b1b6f45f770dfc58903f3906134c7c0c1421ac099e172a10e628e78da7",
+      "bytes": 13593,
+      "files": 1
+    },
+    {
+      "path": "templates/table-manager.json",
+      "sha256": "938ce65721d1dac4dd7bd33f6d2bb5aacf121ec4509cbe6bbac8fc62c6b5cf09",
+      "bytes": 17128,
+      "files": 1
+    },
+    {
+      "path": "templates/todo.json",
+      "sha256": "9336fc580fa74718c2897efdc8cd456e98141c54dea5331915380647e4821170",
+      "bytes": 74008,
+      "files": 1
+    }
+  ]
+}

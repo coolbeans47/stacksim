@@ -190,6 +190,10 @@ Review the confirmation prompt carefully. Deletion removes the sandbox and its
 Todo records while preserving StackSim's shared managed bootstrap and unrelated
 sandboxes.
 
+Wait at least 30 seconds before deploying the same sandbox identifier again.
+Its generated reference parameter follows Parameter Store's name-reuse cooldown;
+an immediate recreation can roll back before writing new outputs.
+
 ## Build the frontend
 
 ```bash

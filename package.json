@@ -12,6 +12,8 @@
     "dev": "tsx src/cli.ts",
     "generate:cloudwatch-insights-capabilities": "node scripts/generate-cloudwatch-logs-insights-capabilities.mjs",
     "check:cloudwatch-insights-capabilities": "node scripts/generate-cloudwatch-logs-insights-capabilities.mjs --check",
+    "generate:amplify-auth-capabilities": "node scripts/generate-amplify-auth-capabilities.mjs",
+    "check:amplify-auth-capabilities": "node scripts/generate-amplify-auth-capabilities.mjs --check",
     "check:structured-arn-inputs": "node scripts/check-structured-arn-inputs.mjs",
     "package:sample": "npm run build && tsc -p tsconfig.lambda.json && node scripts/package-lambda.mjs",
     "seed": "npm run package:sample && node dist/examples/deploy.js",

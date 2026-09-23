@@ -564,7 +564,8 @@ function assign(scope: Record<string, unknown>, expression: string, value: unkno
     throw new AppSyncVtlError("Unsupported #set assignment path.");
   }
   if (match[1] === "ctx" || match[1] === "context") {
-    if (parts[0] !== "stash") throw new AppSyncVtlError("Only $ctx.stash can be assigned.");
+    const generatedSubscriptionFilter = ["args", "arguments"].includes(String(parts[0])) && parts.length === 2 && parts[1] === "filter";
+    if (parts[0] !== "stash" && !generatedSubscriptionFilter) throw new AppSyncVtlError("Only $ctx.stash and the generated subscription argument filter can be assigned.");
   }
   let target = property(scope, match[1]) as any;
   for (const key of parts.slice(0, -1)) {
@@ -680,8 +681,10 @@ class Runtime {
     private readonly now: number,
   ) {
     const normalized = {
-      arguments: clone(context.arguments),
-      args: clone(context.arguments),
+      // Generated owner functions stamp input and compose subscription filters
+      // for later pipeline stages. Both aliases share this request-local map.
+      arguments: context.arguments,
+      args: context.arguments,
       source: clone(context.source),
       result: clone(context.result),
       error: clone(context.error ?? null),
@@ -876,6 +879,7 @@ class Runtime {
       parseJson: safe((value: unknown) => JSON.parse(String(value))),
       defaultIfNull: safe((value: unknown, fallback: unknown) => value === null || value === undefined ? fallback : value),
       defaultIfNullOrBlank: safe((value: unknown, fallback: unknown) => value === null || value === undefined || String(value).trim() === "" ? fallback : value),
+      isList: safe((value: unknown) => Array.isArray(value)),
       isNull: safe((value: unknown) => value === null || value === undefined),
       isNullOrEmpty: safe((value: unknown) => value === null || value === undefined
         || (typeof value === "string" || Array.isArray(value) ? value.length === 0 : isRecord(value) ? Object.keys(value).length === 0 : false)),
@@ -1079,9 +1083,9 @@ export function validateAppSyncVtl(template: string): void {
   cleanTemplate(template);
   // Parse and evaluate against a deliberately populated context so invalid
   // directives, references, utility calls, and non-JSON output fail at control time.
-  evaluateAppSyncVtl(template, {
+  try { evaluateAppSyncVtl(template, {
     arguments: { id: "validation", input: { id: "validation", value: "value" }, limit: 1, nextToken: null },
-    source: { id: "source" },
+    source: { id: "source", owner: "validation::validation" },
     result: { id: "result", items: [], nextToken: null },
     error: null,
     identity: null,
@@ -1090,5 +1094,9 @@ export function validateAppSyncVtl(template: string): void {
     request: { headers: {} },
     info: { fieldName: "field", parentTypeName: "Query", variables: {} },
     authType: "API Key Authorization",
-  }, 0);
+  }, 0); } catch (error) {
+    // Authorization denial is a valid runtime outcome, not malformed VTL. The
+    // generated Cognito owner functions deliberately deny the validation identity.
+    if (!(error instanceof AppSyncVtlError) || error.errorType !== "Unauthorized") throw error;
+  }
 }

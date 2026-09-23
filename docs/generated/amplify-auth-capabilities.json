@@ -1,0 +1,1001 @@
+{
+  "schemaVersion": 1,
+  "generatedBy": "scripts/generate-amplify-auth-capabilities.mjs",
+  "capability": "amplify-gen2-authenticated-app",
+  "milestone": "AMX-M4",
+  "status": "complete",
+  "claim": "Pinned Amplify Gen 2 email Auth, User Pool owner Data and separate authenticated Identity Pool/IAM Data fixtures",
+  "qualification": "Exact pinned email Auth, owner Data and authenticated Identity Pool/IAM Data fixtures passed unmodified CLI/client, same-session signing, guest transitions, Auth update/rollback/restart/two-sandbox/delete/cleanup, and scoped AMX-19 checks on Node 22.13.0/macOS arm64. AMX-M2 public workflow rechecked with the documented 30-second Parameter Store cooldown before same-name recreation. General AMX-M3 recovery and unrelated backend breadth remain excluded; Linux/Windows were not executed.",
+  "completionRecord": "docs/gap-3-authenticated-app-closeout.md",
+  "completionStatusSha256": "87d7cd13fd7238f1af2df338456b1981b9a32c3c597a5c20716b8e2dab927c19",
+  "runtimeEvidenceSha256": {
+    "docs/generated/amplify-auth-client-evidence.json": "3c654c88d79a06bc442e112c36c3415308bdd75b8dbfa0ff6d02433badce89f6",
+    "examples/amplify-auth-notes/evidence/browser-smoke.json": "b0dcebd06470c12dda2cc734913e40081620a9355ee3e7c60c76c6c12fd4f77f"
+  },
+  "fixtures": [
+    {
+      "name": "amplify-gen2-auth-email",
+      "nodeVersion": "22.13.0",
+      "packageManager": "npm@11.9.0",
+      "dependencies": {
+        "@aws-amplify/backend": "1.24.0",
+        "@aws-amplify/backend-cli": "1.9.0",
+        "aws-amplify": "6.20.0",
+        "typescript": "7.0.2"
+      },
+      "devDependencies": {
+        "aws-cdk-lib": "2.265.0"
+      },
+      "transitiveVersions": {
+        "@aws-amplify/ai-constructs": [
+          "1.6.2"
+        ],
+        "@aws-amplify/analytics": [
+          "7.1.0"
+        ],
+        "@aws-amplify/api": [
+          "6.3.29"
+        ],
+        "@aws-amplify/api-graphql": [
+          "4.8.10"
+        ],
+        "@aws-amplify/api-rest": [
+          "4.6.4"
+        ],
+        "@aws-amplify/appsync-modelgen-plugin": [
+          "2.15.3"
+        ],
+        "@aws-amplify/auth": [
+          "6.20.0"
+        ],
+        "@aws-amplify/auth-construct": [
+          "1.11.2"
+        ],
+        "@aws-amplify/backend": [
+          "1.24.0"
+        ],
+        "@aws-amplify/backend-auth": [
+          "1.9.4"
+        ],
+        "@aws-amplify/backend-cli": [
+          "1.9.0"
+        ],
+        "@aws-amplify/backend-data": [
+          "1.8.0"
+        ],
+        "@aws-amplify/backend-deployer": [
+          "2.2.0"
+        ],
+        "@aws-amplify/backend-function": [
+          "1.18.2"
+        ],
+        "@aws-amplify/backend-output-schemas": [
+          "1.8.0"
+        ],
+        "@aws-amplify/backend-output-storage": [
+          "1.3.4",
+          "1.3.5"
+        ],
+        "@aws-amplify/backend-secret": [
+          "1.4.2"
+        ],
+        "@aws-amplify/backend-storage": [
+          "1.5.0"
+        ],
+        "@aws-amplify/cli-core": [
+          "2.2.6"
+        ],
+        "@aws-amplify/client-config": [
+          "1.11.0"
+        ],
+        "@aws-amplify/codegen-ui": [
+          "2.20.6"
+        ],
+        "@aws-amplify/codegen-ui-react": [
+          "2.20.6"
+        ],
+        "@aws-amplify/core": [
+          "6.18.0"
+        ],
+        "@aws-amplify/data-construct": [
+          "1.17.7"
+        ],
+        "@aws-amplify/data-schema": [
+          "1.26.1"
+        ],
+        "@aws-amplify/data-schema-types": [
+          "1.3.0"
+        ],
+        "@aws-amplify/datastore": [
+          "5.1.10"
+        ],
+        "@aws-amplify/deployed-backend-client": [
+          "1.8.2"
+        ],
+        "@aws-amplify/form-generator": [
+          "1.2.7"
+        ],
+        "@aws-amplify/graphql-api-construct": [
+          "1.22.2"
+        ],
+        "@aws-amplify/graphql-auth-transformer": [
+          "4.2.9"
+        ],
+        "@aws-amplify/graphql-conversation-transformer": [
+          "1.1.16"
+        ],
+        "@aws-amplify/graphql-default-value-transformer": [
+          "3.1.18"
+        ],
+        "@aws-amplify/graphql-directives": [
+          "1.1.1",
+          "2.8.0"
+        ],
+        "@aws-amplify/graphql-docs-generator": [
+          "4.2.2"
+        ],
+        "@aws-amplify/graphql-function-transformer": [
+          "3.1.20"
+        ],
+        "@aws-amplify/graphql-generation-transformer": [
+          "1.2.8"
+        ],
+        "@aws-amplify/graphql-generator": [
+          "0.5.4"
+        ],
+        "@aws-amplify/graphql-http-transformer": [
+          "3.0.23"
+        ],
+        "@aws-amplify/graphql-index-transformer": [
+          "3.1.3"
+        ],
+        "@aws-amplify/graphql-maps-to-transformer": [
+          "4.0.24"
+        ],
+        "@aws-amplify/graphql-model-transformer": [
+          "3.5.0"
+        ],
+        "@aws-amplify/graphql-predictions-transformer": [
+          "3.0.23"
+        ],
+        "@aws-amplify/graphql-relational-transformer": [
+          "3.1.15"
+        ],
+        "@aws-amplify/graphql-schema-generator": [
+          "0.11.16"
+        ],
+        "@aws-amplify/graphql-searchable-transformer": [
+          "3.1.4"
+        ],
+        "@aws-amplify/graphql-sql-transformer": [
+          "0.4.23"
+        ],
+        "@aws-amplify/graphql-transformer": [
+          "2.5.1"
+        ],
+        "@aws-amplify/graphql-transformer-core": [
+          "3.6.1"
+        ],
+        "@aws-amplify/graphql-transformer-interfaces": [
+          "4.4.0"
+        ],
+        "@aws-amplify/graphql-types-generator": [
+          "3.6.0"
+        ],
+        "@aws-amplify/graphql-validate-transformer": [
+          "1.1.8"
+        ],
+        "@aws-amplify/model-generator": [
+          "1.2.4"
+        ],
+        "@aws-amplify/notifications": [
+          "2.1.0"
+        ],
+        "@aws-amplify/platform-core": [
+          "1.11.0",
+          "1.11.1"
+        ],
+        "@aws-amplify/plugin-types": [
+          "1.12.1",
+          "1.12.2"
+        ],
+        "@aws-amplify/sandbox": [
+          "2.3.0"
+        ],
+        "@aws-amplify/schema-generator": [
+          "1.4.1"
+        ],
+        "@aws-amplify/storage": [
+          "6.16.0"
+        ],
+        "@aws-sdk/client-amplify": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-amplifyuibuilder": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-appsync": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-bedrock-agentcore-control": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-bedrock-runtime": [
+          "3.1058.0",
+          "3.1078.0"
+        ],
+        "@aws-sdk/client-cloudcontrol": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-cloudformation": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-cloudwatch-logs": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-codebuild": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-ec2": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-ecr": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-ecs": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-elastic-load-balancing-v2": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-firehose": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-iam": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-kinesis": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-kms": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-lambda": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-personalize-events": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-rds": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-route-53": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-s3": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-secrets-manager": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-sfn": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-ssm": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-sso": [
+          "3.1078.0"
+        ],
+        "@aws-sdk/client-sso-oidc": [
+          "3.1078.0"
+        ],
+        "@aws-sdk/client-sts": [
+          "3.1011.0",
+          "3.1078.0",
+          "3.1101.0"
+        ],
+        "aws-cdk-lib": [
+          "2.265.0"
+        ],
+        "constructs": [
+          "10.8.0"
+        ]
+      },
+      "lockSha256": "1e1a0066ee7e07718398989cff522891d3408a4d75599a0f0400e15d025b1aa1",
+      "resources": 9,
+      "templates": 2,
+      "authorizationRule": null,
+      "evidenceSha256": {
+        "fixture-source-manifest.json": "0946e248c645cb50c02dfd2f1d9846981e721721baef56a49f4108aad59a6b47",
+        "dependency-manifest.json": "bacdf9f00c93cf41efbaf55f034627960daf533c574823b519edebeade18b441",
+        "graph-manifest.json": "3e6e0b9be0cf3ca09d3b213e1aed04782b437aae9645c18e32865d9650fa299c",
+        "assets-manifest.json": "f296a2ab21ec2116204227b0c9b81485280910f9b286dda92b104367144fcb0f",
+        "aws-call-trace.json": "c90038616c8475d4c61865041878ea4037ffbd6dee098862d31231239a7a5a2d",
+        "synthesis-only.json": "6c03522c8bb28a8ae7446d967a45500f82d1f5af632a4cf1d492af7a6bf05546",
+        "repeat-synthesis.json": "cfd67cffb48ef2925f4dedafccace3b98f020bde683587ca516bd24fd8602a29",
+        "endpoint-derivation.json": "ee9a18b40d65175b754a1adeaf73cfaa401d5e4e67700723b918a292f761fcb5",
+        "output-contract.json": "02b2be930c7ba5c94e5d281586b6fbca54e9282eb31a353ca963e12bb02587b8",
+        "auth-contract.json": "400009e5c9ec618cb9afd4d357a38a6646aed401bd10c243dd66a9527628da80",
+        "evidence-manifest.json": "008bf2bc54cda6da0e488e647b36f145237126a9c34ee56ae2361eaff36c89e3"
+      },
+      "synthesisPlatform": {
+        "cliNodeVersion": "22.13.0",
+        "captureNodeVersion": "22.13.0",
+        "platform": "darwin",
+        "architecture": "arm64"
+      }
+    },
+    {
+      "name": "amplify-gen2-auth-data-owner",
+      "nodeVersion": "22.13.0",
+      "packageManager": "npm@11.9.0",
+      "dependencies": {
+        "@aws-amplify/backend": "1.24.0",
+        "@aws-amplify/backend-cli": "1.9.0",
+        "aws-amplify": "6.20.0",
+        "typescript": "7.0.2"
+      },
+      "devDependencies": {
+        "aws-cdk-lib": "2.265.0"
+      },
+      "transitiveVersions": {
+        "@aws-amplify/ai-constructs": [
+          "1.6.2"
+        ],
+        "@aws-amplify/analytics": [
+          "7.1.0"
+        ],
+        "@aws-amplify/api": [
+          "6.3.29"
+        ],
+        "@aws-amplify/api-graphql": [
+          "4.8.10"
+        ],
+        "@aws-amplify/api-rest": [
+          "4.6.4"
+        ],
+        "@aws-amplify/appsync-modelgen-plugin": [
+          "2.15.3"
+        ],
+        "@aws-amplify/auth": [
+          "6.20.0"
+        ],
+        "@aws-amplify/auth-construct": [
+          "1.11.2"
+        ],
+        "@aws-amplify/backend": [
+          "1.24.0"
+        ],
+        "@aws-amplify/backend-auth": [
+          "1.9.4"
+        ],
+        "@aws-amplify/backend-cli": [
+          "1.9.0"
+        ],
+        "@aws-amplify/backend-data": [
+          "1.8.0"
+        ],
+        "@aws-amplify/backend-deployer": [
+          "2.2.0"
+        ],
+        "@aws-amplify/backend-function": [
+          "1.18.2"
+        ],
+        "@aws-amplify/backend-output-schemas": [
+          "1.8.0"
+        ],
+        "@aws-amplify/backend-output-storage": [
+          "1.3.4",
+          "1.3.5"
+        ],
+        "@aws-amplify/backend-secret": [
+          "1.4.2"
+        ],
+        "@aws-amplify/backend-storage": [
+          "1.5.0"
+        ],
+        "@aws-amplify/cli-core": [
+          "2.2.6"
+        ],
+        "@aws-amplify/client-config": [
+          "1.11.0"
+        ],
+        "@aws-amplify/codegen-ui": [
+          "2.20.6"
+        ],
+        "@aws-amplify/codegen-ui-react": [
+          "2.20.6"
+        ],
+        "@aws-amplify/core": [
+          "6.18.0"
+        ],
+        "@aws-amplify/data-construct": [
+          "1.17.7"
+        ],
+        "@aws-amplify/data-schema": [
+          "1.26.1"
+        ],
+        "@aws-amplify/data-schema-types": [
+          "1.3.0"
+        ],
+        "@aws-amplify/datastore": [
+          "5.1.10"
+        ],
+        "@aws-amplify/deployed-backend-client": [
+          "1.8.2"
+        ],
+        "@aws-amplify/form-generator": [
+          "1.2.7"
+        ],
+        "@aws-amplify/graphql-api-construct": [
+          "1.22.2"
+        ],
+        "@aws-amplify/graphql-auth-transformer": [
+          "4.2.9"
+        ],
+        "@aws-amplify/graphql-conversation-transformer": [
+          "1.1.16"
+        ],
+        "@aws-amplify/graphql-default-value-transformer": [
+          "3.1.18"
+        ],
+        "@aws-amplify/graphql-directives": [
+          "1.1.1",
+          "2.8.0"
+        ],
+        "@aws-amplify/graphql-docs-generator": [
+          "4.2.2"
+        ],
+        "@aws-amplify/graphql-function-transformer": [
+          "3.1.20"
+        ],
+        "@aws-amplify/graphql-generation-transformer": [
+          "1.2.8"
+        ],
+        "@aws-amplify/graphql-generator": [
+          "0.5.4"
+        ],
+        "@aws-amplify/graphql-http-transformer": [
+          "3.0.23"
+        ],
+        "@aws-amplify/graphql-index-transformer": [
+          "3.1.3"
+        ],
+        "@aws-amplify/graphql-maps-to-transformer": [
+          "4.0.24"
+        ],
+        "@aws-amplify/graphql-model-transformer": [
+          "3.5.0"
+        ],
+        "@aws-amplify/graphql-predictions-transformer": [
+          "3.0.23"
+        ],
+        "@aws-amplify/graphql-relational-transformer": [
+          "3.1.15"
+        ],
+        "@aws-amplify/graphql-schema-generator": [
+          "0.11.16"
+        ],
+        "@aws-amplify/graphql-searchable-transformer": [
+          "3.1.4"
+        ],
+        "@aws-amplify/graphql-sql-transformer": [
+          "0.4.23"
+        ],
+        "@aws-amplify/graphql-transformer": [
+          "2.5.1"
+        ],
+        "@aws-amplify/graphql-transformer-core": [
+          "3.6.1"
+        ],
+        "@aws-amplify/graphql-transformer-interfaces": [
+          "4.4.0"
+        ],
+        "@aws-amplify/graphql-types-generator": [
+          "3.6.0"
+        ],
+        "@aws-amplify/graphql-validate-transformer": [
+          "1.1.8"
+        ],
+        "@aws-amplify/model-generator": [
+          "1.2.4"
+        ],
+        "@aws-amplify/notifications": [
+          "2.1.0"
+        ],
+        "@aws-amplify/platform-core": [
+          "1.11.0",
+          "1.11.1"
+        ],
+        "@aws-amplify/plugin-types": [
+          "1.12.1",
+          "1.12.2"
+        ],
+        "@aws-amplify/sandbox": [
+          "2.3.0"
+        ],
+        "@aws-amplify/schema-generator": [
+          "1.4.1"
+        ],
+        "@aws-amplify/storage": [
+          "6.16.0"
+        ],
+        "@aws-sdk/client-amplify": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-amplifyuibuilder": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-appsync": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-bedrock-agentcore-control": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-bedrock-runtime": [
+          "3.1058.0",
+          "3.1078.0"
+        ],
+        "@aws-sdk/client-cloudcontrol": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-cloudformation": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-cloudwatch-logs": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-codebuild": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-ec2": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-ecr": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-ecs": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-elastic-load-balancing-v2": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-firehose": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-iam": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-kinesis": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-kms": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-lambda": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-personalize-events": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-rds": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-route-53": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-s3": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-secrets-manager": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-sfn": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-ssm": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-sso": [
+          "3.1078.0"
+        ],
+        "@aws-sdk/client-sso-oidc": [
+          "3.1078.0"
+        ],
+        "@aws-sdk/client-sts": [
+          "3.1011.0",
+          "3.1078.0",
+          "3.1101.0"
+        ],
+        "aws-cdk-lib": [
+          "2.265.0"
+        ],
+        "constructs": [
+          "10.8.0"
+        ]
+      },
+      "lockSha256": "0cb02fd3c9172ee50be4672ae771ec09b096356aff319dd31f6317e51b1d354f",
+      "resources": 84,
+      "templates": 5,
+      "authorizationRule": "allow.owner()",
+      "ownerFieldRule": "owner: a.string().authorization(allow => [allow.owner().to(['read','delete'])]); owner is stamped by unchanged generated authorization; explicit create/update owner input is denied, and owners can delete their records",
+      "evidenceSha256": {
+        "fixture-source-manifest.json": "19afd6695bfbbbdaeddc3e9ec25390b5ea4c1813dc5fee29469f2f4e4cda1d55",
+        "dependency-manifest.json": "bacdf9f00c93cf41efbaf55f034627960daf533c574823b519edebeade18b441",
+        "graph-manifest.json": "38c5a51f0c8e36cf6f524063d295d0a2ed75dae829f1e38f54c2fb31caa479a1",
+        "assets-manifest.json": "7a590cf4357d7833c038b3ee50fb9183b01f3c5544860f9b90dc949bbfcd07c5",
+        "aws-call-trace.json": "be18516f4f6dcfe7007f249948eab035ec85ef34ddba462e9867032e75f7379f",
+        "synthesis-only.json": "e0447ac364a490e4ee7351dc906925ef1033f1583b975513efd2e8ff92348135",
+        "repeat-synthesis.json": "8ff5461799ff878e346fb1d2c5a0dcde06e4f5bce8fd9a3f16aac686471071d9",
+        "endpoint-derivation.json": "ee9a18b40d65175b754a1adeaf73cfaa401d5e4e67700723b918a292f761fcb5",
+        "output-contract.json": "871b77a958ae221c5a70c741d3cc037ea44709f281a8aa6eba6255dd4673a6c5",
+        "auth-contract.json": "1ace4b46a9009d8261ee22a8532b61ae41b1f80983d6d9e0ab645d7982108862",
+        "evidence-manifest.json": "8106127601f4192f7dad6030ae243d0245b62fc7c515f18c6427bc0885a198b1"
+      },
+      "synthesisPlatform": {
+        "cliNodeVersion": "22.13.0",
+        "captureNodeVersion": "22.13.0",
+        "platform": "darwin",
+        "architecture": "arm64"
+      }
+    },
+    {
+      "name": "amplify-gen2-auth-data-iam",
+      "nodeVersion": "22.13.0",
+      "packageManager": "npm@11.9.0",
+      "dependencies": {
+        "@aws-amplify/backend": "1.24.0",
+        "@aws-amplify/backend-cli": "1.9.0",
+        "aws-amplify": "6.20.0",
+        "typescript": "7.0.2"
+      },
+      "devDependencies": {
+        "aws-cdk-lib": "2.265.0"
+      },
+      "transitiveVersions": {
+        "@aws-amplify/ai-constructs": [
+          "1.6.2"
+        ],
+        "@aws-amplify/analytics": [
+          "7.1.0"
+        ],
+        "@aws-amplify/api": [
+          "6.3.29"
+        ],
+        "@aws-amplify/api-graphql": [
+          "4.8.10"
+        ],
+        "@aws-amplify/api-rest": [
+          "4.6.4"
+        ],
+        "@aws-amplify/appsync-modelgen-plugin": [
+          "2.15.3"
+        ],
+        "@aws-amplify/auth": [
+          "6.20.0"
+        ],
+        "@aws-amplify/auth-construct": [
+          "1.11.2"
+        ],
+        "@aws-amplify/backend": [
+          "1.24.0"
+        ],
+        "@aws-amplify/backend-auth": [
+          "1.9.4"
+        ],
+        "@aws-amplify/backend-cli": [
+          "1.9.0"
+        ],
+        "@aws-amplify/backend-data": [
+          "1.8.0"
+        ],
+        "@aws-amplify/backend-deployer": [
+          "2.2.0"
+        ],
+        "@aws-amplify/backend-function": [
+          "1.18.2"
+        ],
+        "@aws-amplify/backend-output-schemas": [
+          "1.8.0"
+        ],
+        "@aws-amplify/backend-output-storage": [
+          "1.3.4",
+          "1.3.5"
+        ],
+        "@aws-amplify/backend-secret": [
+          "1.4.2"
+        ],
+        "@aws-amplify/backend-storage": [
+          "1.5.0"
+        ],
+        "@aws-amplify/cli-core": [
+          "2.2.6"
+        ],
+        "@aws-amplify/client-config": [
+          "1.11.0"
+        ],
+        "@aws-amplify/codegen-ui": [
+          "2.20.6"
+        ],
+        "@aws-amplify/codegen-ui-react": [
+          "2.20.6"
+        ],
+        "@aws-amplify/core": [
+          "6.18.0"
+        ],
+        "@aws-amplify/data-construct": [
+          "1.17.7"
+        ],
+        "@aws-amplify/data-schema": [
+          "1.26.1"
+        ],
+        "@aws-amplify/data-schema-types": [
+          "1.3.0"
+        ],
+        "@aws-amplify/datastore": [
+          "5.1.10"
+        ],
+        "@aws-amplify/deployed-backend-client": [
+          "1.8.2"
+        ],
+        "@aws-amplify/form-generator": [
+          "1.2.7"
+        ],
+        "@aws-amplify/graphql-api-construct": [
+          "1.22.2"
+        ],
+        "@aws-amplify/graphql-auth-transformer": [
+          "4.2.9"
+        ],
+        "@aws-amplify/graphql-conversation-transformer": [
+          "1.1.16"
+        ],
+        "@aws-amplify/graphql-default-value-transformer": [
+          "3.1.18"
+        ],
+        "@aws-amplify/graphql-directives": [
+          "1.1.1",
+          "2.8.0"
+        ],
+        "@aws-amplify/graphql-docs-generator": [
+          "4.2.2"
+        ],
+        "@aws-amplify/graphql-function-transformer": [
+          "3.1.20"
+        ],
+        "@aws-amplify/graphql-generation-transformer": [
+          "1.2.8"
+        ],
+        "@aws-amplify/graphql-generator": [
+          "0.5.4"
+        ],
+        "@aws-amplify/graphql-http-transformer": [
+          "3.0.23"
+        ],
+        "@aws-amplify/graphql-index-transformer": [
+          "3.1.3"
+        ],
+        "@aws-amplify/graphql-maps-to-transformer": [
+          "4.0.24"
+        ],
+        "@aws-amplify/graphql-model-transformer": [
+          "3.5.0"
+        ],
+        "@aws-amplify/graphql-predictions-transformer": [
+          "3.0.23"
+        ],
+        "@aws-amplify/graphql-relational-transformer": [
+          "3.1.15"
+        ],
+        "@aws-amplify/graphql-schema-generator": [
+          "0.11.16"
+        ],
+        "@aws-amplify/graphql-searchable-transformer": [
+          "3.1.4"
+        ],
+        "@aws-amplify/graphql-sql-transformer": [
+          "0.4.23"
+        ],
+        "@aws-amplify/graphql-transformer": [
+          "2.5.1"
+        ],
+        "@aws-amplify/graphql-transformer-core": [
+          "3.6.1"
+        ],
+        "@aws-amplify/graphql-transformer-interfaces": [
+          "4.4.0"
+        ],
+        "@aws-amplify/graphql-types-generator": [
+          "3.6.0"
+        ],
+        "@aws-amplify/graphql-validate-transformer": [
+          "1.1.8"
+        ],
+        "@aws-amplify/model-generator": [
+          "1.2.4"
+        ],
+        "@aws-amplify/notifications": [
+          "2.1.0"
+        ],
+        "@aws-amplify/platform-core": [
+          "1.11.0",
+          "1.11.1"
+        ],
+        "@aws-amplify/plugin-types": [
+          "1.12.1",
+          "1.12.2"
+        ],
+        "@aws-amplify/sandbox": [
+          "2.3.0"
+        ],
+        "@aws-amplify/schema-generator": [
+          "1.4.1"
+        ],
+        "@aws-amplify/storage": [
+          "6.16.0"
+        ],
+        "@aws-sdk/client-amplify": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-amplifyuibuilder": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-appsync": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-bedrock-agentcore-control": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-bedrock-runtime": [
+          "3.1058.0",
+          "3.1078.0"
+        ],
+        "@aws-sdk/client-cloudcontrol": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-cloudformation": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-cloudwatch-logs": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-codebuild": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-ec2": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-ecr": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-ecs": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-elastic-load-balancing-v2": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-firehose": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-iam": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-kinesis": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-kms": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-lambda": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-personalize-events": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-rds": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-route-53": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-s3": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-secrets-manager": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-sfn": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-ssm": [
+          "3.1101.0"
+        ],
+        "@aws-sdk/client-sso": [
+          "3.1078.0"
+        ],
+        "@aws-sdk/client-sso-oidc": [
+          "3.1078.0"
+        ],
+        "@aws-sdk/client-sts": [
+          "3.1011.0",
+          "3.1078.0",
+          "3.1101.0"
+        ],
+        "aws-cdk-lib": [
+          "2.265.0"
+        ],
+        "constructs": [
+          "10.8.0"
+        ]
+      },
+      "lockSha256": "9d6200acb57784f92f95e2c40dfb449e60874460324de3ee9e5495d89925a6ce",
+      "resources": 83,
+      "templates": 5,
+      "authorizationRule": "allow.authenticated('identityPool')",
+      "evidenceSha256": {
+        "fixture-source-manifest.json": "0eaaf3b7a5f2c65eb33e2dea9e7aa37aac31ae4fd1feb10ec3c509e9beab4317",
+        "dependency-manifest.json": "bacdf9f00c93cf41efbaf55f034627960daf533c574823b519edebeade18b441",
+        "graph-manifest.json": "491efa45ca162624d0a75221471aa31d03ec159ad860940325dd0ee66cb59778",
+        "assets-manifest.json": "a4454efdcc1794788c6b5f71bcf8da3541bc452ccf987276fd83cbd777349dc1",
+        "aws-call-trace.json": "5aebcce8f2bca151648117f6b094289e7f8b3e7007a65745493b2621448ad36a",
+        "synthesis-only.json": "c4dc21456fe63b5fb1bbea26d2b09613d7e8ca826ff8ef339c6a9b69923d0b32",
+        "repeat-synthesis.json": "dcaaf65cb96cc27c0b7afd360cad8fde7311cde7baf7be1942efd68c530c1f76",
+        "endpoint-derivation.json": "ee9a18b40d65175b754a1adeaf73cfaa401d5e4e67700723b918a292f761fcb5",
+        "output-contract.json": "871b77a958ae221c5a70c741d3cc037ea44709f281a8aa6eba6255dd4673a6c5",
+        "auth-contract.json": "2d778693546f180d6135745ea30f195b0926a984ba5b7c76f7e4b7b29b03117f",
+        "evidence-manifest.json": "60c4f8fa1f6d8505f9c1f7a3d6402c327ac3c180e3a3593e66562cbe70b43144"
+      },
+      "synthesisPlatform": {
+        "cliNodeVersion": "22.13.0",
+        "captureNodeVersion": "22.13.0",
+        "platform": "darwin",
+        "architecture": "arm64"
+      }
+    }
+  ],
+  "commands": {
+    "capabilityCheck": "node scripts/generate-amplify-auth-capabilities.mjs --check",
+    "focusedIntegration": "node --test dist/test/amplify-gen2-auth.test.js",
+    "frozenCorpus": "node --test dist/test/amplify-amx13-corpus.test.js dist/test/amplify-amx13-user-pool.test.js",
+    "deploy": "npm --prefix examples/amplify-auth-notes run deploy",
+    "start": "npm --prefix examples/amplify-auth-notes start",
+    "cleanup": "npm --prefix examples/amplify-auth-notes run backend:delete"
+  },
+  "auth": {
+    "userPool": "Pinned Amplify SRP, confirmation, refresh and local sign-out; AppSync consumes verified access tokens",
+    "identityPool": "ID-token login into existing enhanced-flow Identity Pools and STS vault; same-session SigV4 Data",
+    "owner": "Unchanged generated VTL and DynamoDB conditions; immutable owner field and two-user CRUD/pagination/subscription isolation",
+    "guest": "Default guest credentials are retained; authenticated-only Data remains denied; issued authenticated credentials retain normal expiry",
+    "jwtRevocation": "Offline JWT verification does not treat local/global sign-out, disable or refresh revocation as automatic issued-JWT invalidation"
+  },
+  "endpointOverrides": [
+    "Auth.Cognito.userPoolEndpoint",
+    "Auth.Cognito.identityPoolEndpoint"
+  ],
+  "runtime": {
+    "simulatorNode": ">=22.13.0",
+    "evidenceNode": "22.13.0",
+    "testedPlatforms": [
+      "macOS arm64"
+    ],
+    "untestedPlatforms": [
+      "Linux",
+      "Windows"
+    ]
+  },
+  "exclusions": [
+    "unrestricted Amplify compatibility",
+    "AMX-M3 general recovery programme",
+    "Storage",
+    "user Functions",
+    "Hosting",
+    "social identity providers",
+    "custom-auth challenge execution",
+    "advanced MFA/passwordless",
+    "group-rule authorization",
+    "arbitrary Identity Pool role mappings",
+    "AppSync OIDC/Lambda authorization"
+  ],
+  "driftPolicy": "Package, source, template, asset, trace, output or endpoint drift requires regeneration and review of owning evidence before this capability can be regenerated; check mode never changes files"
+}

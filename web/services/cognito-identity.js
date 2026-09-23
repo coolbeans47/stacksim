@@ -25,7 +25,7 @@ async function poolsPage(context) {
     <td>${formatDate(pool.createdAt)}</td>
   </tr>`).join("");
   context.main.innerHTML = `<div class="page-width cognito-page">${pageHeader("Identity pools", "Regional pools that mint enhanced-flow credentials from User Pool ID tokens.")}
-    <div class="alert info"><strong>CID-01 enhanced flow</strong><br>Identity pools exchange a User Pool ID token for temporary AWS credentials through GetId and GetCredentialsForIdentity. Classic flow, role mappings, social IdPs, developer identities, and Amplify default Auth are not available.</div>
+    <div class="alert info"><strong>CID-01 enhanced flow</strong><br>Identity pools exchange a User Pool ID token for temporary AWS credentials through GetId and GetCredentialsForIdentity. The pinned Auth fixtures support the generated no-group Token/AuthenticatedRole mapping and atomic guest linking. Classic flow, other role mappings, social IdPs, and developer identities remain unavailable.</div>
     <section class="card"><div class="card-header"><h2>Identity pools <span class="muted">(${identityPools.length})</span></h2></div><div class="toolbar"><label class="filter"><span aria-hidden="true">⌕</span><input data-filter-table placeholder="Find an identity pool"></label></div><div class="table-wrap">${rows ? `<table class="cognito-pool-table"><thead><tr><th>Name</th><th>Guests</th><th>Providers</th><th>Identities</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table>` : emptyState("C", "No identity pools", "Create an identity pool with the Cognito Identity SDK, AWS CLI, or CloudFormation. This console is read-only in CID-01.")}</div></section>
   </div>`;
   context.bindTableFilter();
