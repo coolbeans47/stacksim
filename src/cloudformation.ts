@@ -121,7 +121,7 @@ interface NestedStackHierarchyInput {
 interface CloudFormationAssetReference {
   readonly logicalId: string;
   readonly resourceType: string;
-  readonly propertyPath: "Code" | "Content" | "BodyS3Location" | "SourceObjectKeys";
+  readonly propertyPath: "Code" | "Content" | "BodyS3Location" | "DefinitionS3Location" | "SourceObjectKeys";
   /** Ordered array position; legacy manifests without it mean element zero. */
   readonly elementIndex?: number;
   readonly bucket: string;
@@ -130,6 +130,8 @@ interface CloudFormationAssetReference {
   readonly sha256: string;
   readonly etag: string;
   readonly size: number;
+  /** Accepted UTF-8 source, bounded to 1 MiB; only asset artifacts carry it. */
+  readonly definitionBody?: string;
 }
 
 interface CloudFormationAssetManifest {
@@ -1228,7 +1230,7 @@ export class CloudFormationService {
       await this.authorizeTypedSsmParameters(parsed.value, suppliedParameters, executionPrincipal);
       resolvedParameters = resolveTemplateParameters(parsed.value.Parameters, suppliedParameters, { resolveSsmParameter: (name, type) => this.resolveBootstrapSsmParameter(name, type, typedSsmGenerations) });
       const pseudos = { ...cloudFormationPseudoParameters(this.store.accountId, this.region, stackId, stackName), "AWS::NotificationARNs": notificationArns };
-      const availableExports = this.exportValues(); conditions = evaluateTemplateConditions(parsed.value, resolvedParameters.values, pseudos, availableExports); validateTemplateRules(parsed.value, resolvedParameters.values, pseudos, conditions, availableExports); processed = conditionallyProcessedTemplate(parsed.value, conditions); const openingEvaluation = { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, resourceRefs: {}, resourceAttributes: {}, imports: availableExports }; processed = await this.pinStaticFileAssets(processed, openingEvaluation, templateArtifactId, executionPrincipal, false, {}, prepared?.assetManifest); await this.pinNestedTemplateAssets(processed, openingEvaluation, templateArtifactId, executionPrincipal, prepared?.nestedTemplateManifest, { stackId, stackName, capabilities: suppliedCapabilities, tags: desiredTags }); this.assertCapabilities(processed, suppliedCapabilities); importNames = this.plannedImportNames(processed, resolvedParameters.values, pseudos, conditions, stackId); graph = buildResourceDependencyGraph(processed); this.validateOpeningResources(processed, stackId, operationId, executionPrincipal); this.validateProviderReferences(processed); this.preflightProviderModels(processed, { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: availableExports }, stackId, operationId, executionPrincipal, desiredTags);
+      const availableExports = this.exportValues(); conditions = evaluateTemplateConditions(parsed.value, resolvedParameters.values, pseudos, availableExports); validateTemplateRules(parsed.value, resolvedParameters.values, pseudos, conditions, availableExports); processed = conditionallyProcessedTemplate(parsed.value, conditions); const openingEvaluation = { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, resourceRefs: {}, resourceAttributes: {}, imports: availableExports }; processed = await this.pinStaticFileAssets(processed, openingEvaluation, templateArtifactId, executionPrincipal, false, {}, prepared?.assetManifest); await this.pinNestedTemplateAssets(processed, openingEvaluation, templateArtifactId, executionPrincipal, prepared?.nestedTemplateManifest, { stackId, stackName, capabilities: suppliedCapabilities, tags: desiredTags }); this.assertCapabilities(processed, suppliedCapabilities); importNames = this.plannedImportNames(processed, resolvedParameters.values, pseudos, conditions, stackId); graph = buildResourceDependencyGraph(processed); this.validateOpeningResources(processed, stackId, operationId, executionPrincipal); this.validateProviderReferences(processed); await this.preflightProviderModels(processed, { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: availableExports }, stackId, operationId, executionPrincipal, desiredTags, {}, new Set(), undefined, new Set(), templateArtifactId);
     } catch (error) { throw this.validationError(error); }
     const typedPins = this.typedSsmPins(parsed.value, resolvedParameters, typedSsmGenerations);
     const processedBody = JSON.stringify(processed); const processedDigest = createHash("sha256").update(processedBody).digest("hex");
@@ -1275,9 +1277,10 @@ export class CloudFormationService {
     const notificationArns = input.NotificationARNs === undefined ? [...stack.notificationArns] : this.normalizedNotificationArns(input.NotificationARNs); const suppliedCapabilities = input.Capabilities === undefined ? [...stack.capabilities] : list<string>(input.Capabilities).map(String); const desiredTags = input.Tags === undefined ? structuredClone(stack.tags) : tags(input.Tags);
     let resolvedParameters: ResolvedParameters; let conditions: Record<string, boolean>; let processed: CloudFormationTemplate; let graph: ReturnType<typeof buildResourceDependencyGraph>; let importNames: string[];
     const typedSsmGenerations = new Map<string, string>();
-    try { await this.authorizeTypedSsmParameters(parsed.value, suppliedParameterInputs, executionPrincipal, previousValues); resolvedParameters = resolveTemplateParameters(parsed.value.Parameters, suppliedParameterInputs, { previous: previousValues, resolveSsmParameter: (name, type) => this.resolveBootstrapSsmParameter(name, type, typedSsmGenerations) }); const pseudos = { ...cloudFormationPseudoParameters(this.store.accountId, this.region, stack.stackId, stack.stackName), "AWS::NotificationARNs": notificationArns }; const availableExports = this.exportValues(); conditions = evaluateTemplateConditions(parsed.value, resolvedParameters.values, pseudos, availableExports); validateTemplateRules(parsed.value, resolvedParameters.values, pseudos, conditions, availableExports); processed = conditionallyProcessedTemplate(parsed.value, conditions); const openingEvaluation = { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, resourceRefs: {}, resourceAttributes: {}, imports: availableExports }; processed = await this.pinStaticFileAssets(processed, openingEvaluation, desiredTemplateArtifactId, executionPrincipal, false, stack.resources, prepared?.assetManifest); await this.pinNestedTemplateAssets(processed, openingEvaluation, desiredTemplateArtifactId, executionPrincipal, prepared?.nestedTemplateManifest, { stackId: stack.stackId, stackName: stack.stackName, logicalPath: stack.parentLogicalId, capabilities: suppliedCapabilities, tags: desiredTags, previousResources: stack.resources }); this.assertCapabilities(processed, suppliedCapabilities); importNames = this.plannedImportNames(processed, resolvedParameters.values, pseudos, conditions, stack.stackId); graph = buildResourceDependencyGraph(processed); this.validateOpeningResources(processed, stack.stackId, operationId, executionPrincipal); this.validateProviderReferences(processed); this.preflightProviderModels(processed, { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: availableExports }, stack.stackId, operationId, executionPrincipal, desiredTags, stack.resources); } catch (error) { throw this.validationError(error); }
+    try { await this.authorizeTypedSsmParameters(parsed.value, suppliedParameterInputs, executionPrincipal, previousValues); resolvedParameters = resolveTemplateParameters(parsed.value.Parameters, suppliedParameterInputs, { previous: previousValues, resolveSsmParameter: (name, type) => this.resolveBootstrapSsmParameter(name, type, typedSsmGenerations) }); const pseudos = { ...cloudFormationPseudoParameters(this.store.accountId, this.region, stack.stackId, stack.stackName), "AWS::NotificationARNs": notificationArns }; const availableExports = this.exportValues(); conditions = evaluateTemplateConditions(parsed.value, resolvedParameters.values, pseudos, availableExports); validateTemplateRules(parsed.value, resolvedParameters.values, pseudos, conditions, availableExports); processed = conditionallyProcessedTemplate(parsed.value, conditions); const openingEvaluation = { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, resourceRefs: {}, resourceAttributes: {}, imports: availableExports }; processed = await this.pinStaticFileAssets(processed, openingEvaluation, desiredTemplateArtifactId, executionPrincipal, false, stack.resources, prepared?.assetManifest); await this.pinNestedTemplateAssets(processed, openingEvaluation, desiredTemplateArtifactId, executionPrincipal, prepared?.nestedTemplateManifest, { stackId: stack.stackId, stackName: stack.stackName, logicalPath: stack.parentLogicalId, capabilities: suppliedCapabilities, tags: desiredTags, previousResources: stack.resources }); this.assertCapabilities(processed, suppliedCapabilities); importNames = this.plannedImportNames(processed, resolvedParameters.values, pseudos, conditions, stack.stackId); graph = buildResourceDependencyGraph(processed); this.validateOpeningResources(processed, stack.stackId, operationId, executionPrincipal); this.validateProviderReferences(processed); await this.preflightProviderModels(processed, { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: availableExports }, stack.stackId, operationId, executionPrincipal, desiredTags, stack.resources, new Set(), undefined, new Set(), desiredTemplateArtifactId); } catch (error) { throw this.validationError(error); }
     const typedPins = this.typedSsmPins(parsed.value, resolvedParameters, typedSsmGenerations);
-    const processedBody = JSON.stringify(processed); const processedDigest = createHash("sha256").update(processedBody).digest("hex"); const sameParameters = canonical(resolvedParameters.entries.map(entry => [entry.parameterKey, entry.parameterValue, entry.resolvedValue])) === canonical(stack.parameters.map(entry => [entry.parameterKey, entry.parameterValue, entry.resolvedValue])); if (processedDigest === stack.processedTemplateDigest && sameParameters && canonical(desiredTags) === canonical(stack.tags) && canonical(suppliedCapabilities) === canonical(stack.capabilities) && canonical(notificationArns) === canonical(stack.notificationArns) && canonical(rollbackConfiguration) === canonical(stack.rollbackConfiguration ?? { rollbackTriggers: [] }) && (input.RoleARN ?? stack.roleArn) === stack.roleArn) throw new AwsError("ValidationError", "No updates are to be performed.", 400);
+    const sameDefinitionAssets = await this.sameStateMachineDefinitionAssets(stack.templateArtifactId, desiredTemplateArtifactId);
+    const processedBody = JSON.stringify(processed); const processedDigest = createHash("sha256").update(processedBody).digest("hex"); const sameParameters = canonical(resolvedParameters.entries.map(entry => [entry.parameterKey, entry.parameterValue, entry.resolvedValue])) === canonical(stack.parameters.map(entry => [entry.parameterKey, entry.parameterValue, entry.resolvedValue])); if (sameDefinitionAssets && processedDigest === stack.processedTemplateDigest && sameParameters && canonical(desiredTags) === canonical(stack.tags) && canonical(suppliedCapabilities) === canonical(stack.capabilities) && canonical(notificationArns) === canonical(stack.notificationArns) && canonical(rollbackConfiguration) === canonical(stack.rollbackConfiguration ?? { rollbackTriggers: [] }) && (input.RoleARN ?? stack.roleArn) === stack.roleArn) throw new AwsError("ValidationError", "No updates are to be performed.", 400);
     const snapshot = { resources: stack.resources, outputs: stack.outputs, parameters: stack.parameters, tags: stack.tags, capabilities: stack.capabilities, notificationArns: stack.notificationArns, rollbackConfiguration: stack.rollbackConfiguration, roleArn: stack.roleArn, description: stack.description, nestedStackSource: stack.nestedStackSource, templateArtifactId: stack.templateArtifactId, templateDigest: stack.templateDigest, processedTemplateDigest: stack.processedTemplateDigest };
     await this.journal.replaceTemplate(desiredTemplateArtifactId, prepared?.originalBody ?? parsed.body, "original"); await this.journal.replaceTemplate(desiredTemplateArtifactId, processedBody, "processed"); await this.journal.replaceJsonArtifact("parameters", `${desiredTemplateArtifactId}.private.json`, { values: resolvedParameters.values, entries: resolvedParameters.entries }); await this.journal.replaceJsonArtifact("operations", `${operationId}.typed-ssm-pins.json`, typedPins); await this.journal.replaceJsonArtifact("execution", `${desiredTemplateArtifactId}.principal.json`, executionPrincipal); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.conditions.json`, conditions); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.graph.json`, graph); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.imports.json`, importNames); if (prepared?.templateSource ?? parsed.source) await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.template-source.json`, prepared?.templateSource ?? parsed.source); await this.journal.replaceJsonArtifact("rollback", `${operationId}.snapshot.json`, snapshot); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.stack.json`, { parameters: resolvedParameters.entries, tags: desiredTags, capabilities: suppliedCapabilities, notificationArns, rollbackConfiguration, roleArn: desiredRoleArn, description: processed.Description, templateDigest: requestTemplateDigest, processedTemplateDigest: processedDigest });
     const removed = Object.keys(stack.resources).filter(logicalId => !processed.Resources[logicalId]).reverse(); const acceptedAt = this.clock.now(); stack.stackStatus = "UPDATE_IN_PROGRESS"; stack.stackStatusReason = undefined; stack.lastClientRequestToken = clientRequestToken; if (nestedSource) stack.nestedStackSource = structuredClone(nestedSource) as unknown as Record<string, unknown>; stack.activeOperation = { operationId, kind: "UPDATE", status: "PENDING", acceptedAt, clientRequestToken, orderedLogicalIds: [...graph.order, ...removed], completedLogicalIds: [], rollbackLogicalIds: [], desiredTemplateArtifactId, previousTemplateArtifactId: stack.templateArtifactId, desiredTemplateDigest: requestTemplateDigest, desiredProcessedTemplateDigest: processedDigest, disableRollback, retainExceptOnCreate, ...(owningParentOperationId ? { owningParentOperationId } : {}) }; if (clientRequestToken) this.state.clientTokens[clientRequestToken] = { operation: "UpdateStack", stackId: stack.stackId, operationId, inputDigest, createdAt: acceptedAt }; this.event(stack, stack.stackName, "AWS::CloudFormation::Stack", "UPDATE_IN_PROGRESS", undefined, stack.stackId, clientRequestToken); await this.checkpoint(stack, "accepted"); await this.store.save(); this.schedule(stack.stackId); return { StackId: stack.stackId, OperationId: operationId };
@@ -1698,6 +1701,13 @@ export class CloudFormationService {
     } catch (error) { throw this.validationError(error); }
   }
 
+  private async sameStateMachineDefinitionAssets(previousId: string | undefined, desiredId: string): Promise<boolean> {
+    const previous = previousId ? await this.journal.readJsonArtifact<CloudFormationAssetManifest>("assets", `${previousId}.json`) : undefined;
+    const desired = await this.journal.readJsonArtifact<CloudFormationAssetManifest>("assets", `${desiredId}.json`);
+    const digests = (manifest: CloudFormationAssetManifest | undefined) => (manifest?.references ?? []).filter(asset => asset.propertyPath === "DefinitionS3Location").map(asset => [asset.logicalId, asset.sha256]);
+    return canonical(digests(previous)) === canonical(digests(desired));
+  }
+
   private async readAssetReference(
     logicalId: string,
     resourceType: string,
@@ -1712,11 +1722,17 @@ export class CloudFormationService {
     const maximumBytes = resourceType === "AWS::Lambda::Function" || resourceType === "AWS::Lambda::LayerVersion"
       ? Number(process.env.STACKSIM_LAMBDA_ZIP_LIMIT ?? 50 * 1024 * 1024)
       : resourceType === "Custom::CDKBucketDeployment" ? 128 * 1024 * 1024
-        : 50 * 1024 * 1024;
+        : resourceType === "AWS::StepFunctions::StateMachine" ? 1024 * 1024 : 50 * 1024 * 1024;
     let object;
     try {
-      if (this.authorizeProviderTargets) await this.authorizeProviderTargets(principal, [{ action: versionId ? "s3:GetObjectVersion" : "s3:GetObject", resource: `arn:aws:s3:::${bucket}/${key}` }]);
+      if (this.authorizeProviderTargets) {
+        const resource = `arn:aws:s3:::${bucket}/${key}`;
+        const context: Record<string, unknown> = versionId !== undefined ? { "s3:VersionId": versionId } : {};
+        await this.s3.enrichAuthorizationContext(resource, context);
+        await this.authorizeProviderTargets(principal, [{ action: versionId ? "s3:GetObjectVersion" : "s3:GetObject", resource, context }]);
+      }
       object = await this.s3.readObjectBytes(bucket, key, versionId, maximumBytes);
+      if (resourceType === "AWS::StepFunctions::StateMachine" && object.ownerAccountId !== this.store.accountId) throw new Error("DefinitionS3Location must use a bucket in the stack account and Region");
     }
     catch (error) {
       // A review-only change set can precede asset publication. CDK uses this
@@ -1726,7 +1742,15 @@ export class CloudFormationService {
       const message = error instanceof Error ? error.message : String(error);
       throw new AwsError("ValidationError", `${logicalId}.${propertyPath} cannot read local S3 asset s3://${bucket}/${key}${versionId ? `?versionId=${versionId}` : ""}: ${message}`, 400);
     }
-    return { logicalId, resourceType, propertyPath, ...(propertyPath === "SourceObjectKeys" ? { elementIndex } : {}), bucket, key, versionId: object.versionId, sha256: object.sha256, etag: object.etag, size: object.size };
+    let definitionBody: string | undefined;
+    if (propertyPath === "DefinitionS3Location") {
+      try {
+        if (object.contentEncoding && object.contentEncoding !== "identity") throw new Error(`Content-Encoding ${object.contentEncoding} is not supported`);
+        definitionBody = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(object.body);
+        if (!definitionBody || definitionBody.charCodeAt(0) === 0xfeff) throw new Error("empty definitions and UTF-8 byte order marks are not supported");
+      } catch (error) { throw new AwsError("ValidationError", `${logicalId}.${propertyPath} requires a nonempty UTF-8 JSON definition: ${error instanceof Error ? error.message : String(error)}`, 400); }
+    }
+    return { logicalId, resourceType, propertyPath, ...(propertyPath === "SourceObjectKeys" ? { elementIndex } : {}), bucket, key, versionId: object.versionId, sha256: object.sha256, etag: object.etag, size: object.size, ...(definitionBody !== undefined ? { definitionBody } : {}) };
   }
 
   /**
@@ -1747,8 +1771,12 @@ export class CloudFormationService {
     const processed = structuredClone(template);
     const references: CloudFormationAssetReference[] = [];
     for (const [logicalId, definition] of Object.entries(processed.Resources)) {
+      if (definition.Type === "AWS::StepFunctions::StateMachine" && !["Definition", "DefinitionString", "DefinitionS3Location"].some(key => isIntrinsicExpression(definition.Properties?.[key])) && ["Definition", "DefinitionString", "DefinitionS3Location"].filter(key => definition.Properties?.[key] !== undefined).length !== 1) {
+        throw new AwsError("ValidationError", `${logicalId}: Specify exactly one of Definition, DefinitionString or DefinitionS3Location`, 400);
+      }
       const propertyPath = definition.Type === "AWS::Lambda::Function" ? "Code"
         : definition.Type === "AWS::Lambda::LayerVersion" ? "Content"
+          : definition.Type === "AWS::StepFunctions::StateMachine" ? "DefinitionS3Location"
           : definition.Type === "AWS::ApiGateway::RestApi" ? "BodyS3Location"
             : definition.Type === "Custom::CDKBucketDeployment" ? "SourceObjectKeys"
               : undefined;
@@ -1797,6 +1825,10 @@ export class CloudFormationService {
         }
       }
       if (!reference) continue;
+      const accepted = acceptedManifest?.references.find(candidate => candidate.logicalId === logicalId && candidate.propertyPath === propertyPath);
+      if (accepted && (accepted.bucket !== reference.bucket || accepted.key !== reference.key || accepted.versionId !== reference.versionId || accepted.sha256 !== reference.sha256 || accepted.etag !== reference.etag || accepted.size !== reference.size)) {
+        throw new AwsError("ValidationError", `${logicalId}.${propertyPath} local S3 asset changed after the change set accepted it`, 400);
+      }
       references.push(reference);
       const target = definition.Properties![propertyPath] as Record<string, unknown>;
       if (propertyPath === "Code" || propertyPath === "Content") target.S3ObjectVersion = reference.versionId;
@@ -1998,7 +2030,7 @@ export class CloudFormationService {
     const completeNodes = nodes.filter((node): node is RecursiveAdmissionNode => node !== undefined);
     let admissionFailure: string | undefined;
     try {
-      for (const node of completeNodes) this.validateRecursiveAdmissionNode(node, principal, capabilities, deferredParameterValues);
+      for (const node of completeNodes) await this.validateRecursiveAdmissionNode(node, principal, capabilities, deferredParameterValues);
       this.validateNestedOutputReferences(template, manifest, admission?.logicalPath);
       for (const node of completeNodes) this.validateNestedOutputReferences(node.template, node.manifest, node.logicalPath);
     } catch (error) {
@@ -2022,7 +2054,7 @@ export class CloudFormationService {
     return "a later owning CloudFormation requirement";
   }
 
-  private validateRecursiveAdmissionNode(node: RecursiveAdmissionNode, principal: PrincipalContext, capabilities: readonly string[], deferredParameterValues: ReadonlySet<string>): void {
+  private async validateRecursiveAdmissionNode(node: RecursiveAdmissionNode, principal: PrincipalContext, capabilities: readonly string[], deferredParameterValues: ReadonlySet<string>): Promise<void> {
     const graph = buildResourceDependencyGraph(node.template);
     for (const logicalId of graph.order) {
       const typeName = node.template.Resources[logicalId].Type;
@@ -2036,7 +2068,7 @@ export class CloudFormationService {
       this.assertCapabilities(node.template, capabilities);
       this.validateOpeningResources(node.template, node.stackId, `admission-${createHash("sha256").update(node.stackId).digest("hex").slice(0, 24)}`, principal);
       this.validateProviderReferences(node.template);
-      this.preflightProviderModels(node.template, { parameters: node.parameters, pseudoParameters: node.pseudoParameters, mappings: node.template.Mappings, conditions: node.conditions, imports: this.exportValues() }, node.stackId, `admission-${createHash("sha256").update(node.stackId).digest("hex").slice(0, 24)}`, principal, node.tags, node.previousResources, deferredParameterValues);
+      await this.preflightProviderModels(node.template, { parameters: node.parameters, pseudoParameters: node.pseudoParameters, mappings: node.template.Mappings, conditions: node.conditions, imports: this.exportValues() }, node.stackId, `admission-${createHash("sha256").update(node.stackId).digest("hex").slice(0, 24)}`, principal, node.tags, node.previousResources, deferredParameterValues);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const failedLogicalId = message.match(/^([^:]+):/)?.[1];
@@ -2079,6 +2111,7 @@ export class CloudFormationService {
   ): Promise<Record<string, unknown>> {
     const propertyPath = resourceType === "AWS::Lambda::Function" ? "Code"
       : resourceType === "AWS::Lambda::LayerVersion" ? "Content"
+        : resourceType === "AWS::StepFunctions::StateMachine" ? "DefinitionS3Location"
         : resourceType === "AWS::ApiGateway::RestApi" ? "BodyS3Location"
           : resourceType === "Custom::CDKBucketDeployment" ? "SourceObjectKeys"
             : undefined;
@@ -2105,13 +2138,35 @@ export class CloudFormationService {
     const requestedVersion = propertyPath === "Code" || propertyPath === "Content" ? input.S3ObjectVersion : input.Version;
     if (typeof bucket !== "string" || !bucket || typeof key !== "string" || !key) return properties;
     if (requestedVersion !== undefined && typeof requestedVersion !== "string") throw new AwsError("ValidationError", `${logicalId}.${propertyPath} asset version must resolve to a string`, 400);
+    if (propertyPath === "DefinitionS3Location") {
+      const durable = await this.journal.readJsonArtifact<CloudFormationAssetReference>("assets", `${operationId}.${logicalId}.${propertyPath}.json`);
+      if (durable) {
+        if (durable.bucket !== bucket || durable.key !== key || requestedVersion !== undefined && durable.versionId !== requestedVersion) throw new AwsError("ValidationError", `${logicalId}.${propertyPath} does not match its accepted operation asset`, 400);
+        // Once this operation accepted bytes, provider retries/restart must not
+        // depend on a mutable object or on its continued existence in S3.
+        return this.materializeStateMachineDefinition(properties, durable);
+      }
+    }
     const reference = await this.readAssetReference(logicalId, resourceType, propertyPath, bucket, key, principal, requestedVersion);
     if (!reference) throw new AwsError("ValidationError", `${logicalId}.${propertyPath} local S3 asset is missing`, 400);
     await this.assertAndCheckpointAssetReference(reference, templateArtifactId, operationId);
+    if (propertyPath === "DefinitionS3Location") return this.materializeStateMachineDefinition(properties, reference);
     const pinned = structuredClone(properties); const target = pinned[propertyPath] as Record<string, unknown>;
     if (propertyPath === "Code" || propertyPath === "Content") target.S3ObjectVersion = reference.versionId;
     else target.Version = reference.versionId;
     return pinned;
+  }
+
+  private materializeStateMachineDefinition(properties: Record<string, unknown>, reference: CloudFormationAssetReference): Record<string, unknown> {
+    if (typeof reference.definitionBody !== "string" || Buffer.byteLength(reference.definitionBody) !== reference.size || createHash("sha256").update(reference.definitionBody).digest("hex") !== reference.sha256) {
+      throw new AwsError("ValidationError", `${reference.logicalId}.DefinitionS3Location immutable definition artifact failed integrity validation`, 400);
+    }
+    const resolved = structuredClone(properties);
+    // Reject conflicting forms rather than hiding them during materialization.
+    if (resolved.Definition !== undefined || resolved.DefinitionString !== undefined) throw new AwsError("ValidationError", "Specify exactly one of Definition, DefinitionString or DefinitionS3Location", 400);
+    delete resolved.DefinitionS3Location;
+    resolved.DefinitionString = reference.definitionBody;
+    return resolved;
   }
 
   private async assertAndCheckpointAssetReference(
@@ -2278,7 +2333,7 @@ export class CloudFormationService {
    * a physical model, but literal and existing-resource graphs are rejected
    * before a stack operation or AVAILABLE change set can mutate a service.
    */
-  private preflightProviderModels(
+  private async preflightProviderModels(
     template: CloudFormationTemplate,
     evaluation: { parameters: Record<string, unknown>; pseudoParameters: Record<string, unknown>; mappings?: Record<string, any>; conditions: Record<string, boolean>; imports: Record<string, unknown> },
     stackId: string,
@@ -2289,7 +2344,8 @@ export class CloudFormationService {
     deferredParameterValues: ReadonlySet<string> = new Set(),
     validationIssues?: ContextualProviderValidationIssue[],
     skipLogicalIds: ReadonlySet<string> = new Set(),
-  ): Record<string, PreflightResourceModel> {
+    assetArtifactId?: string,
+  ): Promise<Record<string, PreflightResourceModel>> {
     const planned: Record<string, PreflightResourceModel> = {};
     const resourceRefs: Record<string, unknown> = {};
     const resourceAttributes: Record<string, Record<string, unknown>> = {};
@@ -2309,7 +2365,7 @@ export class CloudFormationService {
         const evaluated = evaluateIntrinsicValue(definition.Properties ?? {}, context, `$.Resources.${logicalId}.Properties`) as Record<string, unknown>;
         const metadata = evaluateIntrinsicValue(definition.Metadata ?? {}, context, `$.Resources.${logicalId}.Metadata`) as Record<string, unknown>;
         const provider = this.providers.require(definition.Type);
-        const properties = this.mergeStackTags(provider, evaluated, stackTags);
+        let properties = this.mergeStackTags(provider, evaluated, stackTags);
         if (containsDynamicReference(properties)) continue;
         const providerContext = this.providerContext(stackId, logicalId, operationId, principal, undefined, "preflight");
         const issues = provider.validate(properties, providerContext);
@@ -2329,6 +2385,14 @@ export class CloudFormationService {
           continue;
         }
         if (issues.length) throw new Error(issues.map(issue => `${issue.path}: ${issue.message}`).join("; "));
+        if (definition.Type === "AWS::StepFunctions::StateMachine" && properties.DefinitionS3Location !== undefined) {
+          const manifest = assetArtifactId ? await this.journal.readJsonArtifact<CloudFormationAssetManifest>("assets", `${assetArtifactId}.json`) : undefined;
+          const reference = manifest?.references.find(item => item.logicalId === logicalId && item.propertyPath === "DefinitionS3Location");
+          // CDK review-only plans may precede publication; dependency-bound assets
+          // are admitted when the normal executor can resolve their addresses.
+          if (!reference) continue;
+          properties = this.materializeStateMachineDefinition(properties, reference);
+        }
         const desired = provider.canonicalize(properties, providerContext) as Record<string, unknown>;
         const previousState = previousResources[logicalId];
         const previous = previousState?.resourceType === definition.Type ? provider.canonicalize(previousState.properties, providerContext) : undefined;
@@ -2704,7 +2768,7 @@ export class CloudFormationService {
       const processedBody = JSON.stringify(processed);
       const processedDigest = createHash("sha256").update(processedBody).digest("hex");
       const providerIssues: ContextualProviderValidationIssue[] = [];
-      const preflightModels = this.preflightProviderModels(processed, { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: planning.availableExports }, stack.stackId, planning.planningOperationId, executionPrincipal, desiredTags, value.changeSetType === "UPDATE" ? stack.resources : {}, new Set(), providerIssues, new Set(declarationIssues.map(issue => issue.logicalResourceId)));
+      const preflightModels = await this.preflightProviderModels(processed, { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: planning.availableExports }, stack.stackId, planning.planningOperationId, executionPrincipal, desiredTags, value.changeSetType === "UPDATE" ? stack.resources : {}, new Set(), providerIssues, new Set(declarationIssues.map(issue => issue.logicalResourceId)), artifactId);
       const validationIssues = [...declarationIssues, ...providerIssues];
       if (validationIssues.length) {
         const outcome = this.buildPlanningOutcome(value, planning.planningOperationId, validationIssues, this.planningSensitiveStrings(processed, resolvedParameters, { pseudoParameters: pseudos, conditions, imports: planning.availableExports }));
@@ -2721,7 +2785,7 @@ export class CloudFormationService {
       const changes = this.changeSetPlan(value.changeSetType === "UPDATE" ? stack : undefined, processed, preflightModels, previousProcessed);
       if (value.includeNestedStacks) await this.planLinkedNestedChangeSets(value, value, stack, processed, preflightModels, changes, nestedTemplateManifest, executionPrincipal, capabilities);
       const sameParameters = canonical(resolvedParameters.entries.map(entry => [entry.parameterKey, entry.parameterValue, entry.resolvedValue])) === canonical(stack.parameters.map(entry => [entry.parameterKey, entry.parameterValue, entry.resolvedValue]));
-      const noUpdates = value.changeSetType === "UPDATE" && processedDigest === stack.processedTemplateDigest && sameParameters && canonical(desiredTags) === canonical(stack.tags) && canonical(capabilities) === canonical(stack.capabilities) && canonical(notificationArns) === canonical(stack.notificationArns) && canonical(rollbackConfiguration) === canonical(stack.rollbackConfiguration ?? { rollbackTriggers: [] }) && desiredRoleArn === stack.roleArn;
+      const noUpdates = value.changeSetType === "UPDATE" && await this.sameStateMachineDefinitionAssets(stack.templateArtifactId, artifactId) && processedDigest === stack.processedTemplateDigest && sameParameters && canonical(desiredTags) === canonical(stack.tags) && canonical(capabilities) === canonical(stack.capabilities) && canonical(notificationArns) === canonical(stack.notificationArns) && canonical(rollbackConfiguration) === canonical(stack.rollbackConfiguration ?? { rollbackTriggers: [] }) && desiredRoleArn === stack.roleArn;
       value.templateDigest = parsed.digest;
       value.processedTemplateDigest = processedDigest;
       value.parameters = resolvedParameters.entries.map(entry => ({ parameterKey: entry.parameterKey, parameterValue: entry.parameterValue, resolvedValue: entry.resolvedValue, noEcho: entry.noEcho }));
@@ -2846,7 +2910,7 @@ export class CloudFormationService {
       this.assertCapabilities(processed, capabilities);
       this.validateOpeningResources(processed, child.stackId, changeSetId, principal);
       this.validateProviderReferences(processed);
-      const childPreflight = this.preflightProviderModels(processed, { parameters: resolved.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: availableExports }, child.stackId, changeSetId, principal, childTags, isCreate ? {} : child.resources);
+      const childPreflight = await this.preflightProviderModels(processed, { parameters: resolved.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: availableExports }, child.stackId, changeSetId, principal, childTags, isCreate ? {} : child.resources, new Set(), undefined, new Set(), artifactId);
       const previousBody = !isCreate && child.templateArtifactId ? await this.journal.readTemplate(child.templateArtifactId, "processed") : undefined;
       const childChanges = this.changeSetPlan(isCreate ? undefined : child, processed, childPreflight, previousBody ? parseCloudFormationTemplate(previousBody) : undefined);
       const now = this.clock.now();
@@ -3327,6 +3391,7 @@ export class CloudFormationService {
     logicalId: string,
     step: string,
     physicalId: string,
+    resourceGeneration?: string,
   ): Promise<void> {
     const operation = stack.activeOperation;
     if (!operation) return;
@@ -3336,10 +3401,12 @@ export class CloudFormationService {
     const record = ledger.records.find(candidate => candidate.key === key && (candidate.kind === "CREATE" || candidate.kind === "REPLACE_CREATE"));
     if (!record || record.status !== "INTENT" || !record.after) return;
     record.after.physicalResourceId = physicalId;
+    if (resourceGeneration !== undefined) record.after.attributes.StackSimResourceGeneration = resourceGeneration;
     record.after.lastUpdatedTimestamp = this.clock.now();
     const resource = stack.resources[logicalId];
     if (record.kind === "CREATE" && resource && resource.resourceStatus === "CREATE_IN_PROGRESS") {
       resource.physicalResourceId = physicalId;
+      if (resourceGeneration !== undefined) resource.attributes.StackSimResourceGeneration = resourceGeneration;
       resource.lastUpdatedTimestamp = this.clock.now();
     }
     await this.journal.replaceJsonArtifact("operations", this.mutationArtifactId(operation.operationId), ledger);
@@ -3774,10 +3841,15 @@ export class CloudFormationService {
       if (properties.ResourcePolicy !== undefined) add("dynamodb:GetResourcePolicy", "dynamodb:PutResourcePolicy");
       if (Array.isArray(properties.Tags) && properties.Tags.length) add("dynamodb:TagResource");
     } else if (typeName === "AWS::StepFunctions::StateMachine") {
-      if (create) add("states:CreateStateMachine", "states:DescribeStateMachine", "states:ListTagsForResource");
+      if (create) add("states:CreateStateMachine", "states:DescribeStateMachine", "states:ListTagsForResource", "states:TagResource");
       if (update) add("states:DescribeStateMachine", "states:UpdateStateMachine", "states:ListTagsForResource", "states:TagResource", "states:UntagResource");
       if (operation === "DELETE") add("states:DescribeStateMachine", "states:ListTagsForResource", "states:DeleteStateMachine");
       if (read) add("states:DescribeStateMachine", "states:ListTagsForResource");
+    } else if (typeName === "AWS::StepFunctions::Activity") {
+      add("states:DescribeActivity", "states:ListTagsForResource");
+      if (create) add("states:CreateActivity", "states:TagResource");
+      if (update) add("states:TagResource", "states:UntagResource");
+      if (operation === "DELETE") add("states:DeleteActivity");
     } else if (typeName === "AWS::AppSync::GraphQLApi") {
       add("appsync:GetGraphqlApi");
       if (create) add("appsync:CreateGraphqlApi", "appsync:TagResource");
@@ -4176,20 +4248,31 @@ export class CloudFormationService {
           } else if (action === "dynamodb:UntagResource") tagKeys = Object.keys(previousMap).filter(key => !Object.hasOwn(desiredMap, key));
           context = { "aws:TagKeys": tagKeys, ...Object.fromEntries(requestTags.map(tag => [`aws:RequestTag/${tag.Key}`, tag.Value])) };
         }
-      } else if (typeName === "AWS::StepFunctions::StateMachine") {
-        const name = properties.StateMachineName;
+      } else if (typeName === "AWS::StepFunctions::StateMachine" || typeName === "AWS::StepFunctions::Activity") {
+        const activity = typeName === "AWS::StepFunctions::Activity";
+        const name = activity ? properties.Name : properties.StateMachineName;
+        const kind = activity ? "activity" : "stateMachine";
         const arn = typeof physicalId === "string" && physicalId.startsWith("arn:")
           ? physicalId
           : typeof name === "string" && name
-            ? `arn:aws:states:${this.region}:${accountId}:stateMachine:${name}`
-            : `arn:aws:states:${this.region}:${accountId}:stateMachine:*`;
+            ? `arn:aws:states:${this.region}:${accountId}:${kind}:${name}`
+            : `arn:aws:states:${this.region}:${accountId}:${kind}:*`;
         resources.push(arn);
-        const current = this.store.regionState(this.region).stepFunctions.stateMachines[arn];
-        const requestTags = tags(properties.Tags);
+        const current = activity ? this.store.regionState(this.region).stepFunctions.activities[arn] : this.store.regionState(this.region).stepFunctions.stateMachines[arn];
+        const desiredTags = [
+          ...tags(properties.Tags),
+          { Key: "aws:cloudformation:stack-id", Value: stack.stackId },
+          { Key: "aws:cloudformation:stack-name", Value: stack.stackName },
+          { Key: "aws:cloudformation:logical-id", Value: logicalId },
+        ];
+        const desiredKeys = new Set(desiredTags.map(tag => tag.Key));
+        const requestTags = action === "states:CreateStateMachine" || action === "states:CreateActivity" ? desiredTags
+          : action === "states:TagResource" ? desiredTags.filter(tag => current?.tags[tag.Key] !== tag.Value) : [];
+        const tagKeys = action === "states:UntagResource" ? Object.keys(current?.tags ?? {}).filter(key => !desiredKeys.has(key)) : requestTags.map(tag => tag.Key);
         context = {
           ...Object.fromEntries(Object.entries(current?.tags ?? {}).map(([key, value]) => [`aws:ResourceTag/${key}`, value])),
           ...Object.fromEntries(requestTags.map(tag => [`aws:RequestTag/${tag.Key}`, tag.Value])),
-          "aws:TagKeys": requestTags.map(tag => tag.Key),
+          ...(["states:CreateStateMachine", "states:CreateActivity", "states:TagResource", "states:UntagResource"].includes(action) ? { "aws:TagKeys": tagKeys } : {}),
         };
       } else if (typeName.startsWith("AWS::AppSync::")) {
         if (action === "iam:PassRole") {
@@ -4450,6 +4533,8 @@ export class CloudFormationService {
     if (!operation) throw new Error(`Stack ${stack.stackName} has no active operation`);
     const artifactId = this.providerCheckpointArtifactId(operation.operationId, logicalId, step);
     const checkpoint = await this.journal.readJsonArtifact<ProviderOperationCheckpoint>("provider-checkpoints", artifactId);
+    const isStepFunctionsProvider = provider.typeName === "AWS::StepFunctions::StateMachine" || provider.typeName === "AWS::StepFunctions::Activity";
+    const recoveryGeneration = (value: unknown): string | undefined => isStepFunctionsProvider && typeof value === "string" ? value : undefined;
     const baseContext = { ...this.providerContext(stack.stackId, logicalId, operation.operationId, principal, checkpoint?.provider.callbackContext as Record<string, any> | undefined, step, checkpoint?.deadlineAt), ...(retentionPolicy ? { retentionPolicy } : {}) };
     if (checkpoint) {
       if (checkpoint.schemaVersion !== 1 || checkpoint.typeName !== provider.typeName || checkpoint.providerVersion !== provider.providerVersion || checkpoint.operation !== providerOperation || checkpoint.stackId !== stack.stackId || checkpoint.logicalId !== logicalId || checkpoint.operationId !== operation.operationId || checkpoint.resourceOperationId !== baseContext.resourceOperationId || checkpoint.idempotencyKey !== baseContext.idempotencyKey || checkpoint.deadlineAt !== baseContext.deadlineAt) {
@@ -4460,7 +4545,7 @@ export class CloudFormationService {
       // its provisional CREATE identity is copied into the mutation ledger.
       // Repair that ordering window before any resume/deadline branch so a
       // subsequent rollback always has the concrete resource to delete.
-      if (providerOperation === "CREATE" && checkpoint.provider.physicalId) await this.persistProvisionalCreatePhysicalId(stack, logicalId, step, checkpoint.provider.physicalId);
+      if (providerOperation === "CREATE" && checkpoint.provider.physicalId) await this.persistProvisionalCreatePhysicalId(stack, logicalId, step, checkpoint.provider.physicalId, recoveryGeneration(checkpoint.provider.callbackContext.generation));
       if (this.clock.now() < checkpoint.resumeAfter) throw new ProviderDeferred(checkpoint.resumeAfter);
     }
     const attempt = checkpoint?.attempt ?? 0;
@@ -4471,7 +4556,24 @@ export class CloudFormationService {
       ?? checkpoint?.provider.physicalId
       ?? (providerOperation === "CREATE" && provider.typeName === RDS_DB_PARAMETER_GROUP_TYPE
         ? rdsDbParameterGroupPhysicalId(baseContext)
-        : stack.resources[logicalId]?.physicalResourceId);
+        : providerOperation === "CREATE" && provider.typeName.startsWith("AWS::StepFunctions::") ? undefined : stack.resources[logicalId]?.physicalResourceId);
+    if (providerOperation !== "CREATE" && isStepFunctionsProvider) {
+      let tracked: CloudFormationStackResourceState | undefined = stack.resources[logicalId];
+      if (tracked?.physicalResourceId !== authorizationTargetPhysicalId || typeof tracked?.attributes.StackSimResourceGeneration !== "string") {
+        const sourceId = operation.rollbackSourceOperationId ?? operation.operationId;
+        const ledger = await this.mutationLedger(sourceId);
+        const records = [...ledger.records].filter(record => record.logicalId === logicalId).reverse();
+        // A provisional replacement can exist only in the mutation ledger;
+        // neither the current stack resource nor its rollback snapshot names it.
+        tracked = records.flatMap(record => [record.rollbackAfter, record.after, record.before]).find(resource => resource !== undefined && resource.physicalResourceId === authorizationTargetPhysicalId && typeof resource.attributes.StackSimResourceGeneration === "string");
+        if (!tracked) {
+          const snapshot = await this.journal.readJsonArtifact<{ resources: Record<string, CloudFormationStackResourceState> }>("rollback", `${sourceId}.snapshot.json`);
+          tracked = snapshot?.resources[logicalId];
+        }
+      }
+      const generation = tracked?.physicalResourceId === authorizationTargetPhysicalId ? tracked?.attributes.StackSimResourceGeneration : undefined;
+      if (typeof generation === "string") Object.assign(baseContext, { resourceGeneration: generation });
+    }
     await this.authorizeProviderOperation(stack, logicalId, providerOperation, provider.typeName, principal, authorizationProperties ?? stack.resources[logicalId]?.properties ?? {}, authorizationTargetPhysicalId);
     const result = await invoke(baseContext);
     if (result?.status === "IN_PROGRESS") {
@@ -4479,14 +4581,14 @@ export class CloudFormationService {
       const resumeAfter = Math.min(baseContext.deadlineAt, this.clock.now() + Math.floor(result.callbackAfterMs));
       const durable: ProviderOperationCheckpoint = { schemaVersion: 1, typeName: provider.typeName, providerVersion: provider.providerVersion, operation: providerOperation, stackId: stack.stackId, logicalId, operationId: operation.operationId, resourceOperationId: baseContext.resourceOperationId, idempotencyKey: baseContext.idempotencyKey, attempt: attempt + 1, deadlineAt: baseContext.deadlineAt, resumeAfter, provider: structuredClone(result.checkpoint) };
       await this.journal.replaceJsonArtifact("provider-checkpoints", artifactId, durable);
-      if (providerOperation === "CREATE" && durable.provider.physicalId) await this.persistProvisionalCreatePhysicalId(stack, logicalId, step, durable.provider.physicalId);
+      if (providerOperation === "CREATE" && durable.provider.physicalId) await this.persistProvisionalCreatePhysicalId(stack, logicalId, step, durable.provider.physicalId, recoveryGeneration(durable.provider.callbackContext.generation));
       await this.checkpoint(stack, `provider:${logicalId}:${step}:attempt-${durable.attempt}`);
       await this.store.save();
       throw new ProviderDeferred(resumeAfter);
     }
     if (result?.status === "FAILED") {
       if (result.physicalId !== undefined && (typeof result.physicalId !== "string" || result.physicalId.length === 0)) throw new Error(`Provider ${provider.typeName} returned an invalid FAILED physical ID for ${logicalId}`);
-      if (providerOperation === "CREATE" && result.physicalId) await this.persistProvisionalCreatePhysicalId(stack, logicalId, step, result.physicalId);
+      if (providerOperation === "CREATE" && result.physicalId) await this.persistProvisionalCreatePhysicalId(stack, logicalId, step, result.physicalId, checkpoint && result.physicalId === checkpoint.provider.physicalId ? recoveryGeneration(checkpoint.provider.callbackContext.generation) : undefined);
       if (result.retryable) {
         const resumeAfter = Math.min(baseContext.deadlineAt, this.clock.now() + Math.min(5_000, 250 * 2 ** Math.min(attempt, 5)));
         const durable: ProviderOperationCheckpoint = { schemaVersion: 1, typeName: provider.typeName, providerVersion: provider.providerVersion, operation: providerOperation, stackId: stack.stackId, logicalId, operationId: operation.operationId, resourceOperationId: baseContext.resourceOperationId, idempotencyKey: baseContext.idempotencyKey, attempt: attempt + 1, deadlineAt: baseContext.deadlineAt, resumeAfter, provider: { ...(checkpoint?.provider ?? { schemaVersion: 1, callbackContext: {} }), ...(result.physicalId ? { physicalId: result.physicalId } : {}) } };

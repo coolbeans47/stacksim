@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { ServiceIntegrationAttemptState, StepFunctionsExecutionState, StepFunctionsRegionState } from "../types.js";
 
-const EXECUTION_SCHEMA_VERSION = 4;
+const EXECUTION_SCHEMA_VERSION = 5;
 
 /**
  * The per-account/Region transactional execution store. Execution payloads,
@@ -43,6 +43,16 @@ export class StepFunctionsExecutionStore {
           execution.taskJournal ??= {};
           execution.callbackTasks ??= {};
           execution.nestedExecutions ??= {};
+          // Bind pre-v5 tasks only when the extant Activity demonstrably predates
+          // their admission. An ambiguous/missing old identity cannot be adopted
+          // by a later same-name Activity. Already issued tokens remain valid.
+          let migratedActivity = false;
+          for (const task of Object.values(execution.callbackTasks)) if (task.kind === "ACTIVITY" && !task.activityGeneration) {
+            const activity = task.activityArn ? regional.activities[task.activityArn] : undefined;
+            task.activityGeneration = activity && activity.creationDate < task.createdAt ? activity.generation : "legacy-unresolved";
+            migratedActivity = true;
+          }
+          if (migratedActivity) insert.run(execution.executionArn, JSON.stringify(execution), Date.now());
           this.executions[row.execution_arn] = execution;
         }
         // One-time import from the pre-SFN-P0 control-state prototype.

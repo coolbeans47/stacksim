@@ -1,5 +1,19 @@
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value ?? {}, key);
 
+export function cloudFormationOrigin(tags = []) {
+  const values = Object.fromEntries(tags.map(tag => [tag.key, tag.value]));
+  const stackId = values["aws:cloudformation:stack-id"];
+  const match = typeof stackId === "string" && stackId.match(/^arn:[^:]+:cloudformation:[^:]+:\d{12}:stack\/([^/]+)\/[^/]+$/);
+  const logicalId = values["aws:cloudformation:logical-id"];
+  if (!match || typeof logicalId !== "string" || !logicalId) return null;
+  return { stackId, stackName: match[1], logicalId, href: `#/cloudformation/stacks/${encodeURIComponent(stackId)}/resources` };
+}
+
+export function executionRoleLink(roleArn) {
+  const match = typeof roleArn === "string" && roleArn.match(/^arn:[^:]+:iam::\d{12}:role\/(?:[^/]+\/)*([^/]+)$/);
+  return match ? `#/iam/roles/${encodeURIComponent(match[1])}` : null;
+}
+
 export function parseStateMachineDefinition(definition) {
   try {
     const parsed = typeof definition === "string" ? JSON.parse(definition) : definition;
@@ -45,7 +59,7 @@ export function lambdaReferences(definition) {
   const references = [];
   for (const scope of definitionScopes(definition)) for (const item of scope.states) {
     if (item.state.Type !== "Task") continue;
-    const optimized = item.state.Resource === "arn:aws:states:::lambda:invoke";
+    const optimized = /^arn:aws:states:::lambda:invoke(?:\.waitForTaskToken)?$/.test(item.state.Resource);
     const target = optimized ? item.state.Parameters?.FunctionName : item.state.Resource;
     const name = lambdaFunctionName(target) ?? (optimized && typeof target === "string" && !target.startsWith("$") ? target.split(":")[0] : null);
     if (name) references.push({ name, resource: target, stateName: item.name, scope: scope.label });
@@ -60,11 +74,11 @@ export function integrationReferences(definition) {
     const resource = item.state.Resource;
     let service = null; let target = null; let href = null;
     if (resource.startsWith("arn:aws:states:::dynamodb:")) { service = "DynamoDB"; target = item.state.Parameters?.TableName; if (typeof target === "string") href = `#/dynamodb/tables/${encodeURIComponent(target)}`; }
-    else if (resource.startsWith("arn:aws:states:::sqs:")) { service = "SQS"; target = item.state.Parameters?.QueueUrl; href = "#/sqs/queues"; }
-    else if (resource.startsWith("arn:aws:states:::sns:")) { service = "SNS"; target = item.state.Parameters?.TopicArn; href = "#/sns/topics"; }
-    else if (resource === "arn:aws:states:::events:putEvents") { service = "EventBridge"; target = "Event bus"; href = "#/eventbridge/buses"; }
+    else if (resource.startsWith("arn:aws:states:::sqs:")) { service = "SQS"; target = item.state.Parameters?.QueueUrl; const name = typeof target === "string" && target.match(/^https?:\/\/[^/]+\/(?:[^/]+\/)*([^/?#]+)$/)?.[1]; href = name ? `#/sqs/queues/${encodeURIComponent(name)}/details` : "#/sqs/queues"; }
+    else if (resource.startsWith("arn:aws:states:::sns:")) { service = "SNS"; target = item.state.Parameters?.TopicArn; const name = typeof target === "string" && target.match(/^arn:[^:]+:sns:[^:]+:\d{12}:([^:]+)$/)?.[1]; href = name ? `#/sns/topics/${encodeURIComponent(name)}` : "#/sns/topics"; }
+    else if (resource === "arn:aws:states:::events:putEvents") { service = "EventBridge"; const entries = item.state.Parameters?.Entries; const names = Array.isArray(entries) ? [...new Set(entries.map(entry => entry.EventBusName ?? (entry["EventBusName.$"] ? null : "default")))] : []; target = names.length === 1 ? names[0] : "Event buses"; const name = typeof target === "string" && names.length === 1 ? target.replace(/^arn:[^:]+:events:[^:]+:\d{12}:event-bus\//, "") : null; href = name ? `#/eventbridge/event-buses/${encodeURIComponent(name)}` : "#/eventbridge/event-buses"; }
     else if (resource.startsWith("arn:aws:states:::states:startExecution")) { service = "Step Functions"; target = item.state.Parameters?.StateMachineArn; if (typeof target === "string") href = `#/step-functions/state-machines/${encodeURIComponent(target)}`; }
-    else if (/^arn:aws:states:[^:]+:[^:]+:activity:/.test(resource)) { service = "Activity"; target = resource; href = "#/step-functions/activities"; }
+    else if (/^arn:aws:states:[^:]+:[^:]+:activity:/.test(resource)) { service = "Activity"; target = resource; href = `#/step-functions/activities/${encodeURIComponent(resource)}`; }
     if (service) references.push({ service, target, href, resource, stateName: item.name, scope: scope.label, callback: resource.endsWith(".waitForTaskToken"), sync: resource.endsWith(".sync") });
   }
   return references;

@@ -115,7 +115,7 @@ test("current bootstrap revision retains SES, SNS, AppSync, Cognito, and Step Fu
     const policy = executionRole.inlinePolicies[CDK_BOOTSTRAP_POLICY_NAME];
     const allStatements = statements(policy);
 
-    assert.equal(CDK_BOOTSTRAP_POLICY_REVISION, 21);
+    assert.equal(CDK_BOOTSTRAP_POLICY_REVISION, 22);
     assert.equal(bootstrap.policyRevision, CDK_BOOTSTRAP_POLICY_REVISION);
     assert.equal(executionRole.tags["stacksim:policy-revision"], String(CDK_BOOTSTRAP_POLICY_REVISION));
     const cognitoPolicyArn = `arn:aws:iam::${accountId}:policy/${CDK_BOOTSTRAP_COGNITO_POLICY_NAME}`;
@@ -173,9 +173,10 @@ test("current bootstrap revision retains SES, SNS, AppSync, Cognito, and Step Fu
     assert(stepFunctions);
     assert.deepEqual(actionList(stepFunctions), [
       "states:CreateStateMachine", "states:DeleteStateMachine", "states:DescribeStateMachine",
+      "states:CreateActivity", "states:DeleteActivity", "states:DescribeActivity",
       "states:ListTagsForResource", "states:TagResource", "states:UntagResource", "states:UpdateStateMachine",
     ]);
-    assert.equal(stepFunctions.Resource, `arn:aws:states:${region}:${accountId}:stateMachine:*`);
+    assert.deepEqual(stepFunctions.Resource, [`arn:aws:states:${region}:${accountId}:stateMachine:*`, `arn:aws:states:${region}:${accountId}:activity:*`]);
     const supportedPassRole = allStatements.find(statement => statement.Sid === "PassSupportedServiceRoles");
     assert(Array.isArray((supportedPassRole?.Condition as any)?.StringEquals?.["iam:PassedToService"]));
     assert((supportedPassRole!.Condition as any).StringEquals["iam:PassedToService"].includes("states.amazonaws.com"));

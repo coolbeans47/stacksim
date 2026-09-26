@@ -61,4 +61,9 @@ test("CloudFormation console links S3, CDK deployment, and SES resources to thei
     PhysicalResourceId: "arn:aws:states:eu-west-1:000000000000:stateMachine:order-workflow",
     Properties: {},
   }), [{ href: "#/step-functions/state-machines/arn%3Aaws%3Astates%3Aeu-west-1%3A000000000000%3AstateMachine%3Aorder-workflow" }]);
+  assert.deepEqual(resourceLinks({
+    ResourceType: "AWS::StepFunctions::Activity",
+    PhysicalResourceId: "arn:aws:states:eu-west-1:000000000000:activity:order-review",
+    Properties: {},
+  }), [{ href: "#/step-functions/activities/arn%3Aaws%3Astates%3Aeu-west-1%3A000000000000%3Aactivity%3Aorder-review" }]);
 });

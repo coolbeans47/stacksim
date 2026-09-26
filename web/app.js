@@ -110,7 +110,8 @@ function showSignIn(message = "") {
       showSignIn(friendlySignInError(error));
     }
   });
-  requestAnimationFrame(() => form.querySelector('[name="accessKeyId"]')?.focus());
+  // Focus before yielding so a deferred callback cannot interrupt password entry.
+  form.querySelector('[name="accessKeyId"]')?.focus();
 }
 
 let consoleConfig;

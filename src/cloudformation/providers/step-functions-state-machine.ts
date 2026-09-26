@@ -35,6 +35,7 @@ export const STEP_FUNCTIONS_STATE_MACHINE_SCHEMA: ProviderSchema = Object.freeze
   properties: Object.freeze({
     Definition: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
     DefinitionString: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
+    DefinitionS3Location: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
     DefinitionSubstitutions: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
     RoleArn: Object.freeze({ valueType: "string", required: true, updateBehavior: "MUTABLE" }),
     StateMachineName: Object.freeze({ valueType: "string", updateBehavior: "REPLACEMENT" }),
@@ -77,7 +78,7 @@ function canonicalTags(value: unknown): readonly { Key: string; Value: string }[
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) throw new TypeError("Tags must be an array");
   const result = value.map(item => {
-    if (!record(item) || typeof item.Key !== "string" || typeof item.Value !== "string") throw new TypeError("Each tag requires string Key and Value");
+    if (!record(item) || Object.keys(item).some(key => key !== "Key" && key !== "Value") || typeof item.Key !== "string" || item.Key.length > 128 || typeof item.Value !== "string" || item.Value.length > 256) throw new TypeError("Each tag requires string Key and Value");
     return { Key: item.Key, Value: item.Value };
   }).sort((left, right) => left.Key.localeCompare(right.Key));
   if (result.length > 47 || new Set(result.map(item => item.Key)).size !== result.length || result.some(item => !item.Key || item.Key.toLowerCase().startsWith("aws:"))) {
@@ -108,8 +109,8 @@ function stable(value: unknown): unknown {
 
 function applySubstitutions(definition: string, value: unknown): string {
   if (value === undefined) return definition;
-  if (!record(value) || Object.values(value).some(item => typeof item !== "string")) throw new TypeError("DefinitionSubstitutions must be a string map");
-  return definition.replace(/\$\{([A-Za-z0-9_]+(?:,[A-Za-z0-9_]+)*)\}/g, (_match, names: string) => {
+  if (!record(value) || !Object.keys(value).length || Object.values(value).some(item => typeof item !== "string" && typeof item !== "boolean" && !Number.isSafeInteger(item))) throw new TypeError("DefinitionSubstitutions must be a nonempty map of strings, integers or booleans");
+  return definition.replace(/\$\{([^{}]+)\}/g, (_match, names: string) => {
     const keys = names.split(",");
     const missing = keys.find(key => !Object.hasOwn(value, key));
     if (missing) throw new TypeError(`DefinitionSubstitutions does not define ${missing}`);
@@ -120,7 +121,8 @@ function applySubstitutions(definition: string, value: unknown): string {
 function definitionString(properties: Record<string, unknown>): string {
   const hasObject = properties.Definition !== undefined;
   const hasString = properties.DefinitionString !== undefined;
-  if (hasObject === hasString) throw new TypeError("Specify exactly one of Definition or DefinitionString");
+  if (properties.DefinitionS3Location !== undefined) throw new TypeError("DefinitionS3Location must be resolved by the CloudFormation immutable asset pipeline before provider execution");
+  if (hasObject === hasString) throw new TypeError("Specify exactly one of Definition, DefinitionString or DefinitionS3Location");
   const raw = hasObject ? JSON.stringify(stable(properties.Definition)) : String(properties.DefinitionString);
   return applySubstitutions(raw, properties.DefinitionSubstitutions);
 }
@@ -133,11 +135,11 @@ function stateMachineArn(model: StepFunctionsStateMachineModel, context: Provide
   return `arn:${context.partition}:states:${context.region}:${context.accountId}:stateMachine:${model.StateMachineName}`;
 }
 
-function inProgress(physicalId: string, phase: string): ProviderInProgress {
+function inProgress(physicalId: string, phase: string, generation: string | undefined): ProviderInProgress {
   return {
     status: "IN_PROGRESS",
     callbackAfterMs: 1,
-    checkpoint: { schemaVersion: 1, physicalId, callbackContext: { phase } },
+    checkpoint: { schemaVersion: 1, physicalId, callbackContext: { phase, ...(generation ? { generation } : {}) } },
   };
 }
 
@@ -150,14 +152,14 @@ function notFound(error: unknown): boolean {
   return error instanceof AwsError && error.code === "StateMachineDoesNotExist";
 }
 
-function success(model: StepFunctionsStateMachineModel, arn: string, revisionId: string): ProviderSuccess<StepFunctionsStateMachineModel> {
+function success(model: StepFunctionsStateMachineModel, arn: string, revisionId: string, generation: string | undefined): ProviderSuccess<StepFunctionsStateMachineModel> {
   return {
     status: "SUCCESS",
     physicalId: arn,
     model: {
       physicalId: arn,
       properties: model,
-      attributes: { Arn: arn, Name: model.StateMachineName, StateMachineRevisionId: revisionId },
+      attributes: { Arn: arn, Name: model.StateMachineName, StateMachineRevisionId: revisionId, ...(generation ? { StackSimResourceGeneration: generation } : {}) },
     },
   };
 }
@@ -174,6 +176,8 @@ export function createStepFunctionsStateMachineProvider(stepFunctions: StepFunct
     const machine = await describe(arn);
     if (!machine) return undefined;
     const tags = await tagMap(arn);
+    const expectedGeneration = context.callbackContext?.generation ?? context.resourceGeneration;
+    if (expectedGeneration !== undefined && expectedGeneration !== stepFunctions.cloudFormationResourceGeneration(arn)) throw new AwsError("OwnershipConflict", `State machine ${arn} has been deleted and recreated; refusing stale provider recovery`, 409);
     if (!owned(tags, context)) throw new AwsError("OwnershipConflict", `State machine ${arn} is not owned by this stack resource`, 409);
     return { machine, tags };
   };
@@ -202,24 +206,24 @@ export function createStepFunctionsStateMachineProvider(stepFunctions: StepFunct
         ...(current.machine.definition !== desired.DefinitionString ? { definition: desired.DefinitionString } : {}),
         ...(current.machine.roleArn !== desired.RoleArn ? { roleArn: desired.RoleArn } : {}),
       });
-      return inProgress(arn, "after-update");
+      return inProgress(arn, "after-update", stepFunctions.cloudFormationResourceGeneration(arn));
     }
     const wanted = ownershipTags(desired, context);
     const removals = Object.keys(current.tags).filter(key => !Object.hasOwn(wanted, key));
     if (removals.length) {
       await stepFunctions.UntagResource({ resourceArn: arn, tagKeys: removals });
-      return inProgress(arn, "after-untag");
+      return inProgress(arn, "after-untag", stepFunctions.cloudFormationResourceGeneration(arn));
     }
     const additions = Object.entries(wanted)
       .filter(([key, value]) => current.tags[key] !== value)
       .map(([key, value]) => ({ key, value }));
     if (additions.length) {
       await stepFunctions.TagResource({ resourceArn: arn, tags: additions });
-      return inProgress(arn, "after-tag");
+      return inProgress(arn, "after-tag", stepFunctions.cloudFormationResourceGeneration(arn));
     }
     const refreshed = await readOwned(arn, context);
     if (!refreshed) return { status: "FAILED", errorCode: "NotFound", message: `State machine ${arn} no longer exists` };
-    return success(modelFrom(refreshed.machine, refreshed.tags), arn, String(refreshed.machine.revisionId));
+    return success(modelFrom(refreshed.machine, refreshed.tags), arn, String(refreshed.machine.revisionId), stepFunctions.cloudFormationResourceGeneration(arn));
   };
 
   return {
@@ -232,8 +236,14 @@ export function createStepFunctionsStateMachineProvider(stepFunctions: StepFunct
       if (!record(properties)) return issues;
       const invalid = (path: string, message: string) => issues.push({ code: "InvalidProperty", path, pathSegments: providerValidationPathSegments(path), message });
       const unsupported = (path: string, message: string) => issues.push({ code: "UnsupportedProperty", path, pathSegments: providerValidationPathSegments(path), message });
-      if ((properties.Definition === undefined) === (properties.DefinitionString === undefined)) invalid("Properties", "Specify exactly one of Definition or DefinitionString");
-      if (properties.DefinitionSubstitutions !== undefined && (!record(properties.DefinitionSubstitutions) || Object.values(properties.DefinitionSubstitutions).some(item => typeof item !== "string"))) invalid("Properties.DefinitionSubstitutions", "DefinitionSubstitutions must be a string map");
+      if ([properties.Definition, properties.DefinitionString, properties.DefinitionS3Location].filter(value => value !== undefined).length !== 1) invalid("Properties", "Specify exactly one of Definition, DefinitionString or DefinitionS3Location");
+      if (properties.DefinitionS3Location !== undefined) {
+        const location = properties.DefinitionS3Location;
+        if (!record(location) || Object.keys(location).some(key => !["Bucket", "Key", "Version"].includes(key)) || typeof location.Bucket !== "string" || !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(location.Bucket) || typeof location.Key !== "string" || !location.Key || Buffer.byteLength(location.Key) > 1024 || location.Version !== undefined && (typeof location.Version !== "string" || !location.Version)) invalid("Properties.DefinitionS3Location", "DefinitionS3Location requires Bucket, Key and an optional nonempty Version in the stack account and Region");
+      }
+      if (properties.DefinitionSubstitutions !== undefined) {
+        try { applySubstitutions("", properties.DefinitionSubstitutions); } catch (error) { invalid("Properties.DefinitionSubstitutions", error instanceof Error ? error.message : String(error)); }
+      }
       const name = properties.StateMachineName;
       if (name !== undefined && (typeof name !== "string" || !/^[A-Za-z0-9-_]{1,80}$/.test(name))) invalid("Properties.StateMachineName", "StateMachineName must contain 1-80 letters, numbers, hyphens, or underscores");
       if (properties.StateMachineType !== undefined && properties.StateMachineType !== "STANDARD") unsupported("Properties.StateMachineType", "Only STANDARD state machines are supported");
@@ -243,28 +253,28 @@ export function createStepFunctionsStateMachineProvider(stepFunctions: StepFunct
         const logging = properties.LoggingConfiguration;
         if (!record(logging)
           || Object.keys(logging).some(key => !["Destinations", "IncludeExecutionData", "Level"].includes(key))
-          || (logging.Level ?? "OFF") !== "OFF"
-          || logging.IncludeExecutionData === true
-          || Array.isArray(logging.Destinations) && logging.Destinations.length > 0) {
+          || logging.Level !== undefined && logging.Level !== "OFF"
+          || logging.IncludeExecutionData !== undefined && logging.IncludeExecutionData !== false
+          || logging.Destinations !== undefined && (!Array.isArray(logging.Destinations) || logging.Destinations.length > 0)) {
           unsupported("Properties.LoggingConfiguration", "Execution logging requires SFN-05; only the disabled OFF configuration is accepted");
         }
       }
       if (properties.TracingConfiguration !== undefined) {
         const tracing = properties.TracingConfiguration;
-        if (!record(tracing) || Object.keys(tracing).some(key => key !== "Enabled") || tracing.Enabled === true) unsupported("Properties.TracingConfiguration", "X-Ray tracing is not supported");
+        if (!record(tracing) || Object.keys(tracing).some(key => key !== "Enabled") || tracing.Enabled !== undefined && tracing.Enabled !== false) unsupported("Properties.TracingConfiguration", "X-Ray tracing is not supported; Enabled must be false");
       }
       if (properties.EncryptionConfiguration !== undefined) {
         const encryption = properties.EncryptionConfiguration;
         if (!record(encryption) || Object.keys(encryption).some(key => key !== "Type") || encryption.Type !== "AWS_OWNED_KEY") unsupported("Properties.EncryptionConfiguration", "Only AWS_OWNED_KEY encryption is supported");
       }
-      try {
+      try { if (properties.DefinitionS3Location === undefined) {
         const definition = definitionString(properties);
         if (Buffer.byteLength(definition) > 1024 * 1024) invalid("Properties.DefinitionString", "The effective definition exceeds 1 MiB");
         else {
           const validation = validateDefinition(definition, context.region, context.accountId);
           for (const diagnostic of validation.diagnostics.filter(item => item.severity === "ERROR")) invalid("Properties.DefinitionString", `${diagnostic.location}: ${diagnostic.message}`);
         }
-      } catch (error) { invalid("Properties.DefinitionString", error instanceof Error ? error.message : String(error)); }
+      } } catch (error) { invalid("Properties.DefinitionString", error instanceof Error ? error.message : String(error)); }
       return issues;
     },
     canonicalize(properties: unknown, context: ProviderContext): StepFunctionsStateMachineModel {
@@ -298,6 +308,7 @@ export function createStepFunctionsStateMachineProvider(stepFunctions: StepFunct
           if (!owned(currentTags, context)) return { status: "FAILED", errorCode: "AlreadyExists", message: `State machine ${arn} already exists and is not owned by this stack resource` };
           return await reconcile(arn, desired, context);
         }
+        if (context.callbackContext?.generation) return { status: "FAILED", errorCode: "NotFound", message: `State machine ${arn} was deleted during creation` };
         await stepFunctions.CreateStateMachine({
           name: desired.StateMachineName,
           definition: desired.DefinitionString,
@@ -305,14 +316,15 @@ export function createStepFunctionsStateMachineProvider(stepFunctions: StepFunct
           type: "STANDARD",
           tags: Object.entries(ownershipTags(desired, context)).map(([key, value]) => ({ key, value })),
         });
-        return inProgress(arn, "after-create");
+        await readOwned(arn, context);
+        return inProgress(arn, "after-create", stepFunctions.cloudFormationResourceGeneration(arn));
       } catch (error) { return failure(error); }
     },
     async read(physicalId: string, context: ProviderContext): Promise<ProviderReadResult<StepFunctionsStateMachineModel>> {
       try {
         const current = await readOwned(physicalId, context);
         if (!current) return { status: "NOT_FOUND", physicalId };
-        return success(modelFrom(current.machine, current.tags), physicalId, String(current.machine.revisionId));
+        return success(modelFrom(current.machine, current.tags), physicalId, String(current.machine.revisionId), stepFunctions.cloudFormationResourceGeneration(physicalId));
       } catch (error) { return notFound(error) ? { status: "NOT_FOUND", physicalId } : failure(error) as ProviderReadResult<StepFunctionsStateMachineModel>; }
     },
     async update(physicalId: string, _previous: StepFunctionsStateMachineModel, desired: StepFunctionsStateMachineModel, context: ProviderContext): Promise<ProviderUpdateResult<StepFunctionsStateMachineModel>> {
@@ -323,6 +335,7 @@ export function createStepFunctionsStateMachineProvider(stepFunctions: StepFunct
       try {
         const current = await readOwned(physicalId, context);
         if (!current) return { status: "NOT_FOUND", physicalId };
+        if (context.callbackContext?.phase !== "before-delete") return inProgress(physicalId, "before-delete", stepFunctions.cloudFormationResourceGeneration(physicalId));
         await stepFunctions.DeleteStateMachine({ stateMachineArn: physicalId });
         return { status: "SUCCESS", physicalId };
       } catch (error) { return notFound(error) ? { status: "NOT_FOUND", physicalId } : failure(error) as ProviderDeleteResult; }

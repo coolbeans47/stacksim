@@ -46,7 +46,7 @@ async function settle(
 
 test("StateMachine provider validates, substitutes, owns, updates, and deletes authoritative workflows", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-sfn-provider-"));
-  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "off" });
+  const simulator = new StackSim({ port: 0, invokePort: 0, cloudFormationCustomResourceCallbackPort: 0, dataDir: root, accountId, region, authMode: "off" });
   const clients: Array<{ destroy(): void }> = [];
   try {
     await simulator.start();
@@ -60,16 +60,17 @@ test("StateMachine provider validates, substitutes, owns, updates, and deletes a
     const provider = createStepFunctionsStateMachineProvider(simulator.stepfunctions);
 
     const invalid = provider.validate({
-      DefinitionS3Location: { Bucket: "unsupported", Key: "definition.json" },
+      DefinitionS3Location: { Bucket: "definitions", Key: "definition.json", Unsupported: true },
       RoleArn: roleArn,
       StateMachineType: "EXPRESS",
       LoggingConfiguration: { Level: "ALL" },
     }, context());
-    assert(invalid.some(issue => issue.path === "Properties.DefinitionS3Location" && issue.code === "UnsupportedProperty"));
+    assert(invalid.some(issue => issue.path === "Properties.DefinitionS3Location" && issue.code === "InvalidProperty"));
     assert(invalid.some(issue => issue.path === "Properties.StateMachineType" && issue.code === "UnsupportedProperty"));
     assert(invalid.some(issue => issue.path === "Properties.LoggingConfiguration" && issue.code === "UnsupportedProperty"));
     assert.equal(Object.keys(simulator.store.regionState(region).stepFunctions.stateMachines).length, 0);
 
+    assert.deepEqual(provider.validate({ DefinitionS3Location: { Bucket: "definitions", Key: "definition.json" }, RoleArn: roleArn }, context()), []);
     const initial = provider.canonicalize({
       StateMachineName: "provider-workflow",
       DefinitionString: JSON.stringify({ StartAt: "Done", States: { Done: { Type: "Pass", Result: "${result}", End: true } } }),
@@ -107,7 +108,7 @@ test("StateMachine provider validates, substitutes, owns, updates, and deletes a
     assert.equal(replacementPlan.action, "REPLACE");
     assert.deepEqual(replacementPlan.replacementProperties, ["StateMachineName"]);
 
-    assert.equal((await provider.delete(created.physicalId, desired, context())).status, "SUCCESS");
+    assert.equal((await settle(current => provider.delete(created.physicalId, desired, current))).status, "SUCCESS");
     assert.equal((await provider.read(created.physicalId, context())).status, "NOT_FOUND");
   } finally {
     for (const client of clients) client.destroy();

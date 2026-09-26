@@ -26,7 +26,7 @@ export const CDK_BOOTSTRAP_QUALIFIER = "hnb659fds";
 // permissions backed by StackSim's bounded providers; they do not advertise
 // the cumulative upstream version 30 template.
 export const CDK_BOOTSTRAP_COMPATIBILITY_VERSION = 23;
-export const CDK_BOOTSTRAP_POLICY_REVISION = 21;
+export const CDK_BOOTSTRAP_POLICY_REVISION = 22;
 export const CDK_BOOTSTRAP_VERSION_PARAMETER = `/cdk-bootstrap/${CDK_BOOTSTRAP_QUALIFIER}/version`;
 export const CDK_BOOTSTRAP_POLICY_NAME = "stacksim-cdk-bootstrap";
 export const CDK_BOOTSTRAP_COGNITO_POLICY_NAME = "stacksim-cdk-bootstrap-cognito";
@@ -389,9 +389,10 @@ function executionPolicy(bucketName: string, accountId: string, region: string):
         Effect: "Allow",
         Action: [
           "states:CreateStateMachine", "states:DeleteStateMachine", "states:DescribeStateMachine",
+          "states:CreateActivity", "states:DeleteActivity", "states:DescribeActivity",
           "states:ListTagsForResource", "states:TagResource", "states:UntagResource", "states:UpdateStateMachine",
         ],
-        Resource: `arn:aws:states:${region}:${accountId}:stateMachine:*`,
+        Resource: [`arn:aws:states:${region}:${accountId}:stateMachine:*`, `arn:aws:states:${region}:${accountId}:activity:*`],
       },
       {
         Sid: "ManageRdsResources",

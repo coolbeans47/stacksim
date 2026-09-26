@@ -151,6 +151,9 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
       ? (Array.isArray(input.tagKeys) ? input.tagKeys.map(String) : [])
       : suppliedTags.map((tag: any) => tag?.key).filter(Boolean);
     for (const tag of suppliedTags) if (tag?.key) operationContext[`aws:RequestTag/${tag.key}`] = tag.value;
+    if (suppliedTags.length && ["CreateStateMachine", "CreateActivity"].includes(operation)) additionalTargets.push({
+      action: "states:TagResource", resource, operation: "TagResource", context: { ...operationContext },
+    });
     if (typeof input.roleArn === "string" && ["CreateStateMachine", "UpdateStateMachine"].includes(operation)) additionalTargets.push({
       action: "iam:PassRole",
       resource: input.roleArn,

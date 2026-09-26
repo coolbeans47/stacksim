@@ -54,6 +54,8 @@ Header actions: **Refresh**, **Update**, **Enable/disable termination protection
 
 Logical ID, type, status, physical ID, module — links to related consoles when supported.
 
+Step Functions state-machine and Activity physical ARNs open their service detail pages. Those pages link back to the exact originating stack and logical resource using service ownership tags. Workflow details link the execution role, supported task resources, execution history and Lambda monitoring/log destinations. Retention preserves the resource and its deployment-origin tags; it does not transfer ownership to a new stack. See the [Step Functions console guide](step-functions-console-guide.md) and [SFN-04 provider contract](step-functions-cloudformation-contract.md).
+
 ---
 
 ### Outputs tab
