@@ -1,0 +1,10 @@
+{
+  "StartAt": "Release",
+  "States": {
+    "Release": {
+      "Type": "Pass",
+      "Result": { "release": "${Release}", "greeting": "${Greeting,Audience}" },
+      "End": true
+    }
+  }
+}

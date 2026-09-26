@@ -87,7 +87,7 @@ function machineName(value: unknown): string {
 }
 function activityName(value: unknown): string {
   const name = String(value ?? "");
-  if (!name || [...name].length > MAX_NAME || /[\s<>{}\[\]?*"#%\\^|~`$&,;:/\u0000-\u001f\u007f-\u009f]/u.test(name)) throw new AwsError("InvalidName", "Activity name is invalid.");
+  if (!name || [...name].length > MAX_NAME || /[\s<>{}\[\]?*"#%\\^|~`$&,;:/\u0000-\u001f\u007f-\u009f\ufffe\uffff\ud800-\udfff\u{10ffff}]/u.test(name)) throw new AwsError("InvalidName", "Activity name is invalid.");
   return name;
 }
 function jsonInput(value: unknown): { text: string; value: unknown } {
@@ -152,6 +152,11 @@ export class StepFunctionsService {
   private machineArn(name: string): string { return `arn:aws:states:${this.region}:${this.store.accountId}:stateMachine:${name}`; }
   private executionArn(machine: StepFunctionsStateMachineState, name: string): string { return `arn:aws:states:${this.region}:${this.store.accountId}:execution:${machine.name}:${name}`; }
   private activityArn(name: string): string { return `arn:aws:states:${this.region}:${this.store.accountId}:activity:${name}`; }
+
+  /** Bounded recovery identity for authorized CloudFormation provider operations. */
+  cloudFormationResourceGeneration(arn: string): string | undefined {
+    return this.state.stateMachines[arn]?.generation ?? this.state.activities[arn]?.generation;
+  }
 
   async start(): Promise<void> {
     if (this.started) return; this.started = true;
@@ -219,9 +224,12 @@ export class StepFunctionsService {
   private configuration(input: any): { loggingConfiguration: StepFunctionsStateMachineState["loggingConfiguration"]; tracingConfiguration: StepFunctionsStateMachineState["tracingConfiguration"]; encryptionConfiguration: StepFunctionsStateMachineState["encryptionConfiguration"] } {
     if (input.type !== undefined && input.type !== "STANDARD") throw new AwsError("StateMachineTypeNotSupported", "P0 supports STANDARD state machines only.");
     const logging = input.loggingConfiguration;
-    if (logging && (logging.level !== undefined && logging.level !== "OFF" || logging.includeExecutionData === true || logging.destinations?.length)) throw new AwsError("ValidationException", "Execution logging requires SFN-05.");
-    if (input.tracingConfiguration?.enabled === true) throw new AwsError("ValidationException", "X-Ray tracing is not available.");
-    if (input.encryptionConfiguration && !["AWS_OWNED_KEY", undefined].includes(input.encryptionConfiguration.type)) throw new AwsError("ValidationException", "Customer-managed encryption is not available.");
+    const object = (value: unknown): value is Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value);
+    if (logging !== undefined && (!object(logging) || Object.keys(logging).some(key => !["level", "includeExecutionData", "destinations"].includes(key)) || logging.level !== undefined && logging.level !== "OFF" || logging.includeExecutionData !== undefined && logging.includeExecutionData !== false || logging.destinations !== undefined && (!Array.isArray(logging.destinations) || logging.destinations.length > 0))) throw new AwsError("ValidationException", "Execution logging requires SFN-05; only disabled OFF configuration is supported.");
+    const tracing = input.tracingConfiguration;
+    if (tracing !== undefined && (!object(tracing) || Object.keys(tracing).some(key => key !== "enabled") || tracing.enabled !== undefined && tracing.enabled !== false)) throw new AwsError("ValidationException", "X-Ray tracing is not available; enabled must be false.");
+    const encryption = input.encryptionConfiguration;
+    if (encryption !== undefined && (!object(encryption) || Object.keys(encryption).some(key => key !== "type") || encryption.type !== "AWS_OWNED_KEY")) throw new AwsError("ValidationException", "Only AWS_OWNED_KEY encryption is supported; customer-managed encryption is not available.");
     if (input.publish !== undefined || input.versionDescription !== undefined) throw new AwsError("ValidationException", "State machine versions require SFN-06.");
     return { loggingConfiguration: { level: "OFF", includeExecutionData: false, destinations: [] }, tracingConfiguration: { enabled: false }, encryptionConfiguration: { type: "AWS_OWNED_KEY" } };
   }
@@ -268,9 +276,13 @@ export class StepFunctionsService {
     return this.store.withMutationLock(`step-functions:${this.region}`, async () => {
       const machine = this.requireMachine(input.stateMachineArn);
       if (input.definition === undefined && input.roleArn === undefined && input.loggingConfiguration === undefined && input.tracingConfiguration === undefined && input.encryptionConfiguration === undefined) throw new AwsError("ValidationException", "At least one mutable field is required.");
-      if (input.definition !== undefined) { this.compile(input.definition); machine.definition = String(input.definition); }
-      if (input.roleArn !== undefined) machine.roleArn = this.validateRole(input.roleArn);
-      this.configuration({ ...input, type: "STANDARD" }); machine.revisionId = randomUUID(); machine.updateDate = this.clock.now(); this.state.revision++; await this.store.save();
+      // Admission is atomic: a bad role/configuration must not publish even an
+      // in-memory portion of the proposed definition before rollback begins.
+      if (input.definition !== undefined) this.compile(input.definition);
+      const roleArn = input.roleArn !== undefined ? this.validateRole(input.roleArn) : machine.roleArn;
+      this.configuration({ ...input, type: "STANDARD" });
+      if (input.definition !== undefined) machine.definition = String(input.definition);
+      machine.roleArn = roleArn; machine.revisionId = randomUUID(); machine.updateDate = this.clock.now(); this.state.revision++; await this.store.save();
       return { updateDate: timestamp(machine.updateDate), revisionId: machine.revisionId };
     });
   }
@@ -286,7 +298,7 @@ export class StepFunctionsService {
 
   async CreateActivity(input: any): Promise<any> {
     const name = activityName(input.name); const arn = this.activityArn(name); const suppliedTags = tags(input.tags);
-    if (input.encryptionConfiguration && ![undefined, "AWS_OWNED_KEY"].includes(input.encryptionConfiguration.type)) throw new AwsError("ValidationException", "Customer-managed activity encryption requires KMS and is unavailable.");
+    this.configuration({ encryptionConfiguration: input.encryptionConfiguration });
     return this.store.withMutationLock(`step-functions:${this.region}`, async () => {
       const existingArn = this.state.activityNames[name];
       if (existingArn) { const existing = this.state.activities[existingArn]; return { activityArn: existing.activityArn, creationDate: timestamp(existing.creationDate) }; }
@@ -307,14 +319,14 @@ export class StepFunctionsService {
   async GetActivityTask(input: any): Promise<any> {
     const activity = this.requireActivity(input.activityArn); if (input.workerName !== undefined && typeof input.workerName !== "string") throw new AwsError("ValidationException", "workerName must be a string."); const workerName = input.workerName as string | undefined;
     if (workerName !== undefined && (!workerName || [...workerName].length > 80)) throw new AwsError("ValidationException", "workerName must contain 1-80 characters.");
-    const claim = async () => this.claimActivityTask(activity.activityArn, workerName);
+    const claim = async () => this.claimActivityTask(activity.activityArn, activity.generation, workerName);
     const immediate = await claim(); if (immediate) return immediate;
     await new Promise<void>(resolve => {
       const waiters = this.activityWaiters.get(activity.activityArn) ?? new Set<() => void>(); this.activityWaiters.set(activity.activityArn, waiters);
       let cancel = () => {}; const done = () => { waiters.delete(done); cancel(); resolve(); }; waiters.add(done);
       cancel = this.scheduler.schedule(done, 1_000);
     });
-    return this.started && this.state.activities[activity.activityArn] ? await claim() ?? { taskToken: "" } : { taskToken: "" };
+    return this.started && this.state.activities[activity.activityArn]?.generation === activity.generation ? await claim() ?? { taskToken: "" } : { taskToken: "" };
   }
   async SendTaskHeartbeat(input: any): Promise<any> {
     const located = this.findCallback(input.taskToken); const task = located.task;
@@ -446,10 +458,11 @@ export class StepFunctionsService {
     task.status = "TIMED_OUT"; task.error = expiration; task.cause = expiration === "States.HeartbeatTimeout" ? "The callback task missed its heartbeat deadline." : "The callback task timed out."; if (task.completionEventRecorded) return; const child = this.callbackChild(execution, entryId);
     this.appendScoped(execution, child, task.kind === "ACTIVITY" ? "ActivityTimedOut" : "TaskTimedOut", task.kind === "ACTIVITY" ? { activityTimedOutEventDetails: { error: task.error, cause: task.cause } } : { taskTimedOutEventDetails: { error: task.error, cause: task.cause } }); task.completionEventRecorded = true;
   }
-  private async claimActivityTask(activityArn: string, workerName: unknown): Promise<any | undefined> {
+  private async claimActivityTask(activityArn: string, generation: string, workerName: unknown): Promise<any | undefined> {
     return this.store.withMutationLock(`step-functions-activity:${activityArn}`, async () => {
+      if (this.state.activities[activityArn]?.generation !== generation) return undefined;
       const now = this.clock.now(); const candidates: Array<{ execution: StepFunctionsExecutionState; entryId: string; task: StepFunctionsCallbackTaskState }> = [];
-      for (const execution of Object.values(this.state.executions)) for (const [entryId, task] of Object.entries(execution.callbackTasks ?? {})) if (task.kind === "ACTIVITY" && task.activityArn === activityArn && task.status === "PENDING" && (!task.leaseUntil || task.leaseUntil <= now)) candidates.push({ execution, entryId, task });
+      for (const execution of Object.values(this.state.executions)) for (const [entryId, task] of Object.entries(execution.callbackTasks ?? {})) if (task.kind === "ACTIVITY" && task.activityArn === activityArn && task.activityGeneration === generation && task.status === "PENDING" && (!task.leaseUntil || task.leaseUntil <= now)) candidates.push({ execution, entryId, task });
       candidates.sort((a, b) => a.task.createdAt - b.task.createdAt || a.task.taskAttemptId.localeCompare(b.task.taskAttemptId)); const selected = candidates[0]; if (!selected) return undefined;
       selected.task.workerName = workerName === undefined ? undefined : String(workerName); selected.task.leaseUntil = now + Math.max(60_000, (selected.task.heartbeatSeconds ?? 60) * 1000); if (!selected.task.startedEventRecorded) { this.appendScoped(selected.execution, this.callbackChild(selected.execution, selected.entryId), "ActivityStarted", { activityStartedEventDetails: { workerName: selected.task.workerName } }); selected.task.startedEventRecorded = true; } await this.persistExecution(selected.execution);
       return { taskToken: this.tokenFor(selected.task), input: JSON.stringify(selected.task.input ?? {}) };
@@ -561,7 +574,9 @@ export class StepFunctionsService {
       case "Fail": { const error = state.ErrorPath ? String(getPath(effective, state.ErrorPath, context)) : state.Error === undefined ? undefined : String(state.Error); const cause = state.CausePath ? String(getPath(effective, state.CausePath, context)) : state.Cause === undefined ? undefined : String(state.Cause); return { terminal: "FAILED", error, cause }; }
       case "Task": {
         let result: unknown;
-        if (ACTIVITY_ARN.test(state.Resource)) { this.requireActivity(state.Resource); result = undefined; }
+        // Activity existence/generation is bound once by ensureCallbackTask.
+        // Deleting its catalog entry must not invalidate an issued worker token.
+        if (ACTIVITY_ARN.test(state.Resource)) { result = undefined; }
         else result = await this.invokeTask(execution, state, effective, taskContext, entryId, child);
         if (result === SUSPENDED) return { suspendUntil: this.clock.now() + 10 };
         if (callback) {
@@ -697,7 +712,7 @@ export class StepFunctionsService {
 
   private ensureCallbackTask(execution: StepFunctionsExecutionState, entryId: string, stateName: string, resource: string): StepFunctionsCallbackTaskState {
     execution.callbackTasks ??= {}; const prior = execution.callbackTasks[entryId]; if (prior) return prior;
-    const activity = resource.match(ACTIVITY_ARN); const tokenId = randomUUID(); const seed = { tokenId }; const task: StepFunctionsCallbackTaskState = execution.callbackTasks[entryId] = { tokenId, tokenDigest: this.tokenDigest(this.tokenFor(seed)), kind: activity ? "ACTIVITY" : "CALLBACK", status: "PENDING", stateName, taskAttemptId: randomUUID(), createdAt: this.clock.now(), ...(activity ? { activityArn: resource } : {}) };
+    const activity = resource.match(ACTIVITY_ARN); const tokenId = randomUUID(); const seed = { tokenId }; const task: StepFunctionsCallbackTaskState = execution.callbackTasks[entryId] = { tokenId, tokenDigest: this.tokenDigest(this.tokenFor(seed)), kind: activity ? "ACTIVITY" : "CALLBACK", status: "PENDING", stateName, taskAttemptId: randomUUID(), createdAt: this.clock.now(), ...(activity ? { activityArn: resource, activityGeneration: this.requireActivity(resource).generation } : {}) };
     if (activity) for (const wake of this.activityWaiters.get(resource) ?? []) wake();
     return task;
   }

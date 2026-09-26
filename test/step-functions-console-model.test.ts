@@ -3,7 +3,27 @@ import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
-const { addStudioState, definitionScopes, executionPresentation, historyPresentation, integrationReferences, lambdaReferences, payloadField, redactSensitiveValue, removeStudioState, renameStudioState, setStudioStartAt, studioFlow, updateStudioState } = await import(pathToFileURL(join(process.cwd(), "web/services/step-functions-model.js")).href);
+const { addStudioState, cloudFormationOrigin, definitionScopes, executionPresentation, executionRoleLink, historyPresentation, integrationReferences, lambdaReferences, payloadField, redactSensitiveValue, removeStudioState, renameStudioState, setStudioStartAt, studioFlow, updateStudioState } = await import(pathToFileURL(join(process.cwd(), "web/services/step-functions-model.js")).href);
+
+test("deployment links preserve stack identity, IAM role paths, and exact integration resources", () => {
+  const stackId = "arn:aws:cloudformation:eu-west-1:000000000000:stack/Orders/first-generation";
+  const tags = [{ key: "aws:cloudformation:stack-id", value: stackId }, { key: "aws:cloudformation:logical-id", value: "Workflow" }];
+  assert.deepEqual(cloudFormationOrigin(tags), { stackId, stackName: "Orders", logicalId: "Workflow", href: `#/cloudformation/stacks/${encodeURIComponent(stackId)}/resources` });
+  assert.equal(cloudFormationOrigin([]), null);
+  assert.equal(cloudFormationOrigin([{ key: "aws:cloudformation:stack-id", value: "javascript:alert(1)" }]), null);
+  assert.equal(executionRoleLink("arn:aws:iam::000000000000:role/service-role/workflow-role"), "#/iam/roles/workflow-role");
+  assert.equal(executionRoleLink("arn:aws:iam::000000000000:user/worker"), null);
+  const activityArn = "arn:aws:states:eu-west-1:000000000000:activity:review";
+  const references = integrationReferences({ StartAt: "Queue", States: {
+    Queue: { Type: "Task", Resource: "arn:aws:states:::sqs:sendMessage", Parameters: { QueueUrl: "http://127.0.0.1:4566/000000000000/orders" }, Next: "Topic" },
+    Topic: { Type: "Task", Resource: "arn:aws:states:::sns:publish", Parameters: { TopicArn: "arn:aws:sns:eu-west-1:000000000000:order-events" }, Next: "Event" },
+    Event: { Type: "Task", Resource: "arn:aws:states:::events:putEvents", Parameters: { Entries: [{ EventBusName: "arn:aws:events:eu-west-1:000000000000:event-bus/orders" }] }, Next: "Review" },
+    Review: { Type: "Task", Resource: activityArn, End: true },
+  } });
+  assert.deepEqual(references.map((item: any) => item.href), ["#/sqs/queues/orders/details", "#/sns/topics/order-events", "#/eventbridge/event-buses/orders", `#/step-functions/activities/${encodeURIComponent(activityArn)}`]);
+  const callback = lambdaReferences({ StartAt: "Task", States: { Task: { Type: "Task", Resource: "arn:aws:states:::lambda:invoke.waitForTaskToken", Parameters: { FunctionName: "arn:aws:lambda:eu-west-1:000000000000:function:callback" }, End: true } } });
+  assert.equal(callback[0].name, "callback");
+});
 
 const definition = JSON.stringify({
   StartAt: "Invoke",

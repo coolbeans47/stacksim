@@ -1,8 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
+import { CloudFormationClient, CreateStackCommand, DescribeStackResourcesCommand, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
 import { EventBridgeClient, PutEventsCommand, PutRuleCommand } from "@aws-sdk/client-eventbridge";
 import { CreateRoleCommand, IAMClient, PutRolePolicyCommand } from "@aws-sdk/client-iam";
 import { CreateFunctionCommand, LambdaClient } from "@aws-sdk/client-lambda";
-import { CreateActivityCommand, CreateStateMachineCommand, DescribeExecutionCommand, DescribeStateMachineCommand, DescribeStateMachineForExecutionCommand, GetExecutionHistoryCommand, ListExecutionsCommand, ListTagsForResourceCommand, SFNClient } from "@aws-sdk/client-sfn";
+import { CreateActivityCommand, CreateStateMachineCommand, DescribeExecutionCommand, DescribeStateMachineCommand, DescribeStateMachineForExecutionCommand, GetExecutionHistoryCommand, ListExecutionsCommand, ListTagsForResourceCommand, SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,7 +67,7 @@ async function waitTerminal(client: SFNClient, executionArn: string) {
   throw new Error("execution did not become terminal");
 }
 
-test.describe("Step Functions SFN-01 through SFN-03 console", () => {
+test.describe("Step Functions SFN-01 through SFN-04 console", () => {
   test.beforeEach(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "stacksim-sfn-browser-"));
     simulator = new StackSim({ port: 0, invokePort: 0, dataDir, region: "eu-west-1", authMode: "off", cdkBootstrap: false });
@@ -77,6 +78,60 @@ test.describe("Step Functions SFN-01 through SFN-03 console", () => {
   test.afterEach(async () => {
     await simulator.stop();
     await rm(dataDir, { recursive: true, force: true });
+  });
+
+  test("SFN-04 navigates deployed workflows, Activities, stack ownership, roles and execution destinations", async ({ page }) => {
+    const errors = browserErrors(page);
+    const fixture = await rolesAndFunction();
+    const cfn = new CloudFormationClient(sdkOptions());
+    const sfn = new SFNClient(sdkOptions());
+    try {
+      const stack = await cfn.send(new CreateStackCommand({ StackName: "BrowserWorkflow", TemplateBody: JSON.stringify({ Resources: {
+        Review: { Type: "AWS::StepFunctions::Activity", Properties: { Name: "browser-stack-review", Tags: [{ Key: "team", Value: "orders" }] } },
+        Workflow: { Type: "AWS::StepFunctions::StateMachine", Properties: { StateMachineName: "browser-stack-workflow", RoleArn: fixture.workflowRoleArn, Definition: { StartAt: "Invoke", States: { Invoke: { Type: "Task", Resource: fixture.functionArn, Retry: [{ ErrorEquals: ["States.ALL"], IntervalSeconds: 1 }], End: true } } } } },
+      } }) }));
+      await expect.poll(async () => (await cfn.send(new DescribeStacksCommand({ StackName: stack.StackId }))).Stacks?.[0]?.StackStatus).toBe("CREATE_COMPLETE");
+      const resources = (await cfn.send(new DescribeStackResourcesCommand({ StackName: stack.StackId }))).StackResources!;
+      const machineArn = resources.find(item => item.LogicalResourceId === "Workflow")!.PhysicalResourceId!;
+      const activityArn = resources.find(item => item.LogicalResourceId === "Review")!.PhysicalResourceId!;
+      const stackRoute = `#/cloudformation/stacks/${encodeURIComponent(stack.StackId!)}/resources`;
+      for (const width of [1280, 390]) {
+        await page.setViewportSize({ width, height: 844 });
+        await page.goto(`${consoleUrl}${stackRoute}`);
+        await page.getByRole("link", { name: machineArn, exact: true }).click();
+        await expect(page.getByRole("heading", { name: "CloudFormation deployment" })).toBeVisible();
+        await expect(page.getByRole("link", { name: "BrowserWorkflow", exact: true })).toHaveAttribute("href", stackRoute);
+        await expect(page.getByRole("link", { name: fixture.workflowRoleArn, exact: true })).toHaveAttribute("href", "#/iam/roles/browser-sfn-workflow");
+        await expect(page.getByRole("link", { name: "browser-sfn-worker logs and metrics" })).toHaveAttribute("href", "#/lambda/functions/browser-sfn-worker/monitor");
+        await page.getByRole("link", { name: "BrowserWorkflow", exact: true }).click();
+        await page.getByRole("link", { name: activityArn, exact: true }).click();
+        await expect(page.getByRole("heading", { name: "Activity details" })).toBeVisible();
+        await expect(page.getByRole("cell", { name: "orders", exact: true })).toBeVisible();
+        await expect(page.getByRole("link", { name: "BrowserWorkflow", exact: true })).toHaveAttribute("href", stackRoute);
+        await expect(page.getByRole("link", { name: "Inspect execution histories" })).toHaveAttribute("href", "#/step-functions/executions");
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      }
+      await page.goto(`${consoleUrl}#/step-functions/state-machines/${encodeURIComponent(machineArn)}/tags`);
+      await page.getByRole("button", { name: "Edit tags", exact: true }).click();
+      const tagEditor = page.getByRole("dialog").getByLabel("Tags (JSON object)");
+      await expect(tagEditor).not.toHaveValue(/aws:cloudformation/);
+      await tagEditor.fill('{"team":"updated-orders"}');
+      await page.getByRole("button", { name: "Save tags", exact: true }).click();
+      await expect.poll(async () => (await sfn.send(new ListTagsForResourceCommand({ resourceArn: machineArn }))).tags?.find(tag => tag.key === "team")?.value).toBe("updated-orders");
+      expect((await sfn.send(new ListTagsForResourceCommand({ resourceArn: machineArn }))).tags?.find(tag => tag.key === "aws:cloudformation:stack-id")?.value).toBe(stack.StackId);
+      const started = await sfn.send(new StartExecutionCommand({ stateMachineArn: machineArn }));
+      await waitTerminal(sfn, started.executionArn!);
+      await page.goto(`${consoleUrl}#/step-functions/executions/${encodeURIComponent(started.executionArn!)}`);
+      await expect(page.getByRole("link", { name: fixture.workflowRoleArn, exact: true })).toHaveAttribute("href", "#/iam/roles/browser-sfn-workflow");
+      await expect(page.getByRole("link", { name: "browser-sfn-worker logs and metrics" })).toHaveAttribute("href", "#/lambda/functions/browser-sfn-worker/monitor");
+      await expect(page.getByRole("tab", { name: "Event history" })).toBeVisible();
+      await page.getByRole("link", { name: fixture.workflowRoleArn, exact: true }).click();
+      await expect(page.getByRole("heading", { name: "browser-sfn-workflow", exact: true })).toBeVisible();
+      await page.goto(`${consoleUrl}#/step-functions/executions/${encodeURIComponent(started.executionArn!)}`);
+      await page.getByRole("link", { name: "browser-sfn-worker logs and metrics" }).click();
+      await expect(page.getByRole("heading", { name: "Recent invocation logs", exact: true })).toBeVisible();
+      expect(errors).toEqual([]);
+    } finally { cfn.destroy(); sfn.destroy(); }
   });
 
   test("explains Step Functions input panels and support boundaries", async ({ page }) => {
@@ -204,7 +259,7 @@ test.describe("Step Functions SFN-01 through SFN-03 console", () => {
       await expect(page.getByText(/existing execution snapshots are unchanged/i)).toBeVisible();
       await expect(page.getByText("Latest update", { exact: true })).toBeVisible();
       await page.getByRole("tab", { name: "Definition" }).click();
-      await expect(page.getByRole("link", { name: /browser-sfn-worker/ })).toBeVisible();
+      await expect(page.locator('a[href="#/lambda/functions/browser-sfn-worker"]')).toBeVisible();
       await expect(page.getByRole("heading", { name: "Branches · branch 1" })).toBeVisible();
       await expect(page.getByRole("heading", { name: "Items · item processor" })).toBeVisible();
 

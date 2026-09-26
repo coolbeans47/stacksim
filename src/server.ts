@@ -68,6 +68,7 @@ import {
   createSqsQueuePolicyProvider,
   createSnsCloudFormationProviders,
   createStepFunctionsStateMachineProvider,
+  createStepFunctionsActivityProvider,
   createAppSyncCloudFormationProviders,
 } from "./cloudformation/providers/index.js";
 import { EmbeddedSqliteProvider } from "./rds/embedded-sqlite.js";
@@ -1146,6 +1147,7 @@ export class StackSim {
         ...createCognitoCloudFormationProviders(cognito),
         ...createCognitoIdentityCloudFormationProviders(cognitoIdentity),
         createStepFunctionsStateMachineProvider(stepfunctions),
+        createStepFunctionsActivityProvider(stepfunctions),
       ];
       const cloudFormationProviders = this.cloudFormationProviderTypes === undefined
         ? availableCloudFormationProviders

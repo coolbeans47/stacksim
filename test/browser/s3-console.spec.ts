@@ -71,6 +71,7 @@ test.describe("S3-01 through S3-08 console", () => {
     await page.getByRole("button", { name: "Create bucket" }).first().click();
     await page.getByLabel("Bucket name").fill(bucket);
     await page.getByRole("dialog").getByRole("button", { name: "Create bucket" }).click();
+    await expect(page).toHaveURL(`${consoleUrl}#/s3/buckets/${bucket}/objects`);
 
     const s3 = new S3Client(sdkOptions(simulator));
     try {

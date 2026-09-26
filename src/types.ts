@@ -3662,6 +3662,8 @@ export interface StepFunctionsCallbackTaskState {
   heartbeatDeadline?: number;
   timeoutDeadline?: number;
   activityArn?: string;
+  /** Prevent a recreated Activity from claiming an earlier generation's tasks. */
+  activityGeneration?: string;
   workerName?: string;
   leaseUntil?: number;
   scheduledEventRecorded?: boolean;

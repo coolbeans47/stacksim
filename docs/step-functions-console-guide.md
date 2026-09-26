@@ -29,7 +29,17 @@ Each section follows the same pattern:
 | **Activities** | `#/step-functions/activities` | Activity catalog and safe worker guidance |
 | **Create state machine** | `#/step-functions/state-machines/create` | Creation wizard |
 
-Machine tabs: `#/step-functions/state-machines/{arn}/overview`, `/definition`, `/executions`, `/tags`. Execution detail: `#/step-functions/executions/{arn}`.
+Machine tabs: `#/step-functions/state-machines/{arn}/overview`, `/definition`, `/executions`, `/tags`. Execution detail: `#/step-functions/executions/{arn}`. Activity detail: `#/step-functions/activities/{arn}`. Encode ARNs when constructing routes.
+
+### CloudFormation and CDK deployments
+
+CloudFormation stack **Resources** links state machines and Activities to their service details. A deployed resource's **CloudFormation deployment** panel links back to the exact originating stack ARN and shows its logical ID. This uses service-returned ownership tags; the browser does not read provider checkpoints or maintain a second resource catalog. Retained resources keep their origin tags even after stack deletion. A new same-name stack does not acquire them automatically, and general resource import/drift operations remain outside the platform's active support.
+
+The state-machine overview and immutable execution snapshot link their execution role to IAM. Definition and execution views link literal supported task targets to DynamoDB tables, SQS queues, SNS topics, EventBridge buses, nested workflows and Activity details. Dynamic targets remain labeled rather than inventing a resource link. Lambda cards link the function and its **Monitor** page, which resolves its configured CloudWatch log destination. Step Functions execution histories remain under **Event history**; these Lambda log links do not enable Step Functions execution logging or tracing.
+
+Use CDK or CloudFormation to update stack-owned definitions, roles and tags so the template remains consistent with service state. The console tag editor excludes reserved `aws:` ownership tags. Updating a definition applies to subsequent executions; current executions keep their captured revision and role. Stack retention leaves the service resource; deletion prevents new starts without deleting existing execution snapshots and histories.
+
+See the [frozen provider contract](step-functions-cloudformation-contract.md) and [CDK lifecycle learning fixture](../examples/cdk-step-functions-lifecycle/README.md) for definition assets, substitutions, deployment authority, failed update/rollback and cleanup.
 
 ---
 
@@ -66,7 +76,7 @@ Header: **Start execution**, **Edit definition**, **Delete**.
 
 #### Overview
 
-ARN, type (Standard), creation date, role ARN, revision ID. **Start execution** modal — optional execution name and JSON input.
+ARN, type (Standard), creation date, linked execution role ARN, revision ID. **Start execution** modal — optional execution name and JSON input.
 
 #### Definition
 
@@ -75,6 +85,8 @@ Read-only graph of states and transitions; link to **Edit definition** for the l
 ## Activities
 
 The Activities page lists name, ARN, and creation time and provides create/delete workflows through the same public Step Functions actions as the SDK. Workers use `GetActivityTask`, `SendTaskHeartbeat`, `SendTaskSuccess`, and `SendTaskFailure`; task assignment, heartbeat deadlines, and completion survive restart. For responsive local shutdown and deterministic tests, an empty `GetActivityTask` poll returns after one second rather than AWS's longer bounded poll. The console deliberately shows only lease-safe guidance—worker names and raw task tokens are never rendered. Nested `.sync` uses local durable execution polling, so its execution role needs `states:StartExecution` on the child state machine and `states:DescribeExecution`/`states:StopExecution` on child execution ARNs; it does not create AWS's managed EventBridge polling rule locally.
+
+Select an Activity name for its ARN, creation time, AWS-owned local encryption boundary, tags and originating stack link. **Inspect execution histories** opens the existing execution catalog. Already issued task tokens remain bound to their executions after Activity deletion; the console never displays them.
 
 #### Executions (on machine)
 

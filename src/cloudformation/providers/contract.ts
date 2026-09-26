@@ -146,6 +146,8 @@ export interface ProviderContext {
   readonly deadlineAt: number;
   /** Provider-owned opaque JSON restored from an IN_PROGRESS result. */
   readonly callbackContext?: Readonly<ProviderJsonObject>;
+  /** Authoritative resource generation retained by the executor, when supported. */
+  readonly resourceGeneration?: string;
   readonly principal: ProviderPrincipalContext;
 }
 

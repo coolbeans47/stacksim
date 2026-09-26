@@ -3,6 +3,8 @@ export interface DefinitionScope { path: string; label: string; kind: string; sl
 export interface StudioStateType { type: string; label: string; hint: string; glyph: string }
 export interface StudioFlowNode { name: string; type: string; start: boolean; end: boolean; summary: string; state: Record<string, any> }
 export interface StudioFlowEdge { from: string; to: string; label?: string }
+export function cloudFormationOrigin(tags?: Array<{ key: string; value: string }>): { stackId: string; stackName: string; logicalId: string; href: string } | null;
+export function executionRoleLink(roleArn: unknown): string | null;
 export function parseStateMachineDefinition(definition: unknown): Record<string, any> | null;
 export function definitionScopes(definition: unknown): DefinitionScope[];
 export function lambdaReferences(definition: unknown): Array<{ name: string; resource: string; stateName: string; scope: string }>;

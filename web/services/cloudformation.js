@@ -286,6 +286,7 @@ export function relatedResourceLinks(resource) {
     "AWS::SES::ConfigurationSet": `#/ses/configuration-sets/${encodeURIComponent(id)}`,
     "AWS::SES::Template": `#/ses/templates/${encodeURIComponent(id)}`,
     "AWS::StepFunctions::StateMachine": `#/step-functions/state-machines/${encodeURIComponent(id)}`,
+    "AWS::StepFunctions::Activity": `#/step-functions/activities/${encodeURIComponent(id)}`,
   };
   return single(routes[type]);
 }
