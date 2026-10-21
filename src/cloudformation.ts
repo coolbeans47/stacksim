@@ -1276,7 +1276,7 @@ export class CloudFormationService {
     if (input.UsePreviousTemplate === true && (input.TemplateBody !== undefined || input.TemplateURL !== undefined)) throw new AwsError("ValidationError", "UsePreviousTemplate cannot be combined with TemplateBody or TemplateURL", 400);
     const operationId = randomUUID();
     const desiredRoleArn = input.RoleARN ?? stack.roleArn; const executionPrincipal = await this.operationPrincipal(desiredRoleArn, operationId, principal);
-    const parsed = input.UsePreviousTemplate === true ? await this.templateFromBody(await this.localTemplate(stack.stackId)) : await this.template(input, executionPrincipal, prepared?.templateBodyMaximumBytes);
+    const parsed = input.UsePreviousTemplate === true ? await this.templateFromBody(await this.localTemplate(stack.stackId), input.Parameters) : await this.template(input, executionPrincipal, prepared?.templateBodyMaximumBytes);
     if (prepared?.templateSource) await this.validatePinnedTemplateSource(prepared.templateSource, prepared.originalBody);
     const clientRequestToken = input.ClientRequestToken === undefined ? undefined : String(input.ClientRequestToken); if (clientRequestToken && (clientRequestToken.length < 1 || clientRequestToken.length > 128)) throw new AwsError("ValidationError", "ClientRequestToken must contain 1-128 characters", 400);
     const disableRollback = input.DisableRollback === true;
@@ -1707,13 +1707,15 @@ export class CloudFormationService {
       source = { templateUrl: String(input.TemplateURL), bucket: loaded.location.bucket, key: loaded.location.key, versionId: loaded.object.versionId, etag: loaded.object.etag, size: loaded.object.size, digest: loaded.object.sha256 };
     } else body = String(input.TemplateBody);
     const maximum = input.TemplateURL !== undefined ? TEMPLATE_URL_MAXIMUM_BYTES : admittedTemplateBodyMaximumBytes ?? TEMPLATE_BODY_MAXIMUM_BYTES; if (!body || Buffer.byteLength(body) > maximum) throw new AwsError("ValidationError", `Template ${input.TemplateURL !== undefined ? "URL object" : "body"} must contain 1-${maximum} bytes`, 400);
-    const parsed = await this.templateFromBody(body);
+    const parsed = await this.templateFromBody(body, input.Parameters);
     return source ? { ...parsed, source } : parsed;
   }
 
-  private async templateFromBody(body: string): Promise<ParsedTemplate> {
+  /** Parse a body and expand its transforms; SAM may resolve a few supplied parameter values. */
+  private async templateFromBody(body: string, suppliedParameters?: unknown): Promise<ParsedTemplate> {
     try {
-      const prepared = prepareCloudFormationTemplate(body, { region: this.region, partition: partitionForRegion(this.region), accountId: this.store.accountId });
+      const parameterValues = Object.fromEntries(list<any>(suppliedParameters).filter(parameter => parameter && typeof parameter.ParameterKey === "string" && parameter.ParameterValue !== undefined && parameter.UsePreviousValue !== true).map(parameter => [String(parameter.ParameterKey), String(parameter.ParameterValue)]));
+      const prepared = prepareCloudFormationTemplate(body, { region: this.region, partition: partitionForRegion(this.region), accountId: this.store.accountId, parameterValues, now: this.clock.now() });
       const value = prepared.template; if (value.Description !== undefined && value.Description.length > 1024) throw new AwsError("ValidationError", "Template Description must be no longer than 1024 characters", 400);
       return { body, value, digest: createHash("sha256").update(body).digest("hex"), transforms: prepared.transforms, ...(prepared.transformedBody === undefined ? {} : { transformedBody: prepared.transformedBody }) };
     } catch (error) { throw this.validationError(error); }
@@ -2766,7 +2768,7 @@ export class CloudFormationService {
       if (value.changeSetType === "CREATE" && input.UsePreviousTemplate === true) throw new AwsError("ValidationError", "CREATE change sets cannot use a previous template", 400);
       const desiredRoleArn = input.RoleARN ?? stack.roleArn;
       const executionPrincipal = await this.operationPrincipal(desiredRoleArn, planning.planningOperationId, planning.principal);
-      const parsed = input.UsePreviousTemplate === true ? await this.templateFromBody(await this.localTemplate(stack.stackId)) : await this.template(input, executionPrincipal);
+      const parsed = input.UsePreviousTemplate === true ? await this.templateFromBody(await this.localTemplate(stack.stackId), input.Parameters) : await this.template(input, executionPrincipal);
       const suppliedParameterInputs = parameters(input.Parameters);
       const previousValues = Object.fromEntries(stack.parameters.filter(parameter => parameter.parameterValue !== undefined).map(parameter => [parameter.parameterKey, parameter.parameterValue!]));
       if (value.changeSetType === "UPDATE") {
