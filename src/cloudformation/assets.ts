@@ -1,5 +1,6 @@
 import { AwsError } from "../errors.js";
 import type { S3InternalObject, S3Service } from "../s3.js";
+import { virtualHostedBucket } from "../s3/address.js";
 
 export const CLOUDFORMATION_TEMPLATE_URL_MAX_BYTES = 1_048_576;
 
@@ -53,9 +54,9 @@ export function parseLocalS3ObjectUrl(value: unknown, expectedRegion: string): L
   let endpoint: LocalS3ObjectLocation["endpoint"] = loopback ? "loopback" : "aws-s3";
 
   if (loopback) {
-    const virtual = hostname.match(/^(.+)\.(?:localhost|127\.0\.0\.1)$/);
+    const virtual = virtualHostedBucket(hostname);
     const parts = pathParts(url.pathname);
-    if (virtual) { bucket = virtual[1]; keyParts = parts; style = "virtual"; }
+    if (virtual) { bucket = virtual; keyParts = parts; style = "virtual"; }
     else { bucket = parts.shift(); keyParts = parts; }
   } else {
     const virtual = hostname.match(/^([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])\.s3(?:[.-]([a-z0-9-]+))?\.amazonaws\.com$/);

@@ -209,15 +209,37 @@ aws cloudformation deploy --template-file packaged.yaml --stack-name sam-app --c
 
 ### How to deploy with the SAM CLI
 
-Use SAM CLI 1.91 or later, point it at StackSim, and give it the bucket explicitly; the SAM CLI's managed bucket is not supported yet:
+Use SAM CLI 1.91 or later. Point it at StackSim, with S3 on the HTTPS endpoint so that the SAM CLI's managed bucket (which denies plain HTTP) accepts the uploads:
 
 ```console
+curl -o ~/stacksim-ca.pem http://127.0.0.1:4566/_stacksim/ca.pem
 export AWS_ENDPOINT_URL=http://127.0.0.1:4566
+export AWS_ENDPOINT_URL_S3=https://127.0.0.1:4569
+export AWS_CA_BUNDLE=~/stacksim-ca.pem
 sam build
-sam deploy --stack-name sam-app --s3-bucket sam-artifacts --capabilities CAPABILITY_IAM
+sam deploy --guided
 ```
 
-In PowerShell, set the endpoint with `$env:AWS_ENDPOINT_URL = "http://127.0.0.1:4566"`.
+`--guided` asks for the stack name and Region, offers to save the answers in `samconfig.toml`, and creates the managed stack `aws-sam-cli-managed-default` the first time. Answer `Y` to allow IAM role creation. To deploy without prompts:
+
+```console
+sam deploy --stack-name sam-app --resolve-s3 --capabilities CAPABILITY_IAM
+```
+
+In PowerShell, use `curl.exe -o "$HOME\stacksim-ca.pem" http://127.0.0.1:4566/_stacksim/ca.pem`, then set `$env:AWS_ENDPOINT_URL = "http://127.0.0.1:4566"`, `$env:AWS_ENDPOINT_URL_S3 = "https://127.0.0.1:4569"`, and `$env:AWS_CA_BUNDLE = "$HOME\stacksim-ca.pem"`. `sam delete --stack-name sam-app` removes the application and its artifacts and keeps the managed stack, as on AWS. To use a bucket of your own instead, pass `--s3-bucket sam-artifacts`. The [SAM guide](sam-guide.md#the-managed-artifact-bucket) explains the managed bucket and how to trust the CA on Windows, macOS, and Linux.
+
+### How to use the managed bucket from the AWS CLI
+
+The managed bucket's policy denies requests that do not use TLS, so `aws s3` commands against it over `http://127.0.0.1:4566` fail with `AccessDenied`. With the three variables above, the AWS CLI uses the HTTPS endpoint for S3:
+
+```console
+aws cloudformation describe-stacks --stack-name aws-sam-cli-managed-default --query "Stacks[0].Outputs[?OutputKey=='SourceBucket'].OutputValue" --output text
+aws s3 ls s3://MANAGED_BUCKET/
+aws s3api head-object --bucket MANAGED_BUCKET --key OBJECT_KEY --query "[ServerSideEncryption,SSEKMSKeyId]"
+aws s3api get-bucket-encryption --bucket MANAGED_BUCKET
+```
+
+`get-bucket-encryption` shows `aws:kms` with no key ID, because the template names none; that means the AWS managed key `aws/s3`. An object you put without an encryption header reports `aws:kms` and that key's ARN, while the SAM CLI's own uploads report `AES256`, because it sends `ServerSideEncryption=AES256`.
 
 ### How to call a SAM API
 

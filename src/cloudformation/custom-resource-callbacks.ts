@@ -4,7 +4,7 @@ import type { FileHandle } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import type { Clock } from "../core/clock.js";
-import { createLoopbackServerCertificate } from "../core/x509.js";
+import { createLoopbackS3Certificate, createLoopbackServerCertificate } from "../core/x509.js";
 import type { StateStore } from "../state.js";
 import { CloudFormationJournal } from "./journal.js";
 
@@ -171,6 +171,8 @@ export class CustomResourceCallbackBroker {
   readonly caPrivateKeyPath: string;
   readonly serverCertificatePath: string;
   readonly serverPrivateKeyPath: string;
+  readonly s3CertificatePath: string;
+  readonly s3PrivateKeyPath: string;
 
   constructor(private readonly store: StateStore, private readonly clock: Clock) {
     this.pkiDirectory = resolve(store.root, "data", "cloudformation", "custom-resource-pki");
@@ -178,6 +180,8 @@ export class CustomResourceCallbackBroker {
     this.caPrivateKeyPath = resolve(this.pkiDirectory, "ca-key.pem");
     this.serverCertificatePath = resolve(this.pkiDirectory, "localhost.pem");
     this.serverPrivateKeyPath = resolve(this.pkiDirectory, "localhost-key.pem");
+    this.s3CertificatePath = resolve(this.pkiDirectory, "s3-localhost.pem");
+    this.s3PrivateKeyPath = resolve(this.pkiDirectory, "s3-localhost-key.pem");
   }
 
   private journal(region: string): CloudFormationJournal {
@@ -214,6 +218,31 @@ export class CustomResourceCallbackBroker {
         [this.serverPrivateKeyPath, generated.privateKey],
       ]);
       return { ca: generated.caCertificate, caPrivateKey: generated.caPrivateKey, certificate: generated.certificate, privateKey: generated.privateKey };
+    }
+  }
+
+  /**
+   * Load or issue the local HTTPS S3 endpoint's leaf under the installation CA
+   * returned by initializePki.  Reissuing never replaces the CA, so a CA the
+   * user already trusts stays valid.
+   */
+  async initializeS3Certificate(ca: string, caPrivateKey: string): Promise<{ certificate: string; privateKey: string }> {
+    try {
+      const [certificate, privateKey] = await Promise.all([
+        readFile(this.s3CertificatePath, "utf8"),
+        readFile(this.s3PrivateKeyPath, "utf8"),
+      ]);
+      const parsed = new X509Certificate(certificate);
+      const caCertificate = new X509Certificate(ca);
+      if (!parsed.verify(caCertificate.publicKey) || !parsed.checkPrivateKey(createPrivateKey(privateKey)) || !parsed.checkHost("s3.localhost") || !parsed.checkHost("example-bucket.s3.localhost") || !parsed.checkIP("127.0.0.1") || Date.parse(parsed.validFrom) > Date.now() || Date.parse(parsed.validTo) <= Date.now() + 24 * 60 * 60_000) throw new Error("S3 certificate is invalid, mismatched, not yet valid, or expiring");
+      return { certificate, privateKey };
+    } catch {
+      const generated = createLoopbackS3Certificate(caPrivateKey, Date.now());
+      await replacePkiBundle(this.pkiDirectory, [
+        [this.s3CertificatePath, generated.certificate],
+        [this.s3PrivateKeyPath, generated.privateKey],
+      ]);
+      return { certificate: generated.certificate, privateKey: generated.privateKey };
     }
   }
 

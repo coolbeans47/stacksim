@@ -256,6 +256,12 @@ export interface SimulatorOptions {
   s3MaximumBucketObjects?: number;
   s3MaximumBuckets?: number;
   s3MaximumTotalBytes?: number;
+  /**
+   * Loopback HTTPS listener serving the main endpoint's API over TLS under the
+   * installation CA, so S3 requests there carry `aws:SecureTransport=true`.
+   * Defaults to 4569 (0 picks a free port when `port` is 0).
+   */
+  s3TlsPort?: number;
   rdsProvider?: RdsEngineProvider;
   rdsStartupTimeoutMs?: number;
   /** Dedicated trusted loopback HTTPS listener for CFN callbacks and their AWS SDK service calls. */
@@ -405,11 +411,14 @@ export class StackSim {
   private control?: HttpServer;
   private data?: HttpServer | HttpsServer;
   private customResourceCallbackServer?: HttpsServer;
+  private s3TlsServer?: HttpsServer;
   private started = false;
   host: string;
   port: number;
   invokePort: number;
   customResourceCallbackPort: number;
+  /** Port of the loopback HTTPS endpoint (`https://127.0.0.1:<s3TlsPort>`). */
+  s3TlsPort: number;
   readonly invokeProtocol: "http" | "https";
 
   constructor(options: SimulatorOptions = {}) {
@@ -417,6 +426,7 @@ export class StackSim {
     this.port = options.port ?? Number(process.env.STACKSIM_PORT ?? 4566);
     this.invokePort = options.invokePort ?? Number(process.env.STACKSIM_INVOKE_PORT ?? 4567);
     this.customResourceCallbackPort = options.cloudFormationCustomResourceCallbackPort ?? Number(process.env.STACKSIM_CLOUDFORMATION_CUSTOM_RESOURCE_CALLBACK_PORT ?? (options.port === 0 ? 0 : 4568));
+    this.s3TlsPort = options.s3TlsPort ?? Number(process.env.STACKSIM_S3_TLS_PORT ?? (options.port === 0 ? 0 : 4569));
     this.region = options.region ?? process.env.AWS_REGION ?? "eu-west-1";
     this.clock = options.clock ?? new SystemClock();
     this.scheduler = new Scheduler(this.clock);
@@ -505,6 +515,7 @@ export class StackSim {
     if (!Number.isFinite(this.apiGatewayRateLimit) || this.apiGatewayRateLimit <= 0 || !Number.isInteger(this.apiGatewayBurstLimit) || this.apiGatewayBurstLimit <= 0) throw new Error("API Gateway account throttle limits must be positive");
     if (!Number.isFinite(this.apiGatewayWebSocketIdleTimeoutMs) || this.apiGatewayWebSocketIdleTimeoutMs <= 0 || !Number.isFinite(this.apiGatewayWebSocketLifetimeMs) || this.apiGatewayWebSocketLifetimeMs <= 0) throw new Error("API Gateway WebSocket timeouts must be positive");
     if (!Number.isInteger(this.customResourceCallbackPort) || this.customResourceCallbackPort < 0 || this.customResourceCallbackPort > 65_535) throw new Error("CloudFormation custom-resource callback port must be an integer from 0 through 65535");
+    if (!Number.isInteger(this.s3TlsPort) || this.s3TlsPort < 0 || this.s3TlsPort > 65_535) throw new Error("S3 HTTPS port must be an integer from 0 through 65535");
     if (!this.apiGatewayVpcLinkOrigins || typeof this.apiGatewayVpcLinkOrigins !== "object" || Array.isArray(this.apiGatewayVpcLinkOrigins) || Object.values(this.apiGatewayVpcLinkOrigins).some(value => { try { return !["http:", "https:"].includes(new URL(value).protocol); } catch { return true; } })) throw new Error("API Gateway VPC link origins must map identifiers to HTTP or HTTPS URLs");
     if (!Number.isFinite(sesMax24HourSend) || sesMax24HourSend <= 0 || !Number.isFinite(sesMaxSendRate) || sesMaxSendRate <= 0) throw new Error("SES sending quota and rate must be positive numbers");
     if (!Number.isSafeInteger(sesMaximumMailboxMessages) || sesMaximumMailboxMessages <= 0 || !Number.isSafeInteger(sesMaximumMailboxBytes) || sesMaximumMailboxBytes <= 0) throw new Error("SES mailbox limits must be positive safe integers");
@@ -601,6 +612,19 @@ export class StackSim {
     await this.listenLoopback(this.customResourceCallbackServer, this.customResourceCallbackPort);
     this.customResourceCallbackPort = (this.customResourceCallbackServer.address() as any).port;
     this.customResourceCallbacks.setEndpointPort(this.customResourceCallbackPort);
+    // The HTTPS endpoint is the main endpoint over TLS: the request sockets are
+    // encrypted, so S3 policy conditions see aws:SecureTransport=true there.
+    const s3Tls = await this.customResourceCallbacks.initializeS3Certificate(callbackPki.ca, callbackPki.caPrivateKey);
+    this.s3TlsServer = createSecureServer({ cert: s3Tls.certificate, key: s3Tls.privateKey }, (req, res) => {
+      if (!this.control) {
+        res.statusCode = 503;
+        res.end();
+        return;
+      }
+      this.control.emit("request", req, res);
+    });
+    await this.listenLoopback(this.s3TlsServer, this.s3TlsPort);
+    this.s3TlsPort = (this.s3TlsServer.address() as any).port;
     this.started = true; this.sts.start(); for (const [region, services] of this.regionalServices) await this.startRegionalServices(region, services);
     this.control = createServer(async (req, res) => {
       const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -662,6 +686,13 @@ export class StackSim {
         res.setHeader("cache-control", "public, max-age=3600");
         return res.end(services.sns.certificate());
       }
+      if (req.method === "GET" && url.pathname === "/_stacksim/ca.pem") {
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/x-pem-file");
+        res.setHeader("content-disposition", 'attachment; filename="stacksim-ca.pem"');
+        res.setHeader("cache-control", "no-store");
+        return res.end(await readFile(this.customResourceCallbacks.caCertificatePath));
+      }
       if (req.method === "GET" && url.pathname === "/_stacksim/appsync/ca.pem") {
         res.statusCode = 200;
         res.setHeader("content-type", "application/x-pem-file");
@@ -710,6 +741,8 @@ export class StackSim {
         accountId: this.store.accountId,
         endpoint: `http://${this.host}:${this.port}`,
         invokeEndpoint: `${this.invokeProtocol}://${this.host}:${this.invokePort}`,
+        s3HttpsEndpoint: `https://127.0.0.1:${this.s3TlsPort}`,
+        s3AwsManagedKeyArn: services.s3.awsManagedKeyArn({ ownerAccountId: this.store.accountId, region }),
         cloudfrontDistributionCount: this.cloudfront.consoleSnapshot().distributions.length,
         lambdaImageSource: process.env.STACKSIM_LAMBDA_OCI_ROOT ? "oci" : process.env.STACKSIM_LAMBDA_DOCKER_SOCKET ? "docker" : undefined,
         counts: { stacks: Object.values(this.store.regionState(region).cloudformation.stacks).filter(stack => stack.stackStatus !== "DELETE_COMPLETE").length, stateMachines: Object.keys(this.store.regionState(region).stepFunctions.stateMachines).length, parameters: Object.keys(this.store.regionState(region).parameterStore.parameters).length, secrets: Object.keys(this.store.regionState(region).secretsManager.secrets).length, functions: Object.keys(this.store.regionState(region).functions).length, capacityProviders: Object.keys(this.store.regionState(region).lambdaCapacityProviders).length, durableExecutions: Object.keys(this.store.regionState(region).lambdaDurableExecutions).length, tables: Object.keys(this.store.regionState(region).tables).length, rdsInstances: Object.keys(this.store.regionState(region).rdsDbInstances).length, buckets: Object.keys(this.store.regionState(region).s3Buckets).length, queues: Object.keys(this.store.regionState(region).sqsQueues).length, topics: Object.keys(this.store.regionState(region).sns.topics).length, subscriptions: Object.keys(this.store.regionState(region).sns.subscriptions).length, eventBuses: Object.keys(this.store.regionState(region).eventBuses).length, eventRules: Object.keys(this.store.regionState(region).eventRules).length, apis: Object.keys(this.store.regionState(region).apis).length, httpApis: Object.keys(this.store.regionState(region).httpApis).length, webSocketApis: Object.keys(this.store.regionState(region).webSocketApis).length, customDomains: Object.keys(this.store.regionState(region).apiGatewayDomainNames).length + Object.keys(this.store.regionState(region).apiGatewayV2DomainNames).length, logGroups: Object.keys(this.store.regionState(region).logs).length, users: Object.keys(this.store.ensureAccount().iam.users).length, groups: Object.keys(this.store.ensureAccount().iam.groups).length, roles: Object.keys(this.store.ensureAccount().iam.roles).length, policies: Object.keys(this.store.ensureAccount().iam.policies).length, sesIdentities: Object.keys(this.store.regionState(region).ses.identities).length, sesTemplates: Object.keys(this.store.regionState(region).ses.templates).length, sesConfigurationSets: Object.keys(this.store.regionState(region).ses.configurationSets).length, sesMessages: services.ses.summary().messageCount, cognitoUserPools: services.cognito.summary().poolCount, cognitoAppClients: services.cognito.summary().clientCount, cognitoIdentityPools: services.cognitoIdentity.summary().poolCount },
@@ -728,6 +761,7 @@ export class StackSim {
         schemaVersion: this.store.state.schemaVersion,
         services: { cloudformation: "available", cloudfront: "available", lambda: "available", apigateway: "available", appsync: "available", dynamodb: "available", rds: "available", s3: "available", sqs: "available", sns: services.sns.admissionStatus(), ssm: "available", secretsmanager: services.secretsmanager.admissionStatus(), eventbridge: "available", scheduler: "available", logs: "available", cloudwatch: "available", iam: "available", sts: "available", ses: services.ses.admissionStatus(), "cognito-idp": "available", "cognito-identity": "available", xray: services.xray.health().status },
         cloudfront: { distributions: this.cloudfront.consoleSnapshot().distributions.length, viewers: this.cloudfront.listLocalViewers(), caCertificatePath: this.cloudfront.caCertificatePath },
+        s3: { httpsEndpoint: `https://127.0.0.1:${this.s3TlsPort}`, virtualHostedHttpsEndpoint: `https://s3.localhost:${this.s3TlsPort}`, caCertificatePath: this.customResourceCallbacks.caCertificatePath },
         rds: this.rdsManager.metadata(),
         requestPrincipalType: requestPrincipal?.principalType ?? null,
         requestPrincipalArn: requestPrincipal && requestPrincipal.principalType !== "anonymous" && requestPrincipal.principalType !== "service" ? requestPrincipal.principalArn : null,
@@ -1652,7 +1686,18 @@ export class StackSim {
 
   private async authorize(principal: PrincipalContext, target: AuthorizationTarget, currentRequestId: string): Promise<void> {
     const result = await this.evaluateAndRecordAuthorization(principal, target, currentRequestId);
-    if (result.decision !== "allowed") throw new AwsError("AccessDeniedException", `User: ${principal.principalArn} is not authorized to perform: ${target.action} on resource: ${target.resource}. ${result.reason}`, 403);
+    if (result.decision !== "allowed") throw new AwsError("AccessDeniedException", `User: ${principal.principalArn} is not authorized to perform: ${target.action} on resource: ${target.resource}. ${result.reason}${await this.insecureTransportHint(principal, target, result)}`, 403);
+  }
+
+  /**
+   * Name the HTTPS endpoint when only a bucket policy's aws:SecureTransport
+   * condition denied a plain-HTTP request; the denial itself stays as evaluated.
+   */
+  private async insecureTransportHint(principal: PrincipalContext, target: AuthorizationTarget, result: AuthorizationResult): Promise<string> {
+    if (result.decision !== "explicitDeny" || !target.action.startsWith("s3:") || target.context["aws:SecureTransport"] !== false) return "";
+    const secure = await this.services(String(target.context["aws:RequestedRegion"])).s3.resourceAuthorization(principal, target.action, target.resource, { ...target.context, "aws:SecureTransport": true });
+    if (!secure || secure.result.decision === "explicitDeny") return "";
+    return ` The bucket policy denies requests that do not use TLS (aws:SecureTransport is false over plain HTTP). Send S3 requests to the StackSim HTTPS endpoint https://127.0.0.1:${this.s3TlsPort} (for example AWS_ENDPOINT_URL_S3) and trust the StackSim CA (AWS_CA_BUNDLE=${this.customResourceCallbacks.caCertificatePath}).`;
   }
 
   private async authorizeFunctionUrl(req: import("node:http").IncomingMessage, lambda: LambdaService, target: NonNullable<ReturnType<LambdaService["findFunctionUrl"]>>, principal: PrincipalContext | undefined, currentRequestId: string, region: string): Promise<void> {
@@ -2638,7 +2683,7 @@ export class StackSim {
     await Promise.all([...this.regionalServices.values()].flatMap(services => [services.sqs.stop(), services.eventbridge.stop(), services.eventscheduler.stop()]));
     this.scheduler.stop();
     const close = (server?: HttpServer | HttpsServer) => server?.listening ? new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())) : Promise.resolve();
-    const drained = Promise.all([close(this.control), close(this.data), close(this.customResourceCallbackServer), this.cloudfront.stop()]);
+    const drained = Promise.all([close(this.control), close(this.data), close(this.customResourceCallbackServer), close(this.s3TlsServer), this.cloudfront.stop()]);
     // Terminate Lambda children while listeners drain. A provider can otherwise
     // hold a callback PUT body open, making server.close() wait for the child
     // that was previously stopped only after the drain completed.

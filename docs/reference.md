@@ -1492,6 +1492,7 @@ console.log(httpApi.ApiEndpoint);
 | SDK and control plane | `http://127.0.0.1:4566` |
 | RDS SQL data plane | Returned `127.0.0.1:{requestedPort}` endpoint; default port `3306` |
 | S3 path-style endpoint | `http://127.0.0.1:4566/{bucket}/{key}` |
+| HTTPS endpoint (S3 with `aws:SecureTransport`) | `https://127.0.0.1:4569/{bucket}/{key}`; virtual-hosted `https://{bucket}.s3.localhost:4569/{key}` where `*.s3.localhost` resolves to loopback. Serves the same API as port 4566 over TLS, with a certificate from the installation CA (`http://127.0.0.1:4566/_stacksim/ca.pem`). See the [SAM guide](sam-guide.md#the-https-s3-endpoint) |
 | Bounded public S3 website | `http://127.0.0.1:4566/_stacksim/s3-website/{bucket}/{key}` |
 | CloudFront local viewer | Separately reported `https://d<label>.localhost:{persistedPort}/{path}` with the installation CA |
 | Web console | `http://127.0.0.1:4566/_stacksim/console` |
@@ -1581,6 +1582,7 @@ npm run test:browser     # run the isolated console browser suite
 |---|---:|---|
 | `STACKSIM_PORT` | `4566` | SDK/control-plane port |
 | `STACKSIM_INVOKE_PORT` | `4567` | API Gateway invocation port |
+| `STACKSIM_S3_TLS_PORT` | `4569` | Loopback HTTPS endpoint, where S3 requests carry `aws:SecureTransport=true` |
 | `STACKSIM_HOST` | `127.0.0.1` | Listen address |
 | `AWS_REGION` | `eu-west-1` | Default simulated region |
 | `STACKSIM_ENDPOINT` | `http://127.0.0.1:4566` | SDK endpoint used by the seed scripts and passed to seeded Lambda functions |

@@ -150,6 +150,7 @@ The two local endpoints have different jobs:
 | ----------------------- | ----------------------------------------------------------------------------- |
 | `http://127.0.0.1:4566` | AWS control-plane and SDK requests, CDK deployments, and the stacksim console |
 | `http://127.0.0.1:4567` | Invoking deployed API Gateway APIs                                            |
+| `https://127.0.0.1:4569` | The same API as port 4566 over TLS, for S3 buckets that require HTTPS (the SAM CLI managed bucket) |
 
 ### 4. Create a CDK TypeScript project
 

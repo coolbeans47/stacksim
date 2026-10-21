@@ -11,6 +11,7 @@ import { resolveIamAuthorizationTarget } from "./iam-target.js";
 import { xrayOperation } from "../xray/action-inventory.js";
 import { moveTaskSource } from "../sqs/move-task.js";
 import { AwsError } from "../errors.js";
+import { virtualHostedBucket } from "../s3/address.js";
 
 export interface AuthorizationTarget { action: string; resource: string; operation: string; input: any; context: Record<string, unknown>; additionalTargets?: AuthorizationTarget[] }
 
@@ -162,7 +163,7 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
     });
   }
   else if (service === "s3") {
-    const rawPath = String(req.url ?? "/").split("?", 1)[0].replace(/^\//, ""); const host = String(req.headers.host ?? "").replace(/:\d+$/, ""); const virtual = host.match(/^(.+)\.(?:s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com|localhost|127\.0\.0\.1)$/i)?.[1]; const separator = rawPath.indexOf("/"); const bucket = decodeURIComponent(virtual ?? (separator < 0 ? rawPath : rawPath.slice(0, separator))); const key = virtual ? decodeURIComponent(rawPath) : separator < 0 ? undefined : decodeURIComponent(rawPath.slice(separator + 1));
+    const rawPath = String(req.url ?? "/").split("?", 1)[0].replace(/^\//, ""); const host = String(req.headers.host ?? "").replace(/:\d+$/, ""); const virtual = virtualHostedBucket(host); const separator = rawPath.indexOf("/"); const bucket = decodeURIComponent(virtual ?? (separator < 0 ? rawPath : rawPath.slice(0, separator))); const key = virtual ? decodeURIComponent(rawPath) : separator < 0 ? undefined : decodeURIComponent(rawPath.slice(separator + 1));
     const uploadId = url.searchParams.has("uploadId"); const partNumber = url.searchParams.has("partNumber");
     if (!bucket) operation = "ListAllMyBuckets";
     else if (!key) operation = url.searchParams.has("acl") ? req.method === "PUT" ? "PutBucketAcl" : "GetBucketAcl"

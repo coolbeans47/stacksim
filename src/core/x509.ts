@@ -131,6 +131,39 @@ export function createLoopbackServerCertificate(
   };
 }
 
+/** Loopback names of the local HTTPS S3 endpoint: path style on the IPs and `localhost`, virtual-hosted style under `s3.localhost`. */
+export const LOOPBACK_S3_DNS_NAMES = Object.freeze(["localhost", "s3.localhost", "*.s3.localhost"]);
+
+/**
+ * Issue the local HTTPS S3 endpoint's leaf under the persisted
+ * installation-local CA.  `*.s3.localhost` rather than `*.localhost`: OpenSSL
+ * (and so Python clients such as botocore) rejects a wildcard with fewer than
+ * two labels after it.
+ */
+export function createLoopbackS3Certificate(
+  caPrivateKey: string,
+  createdAt: number,
+  lifetimeMs = 365 * 24 * 60 * 60_000,
+): { certificate: string; privateKey: string; expirationDate: number } {
+  const signingKey = createPrivateKey(caPrivateKey);
+  const leafKeys = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const leafExtensions = der(0xa3, der(0x30,
+    der(0x30, oid("2.5.29.19"), der(0x01, Buffer.from([0xff])), der(0x04, der(0x30))),
+    der(0x30, oid("2.5.29.15"), der(0x01, Buffer.from([0xff])), der(0x04, der(0x03, Buffer.from([0x07, 0x80])))),
+    der(0x30, oid("2.5.29.37"), der(0x04, der(0x30, oid("1.3.6.1.5.5.7.3.1")))),
+    der(0x30, oid("2.5.29.17"), der(0x04, der(0x30,
+      ...LOOPBACK_S3_DNS_NAMES.map(name => der(0x82, Buffer.from(name, "ascii"))),
+      der(0x87, Buffer.from([127, 0, 0, 1])),
+      der(0x87, Buffer.from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])),
+    ))),
+  ));
+  const leaf = certificate("s3.localhost", LOOPBACK_CA_NAME, leafKeys.publicKey, signingKey, createdAt, lifetimeMs, leafExtensions);
+  return {
+    ...leaf,
+    privateKey: leafKeys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+  };
+}
+
 /** Issue one exact-host viewer leaf under the persisted installation-local CA. */
 export function createLoopbackHostCertificate(
   host: string,
