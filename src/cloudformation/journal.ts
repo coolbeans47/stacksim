@@ -48,7 +48,7 @@ export interface CloudFormationJournalCompactionResult {
   readonly terminalOperations: number;
 }
 
-export type CloudFormationTemplateForm = "original" | "processed" | "previous";
+export type CloudFormationTemplateForm = "original" | "processed" | "previous" | "transformed";
 
 export class CloudFormationJournalCorruptionError extends Error {
   constructor(
@@ -565,8 +565,8 @@ function validateTimestamp(timestamp: string): void {
 }
 
 function validateTemplateForm(form: string): asserts form is CloudFormationTemplateForm {
-  if (form !== "original" && form !== "processed" && form !== "previous") {
-    throw new TypeError("template form must be original, processed, or previous");
+  if (form !== "original" && form !== "processed" && form !== "previous" && form !== "transformed") {
+    throw new TypeError("template form must be original, processed, previous, or transformed");
   }
 }
 

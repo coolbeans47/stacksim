@@ -1,7 +1,9 @@
 import { collectDynamicReferences } from "./dynamic-references.js";
+import { CloudFormationYamlError, parseCloudFormationYaml } from "./yaml.js";
 
 export type CloudFormationTemplateErrorKind =
   | "InvalidJson"
+  | "InvalidYaml"
   | "InvalidTemplate"
   | "UnsupportedTemplateSection"
   | "UnsupportedTransform"
@@ -23,8 +25,10 @@ export class TemplateValidationError extends Error {
     public readonly kind: CloudFormationTemplateErrorKind,
     message: string,
     public readonly path = "$",
+    /** Source position for format errors, which already name their line and column. */
+    public readonly position?: { readonly line: number; readonly column: number },
   ) {
-    super(`${message} at ${path}`);
+    super(position ? message : `${message} at ${path}`);
     this.name = "TemplateValidationError";
   }
 }
@@ -317,24 +321,49 @@ function validateConditionUses(template: CloudFormationTemplate): void {
 }
 
 /**
- * Parse a JSON TemplateBody (or validate an already parsed JSON value).
- * YAML ingestion is intentionally outside the CFN-02 contract.
+ * Parse a template body as CloudFormation does: a body that parses as JSON is
+ * JSON, and anything else is read as YAML with the short-form intrinsic tags.
+ */
+export function parseTemplateDocument(templateBody: string): unknown {
+  let jsonError: unknown;
+  try {
+    return JSON.parse(templateBody);
+  } catch (error) {
+    // Not JSON: fall through to the YAML reader, whose errors carry positions.
+    jsonError = error;
+  }
+  try {
+    return parseCloudFormationYaml(templateBody);
+  } catch (error) {
+    if (!(error instanceof CloudFormationYamlError)) throw error;
+    // A body that opens like a JSON object was meant as JSON, so report the
+    // JSON syntax error rather than the YAML reader's view of it.
+    if (templateBody.trimStart().startsWith("{")) throw jsonFormatError(templateBody, jsonError);
+    throw new TemplateValidationError("InvalidYaml", error.message, "$", { line: error.line, column: error.column });
+  }
+}
+
+function jsonFormatError(templateBody: string, error: unknown): TemplateValidationError {
+  const detail = error instanceof Error ? error.message : String(error);
+  const offset = Number(/at position (\d+)/.exec(detail)?.[1] ?? templateBody.length);
+  const before = templateBody.slice(0, offset);
+  const line = before.split("\n").length;
+  const column = offset - (before.lastIndexOf("\n") + 1) + 1;
+  return new TemplateValidationError("InvalidJson", `Template format error: JSON not well-formed. (line ${line}, column ${column})`, "$", { line, column });
+}
+
+/**
+ * Parse a JSON or YAML TemplateBody (or validate an already parsed value)
+ * into a structurally validated template. Transforms are expanded before this
+ * validator runs, so a remaining Transform section is rejected here.
  */
 export function parseCloudFormationTemplate(templateBody: string | unknown): CloudFormationTemplate {
-  let parsed: unknown = templateBody;
-  if (typeof templateBody === "string") {
-    try {
-      parsed = JSON.parse(templateBody);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      fail("InvalidJson", "$", `template body must be valid JSON; YAML is not supported in CFN-02 (${detail})`);
-    }
-  }
+  const parsed = typeof templateBody === "string" ? parseTemplateDocument(templateBody) : templateBody;
 
   assertJsonValue(parsed, "$", new Set());
   const root = expectObject(parsed, "$", "template");
 
-  if (Object.prototype.hasOwnProperty.call(root, "Transform")) fail("UnsupportedTransform", "$.Transform", "template transforms are not supported in CFN-02");
+  if (Object.prototype.hasOwnProperty.call(root, "Transform")) fail("UnsupportedTransform", "$.Transform", "template transforms must be admitted and expanded before structural validation");
   if (Object.prototype.hasOwnProperty.call(root, "Macros")) fail("UnsupportedMacro", "$.Macros", "template macros are not supported in CFN-02");
   const unsupportedSection = Object.keys(root).filter(section => !TOP_LEVEL_SECTIONS.has(section)).sort()[0];
   if (unsupportedSection !== undefined) fail("UnsupportedTemplateSection", childPath("$", unsupportedSection), `unsupported template section ${JSON.stringify(unsupportedSection)}`);
