@@ -24,6 +24,7 @@ import { CreateBucketCommand, HeadBucketCommand, PutObjectCommand, S3Client } fr
 import { StackSim } from "../src/server.js";
 import {
   SERVERLESS_TRANSFORM,
+  ServerlessTransformError,
   TemplateTransformError,
   declaredTransforms,
   expandServerlessTransform,
@@ -35,11 +36,11 @@ const region = "eu-west-1";
 const context = { region, partition: "aws", accountId: "000000000000" };
 const execFileAsync = promisify(execFile);
 
-function transformError(action: () => unknown): TemplateTransformError {
+function transformError(action: () => unknown): TemplateTransformError | ServerlessTransformError {
   try {
     action();
   } catch (error) {
-    assert.ok(error instanceof TemplateTransformError, String(error));
+    assert.ok(error instanceof TemplateTransformError || error instanceof ServerlessTransformError, String(error));
     return error;
   }
   assert.fail("expected a transform error");
@@ -124,11 +125,11 @@ test("the SAM transform is an identity expansion without AWS::Serverless resourc
   assert.equal(prepareCloudFormationTemplate(YAML_QUEUE_TOPIC, context).transformedBody, undefined);
 });
 
-test("AWS::Serverless resources and Globals fail the whole transform in the AWS format", () => {
+test("unimplemented AWS::Serverless resources, properties, and Globals fail the whole transform in the AWS format", () => {
   const error = transformError(() => expandServerlessTransform({
     Transform: SERVERLESS_TRANSFORM,
     Resources: {
-      HelloWorldFunction: { Type: "AWS::Serverless::Function", Properties: { Handler: "app.handler" } },
+      HelloWorldFunction: { Type: "AWS::Serverless::Function", Properties: { CodeUri: "s3://bucket/key", Handler: "app.handler", Runtime: "nodejs22.x", AutoPublishAlias: "live" } },
       Bucket: { Type: "AWS::S3::Bucket" },
       Layer: { Type: "AWS::Serverless::LayerVersion" },
       App: { Type: "AWS::Serverless::Application" },
@@ -136,10 +137,10 @@ test("AWS::Serverless resources and Globals fail the whole transform in the AWS 
   }, context));
   assert.equal(error.code, "ValidationError");
   assert.equal(error.message, "Transform AWS::Serverless-2016-10-31 failed with: Invalid Serverless Application Specification document. Number of errors found: 3. "
-    + "Resource with id [HelloWorldFunction] is invalid. Resource type AWS::Serverless::Function is not supported by StackSim (owning phase: SAM-02). "
+    + "Resource with id [HelloWorldFunction] is invalid. Property 'AutoPublishAlias' is not supported by StackSim (owning phase: SAM-04). "
     + "Resource with id [Layer] is invalid. Resource type AWS::Serverless::LayerVersion is not supported by StackSim (owning phase: SAM-04). "
     + "Resource with id [App] is invalid. Resource type AWS::Serverless::Application is not supported by StackSim.");
-  assert.match(transformError(() => expandServerlessTransform({ Transform: SERVERLESS_TRANSFORM, Globals: { Function: { Timeout: 3 } }, Resources: {} }, context)).message, /Number of errors found: 1\. Structure of the SAM template is invalid\. The Globals section is not supported by StackSim \(owning phase: SAM-02\)\./);
+  assert.match(transformError(() => expandServerlessTransform({ Transform: SERVERLESS_TRANSFORM, Globals: { Function: { Layers: ["arn"] } }, Resources: {} }, context)).message, /Number of errors found: 1\. 'Globals' section is invalid\. 'Layers' in 'Function' is not supported by StackSim \(owning phase: SAM-04\)\./);
 });
 
 async function withSimulator(prefix: string, run: (fixture: { root: string; simulator: StackSim; options: { endpoint: string; region: string; credentials: typeof credentials; maxAttempts: number } }) => Promise<void>): Promise<void> {
@@ -283,7 +284,7 @@ Outputs:`);
   }
 });
 
-test("an AWS::Serverless resource fails the change set and CreateStack with no mutation", async () => {
+test("an unimplemented AWS::Serverless property fails the change set and CreateStack with no mutation", async () => {
   await withSimulator("stacksim-sam01-serverless-", async ({ options, simulator }) => {
     const client = new CloudFormationClient(options);
     const lambda = new LambdaClient(options);
@@ -295,8 +296,9 @@ Resources:
       CodeUri: s3://bucket/key
       Handler: app.lambdaHandler
       Runtime: nodejs22.x
+      AutoPublishAlias: live
 `;
-    const expected = "Transform AWS::Serverless-2016-10-31 failed with: Invalid Serverless Application Specification document. Number of errors found: 1. Resource with id [HelloWorldFunction] is invalid. Resource type AWS::Serverless::Function is not supported by StackSim (owning phase: SAM-02).";
+    const expected = "Transform AWS::Serverless-2016-10-31 failed with: Invalid Serverless Application Specification document. Number of errors found: 1. Resource with id [HelloWorldFunction] is invalid. Property 'AutoPublishAlias' is not supported by StackSim (owning phase: SAM-04).";
     try {
       const planned = await client.send(new CreateChangeSetCommand({ StackName: "sam-function", ChangeSetName: "initial", ChangeSetType: "CREATE", TemplateBody: template, Capabilities: ["CAPABILITY_IAM"] }));
       const described = await client.send(new DescribeChangeSetCommand({ ChangeSetName: planned.Id }));

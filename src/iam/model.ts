@@ -19,7 +19,30 @@ const managed: Array<{ name: string; path: string; id: string; document: PolicyD
   ] } },
   { name: "AmazonDynamoDBFullAccess", path: "/", id: "ANPAIDDBFULLACCESS01", document: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "dynamodb:*", Resource: "*" }] } },
   { name: "AdministratorAccess", path: "/", id: "ANPAIADMINACCESS001", document: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "*", Resource: "*" }] } },
+  // Referenced by the AWS SAM transform (SAM-02): Tracing: Active, and common
+  // Policies entries in SAM quick starts and golden fixtures.
+  { name: "AWSXRayDaemonWriteAccess", path: "/", id: "ANPAIXRAYDAEMONW001", document: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["xray:PutTraceSegments", "xray:PutTelemetryRecords", "xray:GetSamplingRules", "xray:GetSamplingTargets", "xray:GetSamplingStatisticSummaries"], Resource: ["*"] }] } },
+  { name: "AWSXrayWriteOnlyAccess", path: "/", id: "ANPAIXRAYWRITEONLY1", document: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["xray:PutTraceSegments", "xray:PutTelemetryRecords", "xray:GetSamplingRules", "xray:GetSamplingTargets", "xray:GetSamplingStatisticSummaries"], Resource: ["*"] }] } },
+  { name: "AWSLambdaRole", path: "/service-role/", id: "ANPAILAMBDAROLE0001", document: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["lambda:InvokeFunction"], Resource: ["*"] }] } },
+  { name: "AmazonS3ReadOnlyAccess", path: "/", id: "ANPAIS3READONLY0001", document: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["s3:Get*", "s3:List*", "s3:Describe*", "s3-object-lambda:Get*", "s3-object-lambda:List*"], Resource: "*" }] } },
+  { name: "AmazonDynamoDBReadOnlyAccess", path: "/", id: "ANPAIDDBREADONLY001", document: { Version: "2012-10-17", Statement: [
+    { Effect: "Allow", Resource: "*", Action: [
+      "application-autoscaling:DescribeScalableTargets", "application-autoscaling:DescribeScalingActivities", "application-autoscaling:DescribeScalingPolicies",
+      "cloudwatch:DescribeAlarmHistory", "cloudwatch:DescribeAlarms", "cloudwatch:DescribeAlarmsForMetric", "cloudwatch:GetMetricData", "cloudwatch:GetMetricStatistics", "cloudwatch:ListMetrics",
+      "datapipeline:DescribeObjects", "datapipeline:DescribePipelines", "datapipeline:GetPipelineDefinition", "datapipeline:ListPipelines", "datapipeline:QueryObjects",
+      "dynamodb:BatchGetItem", "dynamodb:Describe*", "dynamodb:List*", "dynamodb:GetAbacStatus", "dynamodb:GetItem", "dynamodb:GetResourcePolicy", "dynamodb:Query", "dynamodb:Scan", "dynamodb:PartiQLSelect",
+      "dax:Describe*", "dax:List*", "dax:GetItem", "dax:BatchGetItem", "dax:Query", "dax:Scan",
+      "ec2:DescribeVpcs", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "iam:GetRole", "iam:ListRoles", "kms:DescribeKey", "kms:ListAliases",
+      "sns:ListSubscriptionsByTopic", "sns:ListTopics", "lambda:ListFunctions", "lambda:ListEventSourceMappings", "lambda:GetFunctionConfiguration",
+      "resource-groups:ListGroups", "resource-groups:ListGroupResources", "resource-groups:GetGroup", "resource-groups:GetGroupQuery", "tag:GetResources",
+      "kinesis:ListStreams", "kinesis:DescribeStream", "kinesis:DescribeStreamSummary",
+    ] },
+    { Effect: "Allow", Action: "cloudwatch:GetInsightRuleReport", Resource: "arn:aws:cloudwatch:*:*:insight-rule/DynamoDBContributorInsights*" },
+  ] } },
 ];
+
+/** Names of the AWS managed policies this catalog models. */
+export const AWS_MANAGED_POLICY_NAMES: ReadonlySet<string> = new Set(managed.map(item => item.name));
 const MANAGED_POLICY_V1_DATE = Date.UTC(2026, 6, 14);
 
 export function createIamState(now = Date.now(), accountId = "000000000000"): IamState {

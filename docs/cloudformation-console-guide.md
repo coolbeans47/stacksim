@@ -150,7 +150,7 @@ Automatic reduced bootstrap creates file-asset bucket and roles by default (`STA
 | Feature | StackSim behavior |
 |---------|-------------------|
 | Template format | JSON or YAML (YAML 1.1 as CloudFormation reads it; no anchors, aliases, or merge keys) |
-| Transforms | `AWS::Serverless-2016-10-31` only, with `CAPABILITY_AUTO_EXPAND` on CreateStack/UpdateStack. `AWS::Serverless::*` resources wait for SAM-02 and fail with the AWS transform error format |
+| Transforms | `AWS::Serverless-2016-10-31` only, with `CAPABILITY_AUTO_EXPAND` on CreateStack/UpdateStack. SAM functions, REST and HTTP APIs, and simple tables expand as in the [SAM guide](sam-guide.md); other SAM features fail with the AWS transform error format |
 | Drift / import | Unavailable |
 | StackSets | Unavailable |
 | Supported providers | Documented subset per release |

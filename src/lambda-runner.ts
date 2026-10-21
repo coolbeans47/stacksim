@@ -1,10 +1,10 @@
 import { measureWorkerMemory } from "./lambda-memory.js";
 import { pathToFileURL } from "node:url";
-import { resolve } from "node:path";
-import { createWriteStream } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { createWriteStream, statSync } from "node:fs";
 import { Writable } from "node:stream";
 import { formatWithOptions } from "node:util";
-import { createRequire, syncBuiltinESMExports } from "node:module";
+import { createRequire, register, syncBuiltinESMExports } from "node:module";
 
 interface InitializeRequest {
   type: "initialize";
@@ -245,22 +245,48 @@ function invokeOrdinary(handler: Function, event: unknown, context: Record<strin
   });
 }
 
+let runtimeSdkForEsmRegistered = false;
+
+/**
+ * Node.js Lambda runtimes let ES module handlers import the AWS SDK for
+ * JavaScript v3 that the runtime bundles. ESM resolution ignores NODE_PATH,
+ * so resolve a bare `@aws-sdk/*` import the function does not package from
+ * the runtime's own copy instead.
+ */
+function registerRuntimeSdkForEsm(): void {
+  if (runtimeSdkForEsmRegistered) return;
+  runtimeSdkForEsmRegistered = true;
+  const sdkRoot = resolve(dirname(createRequire(import.meta.url).resolve("@aws-sdk/client-lambda")), "..", "..", "..");
+  const hooks = `let parentURL;
+export function initialize(data) { parentURL = data.parentURL; }
+export async function resolve(specifier, context, next) {
+  try { return await next(specifier, context); }
+  catch (error) {
+    if (error?.code !== "ERR_MODULE_NOT_FOUND" || !specifier.startsWith("@aws-sdk/") || context.parentURL === parentURL) throw error;
+    return next(specifier, { ...context, parentURL });
+  }
+}`;
+  register(`data:text/javascript,${encodeURIComponent(hooks)}`, { data: { parentURL: pathToFileURL(join(sdkRoot, "runtime-sdk.mjs")).href } });
+}
+
 async function loadHandler(request: InitializeRequest): Promise<Function> {
   const dot = request.handler.lastIndexOf(".");
   if (dot < 1) throw new Error(`Invalid handler '${request.handler}'. Expected module.exportName`);
   const moduleName = request.handler.slice(0, dot);
   const exportName = request.handler.slice(dot + 1);
   const modulePath = resolve(request.codeDir, moduleName);
-  let loaded: any;
-  let lastError: unknown;
-  for (const candidate of [modulePath, `${modulePath}.js`, `${modulePath}.mjs`, `${modulePath}.cjs`]) {
-    try { loaded = await import(pathToFileURL(candidate).href); break; }
-    catch (error: any) {
-      lastError = error;
-      if (error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
-    }
+  // Pick the module file first, so a dependency the module cannot import
+  // reports its own error instead of looking like a missing handler file.
+  const candidate = [modulePath, `${modulePath}.js`, `${modulePath}.mjs`, `${modulePath}.cjs`].find(path => {
+    try { return statSync(path).isFile(); } catch { return false; }
+  });
+  if (!candidate) {
+    const error = new Error(`Cannot find module '${moduleName}' (tried .js, .mjs, and .cjs) in the function code`);
+    (error as NodeJS.ErrnoException).code = "ERR_MODULE_NOT_FOUND";
+    throw error;
   }
-  if (!loaded) throw lastError;
+  registerRuntimeSdkForEsm();
+  const loaded: any = await import(pathToFileURL(candidate).href);
   const handler = loaded[exportName] ?? loaded.default?.[exportName];
   if (typeof handler !== "function") throw new Error(`Handler export '${exportName}' was not found in ${moduleName}`);
   return handler;

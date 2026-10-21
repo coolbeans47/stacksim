@@ -188,7 +188,7 @@ aws cloudformation deploy --template-file template.yaml --stack-name my-stack
 aws cloudformation get-template --stack-name my-stack
 ```
 
-`get-template` returns the YAML exactly as you wrote it. A template that declares `Transform: AWS::Serverless-2016-10-31` also deploys this way, because `deploy` uses a change set. `create-stack` and `update-stack` need `--capabilities CAPABILITY_AUTO_EXPAND` for such a template, as on AWS. Use `--template-stage Processed` to see the expanded template. `AWS::Serverless::*` resources are not expanded yet; they fail with the AWS-format `Transform AWS::Serverless-2016-10-31 failed with: ...` error until SAM-02.
+`get-template` returns the YAML exactly as you wrote it. A template that declares `Transform: AWS::Serverless-2016-10-31` also deploys this way, because `deploy` uses a change set. `create-stack` and `update-stack` need `--capabilities CAPABILITY_AUTO_EXPAND` for such a template, as on AWS. Use `--template-stage Processed` to see the expanded template. SAM functions, APIs, and simple tables are expanded as described in the [SAM guide](sam-guide.md); anything StackSim does not implement yet fails with the AWS-format `Transform AWS::Serverless-2016-10-31 failed with: ...` error.
 
 ## DynamoDB and DynamoDB Streams
 

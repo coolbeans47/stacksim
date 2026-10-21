@@ -24,7 +24,7 @@ const help = {
   template: {
     level: "Partial",
     description: "The template is the declarative source for a stack. Original shows what was submitted, byte for byte. View processed template shows the output of declared transforms such as AWS::Serverless-2016-10-31; for templates without transforms it shows the condition-resolved document CloudFormation used to plan and execute resources.",
-    support: "JSON and YAML templates (including short-form tags such as !Ref and !GetAtt), core sections, supported intrinsic functions, conditions, dependencies, validation, planning, and execution are active. The AWS::Serverless-2016-10-31 transform is admitted with CAPABILITY_AUTO_EXPAND; AWS::Serverless::* resource expansion arrives in SAM-02. YAML editing in the console keeps the template as written. Other transforms, macros, modules, and unsupported resource types are unavailable.",
+    support: "JSON and YAML templates (including short-form tags such as !Ref and !GetAtt), core sections, supported intrinsic functions, conditions, dependencies, validation, planning, and execution are active. The AWS::Serverless-2016-10-31 transform is admitted with CAPABILITY_AUTO_EXPAND; SAM functions, REST and HTTP APIs, simple tables, Globals, and policy templates expand; other SAM features fail with an error that names the phase that will add them. YAML editing in the console keeps the template as written. Other transforms, macros, modules, and unsupported resource types are unavailable.",
   },
   changeSets: {
     level: "Supported locally",
