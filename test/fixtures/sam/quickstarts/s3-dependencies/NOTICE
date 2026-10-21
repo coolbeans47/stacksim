@@ -1,0 +1,16 @@
+This directory is the `npm install --omit=dev` output for the s3 quick start's
+dependency `@aws-sdk/util-stream-node@3.374.0`, which the AWS Lambda Node.js
+runtimes do not bundle. `sam build` installs it into the function artifact; the
+quick-start tests add these files under `node_modules/`. The quick start's other
+dependency, `@aws-sdk/client-s3`, is bundled by the runtime and is resolved from
+StackSim's runtime SDK instead. Only each package's package.json, license, and
+CommonJS build are kept.
+
+@aws-sdk/util-stream-node 3.374.0 and @smithy/{abort-controller, is-array-buffer,
+node-http-handler, protocol-http, querystring-builder, types, util-buffer-from,
+util-stream-node, util-uri-escape} 1.x:
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+Licensed under the Apache License, Version 2.0 (see each package's LICENSE).
+
+tslib 2.8.1: Copyright (c) Microsoft Corporation. Licensed under the 0BSD
+license (see tslib/LICENSE.txt).

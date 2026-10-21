@@ -19,6 +19,7 @@ import {
   UpdateFunctionEventInvokeConfigCommand,
 } from "@aws-sdk/client-lambda";
 import { TestClock } from "../src/core/clock.js";
+import { createZip } from "../src/core/zip-create.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/migrations/v1-to-v2.js";
 import { StackSim } from "../src/server.js";
 import { waitForTableActive } from "./support/dynamodb.js";
@@ -208,6 +209,54 @@ test("Lambda async invocation persists before 202, retries deterministically, de
   } finally {
     disconnect();
     await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a new async event runs at once even while an earlier event waits for its retry", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-lambda-async-wake-"));
+  const clock = new TestClock(Date.parse("2026-07-15T09:00:00Z"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off" });
+  let lambda: LambdaClient | undefined;
+  try {
+    await simulator.start();
+    lambda = new LambdaClient({ endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials });
+    const code = createZip([{ name: "index.js", content: "exports.handler = async (event) => { if (event.fail) throw new Error('first attempt fails'); return 'ok'; };\n" }]);
+    await lambda.send(new CreateFunctionCommand({ FunctionName: "async-wake", Runtime: "nodejs22.x", Role: "arn:aws:iam::000000000000:role/test", Handler: "index.handler", Code: { ZipFile: code } }));
+    const queue = () => Object.values(simulator.store.regionState(region).lambdaAsyncInvocations);
+
+    await lambda.send(new InvokeCommand({ FunctionName: "async-wake", InvocationType: "Event", Payload: Buffer.from(JSON.stringify({ fail: true })) }));
+    const [failing] = await waitForWithClock(clock, queue, events => events.length === 1 && events[0].attempts === 1 && events[0].status === "QUEUED");
+    assert.equal(failing.nextAttemptAt, failing.lastAttemptAt! + 60_000, "the failed event waits a minute for its retry");
+
+    // Without advancing the clock toward that retry, the next event is delivered.
+    await lambda.send(new InvokeCommand({ FunctionName: "async-wake", InvocationType: "Event", Payload: Buffer.from(JSON.stringify({ fail: false })) }));
+    const remaining = await waitForWithClock(clock, queue, events => events.length === 1);
+    assert.equal(remaining[0].eventId, failing.eventId, "only the retrying event is still queued");
+  } finally {
+    lambda?.destroy();
+    await simulator.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an event invoke config on $LATEST governs unqualified async invocations", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-lambda-async-latest-"));
+  const clock = new TestClock(Date.parse("2026-07-15T09:00:00Z"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off" });
+  let lambda: LambdaClient | undefined;
+  try {
+    await simulator.start();
+    lambda = new LambdaClient({ endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials });
+    const code = createZip([{ name: "index.js", content: "exports.handler = async () => { throw new Error('always fails'); };\n" }]);
+    await lambda.send(new CreateFunctionCommand({ FunctionName: "async-latest", Runtime: "nodejs22.x", Role: "arn:aws:iam::000000000000:role/test", Handler: "index.handler", Code: { ZipFile: code } }));
+    // CloudFormation's AWS::Lambda::EventInvokeConfig names $LATEST explicitly.
+    await lambda.send(new PutFunctionEventInvokeConfigCommand({ FunctionName: "async-latest", Qualifier: "$LATEST", MaximumRetryAttempts: 0 }));
+    await lambda.send(new InvokeCommand({ FunctionName: "async-latest", InvocationType: "Event", Payload: Buffer.from("{}") }));
+    await waitForWithClock(clock, () => Object.values(simulator.store.regionState(region).lambdaAsyncInvocations), events => events.length === 0);
+  } finally {
+    lambda?.destroy();
+    await simulator.stop();
     await rm(root, { recursive: true, force: true });
   }
 });

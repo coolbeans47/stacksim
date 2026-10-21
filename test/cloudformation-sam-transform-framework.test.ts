@@ -129,18 +129,18 @@ test("unimplemented AWS::Serverless resources, properties, and Globals fail the 
   const error = transformError(() => expandServerlessTransform({
     Transform: SERVERLESS_TRANSFORM,
     Resources: {
-      HelloWorldFunction: { Type: "AWS::Serverless::Function", Properties: { CodeUri: "s3://bucket/key", Handler: "app.handler", Runtime: "nodejs22.x", AutoPublishAlias: "live" } },
+      HelloWorldFunction: { Type: "AWS::Serverless::Function", Properties: { CodeUri: "s3://bucket/key", Handler: "app.handler", Runtime: "nodejs22.x", AutoPublishAlias: "live", DeploymentPreference: { Type: "AllAtOnce" } } },
       Bucket: { Type: "AWS::S3::Bucket" },
-      Layer: { Type: "AWS::Serverless::LayerVersion" },
+      Connector: { Type: "AWS::Serverless::Connector" },
       App: { Type: "AWS::Serverless::Application" },
     },
   }, context));
   assert.equal(error.code, "ValidationError");
   assert.equal(error.message, "Transform AWS::Serverless-2016-10-31 failed with: Invalid Serverless Application Specification document. Number of errors found: 3. "
-    + "Resource with id [HelloWorldFunction] is invalid. Property 'AutoPublishAlias' is not supported by StackSim (owning phase: SAM-04). "
-    + "Resource with id [Layer] is invalid. Resource type AWS::Serverless::LayerVersion is not supported by StackSim (owning phase: SAM-04). "
+    + "Resource with id [HelloWorldFunction] is invalid. Property 'DeploymentPreference' is not supported by StackSim. "
+    + "Resource with id [Connector] is invalid. Resource type AWS::Serverless::Connector is not supported by StackSim (owning phase: SAM-06). "
     + "Resource with id [App] is invalid. Resource type AWS::Serverless::Application is not supported by StackSim.");
-  assert.match(transformError(() => expandServerlessTransform({ Transform: SERVERLESS_TRANSFORM, Globals: { Function: { Layers: ["arn"] } }, Resources: {} }, context)).message, /Number of errors found: 1\. 'Globals' section is invalid\. 'Layers' in 'Function' is not supported by StackSim \(owning phase: SAM-04\)\./);
+  assert.match(transformError(() => expandServerlessTransform({ Transform: SERVERLESS_TRANSFORM, Globals: { Function: { VpcConfig: { SubnetIds: [] } } }, Resources: {} }, context)).message, /Number of errors found: 1\. 'Globals' section is invalid\. 'VpcConfig' in 'Function' is not supported by StackSim\./);
 });
 
 async function withSimulator(prefix: string, run: (fixture: { root: string; simulator: StackSim; options: { endpoint: string; region: string; credentials: typeof credentials; maxAttempts: number } }) => Promise<void>): Promise<void> {
@@ -297,8 +297,10 @@ Resources:
       Handler: app.lambdaHandler
       Runtime: nodejs22.x
       AutoPublishAlias: live
+      DeploymentPreference:
+        Type: AllAtOnce
 `;
-    const expected = "Transform AWS::Serverless-2016-10-31 failed with: Invalid Serverless Application Specification document. Number of errors found: 1. Resource with id [HelloWorldFunction] is invalid. Property 'AutoPublishAlias' is not supported by StackSim (owning phase: SAM-04).";
+    const expected = "Transform AWS::Serverless-2016-10-31 failed with: Invalid Serverless Application Specification document. Number of errors found: 1. Resource with id [HelloWorldFunction] is invalid. Property 'DeploymentPreference' is not supported by StackSim.";
     try {
       const planned = await client.send(new CreateChangeSetCommand({ StackName: "sam-function", ChangeSetName: "initial", ChangeSetType: "CREATE", TemplateBody: template, Capabilities: ["CAPABILITY_IAM"] }));
       const described = await client.send(new DescribeChangeSetCommand({ ChangeSetName: planned.Id }));

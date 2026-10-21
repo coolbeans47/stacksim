@@ -19,6 +19,22 @@ export interface SamContext {
   readonly functionNames: Map<string, string[]>;
   /** Milliseconds since the epoch, used only by AlwaysDeploy. */
   readonly now: number;
+  /** Tags PropagateTags writes onto S3 buckets that function events reference, by bucket ID. */
+  readonly bucketTags: Map<string, unknown[]>;
+  /** SAM resources whose generated resource has a new logical ID (layers), by original ID. */
+  readonly changedLogicalIds: Map<string, string>;
+  /** SharedApiUsagePlan: what every API with CreateUsagePlan SHARED contributes to ServerlessUsagePlan. */
+  readonly sharedUsagePlan: SharedUsagePlan;
+}
+
+export interface SharedUsagePlan {
+  readonly dependsOn: string[];
+  readonly apiStages: JsonObject[];
+  readonly stageKeys: JsonObject[];
+  readonly conditions: unknown[];
+  anyApiWithoutCondition: boolean;
+  deletionPolicy?: unknown;
+  updateReplacePolicy?: unknown;
 }
 
 export function addReference(context: SamContext, logicalId: string, property: string, target: string): void {

@@ -1021,7 +1021,8 @@ export class SqsService {
   async receiveForConsumer(input: SqsConsumerReceiveInput): Promise<SqsConsumerReceiveOutput> {
     const queue = this.resolveQueueArn(input.queueArn);
     if (input.roleArn) {
-      for (const action of ["sqs:GetQueueAttributes", "sqs:ReceiveMessage", "sqs:ChangeMessageVisibility"]) {
+      // Lambda's documented SQS execution-role permissions; it does not need sqs:ChangeMessageVisibility.
+      for (const action of ["sqs:GetQueueAttributes", "sqs:ReceiveMessage"]) {
         const decision = this.roleQueueAuthorization(queue, input.roleArn, action);
         await this.recordAuthorization(input.roleArn, action, queue.queueArn, decision);
         if (decision.decision !== "allowed") throw new AwsError("AccessDeniedException", `${input.roleArn} is not authorized to consume ${queue.queueArn}. ${decision.reason}`, 403);

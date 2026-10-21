@@ -15,6 +15,10 @@ export interface EventCoverage {
   readonly event: Coverage;
   /** Per-property coverage; omitted when every property shares the event's coverage. */
   readonly properties?: CoverageTable;
+  /** Properties SAM's translator accepts for this event type although its schema does not list them. */
+  readonly extraProperties?: CoverageTable;
+  /** A short note shown in docs/sam-coverage.md. */
+  readonly note?: string;
 }
 
 export interface ResourceCoverage {
@@ -28,17 +32,29 @@ export interface ResourceCoverage {
 
 const states = (coverage: Coverage, names: readonly string[]): Record<string, Coverage> => Object.fromEntries(names.map(name => [name, coverage]));
 
+/** Properties SAM's PullEventSource accepts for every pull event; SQS and DynamoDB events take only some of them. */
+const PULL_ONLY_PROPERTIES = [
+  "BatchSize", "BisectBatchOnFunctionError", "ConsumerGroupId", "DestinationConfig", "Enabled", "FilterCriteria", "FunctionResponseTypes", "KafkaBootstrapServers",
+  "KmsKeyArn", "LoggingConfig", "MaximumBatchingWindowInSeconds", "MaximumRecordAgeInSeconds", "MaximumRetryAttempts", "MetricsConfig", "ParallelizationFactor",
+  "ProvisionedPollerConfig", "Queues", "ScalingConfig", "SchemaRegistryConfig", "SecretsManagerKmsKeyId", "SourceAccessConfigurations", "StartingPosition",
+  "StartingPositionTimestamp", "Topics", "TumblingWindowInSeconds",
+];
+const SQS_EVENT_PROPERTIES = ["BatchSize", "Enabled", "FilterCriteria", "FunctionResponseTypes", "KmsKeyArn", "MaximumBatchingWindowInSeconds", "MetricsConfig", "ScalingConfig"];
+const DYNAMODB_EVENT_PROPERTIES = [
+  "BatchSize", "BisectBatchOnFunctionError", "DestinationConfig", "Enabled", "FilterCriteria", "FunctionResponseTypes", "KmsKeyArn", "MaximumBatchingWindowInSeconds",
+  "MaximumRecordAgeInSeconds", "MaximumRetryAttempts", "MetricsConfig", "ParallelizationFactor", "StartingPosition", "StartingPositionTimestamp", "TumblingWindowInSeconds",
+];
+
 export const SAM_RESOURCE_COVERAGE: Readonly<Record<string, ResourceCoverage>> = {
   "AWS::Serverless::Function": {
     resource: "implemented",
     properties: {
       ...states("implemented", [
-        "Architectures", "AssumeRolePolicyDocument", "CodeSigningConfigArn", "CodeUri", "DeadLetterQueue", "Description", "Environment", "EphemeralStorage",
-        "Events", "FunctionName", "Handler", "InlineCode", "LoggingConfig", "MemorySize", "PackageType", "PermissionsBoundary", "Policies", "PropagateTags",
-        "ReservedConcurrentExecutions", "Role", "RolePath", "Runtime", "Tags", "Timeout", "Tracing",
+        "Architectures", "AssumeRolePolicyDocument", "AutoPublishAlias", "AutoPublishAliasAllProperties", "AutoPublishCodeSha256", "CodeSigningConfigArn", "CodeUri",
+        "DeadLetterQueue", "Description", "Environment", "EphemeralStorage", "EventInvokeConfig", "Events", "FunctionName", "FunctionUrlConfig", "Handler", "InlineCode",
+        "Layers", "LoggingConfig", "MemorySize", "PackageType", "PermissionsBoundary", "Policies", "PropagateTags", "ProvisionedConcurrencyConfig",
+        "ReservedConcurrentExecutions", "Role", "RolePath", "Runtime", "Tags", "Timeout", "Tracing", "VersionDeletionPolicy", "VersionDescription",
       ]),
-      ...states("SAM-03", ["EventInvokeConfig", "FunctionUrlConfig"]),
-      ...states("SAM-04", ["AutoPublishAlias", "AutoPublishAliasAllProperties", "AutoPublishCodeSha256", "Layers", "ProvisionedConcurrencyConfig", "VersionDeletionPolicy", "VersionDescription"]),
       ...states("non-goal", [
         "CapacityProviderConfig", "DeploymentPreference", "DurableConfig", "FileSystemConfigs", "FunctionScalingConfig", "ImageConfig", "ImageUri", "KmsKeyArn",
         "PublishToLatestPublished", "RecursiveLoop", "RuntimeManagementConfig", "SnapStart", "SourceKMSKeyArn", "TenancyConfig", "VpcConfig",
@@ -47,13 +63,57 @@ export const SAM_RESOURCE_COVERAGE: Readonly<Record<string, ResourceCoverage>> =
     events: {
       Api: {
         event: "implemented",
-        properties: { ...states("implemented", ["Method", "Path", "RestApiId", "TimeoutInMillis"]), ...states("SAM-04", ["Auth", "RequestModel", "RequestParameters"]), ResponseTransferMode: "non-goal" },
+        properties: { ...states("implemented", ["Auth", "Method", "Path", "RequestModel", "RequestParameters", "RestApiId", "TimeoutInMillis"]), ResponseTransferMode: "non-goal" },
+        note: "With `AWS_IAM` auth and no `InvokeRole` (or `CALLER_CREDENTIALS`), API Gateway calls the function with the SigV4 caller's credentials, as on AWS.",
       },
       HttpApi: {
         event: "implemented",
-        properties: { ...states("implemented", ["ApiId", "Method", "Path", "PayloadFormatVersion", "RouteSettings", "TimeoutInMillis"]), Auth: "SAM-04" },
+        properties: states("implemented", ["ApiId", "Auth", "Method", "Path", "PayloadFormatVersion", "RouteSettings", "TimeoutInMillis"]),
       },
-      ...Object.fromEntries(["CloudWatchEvent", "CloudWatchLogs", "DynamoDB", "EventBridgeRule", "S3", "SNS", "SQS", "Schedule"].map(type => [type, { event: "SAM-03" as const }])),
+      CloudWatchEvent: {
+        event: "implemented",
+        properties: states("implemented", ["Enabled", "EventBusName", "Input", "InputPath", "Pattern", "State"]),
+        extraProperties: states("implemented", ["DeadLetterConfig", "InputTransformer", "RetryPolicy", "RuleName", "Target"]),
+      },
+      CloudWatchLogs: { event: "implemented", properties: states("implemented", ["FilterPattern", "LogGroupName"]) },
+      DynamoDB: {
+        event: "implemented",
+        properties: {
+          ...states("implemented", [
+            "BatchSize", "BisectBatchOnFunctionError", "DestinationConfig", "Enabled", "FilterCriteria", "FunctionResponseTypes", "MaximumBatchingWindowInSeconds",
+            "MaximumRecordAgeInSeconds", "MaximumRetryAttempts", "ParallelizationFactor", "StartingPosition", "Stream", "TumblingWindowInSeconds",
+          ]),
+          ...states("non-goal", ["KmsKeyArn", "MetricsConfig", "StartingPositionTimestamp"]),
+        },
+        extraProperties: states("non-goal", PULL_ONLY_PROPERTIES.filter(name => !DYNAMODB_EVENT_PROPERTIES.includes(name))),
+        note: "`KmsKeyArn` needs KMS. DynamoDB Streams have no `AT_TIMESTAMP` starting position.",
+      },
+      EventBridgeRule: {
+        event: "implemented",
+        properties: states("implemented", ["DeadLetterConfig", "EventBusName", "Input", "InputPath", "InputTransformer", "Pattern", "RetryPolicy", "RuleName", "Target"]),
+        extraProperties: states("implemented", ["Enabled", "State"]),
+      },
+      S3: { event: "implemented", properties: states("implemented", ["Bucket", "Events", "Filter"]), note: "The bucket must be declared in the same template, as SAM requires." },
+      SNS: {
+        event: "implemented",
+        properties: states("implemented", ["FilterPolicy", "FilterPolicyScope", "Region", "SqsSubscription", "Topic"]),
+        extraProperties: { RedrivePolicy: "implemented" },
+      },
+      SQS: {
+        event: "implemented",
+        properties: {
+          ...states("implemented", ["BatchSize", "Enabled", "FilterCriteria", "FunctionResponseTypes", "MaximumBatchingWindowInSeconds", "Queue", "ScalingConfig"]),
+          ...states("non-goal", ["KmsKeyArn", "MetricsConfig"]),
+        },
+        extraProperties: states("non-goal", PULL_ONLY_PROPERTIES.filter(name => !SQS_EVENT_PROPERTIES.includes(name))),
+        note: "`KmsKeyArn` needs KMS.",
+      },
+      Schedule: {
+        event: "implemented",
+        properties: states("implemented", ["DeadLetterConfig", "Description", "Enabled", "Input", "Name", "RetryPolicy", "Schedule", "State"]),
+        extraProperties: { RuleName: "implemented" },
+        note: "As in SAM, `RuleName` is accepted and ignored on Schedule events; `Name` names the rule.",
+      },
       ...Object.fromEntries(["AlexaSkill", "Cognito", "DocumentDB", "IoTRule", "Kinesis", "MQ", "MSK", "ScheduleV2", "SelfManagedKafka"].map(type => [type, { event: "non-goal" as const }])),
     },
     notes: {
@@ -61,17 +121,17 @@ export const SAM_RESOURCE_COVERAGE: Readonly<Record<string, ResourceCoverage>> =
       DeploymentPreference: "Needs a CodeDeploy service.",
       VpcConfig: "StackSim has no VPC model.",
       Role: "A string or intrinsic role ARN; an `Fn::If` that selects the generated role is not supported.",
+      EventInvokeConfig: "SQS, SNS, Lambda, and EventBridge destinations; `Type: S3Bucket` is not supported (Lambda S3 async destinations are not available locally).",
     },
   },
   "AWS::Serverless::Api": {
     resource: "implemented",
     properties: {
       ...states("implemented", [
-        "AccessLogSetting", "AlwaysDeploy", "BinaryMediaTypes", "CacheClusterEnabled", "CacheClusterSize", "DefinitionBody", "DefinitionUri", "Description",
-        "EndpointConfiguration", "GatewayResponses", "MethodSettings", "MinimumCompressionSize", "Name", "OpenApiVersion", "PropagateTags", "StageName", "Tags",
-        "TracingEnabled", "Variables",
+        "AccessLogSetting", "AlwaysDeploy", "ApiKeySourceType", "Auth", "BinaryMediaTypes", "CacheClusterEnabled", "CacheClusterSize", "Cors", "DefinitionBody",
+        "DefinitionUri", "Description", "EndpointConfiguration", "GatewayResponses", "MethodSettings", "MinimumCompressionSize", "Models", "Name", "OpenApiVersion",
+        "Policy", "PropagateTags", "StageName", "Tags", "TracingEnabled", "Variables",
       ]),
-      ...states("SAM-04", ["ApiKeySourceType", "Auth", "Cors", "Models", "Policy"]),
       ...states("non-goal", ["CanarySetting", "DisableExecuteApiEndpoint", "Domain", "EndpointAccessMode", "FailOnWarnings", "MergeDefinitions", "Mode", "SecurityPolicy"]),
     },
     notes: { Domain: "Needs ACM and Route 53 semantics StackSim does not model." },
@@ -81,9 +141,8 @@ export const SAM_RESOURCE_COVERAGE: Readonly<Record<string, ResourceCoverage>> =
     properties: {
       ...states("implemented", [
         "AccessLogSettings", "CorsConfiguration", "DefaultRouteSettings", "DefinitionBody", "DefinitionUri", "Description", "DisableExecuteApiEndpoint",
-        "FailOnWarnings", "Name", "PropagateTags", "RouteSettings", "StageName", "StageVariables", "Tags",
+        "FailOnWarnings", "Name", "PropagateTags", "RouteSettings", "StageName", "StageVariables", "Tags", "Auth",
       ]),
-      Auth: "SAM-04",
       Domain: "non-goal",
     },
   },
@@ -92,12 +151,44 @@ export const SAM_RESOURCE_COVERAGE: Readonly<Record<string, ResourceCoverage>> =
     properties: states("implemented", ["PointInTimeRecoverySpecification", "PrimaryKey", "ProvisionedThroughput", "SSESpecification", "TableName", "Tags"]),
     notes: { SSESpecification: "SSE with the DynamoDB-owned key only; KMS keys need KMS." },
   },
-  "AWS::Serverless::LayerVersion": { resource: "SAM-04" },
+  "AWS::Serverless::LayerVersion": {
+    resource: "implemented",
+    properties: states("implemented", ["CompatibleArchitectures", "CompatibleRuntimes", "ContentUri", "Description", "LayerName", "LicenseInfo", "PublishLambdaVersion", "RetentionPolicy"]),
+  },
   "AWS::Serverless::StateMachine": {
-    resource: "SAM-04",
+    resource: "implemented",
+    properties: {
+      ...states("implemented", [
+        "Definition", "DefinitionSubstitutions", "DefinitionUri", "Events", "Logging", "Name", "PermissionsBoundary", "Policies", "PropagateTags", "Role", "RolePath", "Tags",
+        "Tracing", "Type",
+      ]),
+      ...states("non-goal", ["AutoPublishAlias", "DeploymentPreference", "UseAliasAsEventTarget"]),
+    },
     events: {
-      ...Object.fromEntries(["Api", "EventBridgeRule", "Schedule"].map(type => [type, { event: "SAM-04" as const }])),
-      ...Object.fromEntries(["CloudWatchEvent", "ScheduleV2"].map(type => [type, { event: "non-goal" as const }])),
+      Api: { event: "implemented", properties: states("implemented", ["Auth", "Method", "Path", "RestApiId", "UnescapeMappingTemplate"]) },
+      CloudWatchEvent: {
+        event: "implemented",
+        properties: states("implemented", ["EventBusName", "Input", "InputPath", "Pattern"]),
+        extraProperties: states("implemented", ["DeadLetterConfig", "InputTransformer", "RetryPolicy", "RuleName", "State", "Target"]),
+      },
+      EventBridgeRule: {
+        event: "implemented",
+        properties: states("implemented", ["DeadLetterConfig", "EventBusName", "Input", "InputPath", "InputTransformer", "Pattern", "RetryPolicy", "RuleName", "Target"]),
+        extraProperties: { State: "implemented" },
+      },
+      Schedule: {
+        event: "implemented",
+        properties: states("implemented", ["DeadLetterConfig", "Description", "Enabled", "Input", "Name", "RetryPolicy", "RoleArn", "Schedule", "State", "Target"]),
+      },
+      ScheduleV2: { event: "non-goal" },
+    },
+    notes: {
+      Type: "`STANDARD` only; `EXPRESS` fails because StackSim's Step Functions runs STANDARD state machines only.",
+      Logging: "Expanded exactly. StackSim's Step Functions accepts only `Level: OFF` until execution logging exists, so other levels fail when the stack deploys.",
+      Tracing: "Expanded exactly, with SAM's X-Ray policy. StackSim's Step Functions does not trace, so `Enabled: true` fails when the stack deploys.",
+      AutoPublishAlias: "Needs Step Functions versions and aliases, which StackSim does not model.",
+      DeploymentPreference: "Needs Step Functions versions and aliases, which StackSim does not model.",
+      UseAliasAsEventTarget: "Needs Step Functions versions and aliases, which StackSim does not model.",
     },
   },
   "AWS::Serverless::Connector": { resource: "SAM-06" },

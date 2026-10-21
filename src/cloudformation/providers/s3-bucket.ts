@@ -32,6 +32,7 @@ export const S3_BUCKET_TYPE = "AWS::S3::Bucket";
 export interface S3BucketEncryptionModel {
   readonly ServerSideEncryptionConfiguration: readonly [{
     readonly ServerSideEncryptionByDefault: { readonly SSEAlgorithm: "AES256" };
+    readonly BucketKeyEnabled?: true;
   }];
 }
 
@@ -59,9 +60,14 @@ export interface S3CorsConfigurationModel {
   }] | readonly { readonly AllowedHeaders: readonly string[]; readonly AllowedMethods: readonly ("GET" | "HEAD")[]; readonly AllowedOrigins: readonly string[] }[];
 }
 
+export interface S3NotificationFilterModel {
+  readonly S3Key: { readonly Rules: ReadonlyArray<{ readonly Name: "prefix" | "suffix"; readonly Value: string }> };
+}
+
 export interface S3LambdaNotificationModel {
   readonly Event: string;
   readonly Function: string;
+  readonly Filter?: S3NotificationFilterModel;
 }
 
 export interface S3NotificationConfigurationModel {
@@ -93,6 +99,19 @@ const AES256_ENCRYPTION: S3BucketEncryptionModel = Object.freeze({
     Object.freeze({ ServerSideEncryptionByDefault: Object.freeze({ SSEAlgorithm: "AES256" as const }) }),
   ]) as unknown as S3BucketEncryptionModel["ServerSideEncryptionConfiguration"],
 });
+
+/** SSE-S3, with S3 Bucket Keys when requested. */
+function encryptionModel(bucketKeyEnabled: boolean): S3BucketEncryptionModel {
+  return bucketKeyEnabled
+    ? { ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" }, BucketKeyEnabled: true }] }
+    : AES256_ENCRYPTION;
+}
+
+/** BucketKeyEnabled of the single encryption rule in template properties. */
+function bucketKeyEnabled(value: unknown): boolean {
+  const rule = isRecord(value) && Array.isArray(value.ServerSideEncryptionConfiguration) ? value.ServerSideEncryptionConfiguration[0] : undefined;
+  return isRecord(rule) && rule.BucketKeyEnabled === true;
+}
 
 export const S3_BUCKET_SCHEMA: ProviderSchema = Object.freeze({
   typeName: S3_BUCKET_TYPE,
@@ -139,9 +158,12 @@ function validateEncryption(value: unknown, issues: ProviderValidationIssue[]): 
     issue(issues, rulePath, "The SSE-S3 rule must be an object");
     return;
   }
-  exactKeys(rule, ["ServerSideEncryptionByDefault"], rulePath, issues);
+  exactKeys(rule, ["BucketKeyEnabled", "ServerSideEncryptionByDefault"], rulePath, issues);
+  if (rule.BucketKeyEnabled !== undefined && typeof rule.BucketKeyEnabled !== "boolean") issue(issues, `${rulePath}.BucketKeyEnabled`, "BucketKeyEnabled must be a boolean");
   const defaultsPath = `${rulePath}.ServerSideEncryptionByDefault`;
   const defaults = rule.ServerSideEncryptionByDefault;
+  // Without a default rule, S3 applies its default SSE-S3 encryption.
+  if (defaults === undefined) return;
   if (!isRecord(defaults)) {
     issue(issues, defaultsPath, "ServerSideEncryptionByDefault must be an object");
     return;
@@ -251,6 +273,41 @@ function validateCors(value: unknown, issues: ProviderValidationIssue[]): void {
 
 const S3_NOTIFICATION_EVENT = /^(?:s3:)?(?:(?:ObjectCreated|ObjectRemoved):(?:\*|Put|Post|Copy|CompleteMultipartUpload|Delete|DeleteMarkerCreated)|ObjectRestore:(?:\*|Post|Completed|Delete)|ObjectTagging:(?:\*|Put|Delete)|ObjectAcl:Put|ObjectAnnotation:(?:\*|Put|Delete)|LifecycleExpiration:(?:\*|Delete|DeleteMarkerCreated|DeleteMarkerDeleted)|LifecycleTransition)$/;
 
+/** A key filter: at most one prefix and one suffix rule, as S3 accepts. */
+function validateNotificationFilter(value: unknown, path: string, issues: ProviderValidationIssue[]): void {
+  if (!isRecord(value)) { issue(issues, path, "Filter must be an object"); return; }
+  exactKeys(value, ["S3Key"], path, issues);
+  if (!isRecord(value.S3Key)) { issue(issues, `${path}.S3Key`, "S3Key must be an object"); return; }
+  exactKeys(value.S3Key, ["Rules"], `${path}.S3Key`, issues);
+  const rules = value.S3Key.Rules;
+  if (!Array.isArray(rules) || rules.length > 2) { issue(issues, `${path}.S3Key.Rules`, "Rules must contain at most one prefix and one suffix rule"); return; }
+  const names = new Set<string>();
+  for (const [index, rule] of rules.entries()) {
+    const rulePath = `${path}.S3Key.Rules.${index}`;
+    if (!isRecord(rule)) { issue(issues, rulePath, "Each filter rule must be an object"); continue; }
+    exactKeys(rule, ["Name", "Value"], rulePath, issues);
+    const name = typeof rule.Name === "string" ? rule.Name.toLowerCase() : "";
+    if (name !== "prefix" && name !== "suffix") issue(issues, `${rulePath}.Name`, "Name must be prefix or suffix");
+    else if (names.has(name)) issue(issues, `${rulePath}.Name`, "Rules must contain at most one prefix and one suffix rule");
+    else names.add(name);
+    if (typeof rule.Value !== "string" || Buffer.byteLength(rule.Value) > 1_024) issue(issues, `${rulePath}.Value`, "Value must be a string of at most 1024 bytes");
+  }
+}
+
+function canonicalFilter(value: unknown): S3NotificationFilterModel | undefined {
+  if (!isRecord(value) || !isRecord(value.S3Key) || !Array.isArray(value.S3Key.Rules) || !value.S3Key.Rules.length) return undefined;
+  const rules = value.S3Key.Rules.map(rule => ({ Name: String((rule as Record<string, unknown>).Name).toLowerCase() as "prefix" | "suffix", Value: String((rule as Record<string, unknown>).Value) }));
+  return { S3Key: { Rules: rules.sort((left, right) => left.Name.localeCompare(right.Name)) } };
+}
+
+function filterFromState(item: { prefix?: string; suffix?: string }): S3NotificationFilterModel | undefined {
+  const rules = [
+    ...(item.prefix !== undefined ? [{ Name: "prefix" as const, Value: item.prefix }] : []),
+    ...(item.suffix !== undefined ? [{ Name: "suffix" as const, Value: item.suffix }] : []),
+  ];
+  return rules.length ? { S3Key: { Rules: rules } } : undefined;
+}
+
 function validateNotification(value: unknown, issues: ProviderValidationIssue[]): void {
   const path = "Properties.NotificationConfiguration";
   if (!isRecord(value)) return;
@@ -265,7 +322,8 @@ function validateNotification(value: unknown, issues: ProviderValidationIssue[])
       issue(issues, itemPath, "Each Lambda configuration must be an object");
       continue;
     }
-    exactKeys(item, ["Event", "Function"], itemPath, issues);
+    exactKeys(item, ["Event", "Filter", "Function"], itemPath, issues);
+    if (item.Filter !== undefined) validateNotificationFilter(item.Filter, `${itemPath}.Filter`, issues);
     if (typeof item.Event !== "string" || !S3_NOTIFICATION_EVENT.test(item.Event)) {
       issue(issues, `${itemPath}.Event`, "Event must be a supported S3 notification event name");
     }
@@ -359,9 +417,11 @@ function canonicalNotification(value: unknown): S3NotificationConfigurationModel
   return {
     LambdaConfigurations: value.LambdaConfigurations.map(item => {
       const event = String((item as Record<string, unknown>).Event);
+      const filter = canonicalFilter((item as Record<string, unknown>).Filter);
       return {
         Event: event.startsWith("s3:") ? event : `s3:${event}`,
         Function: String((item as Record<string, unknown>).Function),
+        ...(filter ? { Filter: filter } : {}),
       };
     }),
   };
@@ -389,7 +449,7 @@ function canonicalBucket(properties: Record<string, unknown>, context: ProviderC
   const lifecycle = canonicalLifecycle(properties.LifecycleConfiguration);
   return {
     BucketName: String(properties.BucketName ?? generatedS3BucketName(context)),
-    BucketEncryption: AES256_ENCRYPTION,
+    BucketEncryption: encryptionModel(bucketKeyEnabled(properties.BucketEncryption)),
     ...(versioning ? { VersioningConfiguration: versioning } : {}),
     ...(ownership ? { OwnershipControls: ownership } : {}),
     ...(pab ? { PublicAccessBlockConfiguration: pab } : {}),
@@ -418,6 +478,7 @@ function notificationState(model: S3BucketModel): NonNullable<S3BucketState["not
       id: `cloudformation-${index + 1}`,
       arn: item.Function,
       events: [item.Event.startsWith("s3:") ? item.Event : `s3:${item.Event}`],
+      ...Object.fromEntries((item.Filter?.S3Key.Rules ?? []).map(rule => [rule.Name, rule.Value])),
     })),
     queue: [],
     eventBridge: false,
@@ -431,6 +492,7 @@ function inputFor(model: S3BucketModel, context: ProviderContext): S3BucketConfi
       ? "enabled"
       : model.VersioningConfiguration?.Status === "Suspended" ? "suspended" : "unversioned",
     encryption: "AES256",
+    bucketKeyEnabled: model.BucketEncryption.ServerSideEncryptionConfiguration[0].BucketKeyEnabled === true,
     ...(model.OwnershipControls ? { objectOwnership: "BucketOwnerEnforced" as const } : {}),
     tags: {
       ...Object.fromEntries(model.Tags.map(tag => [tag.Key, tag.Value])),
@@ -477,10 +539,10 @@ function modelFromState(state: S3BucketState): S3BucketModel {
   }
   const tags = tagsFromState(state);
   delete tags[S3_CLOUDFORMATION_OWNER_TAG];
-  const lambdaConfigurations = (state.notificationConfiguration?.lambda ?? []).flatMap(item => item.events.map(event => ({
-    Event: event,
-    Function: item.arn,
-  })));
+  const lambdaConfigurations = (state.notificationConfiguration?.lambda ?? []).flatMap(item => item.events.map(event => {
+    const filter = filterFromState(item);
+    return { Event: event, Function: item.arn, ...(filter ? { Filter: filter } : {}) };
+  }));
   let lifecycle: S3LifecycleConfigurationModel | undefined;
   if (state.lifecycleConfiguration) {
     const rules = state.lifecycleConfiguration.rules;
@@ -504,7 +566,7 @@ function modelFromState(state: S3BucketState): S3BucketModel {
   }
   return {
     BucketName: state.name,
-    BucketEncryption: AES256_ENCRYPTION,
+    BucketEncryption: encryptionModel(state.encryptionConfiguration?.bucketKeyEnabled === true),
     ...(state.versioning === "enabled" ? { VersioningConfiguration: { Status: "Enabled" as const } }
       : state.versioning === "suspended" ? { VersioningConfiguration: { Status: "Suspended" as const } } : {}),
     ...(state.cloudFormationConfiguration?.ownershipControls ? { OwnershipControls: { Rules: [{ ObjectOwnership: "BucketOwnerEnforced" as const }] } } : {}),

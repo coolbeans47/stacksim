@@ -1,4 +1,4 @@
-import { isObject, type JsonObject } from "./common.js";
+import { isObject, shorthand, type JsonObject } from "./common.js";
 
 export const X_INTEGRATION = "x-amazon-apigateway-integration";
 export const X_ANY_METHOD = "x-amazon-apigateway-any-method";
@@ -64,6 +64,7 @@ export function permissionPath(path: string, greedyParameters: boolean): string 
   return trimmed.replace(greedyParameters ? /\{([a-zA-Z0-9._-]+|[a-zA-Z0-9._-]+\+|proxy\+)\}/g : /\{([a-zA-Z0-9._-]+|proxy\+)\}/g, "*");
 }
 
-export function lambdaIntegrationUri(partition: string, functionLogicalId: string): JsonObject {
-  return { "Fn::Sub": `arn:${partition}:apigateway:\${AWS::Region}:lambda:path/2015-03-31/functions/\${${functionLogicalId}.Arn}/invocations` };
+/** _build_apigw_integration_uri: the function's (or its alias's) ARN in shorthand inside Fn::Sub. */
+export function lambdaIntegrationUri(partition: string, functionArn: JsonObject): JsonObject {
+  return { "Fn::Sub": `arn:${partition}:apigateway:\${AWS::Region}:lambda:path/2015-03-31/functions/${shorthand(functionArn)}/invocations` };
 }

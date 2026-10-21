@@ -1,0 +1,57 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Notes API - a small AWS SAM application that runs on StackSim
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Timeout: 10
+    MemorySize: 256
+
+Resources:
+  # SAM expands this into an AWS::DynamoDB::Table with an `id` string key.
+  NotesTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: id
+        Type: String
+
+  # SAM generates the function's role, an HTTP API with two routes, the
+  # invoke permissions, and (for AutoPublishAlias) a version and a `live` alias.
+  NotesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.handler
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref NotesTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref NotesTable
+      Events:
+        ListNotes:
+          Type: HttpApi
+          Properties:
+            Path: /notes
+            Method: GET
+        CreateNote:
+          Type: HttpApi
+          Properties:
+            Path: /notes
+            Method: POST
+
+Outputs:
+  NotesUrl:
+    Description: The AWS-shaped URL of the notes route
+    Value: !Sub https://${ServerlessHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/notes
+  LocalNotesUrl:
+    Description: The same route on StackSim's local invoke port
+    Value: !Sub http://${ServerlessHttpApi}.execute-api.localhost:4567/notes
+  NotesTableName:
+    Value: !Ref NotesTable
+  LiveAlias:
+    Description: The alias that the API routes invoke
+    Value: !Ref NotesFunction.Alias

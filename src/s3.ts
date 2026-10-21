@@ -65,6 +65,8 @@ export interface S3BucketConfigurationInput {
   name: string;
   versioning: "unversioned" | "enabled" | "suspended";
   encryption: "AES256" | "aws:kms" | "aws:kms:dsse";
+  /** S3 Bucket Keys for the default encryption rule; they reduce KMS calls and are otherwise inert. */
+  bucketKeyEnabled?: boolean;
   objectOwnership?: "BucketOwnerEnforced";
   tags?: Record<string, string>;
   publicAccessBlock?: Partial<S3BucketPublicAccessBlock>;
@@ -296,6 +298,7 @@ function parseXmlBoolean(xml: string, name: string): boolean {
 interface CanonicalBucketConfiguration {
   versioning: "unversioned" | "enabled" | "suspended";
   encryption: "AES256";
+  encryptionConfiguration: { algorithm: "AES256"; bucketKeyEnabled: boolean };
   objectOwnership: "BucketOwnerEnforced";
   cloudFormationConfiguration: {
     ownershipControls: boolean;
@@ -314,6 +317,7 @@ function canonicalBucketConfiguration(input: S3BucketConfigurationUpdate): Canon
   return {
     versioning: input.versioning,
     encryption: "AES256",
+    encryptionConfiguration: { algorithm: "AES256", bucketKeyEnabled: input.bucketKeyEnabled === true },
     objectOwnership: "BucketOwnerEnforced",
     cloudFormationConfiguration: {
       ownershipControls: input.objectOwnership !== undefined,
@@ -331,6 +335,9 @@ function sameBucketConfiguration(bucket: S3BucketState, desired: CanonicalBucket
   const canonical = desired;
   return current.versioning === canonical.versioning
     && current.encryption === canonical.encryption
+    && current.encryptionConfiguration?.algorithm === canonical.encryptionConfiguration.algorithm
+    && Boolean(current.encryptionConfiguration?.bucketKeyEnabled) === canonical.encryptionConfiguration.bucketKeyEnabled
+    && current.encryptionConfiguration?.kmsKeyId === undefined
     && current.objectOwnership === canonical.objectOwnership
     && JSON.stringify(current.cloudFormationConfiguration ?? { ownershipControls: false, publicAccessBlock: false }) === JSON.stringify(canonical.cloudFormationConfiguration)
     && JSON.stringify(current.tags) === JSON.stringify(canonical.tags)
@@ -704,6 +711,7 @@ export class S3Service {
     if (!sameBucketConfiguration(located.bucket, desired)) {
       located.bucket.versioning = desired.versioning;
       located.bucket.encryption = desired.encryption;
+      located.bucket.encryptionConfiguration = desired.encryptionConfiguration;
       located.bucket.objectOwnership = desired.objectOwnership;
       located.bucket.cloudFormationConfiguration = desired.cloudFormationConfiguration;
       located.bucket.tags = desired.tags;

@@ -262,15 +262,17 @@ class YamlReader {
   /**
    * Parse a block-context node whose first character is at the cursor. Every
    * block parser leaves the cursor at the start of the line after the node.
+   * A mapping value (`mappingValue`) may continue as a block sequence at the
+   * mapping's own indentation, also after a tag.
    */
-  private parseNodeHere(parentIndent: number, compact: boolean): Parsed {
+  private parseNodeHere(parentIndent: number, compact: boolean, mappingValue = false): Parsed {
     this.rejectNodeProperty();
     if (this.text[this.pos] === "!") {
       const tag = this.readTag();
       if (!isSpaceOrEnd(this.text[this.pos])) this.fail(`tag ${tag.name} must be followed by a space`);
       this.skipInline();
       if (this.text[this.pos] === "!") this.fail("a node can have only one tag");
-      const node = this.atCommentOrEnd() ? this.parseFollowingLines(parentIndent, false) : this.parseNodeHere(parentIndent, false);
+      const node = this.atCommentOrEnd() ? this.parseFollowingLines(parentIndent, mappingValue) : this.parseNodeHere(parentIndent, false);
       return this.tagged(node, tag);
     }
     const column = this.column();
@@ -331,7 +333,7 @@ class YamlReader {
       seen.add(key.text);
       this.pos = key.next;
       this.skipInline();
-      const node = this.atCommentOrEnd() ? this.parseFollowingLines(column, true) : this.parseNodeHere(column, false);
+      const node = this.atCommentOrEnd() ? this.parseFollowingLines(column, true) : this.parseNodeHere(column, false, true);
       setKey(result, key.text, this.value(node));
       const next = this.peekContentLine(this.pos);
       if (!next || next.marker || next.indent < column) break;

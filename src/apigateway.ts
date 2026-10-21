@@ -68,6 +68,9 @@ class GatewayFailure extends AwsError {
   constructor(readonly responseType: string, code: string, message: string, status: number, readonly detail?: string) { super(code, message, status); }
 }
 /** AWS hides integration and mapping failures behind a generic body; the detail is written only to execution logs. */
+/** API Gateway's caller-credentials marker: call the Lambda integration with the IAM caller's own credentials. */
+const CALLER_CREDENTIALS = /^arn:aws(?:-[a-z]+)*:iam::\*:user\/\*$/;
+const isCallerCredentials = (credentials: string | undefined): boolean => credentials !== undefined && CALLER_CREDENTIALS.test(credentials);
 function internalError(responseType: string, status: number, detail: string, code = "InternalServerErrorException"): GatewayFailure { return new GatewayFailure(responseType, code, "Internal server error", status, detail); }
 /** `x-amzn-ErrorType` values API Gateway sends with gateway responses. */
 const GATEWAY_ERROR_TYPES: Record<string, string> = { ACCESS_DENIED: "AccessDeniedException", API_CONFIGURATION_ERROR: "InternalServerErrorException", AUTHORIZER_CONFIGURATION_ERROR: "AuthorizerConfigurationException", AUTHORIZER_FAILURE: "AuthorizerFailureException", BAD_REQUEST_PARAMETERS: "BadRequestException", BAD_REQUEST_BODY: "BadRequestException", DEFAULT_5XX: "InternalServerErrorException", INTEGRATION_FAILURE: "InternalServerErrorException", INTEGRATION_TIMEOUT: "InternalServerErrorException", INVALID_API_KEY: "ForbiddenException", MISSING_AUTHENTICATION_TOKEN: "MissingAuthenticationTokenException", QUOTA_EXCEEDED: "LimitExceededException", REQUEST_TOO_LARGE: "RequestTooLongException", RESOURCE_NOT_FOUND: "ResourceNotFoundException", THROTTLED: "TooManyRequestsException", UNAUTHORIZED: "UnauthorizedException", UNSUPPORTED_MEDIA_TYPE: "UnsupportedMediaTypeException", WAF_FILTERED: "WAFFilteredException" };
@@ -218,14 +221,14 @@ export class ApiGatewayService {
     const api = this.api(restApiId); const resource = api.resources[resourceId];
     if (!resource) throw new AwsError("BadRequestException", `API Gateway resource ${resourceId} does not exist in REST API ${restApiId}`);
     const type = String(integration.Type ?? ""); const uri = String(integration.Uri ?? ""); const credentials = integration.Credentials === undefined ? undefined : String(integration.Credentials);
-    if (credentials) this.validateIntegrationRole(credentials);
+    if (credentials && !isCallerCredentials(credentials)) this.validateIntegrationRole(credentials);
     const lambdaTarget = /^arn:aws:apigateway:([a-z0-9-]+):lambda:path\/2015-03-31\/functions\/(arn:aws:lambda:([a-z0-9-]+):(\d{12}):function:([A-Za-z0-9-_]+)(?::([A-Za-z0-9-_]+))?)\/invocations$/.exec(uri);
     if (lambdaTarget) {
       if (lambdaTarget[1] !== this.region || lambdaTarget[3] !== this.region || lambdaTarget[4] !== this.store.accountId) throw new AwsError("BadRequestException", "Lambda integrations must target the simulator account and API Region");
       const functionArn = lambdaTarget[2]; const functionName = lambdaTarget[5]; const qualifier = lambdaTarget[6]; const fn = this.store.regionState(this.region).functions[functionName];
       if (!fn) throw new AwsError("BadRequestException", `Lambda integration target ${functionName} does not exist`);
       if (qualifier && !fn.versions?.[qualifier] && !fn.aliases?.[qualifier]) throw new AwsError("BadRequestException", `Lambda integration qualifier ${qualifier} does not exist`);
-      if (credentials) {
+      if (credentials && !isCallerCredentials(credentials)) {
         if (evaluateRoleAuthorization(this.store.ensureAccount().iam, credentials, "lambda:InvokeFunction", functionArn).decision !== "allowed") throw new AwsError("BadRequestException", "The API Gateway integration role cannot invoke the target Lambda function");
       }
       return;
@@ -1358,11 +1361,25 @@ export class ApiGatewayService {
     if (integration.type === "HTTP" || integration.type === "HTTP_PROXY") return this.callHttpIntegration(integration, input, mapped, uri, started);
     throw new AwsError("BadGatewayException", "Unsupported integration", 502);
   }
+  /**
+   * Caller credentials: API Gateway invokes the function as the IAM caller of
+   * an AWS_IAM-authorized method, so the caller's identity policies must allow
+   * lambda:InvokeFunction; the function's resource policy is not consulted.
+   */
+  private authorizeCallerInvoke(input: InvocationInput, functionArn: string): void {
+    if (this.authMode !== "enforce") return;
+    const caller = input.principalContext;
+    if (!caller) throw internalError("API_CONFIGURATION_ERROR", 500, "Execution failed due to configuration error: caller credentials require a SigV4-signed request to an AWS_IAM method", "AccessDeniedException");
+    const decision = evaluateAuthorization(this.store.ensureAccount(caller.accountId).iam, caller, "lambda:InvokeFunction", functionArn, { "aws:PrincipalArn": caller.principalArn, "aws:PrincipalAccount": caller.accountId, "aws:RequestedRegion": this.region, "aws:CurrentTime": new Date(this.clock.now()).toISOString() });
+    if (decision.decision !== "allowed") throw internalError("API_CONFIGURATION_ERROR", 500, `Execution failed due to configuration error: Invalid permissions on Lambda function: ${caller.principalArn} is not authorized to perform lambda:InvokeFunction on ${functionArn}`, "AccessDeniedException");
+  }
   private lambdaErrorMessage(payload: Buffer): string { try { const parsed = JSON.parse(payload.toString("utf8")); if (parsed && typeof parsed === "object" && parsed.errorMessage !== undefined && parsed.errorMessage !== null) return String(parsed.errorMessage); } catch {} return payload.toString("utf8"); }
   /** DPG-08/09/30: Lambda integrations. Proxy failures are 502 and permission or invocation failures are 500, always with the generic body; details are execution-log only. */
   private async callLambdaIntegration(api: RestApiState, resource: ApiResource, integration: ApiIntegrationState, input: InvocationInput, mapped: { body: Buffer }, context: Record<string, unknown>, configuration: InvocationConfiguration, uri: string, started: number): Promise<BackendResult> {
     const arn = uri.match(/functions\/(arn:[^/]+)\/invocations/)?.[1]; if (!arn) throw internalError("API_CONFIGURATION_ERROR", 500, "Execution failed due to configuration error: Invalid Lambda function URI");
-    if (integration.credentials && evaluateRoleAuthorization(this.store.ensureAccount().iam, integration.credentials, "lambda:InvokeFunction", arn).decision !== "allowed") throw internalError("API_CONFIGURATION_ERROR", 500, `Execution failed due to configuration error: Invalid permissions on Lambda function: role ${integration.credentials} is not authorized to perform lambda:InvokeFunction on ${arn}`, "AccessDeniedException");
+    const callerCredentials = isCallerCredentials(integration.credentials);
+    if (callerCredentials) this.authorizeCallerInvoke(input, arn);
+    else if (integration.credentials && evaluateRoleAuthorization(this.store.ensureAccount().iam, integration.credentials, "lambda:InvokeFunction", arn).decision !== "allowed") throw internalError("API_CONFIGURATION_ERROR", 500, `Execution failed due to configuration error: Invalid permissions on Lambda function: role ${integration.credentials} is not authorized to perform lambda:InvokeFunction on ${arn}`, "AccessDeniedException");
     const sourceArn = `arn:aws:execute-api:${this.region}:${this.store.accountId}:${api.id}/${input.stageName}/${input.method}/${input.path.replace(/^\//, "")}`; const requestBinary = matchesMediaType(input.headers["content-type"], configuration.binaryMediaTypes);
     let event: unknown;
     if (integration.type === "AWS_PROXY") { const eventHeaders = proxyHeaders(headerPairs(input)); event = { resource: resource.path, path: input.path, httpMethod: input.method, headers: eventHeaders.headers, multiValueHeaders: eventHeaders.multiValueHeaders, queryStringParameters: Object.keys(input.query).length ? input.query : null, multiValueQueryStringParameters: Object.keys(input.multiQuery).length ? input.multiQuery : null, pathParameters: Object.keys(input.pathParameters).length ? input.pathParameters : null, stageVariables: Object.keys(input.stageVariables).length ? input.stageVariables : null, requestContext: context, body: input.body.length ? input.body.toString(requestBinary ? "base64" : "utf8") : null, isBase64Encoded: requestBinary }; }
@@ -1671,7 +1688,9 @@ export class ApiGatewayService {
     for (const parameter of integration.cacheKeyParameters ?? []) { if (!/^(?:method|integration)\.request\.(?:header|querystring|path)\.[A-Za-z0-9._-]+$/.test(parameter)) throw new AwsError("BadRequestException", `Invalid cache key parameter: ${parameter}`); if (method) { const source = parameter.startsWith("integration.request.") ? integration.requestParameters?.[parameter] : parameter; if (!source || !Object.prototype.hasOwnProperty.call(method.requestParameters ?? {}, source)) throw new AwsError("BadRequestException", `Cache key parameter must reference a declared method request parameter: ${parameter}`); } }
     for (const [target, source] of Object.entries(integration.requestParameters ?? {})) { if (!/^integration\.request\.(header|querystring|path)\.[A-Za-z0-9._-]+$/.test(target) || typeof source !== "string") throw new AwsError("BadRequestException", `Invalid integration request parameter mapping: ${target}`); }
     for (const template of Object.values(integration.requestTemplates ?? {})) validateVtl(template);
-    if (integration.credentials) this.validateIntegrationRole(integration.credentials);
+    if (isCallerCredentials(integration.credentials)) {
+      if (!/:lambda:path\//.test(String(integration.uri ?? ""))) throw new AwsError("BadRequestException", "StackSim passes caller credentials through to Lambda integrations only");
+    } else if (integration.credentials) this.validateIntegrationRole(integration.credentials);
   }
   private validateIntegrationResponse(method: ApiMethodState, response: ApiIntegrationResponseState): void {
     if (!/^\d{3}$/.test(response.statusCode) || !method.responses?.[response.statusCode]) throw new AwsError("BadRequestException", "A matching method response must exist");
