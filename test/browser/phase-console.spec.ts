@@ -1080,7 +1080,7 @@ test.describe("target phase console workflows", () => {
       await expect(page.getByRole("heading", { name: "No methods" })).toBeVisible();
       await page.getByRole("button", { name: "Create method" }).click();
       let dialog = page.getByRole("dialog");
-      await fillArnCombobox(dialog.getByLabel("Lambda function"), "arn:aws:lambda:eu-west-1:000000000000:function:phase-api-target");
+      await fillArnCombobox(dialog.getByLabel("Lambda function", { exact: true }), "arn:aws:lambda:eu-west-1:000000000000:function:phase-api-target");
       await dialog.getByRole("button", { name: "Create method" }).click();
       await expect(page.getByRole("button", { name: "GET · AWS_PROXY" })).toBeVisible();
 
@@ -1122,7 +1122,7 @@ test.describe("target phase console workflows", () => {
       await page.getByRole("button", { name: "Create authorizer" }).click();
       dialog = page.getByRole("dialog");
       await dialog.getByLabel("Name").fill("browser-token");
-      await fillArnCombobox(dialog.getByLabel("Lambda function"), "arn:aws:lambda:eu-west-1:000000000000:function:phase-api-authorizer");
+      await fillArnCombobox(dialog.getByLabel("Lambda function", { exact: true }), "arn:aws:lambda:eu-west-1:000000000000:function:phase-api-authorizer");
       await dialog.getByLabel("Cache TTL (seconds)").fill("0");
       await dialog.getByRole("button", { name: "Create authorizer" }).click();
       await expect(page.getByRole("button", { name: "View and test" })).toBeVisible();
@@ -1314,7 +1314,7 @@ test.describe("target phase console workflows", () => {
       await expect(page.getByRole("heading", { name: "No integrations" })).toBeVisible();
       await page.getByRole("button", { name: "Create integration" }).click();
       dialog = page.getByRole("dialog");
-      await dialog.getByLabel("Integration target").fill(target.FunctionArn!);
+      await fillArnCombobox(dialog.getByLabel("Lambda function", { exact: true }), target.FunctionArn!);
       await dialog.getByLabel("Description").fill("Orders Lambda");
       await dialog.getByLabel("Payload format version").selectOption("2.0");
       await dialog.getByLabel("Request parameter mappings (JSON)").fill('{"append:header.x-browser":"\'console\'"}');

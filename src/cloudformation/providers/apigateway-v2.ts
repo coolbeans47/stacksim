@@ -1,5 +1,6 @@
 import { providerValidationPathSegments } from "./contract.js";
-import type { ApiGatewayV2Service } from "../../apigateway-v2.js";
+import { HTTP_API_INTEGRATION_SUBTYPES, HTTP_API_UNSUPPORTED_INTEGRATION_SUBTYPES, HTTP_API_VPC_LINK_UNSUPPORTED, type ApiGatewayV2Service } from "../../apigateway-v2.js";
+import type { ApiGatewayBodyS3Location } from "./apigateway-rest.js";
 import { AwsError } from "../../errors.js";
 import {
   ProviderReferenceError,
@@ -33,9 +34,14 @@ type JsonObject = Record<string, any>;
 type Protocol = "HTTP" | "WEBSOCKET";
 
 export interface ApiGatewayV2ApiModel {
-  readonly Name: string;
+  /** Optional only when Body or BodyS3Location supplies info.title. */
+  readonly Name?: string;
   readonly ProtocolType: Protocol;
   readonly ApiKeySelectionExpression?: string;
+  readonly Body?: unknown;
+  readonly BodyS3Location?: Readonly<ApiGatewayBodyS3Location & { Etag?: string }>;
+  readonly BasePath?: "ignore" | "prepend" | "split";
+  readonly FailOnWarnings?: boolean;
   readonly CorsConfiguration?: Readonly<JsonObject>;
   readonly CredentialsArn?: string;
   readonly Description?: string;
@@ -55,7 +61,7 @@ export interface ApiGatewayV2IntegrationModel {
   readonly CredentialsArn?: string;
   readonly Description?: string;
   readonly IntegrationMethod?: string;
-  readonly IntegrationSubtype?: "SQS-SendMessage";
+  readonly IntegrationSubtype?: string;
   readonly IntegrationType: "AWS" | "AWS_PROXY" | "HTTP" | "HTTP_PROXY" | "MOCK";
   readonly IntegrationUri?: string;
   readonly PassthroughBehavior?: "WHEN_NO_MATCH" | "WHEN_NO_TEMPLATES" | "NEVER";
@@ -179,8 +185,11 @@ const arrayProperty = (updateBehavior: "MUTABLE" | "REPLACEMENT" | "CONDITIONAL_
 export const API_GATEWAY_V2_API_SCHEMA: ProviderSchema = Object.freeze({
   typeName: API_GATEWAY_V2_API_TYPE, unknownProperties: "REJECT",
   properties: Object.freeze({
-    Name: stringProperty("MUTABLE", true), ProtocolType: stringProperty("REPLACEMENT", true),
+    Name: stringProperty("MUTABLE"), ProtocolType: stringProperty("REPLACEMENT"),
     ApiKeySelectionExpression: stringProperty("MUTABLE"), CorsConfiguration: objectProperty("MUTABLE"),
+    Body: Object.freeze({ valueType: "any" as const, updateBehavior: "MUTABLE" as const, description: "OpenAPI 3.0 definition imported with ImportApi/ReimportApi (HTTP APIs only)." }),
+    BodyS3Location: Object.freeze({ valueType: "object" as const, updateBehavior: "MUTABLE" as const, description: "Requires a resolver supplied to the provider factory." }),
+    BasePath: stringProperty("MUTABLE"), FailOnWarnings: booleanProperty("MUTABLE"),
     CredentialsArn: stringProperty("MUTABLE"), Description: stringProperty("MUTABLE"),
     DisableExecuteApiEndpoint: booleanProperty("MUTABLE"), IpAddressType: stringProperty("MUTABLE"),
     RouteKey: stringProperty("MUTABLE"), RouteSelectionExpression: stringProperty("MUTABLE"),
@@ -418,6 +427,8 @@ function providerResult<Model>(physicalId: string, model: ProviderReadModel<Mode
 
 const LAMBDA_ARN = /^arn:aws(?:-[a-z]+)?:lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9-_]+(?::[A-Za-z0-9-_]+)?$/;
 const LAMBDA_URI = /^arn:aws:apigateway:[a-z0-9-]+:lambda:path\/2015-03-31\/functions\/arn:aws(?:-[a-z]+)?:lambda:[^/]+\/invocations$/;
+const HTTP_TARGET = /^https?:\/\/[^\s]+$/i;
+const STAGE_VARIABLE_REFERENCE = /\$\{stageVariables\.[A-Za-z0-9_]+\}/g;
 function lambdaTargetLocation(value: string): { region: string; accountId: string; gatewayRegion?: string } | undefined {
   const direct = /^arn:aws(?:-[a-z]+)?:lambda:([a-z0-9-]+):(\d{12}):function:[A-Za-z0-9-_]+(?::[A-Za-z0-9-_]+)?$/.exec(value);
   if (direct) return { region: direct[1], accountId: direct[2] };
@@ -441,18 +452,31 @@ function validateSameAccountRoleArn(value: unknown, path: string, context: Provi
 function apiIssues(properties: unknown, context?: ProviderContext): ProviderValidationIssue[] {
   const issues = validateDeclaredProperties(properties, API_GATEWAY_V2_API_SCHEMA);
   if (!isObject(properties)) return issues;
+  const definition = properties.Body !== undefined || properties.BodyS3Location !== undefined;
+  if (!definition && properties.Name === undefined) issues.push(issue("Properties.Name", "Name is required unless Body or BodyS3Location supplies an OpenAPI definition", "MissingRequiredProperty"));
+  if (!definition && properties.ProtocolType === undefined) issues.push(issue("Properties.ProtocolType", "ProtocolType is required unless Body or BodyS3Location supplies an OpenAPI definition", "MissingRequiredProperty"));
+  if (properties.Body !== undefined && properties.BodyS3Location !== undefined) issues.push(issue("Properties.BodyS3Location", "Body and BodyS3Location are mutually exclusive"));
+  if (properties.Body !== undefined && !isObject(properties.Body) && typeof properties.Body !== "string") issues.push(issue("Properties.Body", "Body must be an OpenAPI object or a JSON/YAML string", "InvalidType"));
+  if (isObject(properties.BodyS3Location)) {
+    rejectUnknown(properties.BodyS3Location, "Properties.BodyS3Location", ["Bucket", "Key", "Version", "Etag"], issues);
+    for (const key of ["Bucket", "Key"]) if (typeof properties.BodyS3Location[key] !== "string" || !properties.BodyS3Location[key]) issues.push(issue(`Properties.BodyS3Location.${key}`, `BodyS3Location.${key} is required and must be a string`));
+    for (const key of ["Version", "Etag"]) if (properties.BodyS3Location[key] !== undefined && typeof properties.BodyS3Location[key] !== "string") issues.push(issue(`Properties.BodyS3Location.${key}`, `BodyS3Location.${key} must be a string`, "InvalidType"));
+  }
+  if (properties.BasePath !== undefined && !["ignore", "prepend", "split"].includes(properties.BasePath)) issues.push(issue("Properties.BasePath", "BasePath must be ignore, prepend, or split"));
+  if (!definition) for (const name of ["BasePath", "FailOnWarnings"]) if (properties[name] !== undefined) issues.push(issue(`Properties.${name}`, `${name} is valid only with Body or BodyS3Location`, "UnsupportedProperty"));
+  if (definition && properties.Target !== undefined) issues.push(issue("Properties.Target", "Quick create Target cannot be combined with an OpenAPI Body or BodyS3Location", "UnsupportedProperty"));
   if (typeof properties.Name === "string" && (!properties.Name.trim() || properties.Name.length > 128)) issues.push(issue("Properties.Name", "Name must contain 1 to 128 characters"));
   if (properties.ProtocolType !== undefined && !["HTTP", "WEBSOCKET"].includes(properties.ProtocolType)) issues.push(issue("Properties.ProtocolType", "ProtocolType must be HTTP or WEBSOCKET"));
   if (properties.IpAddressType !== undefined && !["ipv4", "dualstack"].includes(properties.IpAddressType)) issues.push(issue("Properties.IpAddressType", "IpAddressType must be ipv4 or dualstack"));
   validateTags(properties.Tags, "Properties.Tags", issues);
-  const protocol = properties.ProtocolType;
+  const protocol = properties.ProtocolType ?? (definition ? "HTTP" : undefined);
   if (protocol === "HTTP") {
     if (properties.ApiKeySelectionExpression !== undefined) issues.push(issue("Properties.ApiKeySelectionExpression", "ApiKeySelectionExpression is supported only for WebSocket APIs", "UnsupportedProperty"));
     if (properties.RouteSelectionExpression !== undefined && properties.RouteSelectionExpression !== "${request.method} ${request.path}") issues.push(issue("Properties.RouteSelectionExpression", "HTTP APIs use ${request.method} ${request.path}"));
     if (properties.RouteKey !== undefined && properties.Target === undefined) issues.push(issue("Properties.RouteKey", "RouteKey is valid only when Target enables quick create"));
     if (properties.CredentialsArn !== undefined && properties.Target === undefined) issues.push(issue("Properties.CredentialsArn", "CredentialsArn is valid only when Target enables quick create"));
     validateSameAccountRoleArn(properties.CredentialsArn, "Properties.CredentialsArn", context, issues);
-    if (properties.Target !== undefined && typeof properties.Target === "string" && !(LAMBDA_ARN.test(properties.Target) || LAMBDA_URI.test(properties.Target))) issues.push(issue("Properties.Target", "The bounded quick-create Target must identify a Lambda function; use AWS::ApiGatewayV2::Integration for HTTP endpoints", "UnsupportedProperty"));
+    if (properties.Target !== undefined && typeof properties.Target === "string" && !(LAMBDA_ARN.test(properties.Target) || LAMBDA_URI.test(properties.Target) || HTTP_TARGET.test(properties.Target))) issues.push(issue("Properties.Target", "The quick-create Target must identify a Lambda function or an HTTP/HTTPS URL", "UnsupportedProperty"));
     else if (context) validateLocalLambdaTarget(properties.Target, "Properties.Target", context, issues);
     if (isObject(properties.CorsConfiguration)) {
       const path = "Properties.CorsConfiguration";
@@ -468,7 +492,7 @@ function apiIssues(properties: unknown, context?: ProviderContext): ProviderVali
     }
   }
   if (protocol === "WEBSOCKET") {
-    for (const name of ["CorsConfiguration", "CredentialsArn", "RouteKey", "Target"]) if (properties[name] !== undefined) issues.push(issue(`Properties.${name}`, `${name} is supported only for HTTP APIs`, "UnsupportedProperty"));
+    for (const name of ["CorsConfiguration", "CredentialsArn", "RouteKey", "Target", "Body", "BodyS3Location", "BasePath", "FailOnWarnings"]) if (properties[name] !== undefined) issues.push(issue(`Properties.${name}`, `${name} is supported only for HTTP APIs`, "UnsupportedProperty"));
     if (properties.RouteSelectionExpression === undefined) issues.push(issue("Properties.RouteSelectionExpression", "WebSocket APIs require RouteSelectionExpression"));
     else if (typeof properties.RouteSelectionExpression === "string" && (!properties.RouteSelectionExpression.startsWith("$request.body") || properties.RouteSelectionExpression.length > 256)) issues.push(issue("Properties.RouteSelectionExpression", "WebSocket RouteSelectionExpression must select from $request.body and cannot exceed 256 characters"));
     if (properties.ApiKeySelectionExpression !== undefined && properties.ApiKeySelectionExpression !== "$request.header.x-api-key") issues.push(issue("Properties.ApiKeySelectionExpression", "Only $request.header.x-api-key is available as ApiKeySelectionExpression"));
@@ -478,9 +502,12 @@ function apiIssues(properties: unknown, context?: ProviderContext): ProviderVali
 
 function canonicalApi(properties: unknown, context?: ProviderContext): ApiGatewayV2ApiModel {
   const issues = apiIssues(properties, context); throwIssues(issues); const input = properties as JsonObject;
-  const protocol = input.ProtocolType as Protocol;
+  const protocol = (input.ProtocolType ?? "HTTP") as Protocol; const location = input.BodyS3Location as JsonObject | undefined;
   return Object.freeze({
-    Name: String(input.Name).trim(), ProtocolType: protocol,
+    ...(input.Name !== undefined ? { Name: String(input.Name).trim() } : {}), ProtocolType: protocol,
+    ...(input.Body !== undefined ? { Body: typeof input.Body === "string" ? input.Body : Object.freeze(canonicalJson(input.Body)) } : {}),
+    ...(location ? { BodyS3Location: Object.freeze({ Bucket: String(location.Bucket), Key: String(location.Key), ...(location.Version !== undefined ? { Version: String(location.Version) } : {}), ...(location.Etag !== undefined ? { Etag: String(location.Etag) } : {}) }) } : {}),
+    ...(input.BasePath !== undefined ? { BasePath: input.BasePath } : {}), ...(input.FailOnWarnings !== undefined ? { FailOnWarnings: Boolean(input.FailOnWarnings) } : {}),
     ...(protocol === "WEBSOCKET" ? { ApiKeySelectionExpression: "$request.header.x-api-key" } : {}),
     ...(isObject(input.CorsConfiguration) ? { CorsConfiguration: Object.freeze(canonicalJson(input.CorsConfiguration)) } : {}),
     ...(optionalString(input.CredentialsArn) ? { CredentialsArn: String(input.CredentialsArn) } : {}),
@@ -539,14 +566,46 @@ async function updateApiQuickResources(service: ApiGatewayV2Service, apiId: stri
   if (!desired.Target) return;
   const quick = await managedQuickResources(service, apiId);
   if (!quick.integration || !quick.route) throw new AwsError("RequiresReplacement", "Adding quick-create resources to an existing explicit API requires replacement", 409);
+  const http = HTTP_TARGET.test(desired.Target);
   await call(service, "PATCH", `/v2/apis/${segment(apiId)}/integrations/${segment(String(quick.integration.integrationId))}`, {
-    integrationType: "AWS_PROXY", integrationUri: desired.Target, integrationMethod: "POST",
-    payloadFormatVersion: "2.0", credentialsArn: desired.CredentialsArn ?? "", requestParameters: {}, responseParameters: {},
+    integrationType: http ? "HTTP_PROXY" : "AWS_PROXY", integrationUri: desired.Target, integrationMethod: http ? "ANY" : "POST",
+    payloadFormatVersion: http ? "1.0" : "2.0", credentialsArn: http ? "" : desired.CredentialsArn ?? "", requestParameters: {}, responseParameters: {},
   });
   if ((desired.RouteKey ?? "$default") !== quick.route.routeKey) await call(service, "PATCH", `/v2/apis/${segment(apiId)}/routes/${segment(String(quick.route.routeId))}`, { routeKey: desired.RouteKey ?? "$default" });
 }
 
-export function createApiGatewayV2ApiProvider(service: ApiGatewayV2Service): ProductionResourceProvider<ApiGatewayV2ApiModel> {
+export interface ApiGatewayV2ProviderOptions {
+  /** Resolve an S3-backed OpenAPI document (BodyS3Location) without introducing a second source of resource state. */
+  readonly resolveBodyS3Location?: (location: ApiGatewayBodyS3Location, context: ProviderContext) => Promise<unknown | Buffer | string>;
+}
+
+function hasDefinition(model: ApiGatewayV2ApiModel): boolean { return model.Body !== undefined || model.BodyS3Location !== undefined; }
+
+async function apiDefinitionBody(model: ApiGatewayV2ApiModel, context: ProviderContext, options: ApiGatewayV2ProviderOptions): Promise<string> {
+  if (model.Body !== undefined) return typeof model.Body === "string" ? model.Body : JSON.stringify(model.Body);
+  if (!options.resolveBodyS3Location) throw new AwsError("DependencyUnavailable", "BodyS3Location requires resolveBodyS3Location in createApiGatewayV2CloudFormationProviders", 400);
+  const value = await options.resolveBodyS3Location(model.BodyS3Location!, context);
+  if (Buffer.isBuffer(value)) return value.toString("utf8"); if (typeof value === "string") return value; if (isObject(value)) return JSON.stringify(value);
+  throw new AwsError("BadRequestException", "BodyS3Location resolver must return an OpenAPI object, string, or Buffer", 400);
+}
+
+function importQuery(model: ApiGatewayV2ApiModel): string {
+  const query = new URLSearchParams(); if (model.BasePath) query.set("basepath", model.BasePath); if (model.FailOnWarnings) query.set("failOnWarnings", "true"); const text = query.toString(); return text ? `?${text}` : "";
+}
+
+function definitionChanged(previous: ApiGatewayV2ApiModel, desired: ApiGatewayV2ApiModel): boolean {
+  return !same(previous.Body, desired.Body) || !same(previous.BodyS3Location, desired.BodyS3Location) || previous.BasePath !== desired.BasePath || previous.FailOnWarnings !== desired.FailOnWarnings;
+}
+
+/** Settings declared next to an OpenAPI Body override the imported definition; undeclared settings keep the imported values. */
+function declaredApiPatch(model: ApiGatewayV2ApiModel): JsonObject {
+  return Object.fromEntries(Object.entries({
+    name: model.Name, description: model.Description, version: model.Version, disableExecuteApiEndpoint: model.DisableExecuteApiEndpoint || undefined,
+    ipAddressType: model.IpAddressType === "ipv4" ? undefined : model.IpAddressType, corsConfiguration: model.CorsConfiguration ? lowerObject(model.CorsConfiguration) : undefined,
+  }).filter(([, value]) => value !== undefined));
+}
+
+export function createApiGatewayV2ApiProvider(service: ApiGatewayV2Service, options: ApiGatewayV2ProviderOptions = {}): ProductionResourceProvider<ApiGatewayV2ApiModel> {
   return {
     typeName: API_GATEWAY_V2_API_TYPE, providerVersion: 1, visibility: "production", schema: API_GATEWAY_V2_API_SCHEMA,
     validate(properties, context) { return apiIssues(properties, context); }, canonicalize(properties, context) { return canonicalApi(properties, context); },
@@ -555,6 +614,12 @@ export function createApiGatewayV2ApiProvider(service: ApiGatewayV2Service): Pro
     },
     async create(desired, context) {
       try {
+        if (hasDefinition(desired)) {
+          const raw = await call<JsonObject>(service, "PUT", `/v2/apis${importQuery(desired)}`, { body: await apiDefinitionBody(desired, context, options) }, context.idempotencyKey); const apiId = String(raw.apiId);
+          const patch = declaredApiPatch(desired); if (Object.keys(patch).length) await call(service, "PATCH", `/v2/apis/${segment(apiId)}`, patch);
+          if (Object.keys(desired.Tags).length) await call(service, "POST", `/v2/tags/${segment(resourceArn(context, `/apis/${apiId}`))}`, { tags: desired.Tags });
+          const model = await apiReadModel(service, apiId); return providerResult(model.physicalId, model);
+        }
         const raw = await call<JsonObject>(service, "POST", "/v2/apis", apiInput(desired), context.idempotencyKey);
         const model = await apiReadModel(service, String(raw.apiId)); return providerResult(model.physicalId, model);
       } catch (error) { return failure(error); }
@@ -567,6 +632,12 @@ export function createApiGatewayV2ApiProvider(service: ApiGatewayV2Service): Pro
       try {
         if (previous.ProtocolType !== desired.ProtocolType) throw new AwsError("RequiresReplacement", "ProtocolType changes require replacement", 409);
         if ((previous.Target === undefined) !== (desired.Target === undefined)) throw new AwsError("RequiresReplacement", "Changing between explicit and quick-create API shape requires replacement", 409);
+        if (hasDefinition(desired)) {
+          if (definitionChanged(previous, desired) || !hasDefinition(previous)) await call(service, "PUT", `/v2/apis/${segment(physicalId)}${importQuery(desired)}`, { body: await apiDefinitionBody(desired, context, options) });
+          const patch = declaredApiPatch(desired); if (Object.keys(patch).length) await call(service, "PATCH", `/v2/apis/${segment(physicalId)}`, patch);
+          await replaceTags(service, resourceArn(context, `/apis/${physicalId}`), previous.Tags, desired.Tags);
+          const model = await apiReadModel(service, physicalId); return providerResult(physicalId, model);
+        }
         await updateApiQuickResources(service, physicalId, desired);
         if (previous.CorsConfiguration && !desired.CorsConfiguration) await call(service, "DELETE", `/v2/apis/${segment(physicalId)}/cors`);
         await call(service, "PATCH", `/v2/apis/${segment(physicalId)}`, {
@@ -630,17 +701,18 @@ function integrationIssues(properties: unknown, context?: ProviderContext): Prov
   const issues = validateDeclaredProperties(properties, API_GATEWAY_V2_INTEGRATION_SCHEMA);
   if (!isObject(properties)) return issues;
   validateRequiredString(properties, "ApiId", issues); validateRequiredString(properties, "IntegrationType", issues);
-  if (properties.ConnectionType !== undefined && properties.ConnectionType !== "INTERNET") issues.push(issue("Properties.ConnectionType", "Only INTERNET integrations are available; VPC_LINK requires unavailable VPC networking", "UnsupportedProperty"));
+  if (properties.ConnectionType !== undefined && properties.ConnectionType !== "INTERNET") issues.push(issue("Properties.ConnectionType", properties.ConnectionType === "VPC_LINK" ? HTTP_API_VPC_LINK_UNSUPPORTED : "ConnectionType must be INTERNET or VPC_LINK", "UnsupportedProperty"));
   if (properties.ContentHandlingStrategy !== undefined && !["CONVERT_TO_BINARY", "CONVERT_TO_TEXT"].includes(properties.ContentHandlingStrategy)) issues.push(issue("Properties.ContentHandlingStrategy", "ContentHandlingStrategy must be CONVERT_TO_BINARY or CONVERT_TO_TEXT"));
   if (properties.PassthroughBehavior !== undefined && !["WHEN_NO_MATCH", "WHEN_NO_TEMPLATES", "NEVER"].includes(properties.PassthroughBehavior)) issues.push(issue("Properties.PassthroughBehavior", "PassthroughBehavior is invalid"));
-  if (properties.IntegrationSubtype !== undefined && properties.IntegrationSubtype !== "SQS-SendMessage") issues.push(issue("Properties.IntegrationSubtype", "Only the SQS-SendMessage AWS service integration subtype is available", "UnsupportedProperty"));
+  if (properties.IntegrationSubtype !== undefined && HTTP_API_UNSUPPORTED_INTEGRATION_SUBTYPES[properties.IntegrationSubtype]) issues.push(issue("Properties.IntegrationSubtype", HTTP_API_UNSUPPORTED_INTEGRATION_SUBTYPES[properties.IntegrationSubtype], "UnsupportedProperty"));
+  else if (properties.IntegrationSubtype !== undefined && !HTTP_API_INTEGRATION_SUBTYPES[properties.IntegrationSubtype]) issues.push(issue("Properties.IntegrationSubtype", `Supported AWS service integration subtypes: ${Object.keys(HTTP_API_INTEGRATION_SUBTYPES).join(", ")}`, "UnsupportedProperty"));
   if (properties.IntegrationType !== undefined && !["AWS", "AWS_PROXY", "HTTP", "HTTP_PROXY", "MOCK"].includes(properties.IntegrationType)) issues.push(issue("Properties.IntegrationType", "IntegrationType is invalid"));
   if (properties.PayloadFormatVersion !== undefined && !["1.0", "2.0"].includes(properties.PayloadFormatVersion)) issues.push(issue("Properties.PayloadFormatVersion", "PayloadFormatVersion must be 1.0 or 2.0"));
   if (properties.IntegrationMethod !== undefined && !/^(?:ANY|DELETE|GET|HEAD|OPTIONS|PATCH|POST|PUT)$/i.test(properties.IntegrationMethod)) issues.push(issue("Properties.IntegrationMethod", "IntegrationMethod is invalid"));
   const timeout = properties.TimeoutInMillis;
   if (timeout !== undefined && (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout < 50 || timeout > 30_000)) issues.push(issue("Properties.TimeoutInMillis", "TimeoutInMillis must be an integer from 50 through 30000"));
   validateSameAccountRoleArn(properties.CredentialsArn, "Properties.CredentialsArn", context, issues);
-  if (context) validateLocalLambdaTarget(properties.IntegrationUri, "Properties.IntegrationUri", context, issues);
+  if (context && typeof properties.IntegrationUri === "string" && !/\$\{stageVariables\./.test(properties.IntegrationUri)) validateLocalLambdaTarget(properties.IntegrationUri, "Properties.IntegrationUri", context, issues);
   validateStringMap(properties.RequestParameters, "Properties.RequestParameters", issues);
   validateStringMap(properties.RequestTemplates, "Properties.RequestTemplates", issues);
   validateIntegrationResponseParameters(properties.ResponseParameters, issues);
@@ -673,16 +745,19 @@ function validateIntegrationForProtocol(model: ApiGatewayV2IntegrationModel, pro
     for (const [name, value] of [["ContentHandlingStrategy", model.ContentHandlingStrategy], ["PassthroughBehavior", model.PassthroughBehavior], ["RequestTemplates", Object.keys(model.RequestTemplates).length ? model.RequestTemplates : undefined], ["TemplateSelectionExpression", model.TemplateSelectionExpression]] as const) if (value !== undefined) throw new AwsError("BadRequestException", `${name} is supported only for WebSocket APIs`, 400);
     if (!model.PayloadFormatVersion) throw new AwsError("BadRequestException", "HTTP integrations require PayloadFormatVersion", 400);
     if (model.TimeoutInMillis > 30_000) throw new AwsError("BadRequestException", "HTTP integration timeout cannot exceed 30000 milliseconds", 400);
-    if (model.IntegrationSubtype === "SQS-SendMessage") {
-      if (model.IntegrationType !== "AWS_PROXY" || model.PayloadFormatVersion !== "1.0") throw new AwsError("BadRequestException", "SQS-SendMessage requires AWS_PROXY and payload format 1.0", 400);
-      if (model.IntegrationUri) throw new AwsError("BadRequestException", "SQS-SendMessage does not use IntegrationUri", 400);
-      if (!model.CredentialsArn) throw new AwsError("BadRequestException", "SQS-SendMessage requires CredentialsArn", 400);
-      for (const required of ["QueueUrl", "MessageBody"]) if (!model.RequestParameters[required]) throw new AwsError("BadRequestException", `SQS-SendMessage requires request parameter ${required}`, 400);
+    if (model.IntegrationSubtype !== undefined) {
+      const subtype = model.IntegrationSubtype; const definition = HTTP_API_INTEGRATION_SUBTYPES[subtype];
+      if (!definition) throw new AwsError("BadRequestException", HTTP_API_UNSUPPORTED_INTEGRATION_SUBTYPES[subtype] ?? `Unsupported AWS service integration subtype ${subtype}`, 400);
+      if (model.IntegrationType !== "AWS_PROXY" || model.PayloadFormatVersion !== "1.0") throw new AwsError("BadRequestException", `${subtype} requires AWS_PROXY and payload format 1.0`, 400);
+      if (model.IntegrationUri) throw new AwsError("BadRequestException", `${subtype} does not use IntegrationUri`, 400);
+      if (!model.CredentialsArn) throw new AwsError("BadRequestException", `${subtype} requires CredentialsArn`, 400);
+      for (const required of definition.required) if (!model.RequestParameters[required]) throw new AwsError("BadRequestException", `${subtype} requires request parameter ${required}`, 400);
     } else if (model.IntegrationType === "AWS_PROXY") {
-      if (!model.IntegrationUri || !(LAMBDA_ARN.test(model.IntegrationUri) || LAMBDA_URI.test(model.IntegrationUri))) throw new AwsError("BadRequestException", "HTTP AWS_PROXY integrations must identify a Lambda function", 400);
+      const probe = model.IntegrationUri?.replace(STAGE_VARIABLE_REFERENCE, "stagevariable");
+      if (!probe || !(LAMBDA_ARN.test(probe) || LAMBDA_URI.test(probe))) throw new AwsError("BadRequestException", "HTTP AWS_PROXY integrations must identify a Lambda function", 400);
     } else {
       if (!model.IntegrationUri) throw new AwsError("BadRequestException", "HTTP_PROXY integrations require IntegrationUri", 400);
-      try { const target = new URL(model.IntegrationUri); if (!["http:", "https:"].includes(target.protocol) || target.username || target.password || target.hash) throw new Error(); }
+      try { const target = new URL(model.IntegrationUri.replace(STAGE_VARIABLE_REFERENCE, "stagevariable")); if (!["http:", "https:"].includes(target.protocol) || target.username || target.password || target.hash) throw new Error(); }
       catch { throw new AwsError("BadRequestException", "HTTP_PROXY IntegrationUri must be a credential-free HTTP/HTTPS URL", 400); }
       if (model.PayloadFormatVersion !== "1.0") throw new AwsError("BadRequestException", "HTTP_PROXY integrations require payload format 1.0", 400);
     }
@@ -1455,9 +1530,9 @@ export function createApiGatewayV2RouteResponseProvider(service: ApiGatewayV2Ser
 }
 
 /** Exact CFN-12 production provider set. Registration is intentionally left to the application composition root. */
-export function createApiGatewayV2CloudFormationProviders(service: ApiGatewayV2Service): readonly ProductionResourceProvider<any>[] {
+export function createApiGatewayV2CloudFormationProviders(service: ApiGatewayV2Service, options: ApiGatewayV2ProviderOptions = {}): readonly ProductionResourceProvider<any>[] {
   return Object.freeze([
-    createApiGatewayV2ApiProvider(service), createApiGatewayV2IntegrationProvider(service), createApiGatewayV2RouteProvider(service),
+    createApiGatewayV2ApiProvider(service, options), createApiGatewayV2IntegrationProvider(service), createApiGatewayV2RouteProvider(service),
     createApiGatewayV2DeploymentProvider(service), createApiGatewayV2StageProvider(service), createApiGatewayV2AuthorizerProvider(service),
     createApiGatewayV2DomainNameProvider(service), createApiGatewayV2ApiMappingProvider(service), createApiGatewayV2ModelProvider(service),
     createApiGatewayV2IntegrationResponseProvider(service), createApiGatewayV2RouteResponseProvider(service),

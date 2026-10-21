@@ -4,17 +4,17 @@ const help = {
   apis: {
     level: "Supported locally",
     description: "An API is the public contract that receives a request and decides where it should go. REST APIs organize endpoints as resources and methods, HTTP APIs use lightweight routes, and WebSocket APIs keep bidirectional client connections open.",
-    support: "REST, HTTP, and WebSocket API creation, configuration, deployment, invocation, import, and export are modeled locally. Edge, private-network, DNS, and public TLS behavior is represented only where the console explicitly describes a local boundary.",
+    support: "REST, HTTP, and WebSocket API creation, configuration, deployment, invocation, import, and export are modeled locally. HTTP APIs can be created from, reimported from, and exported to OpenAPI 3.0. Edge, private-network, DNS, and public TLS behavior is represented only where the console explicitly describes a local boundary.",
   },
   resources: {
     level: "Supported locally",
     description: "A REST resource is a URL path such as /orders. Add methods such as GET or POST to decide how each request is authorized, validated, transformed, and sent to a Lambda function, HTTP service, AWS service, mock response, or private integration. Non-root resources can be deleted, including their child resources and methods.",
-    support: "Resource trees, methods, integrations, request and response mappings, validation, CORS, authorization, deployments, deletion, and local invocation are active. A deployed stage uses an immutable snapshot, so redeploy after changing this panel.",
+    support: "Resource trees, proxy resources, methods, integrations, request and response mappings, validation, CORS, authorization, deployments, deletion, and local invocation are active. Create method offers Lambda (proxy or non-proxy), HTTP (proxy or non-proxy), Mock, AWS service, and VPC link integrations; when it wires a Lambda function the console adds the lambda:InvokeFunction permission after you confirm it. HTTP integrations need STACKSIM_ALLOW_OUTBOUND_HTTP=true. A deployed stage uses an immutable snapshot, so redeploy after changing this panel.",
   },
   methods: {
     level: "Supported locally",
     description: "Each segmented pill represents one method on the selected resource. Choose the white method half to configure, test, or delete it; choose the blue Monitor half to open CloudWatch metrics.",
-    support: "Method configuration, deletion, and test invocation are active locally. Monitor opens the metrics console, where you can select the relevant API Gateway dimensions and emitted series. Redeploy after deleting a method so stages stop serving it.",
+    support: "Method configuration, deletion, and test invocation are active locally. Saving keeps every method and integration response, including header declarations and mappings. The invoke URL below the methods uses the selected stage's last deployment. Monitor opens the metrics console, where you can select the relevant API Gateway dimensions and emitted series. Redeploy after deleting a method so stages stop serving it.",
   },
   models: {
     level: "Supported locally",
@@ -29,7 +29,7 @@ const help = {
   restAuthorizers: {
     level: "Supported locally",
     description: "An authorizer makes an access decision before a REST method runs. A Lambda authorizer evaluates request identity and returns a policy; a Cognito user-pool authorizer validates a user token and optional scopes.",
-    support: "Lambda TOKEN and REQUEST authorizers, local Cognito user-pool tokens, identity sources, caching, tests, and deployed authorization are active. Cognito pools must exist in this StackSim environment, and Lambda invoke permissions still apply.",
+    support: "Lambda TOKEN and REQUEST authorizers, local Cognito user-pool tokens, identity sources, caching, tests, and deployed authorization are active. Cognito pools must exist in this StackSim environment. Lambda authorizers need either a Lambda invoke role or a lambda:InvokeFunction statement for /authorizers/{id}; the console offers to add that statement. Test results show the client status, principal ID, policy, context, log, and latency.",
   },
   gatewayResponses: {
     level: "Supported locally",
@@ -49,7 +49,7 @@ const help = {
   stages: {
     level: "Supported locally",
     description: "A stage is a named, invokable release of an API, such as dev or prod. It points to a deployment snapshot and is where runtime controls such as logging, metrics, throttling, caching, variables, and canary traffic are configured.",
-    support: "REST, HTTP, and WebSocket stages, manual and automatic deployments, invoke URLs, access logs, metrics, throttling, variables, and supported release settings are active locally.",
+    support: "REST, HTTP, and WebSocket stages, manual and automatic deployments, copyable invoke URLs (HTTP $default has no stage prefix; WebSocket stages list the WebSocket and @connections URLs), access logs, metrics, throttling, variables, and supported release settings are active locally.",
   },
   deployment: {
     level: "Supported locally",
@@ -94,17 +94,17 @@ const help = {
   wsRoutes: {
     level: "Supported locally",
     description: "A WebSocket route selects what should handle a connected client's message. $connect and $disconnect cover connection lifecycle events, $default is the fallback, and custom route keys are selected from the configured message expression.",
-    support: "Connection lifecycle, route selection, custom and reserved routes, integrations, deployments, live connections, and local management API calls are active.",
+    support: "Connection lifecycle, route selection, custom and reserved routes, integrations, the $default route response for two-way routes, route request and response models, deployments, live connections, and local management API calls are active.",
   },
   integrations: {
     level: "Supported locally",
-    description: "An integration is the backend a route calls after API Gateway accepts a request. Use a Lambda proxy to pass an event to a function, or an HTTP proxy to forward the request to a service endpoint.",
-    support: "HTTP API Lambda and HTTP proxy integrations, payload versions, parameter mapping, timeouts, and deployment snapshots are active. Public or private outbound targets still follow StackSim networking opt-ins.",
+    description: "An integration is the backend a route calls after API Gateway accepts a request. Use a Lambda proxy to pass an event to a function, an HTTP proxy to forward the request to a service endpoint, or an AWS service integration to call EventBridge, SQS, or Step Functions directly.",
+    support: "HTTP API Lambda and HTTP proxy integrations, AWS service integrations (EventBridge PutEvents, SQS SendMessage, ReceiveMessage, DeleteMessage, and PurgeQueue, Step Functions StartExecution and StopExecution) with an invocation role, payload versions, parameter mapping, timeouts, and deployment snapshots are active. The console adds the Lambda invoke permission when you confirm it. HTTP URI integrations need STACKSIM_ALLOW_OUTBOUND_HTTP=true, plus STACKSIM_ALLOW_PRIVATE_HTTP=true for localhost or private targets.",
   },
   wsIntegrations: {
     level: "Supported locally",
     description: "A WebSocket integration handles a connection event or routed message. It can invoke Lambda, call an HTTP or supported AWS service target, transform a request, or return a mock response.",
-    support: "Lambda, HTTP, AWS, proxy, and mock integration configuration is modeled; supported targets run locally with request templates, timeouts, deployment snapshots, and connection context.",
+    support: "Lambda, HTTP, AWS, proxy, and mock integration configuration is modeled; supported targets run locally with request templates, timeouts, deployment snapshots, and connection context. Non-proxy integrations can store integration responses. The console adds the Lambda invoke permission when you confirm it, and HTTP targets need STACKSIM_ALLOW_OUTBOUND_HTTP=true.",
   },
   httpAuthorization: {
     level: "Supported locally",

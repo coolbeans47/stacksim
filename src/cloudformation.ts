@@ -1777,7 +1777,7 @@ export class CloudFormationService {
       const propertyPath = definition.Type === "AWS::Lambda::Function" ? "Code"
         : definition.Type === "AWS::Lambda::LayerVersion" ? "Content"
           : definition.Type === "AWS::StepFunctions::StateMachine" ? "DefinitionS3Location"
-          : definition.Type === "AWS::ApiGateway::RestApi" ? "BodyS3Location"
+          : definition.Type === "AWS::ApiGateway::RestApi" || definition.Type === "AWS::ApiGatewayV2::Api" ? "BodyS3Location"
             : definition.Type === "Custom::CDKBucketDeployment" ? "SourceObjectKeys"
               : undefined;
       if (!propertyPath) continue;
@@ -2112,7 +2112,7 @@ export class CloudFormationService {
     const propertyPath = resourceType === "AWS::Lambda::Function" ? "Code"
       : resourceType === "AWS::Lambda::LayerVersion" ? "Content"
         : resourceType === "AWS::StepFunctions::StateMachine" ? "DefinitionS3Location"
-        : resourceType === "AWS::ApiGateway::RestApi" ? "BodyS3Location"
+        : resourceType === "AWS::ApiGateway::RestApi" || resourceType === "AWS::ApiGatewayV2::Api" ? "BodyS3Location"
           : resourceType === "Custom::CDKBucketDeployment" ? "SourceObjectKeys"
             : undefined;
     if (!propertyPath) return properties;
@@ -2230,7 +2230,7 @@ export class CloudFormationService {
       } else if (resource.resourceType === "AWS::Lambda::LayerVersion") {
         const content = resource.properties.Content as Record<string, unknown> | undefined;
         if (content && typeof content === "object" && !Array.isArray(content)) addReference(content.S3Bucket, content.S3Key, content.S3ObjectVersion);
-      } else if (resource.resourceType === "AWS::ApiGateway::RestApi") {
+      } else if (resource.resourceType === "AWS::ApiGateway::RestApi" || resource.resourceType === "AWS::ApiGatewayV2::Api") {
         const body = resource.properties.BodyS3Location as Record<string, unknown> | undefined;
         if (body && typeof body === "object" && !Array.isArray(body)) addReference(body.Bucket, body.Key, body.Version);
       }
@@ -3718,6 +3718,8 @@ export class CloudFormationService {
       if (operation === "DELETE") add("cloudwatch:DeleteMetricStream");
     } else if (typeName.startsWith("AWS::ApiGatewayV2::")) {
       if (create) add("apigateway:GET", "apigateway:POST", "apigateway:DELETE");
+      // ImportApi/ReimportApi are PUT /v2/apis{,/apiId}; an import-created API is then patched with template-declared overrides.
+      if (typeName === "AWS::ApiGatewayV2::Api" && (properties.Body !== undefined || properties.BodyS3Location !== undefined)) { if (create) add("apigateway:PUT", "apigateway:PATCH"); if (update) add("apigateway:PUT"); }
       if (read) add("apigateway:GET");
       if (update) {
         add("apigateway:GET");
@@ -3744,9 +3746,12 @@ export class CloudFormationService {
         if (create || update) add("apigateway:GET", "apigateway:PUT", "apigateway:DELETE");
         if (operation === "DELETE") add("apigateway:GET", "apigateway:DELETE");
       } else if (typeName === "AWS::ApiGateway::Deployment") {
+        const namesStage = properties.StageName !== undefined || stack.resources[logicalId]?.properties.StageName !== undefined;
         if (create) add("apigateway:GET", "apigateway:POST");
         if (update || read) add("apigateway:GET");
-        if (operation === "DELETE") add("apigateway:DELETE");
+        if (update) add("apigateway:PATCH");
+        if (namesStage && (create || update)) add("apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:PUT", "apigateway:DELETE");
+        if (operation === "DELETE") add("apigateway:DELETE", ...(namesStage ? ["apigateway:GET", "apigateway:PATCH"] : []));
       } else if (typeName === "AWS::ApiGateway::Stage") {
         if (create) add("apigateway:GET", "apigateway:POST", "apigateway:PATCH", "apigateway:DELETE");
         if (update) add("apigateway:GET", "apigateway:PATCH");
@@ -4320,6 +4325,7 @@ export class CloudFormationService {
           const apiId = typeof physicalId === "string" && !physicalId.startsWith("stacksim:") ? physicalId : undefined;
           const apiPath = `/v2/apis/${segment(apiId)}`;
           if (action === "apigateway:POST" && operation === "CREATE") paths.push("/v2/apis");
+          else if (action === "apigateway:PUT") paths.push(operation === "CREATE" ? "/v2/apis" : apiPath);
           else if (action === "apigateway:GET") {
             paths.push(apiPath);
             if (properties.ProtocolType === "HTTP") paths.push(`${apiPath}/integrations`, `${apiPath}/routes`);
@@ -4414,7 +4420,15 @@ export class CloudFormationService {
           const parts = decodedPhysical("deployment", 2); const id = parts?.[1]; const collection = `/restapis/${segment(apiId)}/deployments`;
           if (action === "apigateway:POST") paths.push(collection);
           else if (action === "apigateway:GET" && operation === "CREATE") paths.push(collection, `${collection}/${id ? segment(id) : "*"}`);
-          else paths.push(`${collection}/${id ? segment(id) : "*"}`);
+          else if (action === "apigateway:GET" || action === "apigateway:PATCH" || action === "apigateway:DELETE" && operation === "DELETE") paths.push(`${collection}/${id ? segment(id) : "*"}`);
+          /* StageName creates or repoints, configures, tags, and finally deletes the named stage. */
+          for (const stageName of new Set([properties.StageName, stack.resources[logicalId]?.properties.StageName].filter(value => typeof value === "string"))) {
+            const item = `/restapis/${segment(apiId)}/stages/${segment(stageName)}`;
+            if (action === "apigateway:POST") paths.push(`/restapis/${segment(apiId)}/stages`);
+            else if (action === "apigateway:PUT") paths.push(tagPath(item));
+            else if (action === "apigateway:DELETE" && operation !== "DELETE") paths.push(item, tagPath(item));
+            else paths.push(item);
+          }
         } else if (typeName === "AWS::ApiGateway::Stage") {
           const item = `/restapis/${segment(apiId)}/stages/${segment(properties.StageName)}`;
           if (action === "apigateway:POST") paths.push(`/restapis/${segment(apiId)}/stages`);

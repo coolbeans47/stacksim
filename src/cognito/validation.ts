@@ -422,19 +422,32 @@ function schema(value: unknown): CognitoUserPoolConfigurationState["schemaAttrib
   });
 }
 
+export const DEFAULT_EXPLICIT_AUTH_FLOWS = Object.freeze(["ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_USER_SRP_AUTH", "ALLOW_CUSTOM_AUTH"] as const);
+
 function accountRecovery(value: unknown): CognitoUserPoolConfigurationState["accountRecoverySetting"] {
   if (value === undefined) return { recoveryMechanisms: [{ name: "verified_email", priority: 1 }] };
   const input = object(value, "AccountRecoverySetting");
   rejectUnknown(input, ["RecoveryMechanisms"], "AccountRecoverySetting");
-  if (!Array.isArray(input.RecoveryMechanisms) || input.RecoveryMechanisms.length !== 1) {
-    throw new AwsError("InvalidParameterException", "AccountRecoverySetting must contain one verified_email mechanism.");
+  if (!Array.isArray(input.RecoveryMechanisms) || input.RecoveryMechanisms.length < 1 || input.RecoveryMechanisms.length > 2) {
+    throw new AwsError("InvalidParameterException", "AccountRecoverySetting.RecoveryMechanisms must contain one or two recovery options.");
   }
-  const mechanism = object(input.RecoveryMechanisms[0], "AccountRecoverySetting.RecoveryMechanisms[0]");
-  rejectUnknown(mechanism, ["Name", "Priority"], "AccountRecoverySetting.RecoveryMechanisms[0]");
-  if (mechanism.Name !== "verified_email" || mechanism.Priority !== 1) {
-    throw new AwsError("InvalidParameterException", "Only priority-1 verified_email recovery is available in COG-01.");
+  const mechanisms = input.RecoveryMechanisms.map((value, index) => {
+    const mechanism = object(value, `AccountRecoverySetting.RecoveryMechanisms[${index}]`);
+    rejectUnknown(mechanism, ["Name", "Priority"], `AccountRecoverySetting.RecoveryMechanisms[${index}]`);
+    if (!["verified_email", "verified_phone_number", "admin_only"].includes(mechanism.Name as string)) {
+      throw new AwsError("InvalidParameterException", "RecoveryMechanisms Name must be verified_email, verified_phone_number, or admin_only.");
+    }
+    if (mechanism.Priority !== 1 && mechanism.Priority !== 2) throw new AwsError("InvalidParameterException", "RecoveryMechanisms Priority must be 1 or 2.");
+    return { name: mechanism.Name as "verified_email" | "verified_phone_number" | "admin_only", priority: mechanism.Priority };
+  }).sort((left, right) => left.priority - right.priority);
+  if (new Set(mechanisms.map(mechanism => mechanism.name)).size !== mechanisms.length || new Set(mechanisms.map(mechanism => mechanism.priority)).size !== mechanisms.length) {
+    throw new AwsError("InvalidParameterException", "RecoveryMechanisms must not repeat a Name or a Priority.");
   }
-  return { recoveryMechanisms: [{ name: "verified_email", priority: 1 }] };
+  if (mechanisms.length > 1 && mechanisms.some(mechanism => mechanism.name === "admin_only")) {
+    throw new AwsError("InvalidParameterException", "admin_only cannot be combined with another account recovery mechanism.");
+  }
+  if (mechanisms[0].priority !== 1) throw new AwsError("InvalidParameterException", "RecoveryMechanisms must include a priority 1 option.");
+  return { recoveryMechanisms: mechanisms };
 }
 
 function verificationTemplate(
@@ -864,7 +877,8 @@ export function clientConfiguration(
     }
   }
   if (operation === "create") clientSecretCreation(input);
-  const flows = strings(input.ExplicitAuthFlows, "ExplicitAuthFlows");
+  // AWS: "If you don't specify a value for ExplicitAuthFlows, your app client supports ALLOW_REFRESH_TOKEN_AUTH, ALLOW_USER_SRP_AUTH, and ALLOW_CUSTOM_AUTH."
+  const flows = input.ExplicitAuthFlows === undefined ? [...DEFAULT_EXPLICIT_AUTH_FLOWS] : strings(input.ExplicitAuthFlows, "ExplicitAuthFlows");
   if (!flows.length || flows.some(flow => ![
     "ALLOW_USER_PASSWORD_AUTH",
     "ALLOW_REFRESH_TOKEN_AUTH",

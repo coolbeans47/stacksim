@@ -558,6 +558,14 @@ For the example output above, the base URL would be:
 http://127.0.0.1:4567/abc123def4/dev
 ```
 
+The host-based form also works, so you can keep the AWS URL shape and swap only the scheme, host, and port:
+
+```text
+http://abc123def4.execute-api.localhost:4567/dev
+```
+
+curl and browsers resolve `*.localhost` to the loopback address without any DNS setup. Node.js `fetch` on Windows does not, so prefer the path-based form in Node.js scripts.
+
 Do not use port 4566 to invoke the deployed API. Port 4566 is the control plane; port 4567 is the API Gateway data plane.
 
 ### 11. Test with the API Gateway console
@@ -1029,7 +1037,7 @@ export class NotesApiStack extends Stack {
 Details worth noticing:
 
 1. The user pool allows email self-sign-up and sends a confirmation code through local SES.
-2. The app client sets `ExplicitAuthFlows` explicitly. stacksim requires that field rather than relying on Cognito defaults.
+2. The app client sets `ExplicitAuthFlows` explicitly so that `USER_PASSWORD_AUTH` sign-in works from curl. If you omit it, stacksim applies the AWS default (`ALLOW_REFRESH_TOKEN_AUTH`, `ALLOW_USER_SRP_AUTH`, `ALLOW_CUSTOM_AUTH`), which supports SRP sign-in such as the Amplify libraries use.
 3. `CognitoUserPoolsAuthorizer` still uses the ordinary CDK authorizer construct; the pool is referenced by ARN from the L1 resource.
 4. Only `POST /notes` sets `authorizationType: AuthorizationType.COGNITO`. `GET /notes` stays open.
 5. No `authorizationScopes` are configured, so callers must present an **ID token**, not an access token.
@@ -1335,9 +1343,11 @@ That authorizer test path validates ID tokens. For method-level checks, prefer t
 
 #### Deploy fails on Cognito resources
 
-Confirm the app client sets `ExplicitAuthFlows`. stacksim rejects Cognito clients that omit it.
+A default CDK `UserPool` with `addClient()` deploys unchanged. An app client without `ExplicitAuthFlows` gets the AWS default flows, so `USER_PASSWORD_AUTH` is rejected unless you enable it (`authFlows: { userPassword: true }`).
 
-The CDK L2 `UserPool` construct emits matching `SmsVerificationMessage` and `VerificationMessageTemplate.SmsMessage` defaults even for an email-only pool. stacksim accepts and round-trips those values as inert compatibility metadata. Configuration that actually enables SMS delivery, phone recovery, or SMS MFA remains unavailable and fails before mutation.
+The CDK L2 `UserPool` construct emits matching `SmsVerificationMessage` and `VerificationMessageTemplate.SmsMessage` defaults even for an email-only pool. stacksim accepts and round-trips those values as inert compatibility metadata.
+
+The CDK default account recovery (`PHONE_WITHOUT_MFA_AND_EMAIL`) is accepted. Password reset uses the highest-priority mechanism each user qualifies for, as in AWS: users with only a verified email get an email code through local SES. stacksim cannot send SMS, so a reset for a user whose top destination is a verified phone number fails with `CodeDeliveryFailureException`. Use `accountRecovery: cognito.AccountRecovery.EMAIL_ONLY` (or `EMAIL_AND_PHONE_WITHOUT_MFA`) if your users have phone numbers. Configuration that enables SMS delivery or SMS MFA remains unavailable and fails before mutation.
 
 The L2 app-client construct also enables OAuth defaults unless `disableOAuth: true` is set. stacksim accepts CDK's safe absolute `https://example.com` placeholder spelling without requiring a trailing slash; the registered callback remains an exact string and stacksim does not contact it.
 

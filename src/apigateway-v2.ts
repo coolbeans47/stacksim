@@ -10,6 +10,9 @@ import { SystemClock } from "./core/clock.js";
 import type { TelemetryBus } from "./core/telemetry.js";
 import type { InvokeResult, LambdaService } from "./lambda.js";
 import type { SqsService, SendMessageInput } from "./sqs.js";
+import type { EventBridgeService } from "./eventbridge.js";
+import type { StepFunctionsService } from "./step-functions.js";
+import { exportHttpApiOpenApi, HttpApiOpenApiError, parseHttpApiOpenApi, serializeHttpApiOpenApi } from "./apigateway-v2-openapi.js";
 import type { CloudWatchLogsService } from "./cloudwatch-logs.js";
 import type { StateStore } from "./state.js";
 import type {
@@ -25,7 +28,7 @@ import type {
   HttpApiStageState,
   HttpApiState,
 } from "./types.js";
-import { evaluateIdentityPolicy, evaluateRoleAuthorization, evaluateTrust, type AuthorizationResult } from "./iam/evaluator.js";
+import { evaluateIdentityPolicy, evaluateRoleAuthorization, evaluateTrust, roleSessionAuthorizationContext, type AuthorizationResult } from "./iam/evaluator.js";
 import type { PrincipalContext } from "./auth/sigv4.js";
 import { id, json, readBody, readJson } from "./util.js";
 import { ApiGatewayWebSocketService, webSocketApiView } from "./apigateway-websocket.js";
@@ -46,6 +49,34 @@ const MAX_HTTP_JWT_CLAIMS = 128;
 const MAX_HTTP_JWT_CLAIM_NAME_BYTES = 256;
 const MAX_HTTP_JWT_CLAIM_VALUE_BYTES = 8_192;
 const MAX_HTTP_JWT_CLAIM_TOTAL_BYTES = 24_576;
+
+/** AWS service integration subtypes StackSim dispatches locally, with the documented request parameter keys (Integration subtype reference). */
+export const HTTP_API_INTEGRATION_SUBTYPES: Readonly<Record<string, { readonly required: readonly string[]; readonly optional: readonly string[] }>> = Object.freeze({
+  "EventBridge-PutEvents": { required: ["Detail", "DetailType", "Source"], optional: ["Time", "EventBusName", "Resources", "Region", "TraceHeader"] },
+  "SQS-SendMessage": { required: ["QueueUrl", "MessageBody"], optional: ["DelaySeconds", "MessageAttributes", "MessageDeduplicationId", "MessageGroupId", "MessageSystemAttributes", "Region"] },
+  "SQS-ReceiveMessage": { required: ["QueueUrl"], optional: ["AttributeNames", "MaxNumberOfMessages", "MessageAttributeNames", "ReceiveRequestAttemptId", "VisibilityTimeout", "WaitTimeSeconds", "Region"] },
+  "SQS-DeleteMessage": { required: ["ReceiptHandle", "QueueUrl"], optional: ["Region"] },
+  "SQS-PurgeQueue": { required: ["QueueUrl"], optional: ["Region"] },
+  "StepFunctions-StartExecution": { required: ["StateMachineArn"], optional: ["Name", "Input", "Region"] },
+  "StepFunctions-StopExecution": { required: ["ExecutionArn"], optional: ["Cause", "Error", "Region"] },
+});
+/** Subtypes AWS documents that StackSim rejects explicitly, with the reason shown to the caller. */
+export const HTTP_API_UNSUPPORTED_INTEGRATION_SUBTYPES: Readonly<Record<string, string>> = Object.freeze({
+  "StepFunctions-StartSyncExecution": "StepFunctions-StartSyncExecution requires an EXPRESS state machine, and StackSim supports STANDARD state machines only",
+  "AppConfig-GetConfiguration": "The AppConfig-GetConfiguration integration subtype is not supported by StackSim",
+  "Kinesis-PutRecord": "The Kinesis-PutRecord integration subtype is not supported by StackSim",
+});
+export const HTTP_API_VPC_LINK_UNSUPPORTED = "VPC links for HTTP APIs are not supported by StackSim";
+/** Headers HTTP API parameter mappings cannot target (Transform API requests and responses: Reserved headers). */
+const RESERVED_MAPPING_HEADER = /^(?:access-control-.*|apigw-.*|authorization|connection|content-encoding|content-length|content-location|forwarded|keep-alive|origin|proxy-authenticate|proxy-authorization|te|trailers|transfer-encoding|upgrade|x-amz-.*|x-amzn-.*|x-forwarded-for|x-forwarded-host|x-forwarded-proto|via)$/i;
+const REQUEST_AUTHORIZER_IDENTITY = /^(?:\$request\.(?:header|querystring)\.[A-Za-z0-9._-]+|\$context\.[A-Za-z0-9._]+|\$stageVariables\.[A-Za-z0-9_]+)$/;
+const STAGE_VARIABLE_REFERENCE = /\$\{stageVariables\.([A-Za-z0-9_]+)\}/g;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function jsonPathValue(text: string, path: string): string {
+  try { let current: any = JSON.parse(text); for (const part of path.match(/\.[A-Za-z0-9_-]+|\[\d+\]/g) ?? []) current = current?.[part.startsWith("[") ? Number(part.slice(1, -1)) : part.slice(1)]; return current === undefined || current === null ? "" : typeof current === "string" ? current : JSON.stringify(current); } catch { return ""; }
+}
+/** CLF request time (dd/MMM/yyyy:HH:mm:ss +0000), the format of $context.requestTime and requestContext.time. */
+export function clfTime(epoch: number): string { const date = new Date(epoch); const pad = (value: number) => String(value).padStart(2, "0"); return `${pad(date.getUTCDate())}/${MONTHS[date.getUTCMonth()]}/${date.getUTCFullYear()}:${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} +0000`; }
 
 function present<T extends Record<string, unknown>>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as T;
@@ -212,7 +243,7 @@ function domainView(domain: ApiGatewayV2DomainNameState): any {
   });
 }
 
-export interface HttpApiDomainResolution { matched: boolean; pathname?: string }
+export interface HttpApiDomainResolution { matched: boolean; pathname?: string; basePath?: string }
 
 export interface HttpApiJwtJwks { keys: JsonWebKey[] }
 
@@ -234,6 +265,14 @@ interface HttpInvocationInput {
   snapshot: HttpApiDeploymentSnapshotState;
   principal?: PrincipalContext;
   identityAuthorization?: AuthorizationResult;
+  /** AWS rawPath / requestContext.http.path: the execute-api path including a named stage, or the path after the API mapping on a custom domain. */
+  rawPath: string;
+  /** Payload 1.0 path and $context.path: the full request path the client used. */
+  fullPath: string;
+  requestTimeEpoch: number;
+  customDomainBasePath?: string;
+  authorization?: HttpAuthorizerResult;
+  observed: { authorizerError?: string; integrationError?: string; integrationStatus?: number; integrationFunctionStatus?: number; integrationLatency?: number; integrationRequestId?: string };
 }
 
 interface ResolvedHttpInvocation {
@@ -247,12 +286,17 @@ interface ResolvedHttpInvocation {
 
 interface HttpBackendResult { status: number; headers: Record<string, string | string[]>; body: Buffer; integrationLatency: number }
 
-interface HttpAuthorizerResult { allowed: boolean; principalId?: string; context: Record<string, unknown>; jwt?: { claims: Record<string, string>; scopes: string[] } }
+interface HttpIamIdentity { accessKey: string | null; accountId: string | null; callerId: string | null; cognitoIdentity: { amr: string[]; identityId: string; identityPoolId: string | null } | null; principalOrgId: string | null; userArn: string | null; userId: string | null }
+
+interface HttpAuthorizerResult { allowed: boolean; principalId?: string; context: Record<string, unknown>; jwt?: { claims: Record<string, string>; scopes: string[] }; iam?: HttpIamIdentity }
 
 export class ApiGatewayV2Service {
   private readonly authorizerCache = new Map<string, { expiresAt: number; value: HttpAuthorizerResult }>();
   private readonly remoteJwksCache = new Map<string, { expiresAt: number; keys: JsonWebKey[] }>();
   private readonly throttleBuckets = new Map<string, { tokens: number; updatedAt: number }>();
+  private readonly accessLogStreams = new Set<string>();
+  private eventbridge?: EventBridgeService;
+  private stepfunctions?: StepFunctionsService;
 
   constructor(
     private readonly store: StateStore,
@@ -273,6 +317,9 @@ export class ApiGatewayV2Service {
     private readonly sqs?: SqsService,
     private readonly cognitoIssuerKeys?: CognitoIssuerKeySource,
   ) {}
+
+  /** Wire the AWS service integration targets created after this service (EventBridge-PutEvents, StepFunctions-*). */
+  setServiceIntegrations(services: { eventbridge?: EventBridgeService; stepfunctions?: StepFunctionsService }): void { if (services.eventbridge) this.eventbridge = services.eventbridge; if (services.stepfunctions) this.stepfunctions = services.stepfunctions; }
 
   private get apis(): Record<string, HttpApiState> { return this.store.regionState(this.region).httpApis; }
   private get domains(): Record<string, ApiGatewayV2DomainNameState> { return this.store.regionState(this.region).apiGatewayV2DomainNames; }
@@ -437,40 +484,51 @@ export class ApiGatewayV2Service {
   private validateIntegration(input: any, existing?: HttpApiIntegrationState): HttpApiIntegrationState {
     const type = String(input.integrationType ?? existing?.integrationType ?? "") as HttpApiIntegrationState["integrationType"];
     if (!new Set(["AWS_PROXY", "HTTP_PROXY"]).has(type)) throw new AwsError("BadRequestException", "HTTP APIs support AWS_PROXY and HTTP_PROXY integrations");
-    const subtype = input.integrationSubtype ?? existing?.integrationSubtype;
-    if (subtype !== undefined && subtype !== "SQS-SendMessage") throw new AwsError("BadRequestException", `Unsupported AWS service integration subtype ${String(subtype)}`);
-    const sqsIntegration = subtype === "SQS-SendMessage";
-    if (sqsIntegration && type !== "AWS_PROXY") throw new AwsError("BadRequestException", "SQS-SendMessage requires AWS_PROXY");
-    if (input.connectionType !== undefined && input.connectionType !== "INTERNET") throw new AwsError("BadRequestException", "VPC_LINK integrations are outside APIG-11");
+    const subtype = input.integrationSubtype === undefined ? existing?.integrationSubtype : input.integrationSubtype === "" || input.integrationSubtype === null ? undefined : String(input.integrationSubtype);
+    if (subtype !== undefined && HTTP_API_UNSUPPORTED_INTEGRATION_SUBTYPES[subtype]) throw new AwsError("BadRequestException", HTTP_API_UNSUPPORTED_INTEGRATION_SUBTYPES[subtype]);
+    if (subtype !== undefined && !HTTP_API_INTEGRATION_SUBTYPES[subtype]) throw new AwsError("BadRequestException", `Unsupported AWS service integration subtype ${subtype}. Supported subtypes: ${Object.keys(HTTP_API_INTEGRATION_SUBTYPES).join(", ")}`);
+    const serviceIntegration = subtype !== undefined;
+    if (serviceIntegration && type !== "AWS_PROXY") throw new AwsError("BadRequestException", `${subtype} requires AWS_PROXY`);
+    const connectionType = String(input.connectionType ?? "INTERNET");
+    if (connectionType === "VPC_LINK" || input.connectionId !== undefined && input.connectionId !== null && input.connectionId !== "") throw new AwsError("BadRequestException", HTTP_API_VPC_LINK_UNSUPPORTED);
+    if (connectionType !== "INTERNET") throw new AwsError("BadRequestException", "ConnectionType must be INTERNET or VPC_LINK");
     const rawUri = input.integrationUri ?? existing?.integrationUri;
-    const uri = rawUri === undefined || rawUri === null || rawUri === "" ? undefined : String(rawUri);
-    if (!sqsIntegration && !uri) throw new AwsError("BadRequestException", "IntegrationUri is required");
-    if (type === "AWS_PROXY" && !sqsIntegration && !/^(?:arn:aws(?:-[a-z]+)?:lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9-_]+(?::[A-Za-z0-9-_]+)?|arn:aws:apigateway:[a-z0-9-]+:lambda:path\/2015-03-31\/functions\/arn:aws(?:-[a-z]+)?:lambda:[^/]+\/invocations)$/.test(uri!)) throw new AwsError("BadRequestException", "AWS_PROXY IntegrationUri must identify a Lambda function");
-    if (type === "HTTP_PROXY") { try { const target = new URL(uri!); if (!new Set(["http:", "https:"]).has(target.protocol)) throw new Error(); } catch { throw new AwsError("BadRequestException", "HTTP_PROXY IntegrationUri must be an HTTP or HTTPS URL"); } }
-    const payload = String(input.payloadFormatVersion ?? existing?.payloadFormatVersion ?? (type === "HTTP_PROXY" || sqsIntegration ? "1.0" : "2.0")) as "1.0" | "2.0";
+    if (serviceIntegration && input.integrationUri !== undefined && input.integrationUri !== null && input.integrationUri !== "") throw new AwsError("BadRequestException", `${subtype} integrations do not use IntegrationUri`);
+    const uri = serviceIntegration || rawUri === undefined || rawUri === null || rawUri === "" ? undefined : String(rawUri);
+    if (!serviceIntegration && !uri) throw new AwsError("BadRequestException", "IntegrationUri is required");
+    const probe = uri?.replace(STAGE_VARIABLE_REFERENCE, "stagevariable");
+    if (type === "AWS_PROXY" && !serviceIntegration && !/^(?:arn:aws(?:-[a-z]+)?:lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9-_]+(?::[A-Za-z0-9-_]+)?|arn:aws:apigateway:[a-z0-9-]+:lambda:path\/2015-03-31\/functions\/arn:aws(?:-[a-z]+)?:lambda:[^/]+\/invocations)$/.test(probe!)) throw new AwsError("BadRequestException", "AWS_PROXY IntegrationUri must identify a Lambda function");
+    if (type === "HTTP_PROXY") { try { const target = new URL(probe!); if (!new Set(["http:", "https:"]).has(target.protocol)) throw new Error(); } catch { throw new AwsError("BadRequestException", "HTTP_PROXY IntegrationUri must be an HTTP or HTTPS URL"); } }
+    const payload = String(input.payloadFormatVersion ?? existing?.payloadFormatVersion ?? (type === "HTTP_PROXY" || serviceIntegration ? "1.0" : "2.0")) as "1.0" | "2.0";
     if (!new Set(["1.0", "2.0"]).has(payload)) throw new AwsError("BadRequestException", "PayloadFormatVersion must be 1.0 or 2.0");
-    if ((type === "HTTP_PROXY" || sqsIntegration) && payload !== "1.0") throw new AwsError("BadRequestException", `${sqsIntegration ? "SQS-SendMessage" : "HTTP_PROXY"} integrations use payload format version 1.0`);
-    if (input.tlsConfig !== undefined || existing?.tlsConfig) throw new AwsError("BadRequestException", "TlsConfig requires a VPC_LINK private integration, which is outside APIG-11");
+    if ((type === "HTTP_PROXY" || serviceIntegration) && payload !== "1.0") throw new AwsError("BadRequestException", `${serviceIntegration ? subtype : "HTTP_PROXY"} integrations use payload format version 1.0`);
+    if (input.tlsConfig !== undefined || existing?.tlsConfig) throw new AwsError("BadRequestException", `TlsConfig requires a VPC_LINK private integration. ${HTTP_API_VPC_LINK_UNSUPPORTED}`);
     const timeout = Number(input.timeoutInMillis ?? existing?.timeoutInMillis ?? 30_000);
     if (!Number.isInteger(timeout) || timeout < 50 || timeout > 30_000) throw new AwsError("BadRequestException", "TimeoutInMillis must be between 50 and 30000");
     const method = input.integrationMethod ?? existing?.integrationMethod ?? (type === "AWS_PROXY" ? "POST" : "ANY");
     if (method !== undefined && !METHODS.has(String(method).toUpperCase())) throw new AwsError("BadRequestException", "Invalid IntegrationMethod");
-    if (sqsIntegration && String(method).toUpperCase() !== "POST") throw new AwsError("BadRequestException", "SQS-SendMessage uses POST");
+    if (serviceIntegration && String(method).toUpperCase() !== "POST") throw new AwsError("BadRequestException", `${subtype} uses POST`);
     const requestParameters = input.requestParameters ?? existing?.requestParameters ?? {};
     const responseParameters = input.responseParameters ?? existing?.responseParameters ?? {};
     if (!requestParameters || typeof requestParameters !== "object" || Array.isArray(requestParameters) || !responseParameters || typeof responseParameters !== "object" || Array.isArray(responseParameters)) throw new AwsError("BadRequestException", "Parameter mappings must be maps");
-    if (sqsIntegration) {
-      const allowed = new Set(["QueueUrl", "MessageBody", "DelaySeconds", "MessageAttributes", "MessageDeduplicationId", "MessageGroupId", "MessageSystemAttributes", "Region"]);
-      for (const [key, expression] of Object.entries(requestParameters)) if (!allowed.has(key) || typeof expression !== "string") throw new AwsError("BadRequestException", `Invalid SQS-SendMessage request parameter ${key}`);
-      for (const required of ["QueueUrl", "MessageBody"]) if (typeof requestParameters[required] !== "string" || !requestParameters[required]) throw new AwsError("BadRequestException", `${required} is required for SQS-SendMessage`);
-    } else for (const [key, expression] of Object.entries(requestParameters)) if (!(key === "overwrite:path" || /^(?:append|overwrite|remove):(?:header|querystring)\.[A-Za-z0-9._-]+$/i.test(key)) || typeof expression !== "string") throw new AwsError("BadRequestException", `Invalid request parameter mapping ${key}`);
-    for (const [status, mappings] of Object.entries(responseParameters)) {
-      if (!(status === "$default" || /^[1-5][0-9]{2}$/.test(status)) || !mappings || typeof mappings !== "object" || Array.isArray(mappings)) throw new AwsError("BadRequestException", `Invalid response parameter mapping status ${status}`);
-      for (const [key, expression] of Object.entries(mappings as Record<string, unknown>)) if (!(key === "overwrite:statuscode" || /^(?:append|overwrite|remove):header\.[A-Za-z0-9._-]+$/i.test(key)) || typeof expression !== "string") throw new AwsError("BadRequestException", `Invalid response parameter mapping ${key}`);
+    if (serviceIntegration) {
+      const definition = HTTP_API_INTEGRATION_SUBTYPES[subtype!]; const allowed = new Set([...definition.required, ...definition.optional]);
+      for (const [key, expression] of Object.entries(requestParameters)) if (!allowed.has(key) || typeof expression !== "string") throw new AwsError("BadRequestException", `Invalid ${subtype} request parameter ${key}. Supported parameters: ${[...allowed].join(", ")}`);
+      for (const required of definition.required) if (typeof requestParameters[required] !== "string" || !requestParameters[required]) throw new AwsError("BadRequestException", `${required} is required for ${subtype}`);
+    } else for (const [key, expression] of Object.entries(requestParameters)) {
+      if (!(key === "overwrite:path" || /^(?:append|overwrite|remove):(?:header|querystring)\.[A-Za-z0-9._-]+$/i.test(key)) || typeof expression !== "string") throw new AwsError("BadRequestException", `Invalid request parameter mapping ${key}`);
+      const header = key.match(/^[a-z]+:header\.(.+)$/i)?.[1]; if (header && RESERVED_MAPPING_HEADER.test(header)) throw new AwsError("BadRequestException", `Invalid request parameter mapping ${key}: the ${header} header is reserved`);
     }
-    const credentialsArn = input.credentialsArn ?? existing?.credentialsArn;
-    if (sqsIntegration && !credentialsArn) throw new AwsError("BadRequestException", "CredentialsArn is required for SQS-SendMessage");
-    this.assertGatewayRole(credentialsArn, sqsIntegration ? "SQS integration" : "integration");
+    for (const [status, mappings] of Object.entries(responseParameters)) {
+      if (!/^[2-5][0-9]{2}$/.test(status) || !mappings || typeof mappings !== "object" || Array.isArray(mappings)) throw new AwsError("BadRequestException", `Invalid response parameter mapping status ${status}; use a status code from 200 through 599`);
+      for (const [key, expression] of Object.entries(mappings as Record<string, unknown>)) {
+        if (!(key === "overwrite:statuscode" || /^(?:append|overwrite|remove):header\.[A-Za-z0-9._-]+$/i.test(key)) || typeof expression !== "string") throw new AwsError("BadRequestException", `Invalid response parameter mapping ${key}`);
+        const header = key.match(/^[a-z]+:header\.(.+)$/i)?.[1]; if (header && RESERVED_MAPPING_HEADER.test(header)) throw new AwsError("BadRequestException", `Invalid response parameter mapping ${key}: the ${header} header is reserved`);
+      }
+    }
+    const credentialsArn = input.credentialsArn === "" || input.credentialsArn === null ? undefined : input.credentialsArn ?? existing?.credentialsArn;
+    if (serviceIntegration && !credentialsArn) throw new AwsError("BadRequestException", `CredentialsArn is required for ${subtype}`);
+    this.assertGatewayRole(credentialsArn, serviceIntegration ? `${subtype} integration` : "integration");
     return {
       integrationId: existing?.integrationId ?? id(10), description: input.description ?? existing?.description,
       integrationType: type, integrationSubtype: subtype,
@@ -488,10 +546,10 @@ export class ApiGatewayV2Service {
     if (!new Set(["REQUEST", "JWT"]).has(type)) throw new AwsError("BadRequestException", "AuthorizerType must be REQUEST or JWT");
     const name = String(input.name ?? existing?.name ?? "").trim();
     if (!name || name.length > 128) throw new AwsError("BadRequestException", "Name is required");
-    const ttl = Number(input.authorizerResultTtlInSeconds ?? existing?.authorizerResultTtlInSeconds ?? 300);
+    const ttl = Number(input.authorizerResultTtlInSeconds ?? existing?.authorizerResultTtlInSeconds ?? 0);
     if (!Number.isInteger(ttl) || ttl < 0 || ttl > 3600) throw new AwsError("BadRequestException", "AuthorizerResultTtlInSeconds must be between 0 and 3600");
     const identitySource = input.identitySource ?? existing?.identitySource ?? [];
-    if (!Array.isArray(identitySource) || identitySource.some((item: unknown) => typeof item !== "string" || !String(item).startsWith("$request."))) throw new AwsError("BadRequestException", "IdentitySource entries must use $request selection expressions");
+    if (!Array.isArray(identitySource) || identitySource.some((item: unknown) => typeof item !== "string" || !item)) throw new AwsError("BadRequestException", "IdentitySource must be a list of selection expressions");
     if (type === "JWT") {
       if (identitySource.length !== 1 || !/^\$request\.(?:header|querystring)\.[A-Za-z0-9._-]+$/i.test(identitySource[0])) throw new AwsError("BadRequestException", "JWT authorizers require one header or query string IdentitySource");
       const jwt = input.jwtConfiguration ?? existing?.jwtConfiguration;
@@ -502,6 +560,7 @@ export class ApiGatewayV2Service {
     }
     const uri = String(input.authorizerUri ?? existing?.authorizerUri ?? "");
     if (!uri) throw new AwsError("BadRequestException", "AuthorizerUri is required for REQUEST authorizers");
+    if (identitySource.some((item: string) => !REQUEST_AUTHORIZER_IDENTITY.test(item))) throw new AwsError("BadRequestException", "REQUEST authorizer IdentitySource entries must be $request.header.{name}, $request.querystring.{name}, $context.{variableName}, or $stageVariables.{variableName}");
     if (ttl > 0 && !identitySource.length) throw new AwsError("BadRequestException", "IdentitySource is required when authorizer caching is enabled");
     const payload = String(input.authorizerPayloadFormatVersion ?? existing?.authorizerPayloadFormatVersion ?? "2.0") as "1.0" | "2.0";
     if (!new Set(["1.0", "2.0"]).has(payload)) throw new AwsError("BadRequestException", "AuthorizerPayloadFormatVersion must be 1.0 or 2.0");
@@ -572,7 +631,7 @@ export class ApiGatewayV2Service {
     };
     if (!new Set(["ipv4", "dualstack"]).has(api.ipAddressType)) throw new AwsError("BadRequestException", "IpAddressType must be ipv4 or dualstack");
     if (input.target !== undefined) {
-      const integration = this.validateIntegration({ integrationType: "AWS_PROXY", integrationUri: input.target, credentialsArn: input.credentialsArn, payloadFormatVersion: "2.0" });
+      const integration = this.validateIntegration(this.quickTargetIntegration(input.target, input.credentialsArn));
       if (operationToken) { integration.integrationId = cloudFormationResourceId(operationToken, "quick-integration")!; integration.cloudFormationOperationToken = cloudFormationChildToken(operationToken, "quick-integration"); }
       integration.apiGatewayManaged = true; api.integrations[integration.integrationId] = integration;
       const route: HttpApiRouteState = { routeId: cloudFormationResourceId(operationToken, "quick-route") ?? id(10), routeKey: this.validateRouteKey(input.routeKey ?? "$default"), authorizationType: "NONE", authorizationScopes: [], target: `integrations/${integration.integrationId}`, apiGatewayManaged: true, ...(operationToken ? { cloudFormationOperationToken: cloudFormationChildToken(operationToken, "quick-route") } : {}) };
@@ -587,12 +646,84 @@ export class ApiGatewayV2Service {
     return api;
   }
 
+  /** Quick create: an HTTP(S) URL becomes an HTTP_PROXY integration (payload 1.0, ANY); anything else is a Lambda AWS_PROXY integration (payload 2.0). */
+  private quickTargetIntegration(target: unknown, credentialsArn: unknown): Record<string, unknown> {
+    return /^https?:\/\//i.test(String(target ?? "")) ? { integrationType: "HTTP_PROXY", integrationUri: target, integrationMethod: "ANY", payloadFormatVersion: "1.0" } : { integrationType: "AWS_PROXY", integrationUri: target, credentialsArn, integrationMethod: "POST", payloadFormatVersion: "2.0" };
+  }
+
+  /** UpdateApi Target/RouteKey/CredentialsArn update the quick-create integration and route; they cannot add quick-create resources to an explicit API. */
+  private updateQuickCreate(api: HttpApiState, input: any): void {
+    const integration = Object.values(api.integrations).find(value => value.apiGatewayManaged); const route = Object.values(api.routes).find(value => value.apiGatewayManaged);
+    if (!integration || !route) throw new AwsError("BadRequestException", "Target, RouteKey, and CredentialsArn can be updated only for an API created with quick create");
+    if (input.target !== undefined || input.credentialsArn !== undefined) {
+      const base = this.quickTargetIntegration(input.target ?? integration.integrationUri, input.credentialsArn ?? integration.credentialsArn); const sameType = base.integrationType === integration.integrationType;
+      api.integrations[integration.integrationId] = this.validateIntegration({ ...base, ...(sameType ? {} : { requestParameters: {}, responseParameters: {} }), ...(base.integrationType === "HTTP_PROXY" ? { credentialsArn: "" } : {}) }, { ...integration, ...(sameType ? {} : { integrationMethod: undefined, payloadFormatVersion: base.payloadFormatVersion as "1.0" | "2.0" }) });
+    }
+    if (input.routeKey !== undefined) { const candidate: HttpApiRouteState = { ...route, routeKey: this.validateRouteKey(input.routeKey) }; this.validateRouteReferences(api, candidate, route.routeId); api.routes[route.routeId] = candidate; }
+  }
+
+  private importNotes(result: { warnings: string[]; importInfo: string[] }): Record<string, string[]> { return { ...(result.warnings.length ? { warnings: [...result.warnings] } : {}), ...(result.importInfo.length ? { importInfo: [...result.importInfo] } : {}) }; }
+
+  private parseImport(body: unknown, url: URL): ReturnType<typeof parseHttpApiOpenApi> {
+    if (typeof body !== "string" || !body.trim()) throw new AwsError("BadRequestException", "Body is required and must contain an OpenAPI 3.0 definition");
+    const basepath = url.searchParams.get("basepath") ?? "ignore"; const failOnWarnings = String(url.searchParams.get("failOnWarnings") ?? url.searchParams.get("failonwarnings") ?? "false").toLowerCase() === "true";
+    let parsed: ReturnType<typeof parseHttpApiOpenApi>;
+    try { parsed = parseHttpApiOpenApi(body, basepath); } catch (error) { if (error instanceof HttpApiOpenApiError) throw new AwsError("BadRequestException", `Errors found during import:\n\t${error.message}`); throw error; }
+    if (failOnWarnings && parsed.warnings.length) throw new AwsError("BadRequestException", `Warnings found during import:\n\t${parsed.warnings.join("\n\t")}`);
+    return parsed;
+  }
+
+  private importStep<T>(label: string, action: () => T): T {
+    try { return action(); } catch (error) { if (error instanceof AwsError && error.status < 500) throw new AwsError("BadRequestException", `Errors found during import:\n\t${label}: ${error.message}`); throw error; }
+  }
+
+  /** Replace the API definition (name, description, version, CORS, authorizers, integrations, routes) with an imported OpenAPI document. Stages, deployments, and tags are kept. */
+  private applyImport(api: HttpApiState, parsed: ReturnType<typeof parseHttpApiOpenApi>): void {
+    api.name = parsed.name.length > 128 ? parsed.name.slice(0, 128) : parsed.name; api.description = parsed.description; api.version = parsed.version;
+    api.corsConfiguration = this.importStep("x-amazon-apigateway-cors", () => this.validateCors(parsed.corsConfiguration));
+    api.authorizers = {}; api.integrations = {}; api.routes = {};
+    const authorizerIds: Record<string, string> = {}; const integrationIds: Record<string, string> = {};
+    for (const [name, input] of Object.entries(parsed.authorizers)) { const authorizer = this.importStep(`Authorizer ${name}`, () => this.validateAuthorizer(input)); api.authorizers[authorizer.authorizerId] = authorizer; authorizerIds[name] = authorizer.authorizerId; }
+    for (const [key, input] of Object.entries(parsed.integrations)) { const integration = this.importStep(`Integration for ${key.replace(/^(?:route|ref):/, "")}`, () => this.validateIntegration(input)); api.integrations[integration.integrationId] = integration; integrationIds[key] = integration.integrationId; }
+    for (const value of parsed.routes) {
+      const route: HttpApiRouteState = { routeId: id(10), routeKey: this.importStep(`Route ${value.routeKey}`, () => this.validateRouteKey(value.routeKey)), authorizationType: value.authorizationType, authorizerId: value.authorizerName ? authorizerIds[value.authorizerName] : undefined, authorizationScopes: [...value.authorizationScopes], target: value.integrationKey && integrationIds[value.integrationKey] ? `integrations/${integrationIds[value.integrationKey]}` : undefined, operationName: value.operationName, apiGatewayManaged: false };
+      this.importStep(`Route ${value.routeKey}`, () => this.validateRouteReferences(api, route)); api.routes[route.routeId] = route;
+    }
+  }
+
+  private async importApi(body: unknown, url: URL, operationToken?: string): Promise<{ api: HttpApiState; warnings: string[]; importInfo: string[] }> {
+    const parsed = this.parseImport(body, url); const apiId = cloudFormationResourceId(operationToken, "api") ?? id(10);
+    const replay = this.apis[apiId]; if (replay) { if (operationToken && replay.cloudFormationOperationToken === operationToken) return { api: replay, warnings: parsed.warnings, importInfo: parsed.importInfo }; throw new AwsError("ConflictException", "An API with this identifier already exists", 409); }
+    if (this.webSocket?.hasApi(apiId)) throw new AwsError("ConflictException", "A different API already uses the derived CloudFormation identifier", 409);
+    const api: HttpApiState = { apiId, name: parsed.name, protocolType: "HTTP", ipAddressType: "ipv4", routeSelectionExpression: "${request.method} ${request.path}", apiEndpoint: `${this.invokeProtocol}://localhost:${this.currentInvokePort()}/${apiId}`, apiGatewayManaged: false, createdDate: this.clock.now(), tags: {}, disableExecuteApiEndpoint: false, integrations: {}, routes: {}, authorizers: {}, deployments: {}, stages: {}, models: {}, cloudFormationOperationToken: operationToken };
+    this.applyImport(api, parsed); this.apis[apiId] = api; await this.store.save(); return { api, warnings: parsed.warnings, importInfo: parsed.importInfo };
+  }
+
+  private async reimportApi(api: HttpApiState, body: unknown, url: URL): Promise<{ api: HttpApiState; warnings: string[]; importInfo: string[] }> {
+    const parsed = this.parseImport(body, url); const candidate = structuredClone(api); this.applyImport(candidate, parsed);
+    for (const stage of Object.values(candidate.stages)) for (const key of Object.keys(stage.routeSettings)) if (!Object.values(candidate.routes).some(route => route.routeKey === key)) delete stage.routeSettings[key];
+    this.apis[api.apiId] = candidate; await this.autoDeploy(candidate); return { api: candidate, warnings: parsed.warnings, importInfo: parsed.importInfo };
+  }
+
+  private exportApi(api: HttpApiState, specification: string, url: URL): { body: string; contentType: string } {
+    if (specification !== "OAS30") throw new AwsError("BadRequestException", "Specification must be OAS30");
+    const outputType = url.searchParams.get("outputType"); if (outputType !== "JSON" && outputType !== "YAML") throw new AwsError("BadRequestException", "OutputType must be JSON or YAML");
+    const exportVersion = url.searchParams.get("exportVersion"); if (exportVersion !== null && exportVersion !== "1.0") throw new AwsError("BadRequestException", "ExportVersion must be 1.0");
+    const includeExtensions = String(url.searchParams.get("includeExtensions") ?? "true").toLowerCase() !== "false"; const stageName = url.searchParams.get("stageName") ?? undefined;
+    let snapshot = this.snapshot(api);
+    if (stageName !== undefined) { const stage = this.stage(api, stageName); const deployment = stage.deploymentId ? api.deployments[stage.deploymentId] : undefined; if (!deployment) throw new AwsError("BadRequestException", `Stage ${stageName} has no deployment to export`); snapshot = deployment.snapshot; }
+    return serializeHttpApiOpenApi(exportHttpApiOpenApi({ api, snapshot, stageName, includeExtensions }), outputType);
+  }
+
   async handle(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL): Promise<void> {
     try {
       if (pathname === "/v2/apis") {
         if (req.method === "POST") { const input = await readJson(req); const operationToken = getCloudFormationIdempotencyKey(req); const stableApiId = cloudFormationResourceId(operationToken, "api"); if (stableApiId) { const replay = this.replayCreated(this.apis[stableApiId], operationToken, "API"); if (replay) { if (input.protocolType !== "HTTP") throw new AwsError("ConflictException", "The CloudFormation operation token is already bound to an HTTP API", 409); return json(res, apiView(replay), 201); } if (this.webSocket?.hasApi(stableApiId) && input.protocolType !== "WEBSOCKET") throw new AwsError("ConflictException", "A different API already uses the derived CloudFormation identifier", 409); } if (input.protocolType === "WEBSOCKET") { if (!this.webSocket) throw new AwsError("BadRequestException", "WebSocket APIs are unavailable"); return json(res, webSocketApiView(await this.webSocket.createApi(input, operationToken)), 201); } return json(res, apiView(await this.createApi(input, operationToken)), 201); }
         if (req.method === "GET") { const values = [...Object.values(this.apis).map(apiView), ...(this.webSocket?.apiViews() ?? [])].sort((a, b) => a.apiId.localeCompare(b.apiId)); return json(res, this.page("GetApis", "apis", values, url)); }
+        if (req.method === "PUT") { const input = await readJson(req); const result = await this.importApi(input.body, url, getCloudFormationIdempotencyKey(req)); return json(res, { ...apiView(result.api), ...this.importNotes(result) }, 201); }
       }
+      if (/^\/v2\/vpclinks(?:\/|$)/.test(pathname)) throw new AwsError("BadRequestException", HTTP_API_VPC_LINK_UNSUPPORTED);
+      if (/^\/v2\/(?:portals|portalproducts)(?:\/|$)/.test(pathname)) throw new AwsError("BadRequestException", "API Gateway developer portals are not supported by StackSim");
 
       if (pathname.startsWith("/v2/tags/")) {
         let arn: string; try { arn = decodeURIComponent(pathname.slice("/v2/tags/".length)); } catch { throw new AwsError("BadRequestException", "Invalid resource ARN"); }
@@ -610,6 +741,7 @@ export class ApiGatewayV2Service {
       const domainMatch = pathname.match(/^\/v2\/domainnames\/([^/]+)(.*)$/);
       if (domainMatch) {
         const name = decodeURIComponent(domainMatch[1]); const domain = this.domain(name); const suffix = domainMatch[2];
+        if (/^\/routingrules(?:\/|$)/.test(suffix)) throw new AwsError("BadRequestException", "Routing rules for custom domain names are not supported by StackSim; use API mappings");
         if (!suffix) {
           if (req.method === "GET") return json(res, domainView(domain));
           if (req.method === "PATCH") { const updated = this.updateDomain(domain, await readJson(req)); if (updated.domainName !== domain.domainName) { delete this.domains[domain.domainName]; this.domains[updated.domainName] = updated; } else this.domains[domain.domainName] = updated; await this.store.save(); return json(res, domainView(updated)); }
@@ -632,6 +764,8 @@ export class ApiGatewayV2Service {
       const apiMatch = pathname.match(/^\/v2\/apis\/([^/]+)(.*)$/);
       if (!apiMatch) throw new AwsError("NotFoundException", "Unknown API Gateway v2 route", 404);
       if (this.webSocket?.hasApi(decodeURIComponent(apiMatch[1]))) {
+        if (/^\/exports\//.test(apiMatch[2])) throw new AwsError("BadRequestException", "ExportApi is supported only for HTTP APIs; WebSocket APIs cannot be exported");
+        if (!apiMatch[2] && req.method === "PUT") throw new AwsError("BadRequestException", "ReimportApi is supported only for HTTP APIs; WebSocket APIs cannot be imported from OpenAPI");
         await this.webSocket.handle(req, res, pathname, url);
         if (req.method === "DELETE" && !apiMatch[2] && res.statusCode < 300) {
           for (const domain of Object.values(this.domains)) for (const [mappingId, mapping] of Object.entries(domain.apiMappings)) if (mapping.apiId === decodeURIComponent(apiMatch[1])) delete domain.apiMappings[mappingId];
@@ -643,12 +777,18 @@ export class ApiGatewayV2Service {
 
       if (!suffix) {
         if (req.method === "GET") return json(res, apiView(api));
-        if (req.method === "PATCH") { const input = await readJson(req); const candidate = structuredClone(api); if (input.protocolType !== undefined && input.protocolType !== "HTTP") throw new AwsError("BadRequestException", "ProtocolType cannot be changed"); if (input.name !== undefined) { const name = String(input.name).trim(); if (!name || name.length > 128) throw new AwsError("BadRequestException", "Invalid Name"); candidate.name = name; } if (input.description !== undefined) candidate.description = input.description; if (input.version !== undefined) candidate.version = input.version; if (input.disableExecuteApiEndpoint !== undefined) candidate.disableExecuteApiEndpoint = Boolean(input.disableExecuteApiEndpoint); if (input.corsConfiguration !== undefined) candidate.corsConfiguration = this.validateCors(input.corsConfiguration); if (input.ipAddressType !== undefined) { if (!new Set(["ipv4", "dualstack"]).has(input.ipAddressType)) throw new AwsError("BadRequestException", "Invalid IpAddressType"); candidate.ipAddressType = input.ipAddressType; } this.apis[api.apiId] = candidate; await this.autoDeploy(candidate); return json(res, apiView(candidate)); }
+        if (req.method === "PUT") { const input = await readJson(req); const result = await this.reimportApi(api, input.body, url); return json(res, { ...apiView(result.api), ...this.importNotes(result) }, 201); }
+        if (req.method === "PATCH") { const input = await readJson(req); const candidate = structuredClone(api); if (input.target !== undefined || input.routeKey !== undefined || input.credentialsArn !== undefined) this.updateQuickCreate(candidate, input); if (input.protocolType !== undefined && input.protocolType !== "HTTP") throw new AwsError("BadRequestException", "ProtocolType cannot be changed"); if (input.name !== undefined) { const name = String(input.name).trim(); if (!name || name.length > 128) throw new AwsError("BadRequestException", "Invalid Name"); candidate.name = name; } if (input.description !== undefined) candidate.description = input.description; if (input.version !== undefined) candidate.version = input.version; if (input.disableExecuteApiEndpoint !== undefined) candidate.disableExecuteApiEndpoint = Boolean(input.disableExecuteApiEndpoint); if (input.corsConfiguration !== undefined) candidate.corsConfiguration = this.validateCors(input.corsConfiguration); if (input.ipAddressType !== undefined) { if (!new Set(["ipv4", "dualstack"]).has(input.ipAddressType)) throw new AwsError("BadRequestException", "Invalid IpAddressType"); candidate.ipAddressType = input.ipAddressType; } this.apis[api.apiId] = candidate; await this.autoDeploy(candidate); return json(res, apiView(candidate)); }
         if (req.method === "DELETE") { delete this.apis[api.apiId]; for (const domain of Object.values(this.domains)) for (const [mappingId, mapping] of Object.entries(domain.apiMappings)) if (mapping.apiId === api.apiId) delete domain.apiMappings[mappingId]; await this.store.save(); res.statusCode = 204; res.end(); return; }
       }
 
       if (suffix === "/cors" && req.method === "DELETE") { delete api.corsConfiguration; await this.autoDeploy(api); res.statusCode = 204; res.end(); return; }
       if (suffix === "/models" || /^\/models\//.test(suffix)) throw new AwsError("BadRequestException", "Models are supported only for WebSocket APIs", 400);
+      if (/^\/integrations\/[^/]+\/integrationresponses(?:\/|$)/.test(suffix)) throw new AwsError("BadRequestException", "Integration responses are supported only for WebSocket APIs", 400);
+      if (/^\/routes\/[^/]+\/routeresponses(?:\/|$)/.test(suffix)) throw new AwsError("BadRequestException", "Route responses are supported only for WebSocket APIs", 400);
+      if (/^\/routes\/[^/]+\/requestparameters(?:\/|$)/.test(suffix)) throw new AwsError("BadRequestException", "Route request parameters are supported only for WebSocket APIs", 400);
+      const exportMatch = suffix.match(/^\/exports\/([^/]+)$/);
+      if (exportMatch && req.method === "GET") { const exported = this.exportApi(api, decodeURIComponent(exportMatch[1]), url); res.statusCode = 200; res.setHeader("content-type", exported.contentType); res.setHeader("content-length", String(Buffer.byteLength(exported.body))); res.end(exported.body); return; }
 
       if (suffix === "/integrations") {
         if (req.method === "POST") { const operationToken = getCloudFormationIdempotencyKey(req); const integrationId = cloudFormationResourceId(operationToken, "integration"); const replay = integrationId ? this.replayCreated(api.integrations[integrationId], operationToken, "integration") : undefined; if (replay) return json(res, integrationView(replay), 201); const integration = this.validateIntegration(await readJson(req)); if (operationToken) { integration.integrationId = integrationId!; integration.cloudFormationOperationToken = operationToken; } api.integrations[integration.integrationId] = integration; await this.autoDeploy(api); return json(res, integrationView(integration), 201); }
@@ -790,7 +930,8 @@ export class ApiGatewayV2Service {
     return { route: Object.values(snapshot.routes).find(route => route.routeKey === "$default"), parameters: {} };
   }
 
-  private resolveInvocation(pathname: string, method: string): ResolvedHttpInvocation {
+  /** With allowMissingRoute, an unmatched request resolves to the "-" route so the 404 is still access-logged and metered for the stage. */
+  private resolveInvocation(pathname: string, method: string, allowMissingRoute = false): ResolvedHttpInvocation {
     const segments = pathname.replace(/^\//, "").split("/"); const apiId = decodeURIComponent(segments.shift() ?? ""); const api = this.api(apiId);
     const firstRaw = segments[0] ?? ""; const first = decodeURIComponent(firstRaw); let stage: HttpApiStageState | undefined;
     if (first && first !== "$default" && api.stages[first]) { stage = api.stages[first]; segments.shift(); }
@@ -802,6 +943,7 @@ export class ApiGatewayV2Service {
     const path = `/${segments.join("/")}` || "/"; const matched = this.matchRoute(deployment.snapshot, method, path);
     if (!matched.route) {
       if (method === "OPTIONS" && deployment.snapshot.corsConfiguration) return { api, stage, snapshot: deployment.snapshot, route: { routeId: "cors-preflight", routeKey: "OPTIONS /{proxy+}", authorizationType: "NONE", authorizationScopes: [], apiGatewayManaged: true }, path, pathParameters: {} };
+      if (allowMissingRoute) return { api, stage, snapshot: deployment.snapshot, route: { routeId: "-", routeKey: "-", authorizationType: "NONE", authorizationScopes: [], apiGatewayManaged: true }, path, pathParameters: {} };
       throw new AwsError("NotFoundException", "Not Found", 404);
     }
     return { api, stage, snapshot: deployment.snapshot, route: matched.route, path, pathParameters: matched.parameters };
@@ -823,30 +965,81 @@ export class ApiGatewayV2Service {
     const names = [...new Set(url.searchParams.keys())]; return { query: Object.fromEntries(names.map(name => [name, url.searchParams.getAll(name).join(",")])), multiQuery: Object.fromEntries(names.map(name => [name, url.searchParams.getAll(name)])) };
   }
 
-  private identityValue(source: string, input: HttpInvocationInput): string {
-    const header = source.match(/^\$request\.header\.([A-Za-z0-9._-]+)$/i)?.[1]; if (header) return input.headers[header.toLowerCase()] ?? "";
-    const query = source.match(/^\$request\.querystring\.([A-Za-z0-9._-]+)$/i)?.[1]; if (query) return input.query[query] ?? "";
-    const path = source.match(/^\$request\.path\.([A-Za-z0-9._-]+)$/i)?.[1]; if (path) return input.pathParameters[path] ?? "";
-    const stage = source.match(/^\$stageVariables\.([A-Za-z0-9._-]+)$/)?.[1]; if (stage) return input.stage.stageVariables[stage] ?? "";
-    if (source === "$context.routeKey") return input.route.routeKey; if (source === "$context.httpMethod") return input.method;
-    return "";
+  /** The documented HTTP API $context variables that exist for this request (access logs, parameter mapping values, identity sources). */
+  private contextVariables(input: HttpInvocationInput, extra: Record<string, unknown> = {}): Record<string, unknown> {
+    const host = input.headers.host; const authorization = input.authorization; const iam = authorization?.iam; const principal = input.route.authorizationType === "AWS_IAM" ? input.principal : undefined; const observed = input.observed;
+    const values: Record<string, unknown> = {
+      accountId: this.store.accountId, apiId: input.api.apiId, domainName: host, domainPrefix: host?.split(".")[0],
+      extendedRequestId: input.requestId, requestId: input.requestId, httpMethod: input.method, path: input.fullPath, protocol: "HTTP/1.1",
+      requestTime: clfTime(input.requestTimeEpoch), requestTimeEpoch: input.requestTimeEpoch, routeKey: input.route.routeKey, stage: input.stage.stageName,
+      "identity.sourceIp": input.sourceIp, "identity.userAgent": input.headers["user-agent"],
+      "identity.accountId": iam?.accountId ?? undefined, "identity.caller": iam?.callerId ?? undefined, "identity.user": iam?.userId ?? undefined, "identity.userArn": iam?.userArn ?? undefined,
+      "identity.cognitoIdentityId": principal?.cognitoIdentityId, "identity.cognitoIdentityPoolId": principal?.cognitoIdentityPoolId, "identity.cognitoAuthenticationType": principal?.cognitoIdentityAuthType, "identity.cognitoAuthenticationProvider": principal?.cognitoIdentityAuthProvider,
+      "customDomain.basePathMatched": input.customDomainBasePath, "authorizer.error": observed.authorizerError,
+      "integration.error": observed.integrationError, integrationErrorMessage: observed.integrationError,
+      "integration.integrationStatus": observed.integrationStatus, integrationStatus: observed.integrationStatus, "integration.status": observed.integrationFunctionStatus ?? observed.integrationStatus,
+      "integration.latency": observed.integrationLatency, integrationLatency: observed.integrationLatency, "integration.requestId": observed.integrationRequestId, awsEndpointRequestId: observed.integrationRequestId,
+    };
+    if (authorization?.jwt) for (const [name, value] of Object.entries(authorization.jwt.claims)) values[`authorizer.claims.${name}`] = value;
+    if (authorization && !authorization.jwt && !authorization.iam) { if (authorization.principalId !== undefined) values["authorizer.principalId"] = authorization.principalId; for (const [name, value] of Object.entries(authorization.context)) values[`authorizer.${name}`] = value; }
+    return { ...values, ...extra };
   }
+
+  private contextValue(name: string, input: HttpInvocationInput, extra?: Record<string, unknown>): string | undefined {
+    const value = this.contextVariables(input, extra)[name]; return value === undefined || value === null ? undefined : typeof value === "object" ? JSON.stringify(value) : String(value);
+  }
+
+  /** Evaluate one HTTP API selection expression ($request.*, $context.*, $stageVariables.*); undefined when the text is not a selection expression. */
+  private selectionValue(selection: string, input: HttpInvocationInput): string | undefined {
+    const header = selection.match(/^\$request\.header\.([A-Za-z0-9._-]+)$/i)?.[1]; if (header !== undefined) return input.headers[header.toLowerCase()] ?? "";
+    const query = selection.match(/^\$request\.querystring\.([A-Za-z0-9._-]+)$/i)?.[1]; if (query !== undefined) return input.query[query] ?? "";
+    if (selection === "$request.path") return input.path;
+    const path = selection.match(/^\$request\.path\.([A-Za-z0-9._-]+)$/i)?.[1]; if (path !== undefined) return input.pathParameters[path] ?? "";
+    if (selection === "$request.body") return input.body.toString("utf8");
+    const bodyPath = selection.match(/^\$request\.body((?:\.[A-Za-z0-9_-]+|\[\d+\])+)$/)?.[1]; if (bodyPath !== undefined) return jsonPathValue(input.body.toString("utf8"), bodyPath);
+    const stage = selection.match(/^\$stageVariables\.([A-Za-z0-9_]+)$/)?.[1]; if (stage !== undefined) return input.stage.stageVariables[stage] ?? "";
+    const context = selection.match(/^\$context\.([A-Za-z0-9_.-]+)$/)?.[1]; if (context !== undefined) return this.contextValue(context, input) ?? "";
+    return undefined;
+  }
+
+  private identityValue(source: string, input: HttpInvocationInput): string { return this.selectionValue(source, input) ?? ""; }
 
   private lambdaArn(uri: string | undefined): string {
     const arn = uri?.match(/functions\/(arn:[^/]+)\/invocations/)?.[1] ?? (uri?.startsWith("arn:") ? uri : undefined);
     if (!arn) throw new AwsError("InternalServerErrorException", "Invalid Lambda integration URI", 500); return arn;
   }
 
+  /** Resolve ${stageVariables.name} references in an integration URI for the invoked stage. */
+  private stageUri(uri: string | undefined, input: HttpInvocationInput): string | undefined { return uri?.replace(STAGE_VARIABLE_REFERENCE, (_match, name: string) => input.stage.stageVariables[name] ?? ""); }
+
   private methodArn(input: HttpInvocationInput): string { return `arn:aws:execute-api:${this.region}:${this.store.accountId}:${input.api.apiId}/${input.stage.stageName}/${input.method}/${input.path.replace(/^\//, "")}`; }
 
-  private requestContext(input: HttpInvocationInput, authorizer: HttpAuthorizerResult = { allowed: true, context: {} }): any {
-    const now = this.clock.now(); return {
+  private routeResource(route: HttpApiRouteState): string { return route.routeKey === "$default" ? "$default" : route.routeKey.split(/\s+/, 2)[1]; }
+
+  /** Payload format 2.0 requestContext. */
+  private requestContext(input: HttpInvocationInput, authorizer?: HttpAuthorizerResult): any {
+    const lambda = authorizer && !authorizer.jwt && !authorizer.iam && (authorizer.principalId !== undefined || Object.keys(authorizer.context).length > 0);
+    return {
       accountId: this.store.accountId, apiId: input.api.apiId,
-      authorizer: authorizer.jwt ? { jwt: authorizer.jwt } : authorizer.principalId || Object.keys(authorizer.context).length ? { lambda: authorizer.context } : undefined,
+      authorizer: authorizer?.jwt ? { jwt: authorizer.jwt } : authorizer?.iam ? { iam: authorizer.iam } : lambda ? { lambda: authorizer!.context } : undefined,
       domainName: input.headers.host, domainPrefix: input.headers.host?.split(".")[0],
-      http: { method: input.method, path: input.path, protocol: "HTTP/1.1", sourceIp: input.sourceIp, userAgent: input.headers["user-agent"] ?? "" },
+      http: { method: input.method, path: input.rawPath, protocol: "HTTP/1.1", sourceIp: input.sourceIp, userAgent: input.headers["user-agent"] ?? "" },
       requestId: input.requestId, routeKey: input.route.routeKey, stage: input.stage.stageName,
-      time: new Date(now).toUTCString(), timeEpoch: now,
+      time: clfTime(input.requestTimeEpoch), timeEpoch: input.requestTimeEpoch,
+    };
+  }
+
+  /** Payload format 1.0 requestContext: the REST-compatible shape (identity, resourcePath, requestTime, authorizer.claims/scopes for JWT, flat Lambda authorizer context). */
+  private requestContextV1(input: HttpInvocationInput, authorizer?: HttpAuthorizerResult): any {
+    const iam = authorizer?.iam; const principal = input.route.authorizationType === "AWS_IAM" ? input.principal : undefined;
+    const lambdaContext = authorizer && !authorizer.jwt && !authorizer.iam ? { ...authorizer.context, ...(authorizer.principalId !== undefined ? { principalId: authorizer.principalId } : {}) } : undefined;
+    return {
+      accountId: this.store.accountId, apiId: input.api.apiId,
+      authorizer: authorizer?.jwt ? { claims: authorizer.jwt.claims, scopes: authorizer.jwt.scopes } : lambdaContext && Object.keys(lambdaContext).length ? lambdaContext : { claims: null, scopes: null },
+      domainName: input.headers.host, domainPrefix: input.headers.host?.split(".")[0], extendedRequestId: input.requestId, httpMethod: input.method,
+      identity: { accessKey: iam?.accessKey ?? null, accountId: iam?.accountId ?? null, caller: iam?.callerId ?? null, cognitoAuthenticationProvider: principal?.cognitoIdentityAuthProvider ?? null, cognitoAuthenticationType: principal?.cognitoIdentityAuthType ?? null, cognitoIdentityId: principal?.cognitoIdentityId ?? null, cognitoIdentityPoolId: principal?.cognitoIdentityPoolId ?? null, principalOrgId: null, sourceIp: input.sourceIp ?? null, user: iam?.userId ?? null, userAgent: input.headers["user-agent"] ?? null, userArn: iam?.userArn ?? null },
+      path: input.fullPath, protocol: "HTTP/1.1", requestId: input.requestId, requestTime: clfTime(input.requestTimeEpoch), requestTimeEpoch: input.requestTimeEpoch,
+      resourceId: input.route.routeKey, resourcePath: this.routeResource(input.route), stage: input.stage.stageName,
     };
   }
 
@@ -854,21 +1047,16 @@ export class ApiGatewayV2Service {
     this.assertGatewayRole(authorizer.authorizerCredentialsArn, "authorizer", true);
     const identities = authorizer.identitySource.map(source => this.identityValue(source, input)); if (identities.some(value => !value)) throw new AwsError("UnauthorizedException", "Unauthorized", 401);
     const cacheKey = `${input.api.apiId}\0${authorizer.authorizerId}\0${input.stage.stageName}\0${identities.join("\0")}`; const cached = this.authorizerCache.get(cacheKey); if (cached && cached.expiresAt > this.clock.now()) return cached.value;
-    const routeArn = this.methodArn(input); const context = this.requestContext(input); const event = authorizer.authorizerPayloadFormatVersion === "1.0" ? {
-      type: "REQUEST", methodArn: routeArn, resource: input.path, path: input.path, httpMethod: input.method, headers: input.headers,
-      multiValueHeaders: input.multiHeaders, queryStringParameters: input.query, multiValueQueryStringParameters: input.multiQuery,
-      pathParameters: input.pathParameters, stageVariables: input.stage.stageVariables,
-      requestContext: { ...context, identity: { sourceIp: input.sourceIp, userAgent: input.headers["user-agent"] } },
-    } : {
-      version: "2.0", type: "REQUEST", routeArn, identitySource: identities, routeKey: input.route.routeKey, rawPath: input.path,
-      rawQueryString: input.rawQueryString, cookies: this.requestCookies(input.headers.cookie), headers: input.headers,
-      requestContext: context, pathParameters: input.pathParameters, stageVariables: input.stage.stageVariables,
-    };
+    const routeArn = this.methodArn(input); let event: any;
+    if (authorizer.authorizerPayloadFormatVersion === "1.0") {
+      const { authorizer: _authorizer, ...requestContext } = this.requestContextV1(input);
+      event = { version: "1.0", type: "REQUEST", methodArn: routeArn, identitySource: identities.join(","), authorizationToken: identities.join(","), resource: this.routeResource(input.route), path: input.fullPath, httpMethod: input.method, headers: input.headers, multiValueHeaders: input.multiHeaders, queryStringParameters: input.query, multiValueQueryStringParameters: input.multiQuery, pathParameters: input.pathParameters, stageVariables: input.stage.stageVariables, requestContext };
+    } else event = present({ version: "2.0", type: "REQUEST", routeArn, identitySource: identities, routeKey: input.route.routeKey, rawPath: input.rawPath, rawQueryString: input.rawQueryString, cookies: this.requestCookies(input.headers.cookie), headers: input.headers, queryStringParameters: Object.keys(input.query).length ? input.query : undefined, requestContext: this.requestContext(input), pathParameters: input.pathParameters, stageVariables: input.stage.stageVariables });
     const sourceArn = `arn:aws:execute-api:${this.region}:${this.store.accountId}:${input.api.apiId}/authorizers/${authorizer.authorizerId}`; let invocation: InvokeResult;
-    const functionArn = this.lambdaArn(authorizer.authorizerUri); if (authorizer.authorizerCredentialsArn && evaluateRoleAuthorization(this.store.ensureAccount().iam, authorizer.authorizerCredentialsArn, "lambda:InvokeFunction", functionArn).decision !== "allowed") throw new AwsError("InternalServerErrorException", "The authorizer role cannot invoke the Lambda function", 500);
+    const functionArn = this.lambdaArn(this.stageUri(authorizer.authorizerUri, input)); if (authorizer.authorizerCredentialsArn && evaluateRoleAuthorization(this.store.ensureAccount().iam, authorizer.authorizerCredentialsArn, "lambda:InvokeFunction", functionArn).decision !== "allowed") throw new AwsError("InternalServerErrorException", "The authorizer role cannot invoke the Lambda function", 500);
     try { invocation = await this.lambda.invoke(functionArn, Buffer.from(JSON.stringify(event)), id(24), { principal: "apigateway.amazonaws.com", sourceArn, sourceAccount: this.store.accountId, enforceResourcePolicy: !authorizer.authorizerCredentialsArn, lineage: input.principal?.lambdaLineage }); }
     catch (error) { if (error instanceof AwsError && error.code === "AccessDeniedException") throw new AwsError("InternalServerErrorException", "API Gateway is not authorized to invoke the authorizer", 500); throw error; }
-    if (invocation.functionError) throw new AwsError("InternalServerErrorException", "Authorizer execution failed", 500);
+    if (invocation.functionError) { let message: unknown; try { message = JSON.parse(invocation.payload.toString("utf8"))?.errorMessage; } catch { message = undefined; } if (message === "Unauthorized") throw new AwsError("UnauthorizedException", "Unauthorized", 401); throw new AwsError("InternalServerErrorException", "Authorizer execution failed", 500); }
     let output: any; try { output = JSON.parse(invocation.payload.toString("utf8")); } catch { throw new AwsError("InternalServerErrorException", "Invalid authorizer response", 500); }
     let result: HttpAuthorizerResult;
     if (authorizer.enableSimpleResponses) {
@@ -952,11 +1140,18 @@ export class ApiGatewayV2Service {
     }
   }
 
+  private iamIdentity(principal: PrincipalContext | undefined): HttpIamIdentity {
+    const cognito = principal?.cognitoIdentityId ? { amr: [principal.cognitoIdentityAuthType, ...String(principal.cognitoIdentityAuthProvider ?? "").split(",")].filter((value): value is string => Boolean(value)), identityId: principal.cognitoIdentityId, identityPoolId: principal.cognitoIdentityPoolId ?? null } : null;
+    return { accessKey: principal?.accessKeyId || null, accountId: principal?.accountId ?? null, callerId: principal?.principalId ?? null, cognitoIdentity: cognito, principalOrgId: null, userArn: principal?.sessionArn ?? principal?.principalArn ?? null, userId: principal?.principalId ?? null };
+  }
+
   private async authorizeInvocation(input: HttpInvocationInput): Promise<HttpAuthorizerResult> {
     if (input.route.authorizationType === "NONE") return { allowed: true, context: {} };
-    if (input.route.authorizationType === "AWS_IAM") { if (this.authMode === "enforce" && input.identityAuthorization?.decision !== "allowed") throw new AwsError("ForbiddenException", "Forbidden", 403); return { allowed: true, principalId: input.principal?.principalId, context: {} }; }
+    if (input.route.authorizationType === "AWS_IAM") { if (this.authMode === "enforce" && input.identityAuthorization?.decision !== "allowed") { input.observed.authorizerError = "Forbidden"; throw new AwsError("ForbiddenException", "Forbidden", 403); } return { allowed: true, principalId: input.principal?.principalId, context: {}, iam: this.iamIdentity(input.principal) }; }
     const authorizer = input.snapshot.authorizers[input.route.authorizerId ?? ""]; if (!authorizer) throw new AwsError("InternalServerErrorException", "Authorizer configuration is unavailable", 500);
-    const result = authorizer.authorizerType === "JWT" ? await this.runJwtAuthorizer(authorizer, input) : await this.runRequestAuthorizer(authorizer, input); if (!result.allowed) throw new AwsError("ForbiddenException", "Forbidden", 403); return result;
+    try {
+      const result = authorizer.authorizerType === "JWT" ? await this.runJwtAuthorizer(authorizer, input) : await this.runRequestAuthorizer(authorizer, input); if (!result.allowed) throw new AwsError("ForbiddenException", "Forbidden", 403); return result;
+    } catch (error) { input.observed.authorizerError = error instanceof Error ? error.message : String(error); throw error; }
   }
 
   private requestCookies(value: string | undefined): string[] | undefined { const cookies = value?.split(/;\s*/).filter(Boolean); return cookies?.length ? cookies : undefined; }
@@ -966,25 +1161,48 @@ export class ApiGatewayV2Service {
   }
 
   private lambdaEvent(input: HttpInvocationInput, integration: HttpApiIntegrationState, authorizer: HttpAuthorizerResult): any {
-    const body = this.bodyValue(input.body); const context = this.requestContext(input, authorizer);
-    if (integration.payloadFormatVersion === "2.0") return present({ version: "2.0", routeKey: input.route.routeKey, rawPath: input.path, rawQueryString: input.rawQueryString, cookies: this.requestCookies(input.headers.cookie), headers: input.headers, queryStringParameters: Object.keys(input.query).length ? input.query : undefined, requestContext: context, body: body.body, pathParameters: Object.keys(input.pathParameters).length ? input.pathParameters : undefined, isBase64Encoded: body.isBase64Encoded, stageVariables: Object.keys(input.stage.stageVariables).length ? input.stage.stageVariables : undefined });
-    return present({ resource: input.route.routeKey === "$default" ? "$default" : input.route.routeKey.split(/\s+/, 2)[1], path: input.path, httpMethod: input.method, headers: input.headers, multiValueHeaders: input.multiHeaders, queryStringParameters: Object.keys(input.query).length ? input.query : undefined, multiValueQueryStringParameters: Object.keys(input.multiQuery).length ? input.multiQuery : undefined, pathParameters: Object.keys(input.pathParameters).length ? input.pathParameters : undefined, stageVariables: Object.keys(input.stage.stageVariables).length ? input.stage.stageVariables : undefined, requestContext: { ...context, identity: { sourceIp: input.sourceIp, userAgent: input.headers["user-agent"] }, authorizer: authorizer.jwt ? authorizer.jwt.claims : authorizer.context }, body: body.body, isBase64Encoded: body.isBase64Encoded });
+    const body = this.bodyValue(input.body); const queries = Object.keys(input.query).length > 0; const parameters = Object.keys(input.pathParameters).length > 0; const variables = Object.keys(input.stage.stageVariables).length > 0;
+    if (integration.payloadFormatVersion === "2.0") return present({ version: "2.0", routeKey: input.route.routeKey, rawPath: input.rawPath, rawQueryString: input.rawQueryString, cookies: this.requestCookies(input.headers.cookie), headers: input.headers, queryStringParameters: queries ? input.query : undefined, requestContext: this.requestContext(input, authorizer), body: body.body, pathParameters: parameters ? input.pathParameters : undefined, isBase64Encoded: body.isBase64Encoded, stageVariables: variables ? input.stage.stageVariables : undefined });
+    return { version: "1.0", resource: this.routeResource(input.route), path: input.fullPath, httpMethod: input.method, headers: input.headers, multiValueHeaders: input.multiHeaders, queryStringParameters: queries ? input.query : null, multiValueQueryStringParameters: queries ? input.multiQuery : null, requestContext: this.requestContextV1(input, authorizer), pathParameters: parameters ? input.pathParameters : null, stageVariables: variables ? input.stage.stageVariables : null, body: body.body ?? null, isBase64Encoded: body.isBase64Encoded };
   }
 
-  private parseLambdaResponse(invocation: InvokeResult, payloadVersion: "1.0" | "2.0", started: number): HttpBackendResult {
-    if (invocation.functionError) throw new AwsError("InternalServerErrorException", "Internal Server Error", 502); let output: any; try { output = JSON.parse(invocation.payload.toString("utf8")); } catch { throw new AwsError("InternalServerErrorException", "Internal Server Error", 502); }
-    if (payloadVersion === "2.0" && (output === null || typeof output !== "object" || output.statusCode === undefined)) { const value = typeof output === "string" ? output : JSON.stringify(output); return { status: 200, headers: { "content-type": typeof output === "string" ? "text/plain; charset=utf-8" : "application/json" }, body: Buffer.from(value ?? ""), integrationLatency: performance.now() - started }; }
-    const status = Number(output?.statusCode); if (!Number.isInteger(status) || status < 100 || status > 599) throw new AwsError("InternalServerErrorException", "Internal Server Error", 502);
+  /** Lambda proxy response handling: function errors and malformed responses are 500 Internal Server Error; payload 2.0 infers statusCode 200 and application/json when the function returns JSON without statusCode. */
+  private parseLambdaResponse(invocation: InvokeResult, payloadVersion: "1.0" | "2.0", started: number, input: HttpInvocationInput): HttpBackendResult {
+    input.observed.integrationStatus = 200; input.observed.integrationRequestId = invocation.requestId;
+    if (invocation.functionError) { let message = "The Lambda function returned an error"; try { const parsed = JSON.parse(invocation.payload.toString("utf8")); if (parsed?.errorMessage) message = `The Lambda function returned the following error: ${String(parsed.errorMessage)}`; } catch { /* keep the generic message */ } input.observed.integrationError = message; throw new AwsError("InternalServerErrorException", "Internal Server Error", 500); }
+    let output: any; try { output = JSON.parse(invocation.payload.toString("utf8")); } catch { input.observed.integrationError = "The Lambda function returned a response that is not valid JSON"; throw new AwsError("InternalServerErrorException", "Internal Server Error", 500); }
+    if (payloadVersion === "2.0" && (output === null || typeof output !== "object" || output.statusCode === undefined)) { const value = typeof output === "string" ? output : JSON.stringify(output); input.observed.integrationFunctionStatus = 200; return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(value ?? ""), integrationLatency: performance.now() - started }; }
+    const status = Number(output?.statusCode); if (!Number.isInteger(status) || status < 100 || status > 599) { input.observed.integrationError = "The Lambda function returned a malformed proxy response"; throw new AwsError("InternalServerErrorException", "Internal Server Error", 500); }
+    input.observed.integrationFunctionStatus = status;
     const headers: Record<string, string | string[]> = {}; for (const [name, value] of Object.entries(output.headers ?? {})) headers[name.toLowerCase()] = String(value); if (payloadVersion === "1.0") for (const [name, value] of Object.entries(output.multiValueHeaders ?? {})) headers[name.toLowerCase()] = Array.isArray(value) ? value.map(String) : [String(value)]; if (payloadVersion === "2.0" && Array.isArray(output.cookies)) headers["set-cookie"] = output.cookies.map(String);
-    let body = output.body === undefined || output.body === null ? Buffer.alloc(0) : Buffer.from(typeof output.body === "string" ? output.body : JSON.stringify(output.body)); if (output.isBase64Encoded) { try { body = Buffer.from(String(output.body ?? ""), "base64"); } catch { throw new AwsError("InternalServerErrorException", "Internal Server Error", 502); } }
+    let body = output.body === undefined || output.body === null ? Buffer.alloc(0) : Buffer.from(typeof output.body === "string" ? output.body : JSON.stringify(output.body)); if (output.isBase64Encoded) { try { body = Buffer.from(String(output.body ?? ""), "base64"); } catch { throw new AwsError("InternalServerErrorException", "Internal Server Error", 500); } }
     return { status, headers, body, integrationLatency: performance.now() - started };
   }
 
+  /** Apply request parameter mappings to the request a Lambda proxy integration receives (headers, query strings, and the path in the event). */
+  private mappedLambdaInput(integration: HttpApiIntegrationState, input: HttpInvocationInput): HttpInvocationInput {
+    if (!Object.keys(integration.requestParameters).length) return input;
+    const headers = { ...input.headers }; const multiHeaders = Object.fromEntries(Object.entries(input.multiHeaders).map(([name, values]) => [name, [...values]])); const multiQuery = Object.fromEntries(Object.entries(input.multiQuery).map(([name, values]) => [name, [...values]])); let rawPath = input.rawPath; let fullPath = input.fullPath;
+    for (const [key, expression] of Object.entries(integration.requestParameters)) {
+      const match = key.match(/^(append|overwrite|remove):(header|querystring)\.([A-Za-z0-9._-]+)$/i);
+      if (match) {
+        const [, rawAction, location, name] = match; const action = rawAction.toLowerCase(); const value = this.requestExpression(expression, input);
+        if (location.toLowerCase() === "header") { const normalized = name.toLowerCase(); if (action === "remove") { delete headers[normalized]; delete multiHeaders[normalized]; } else if (action === "append" && headers[normalized]) { headers[normalized] += `,${value}`; multiHeaders[normalized] = [...(multiHeaders[normalized] ?? []), value]; } else { headers[normalized] = value; multiHeaders[normalized] = [value]; } }
+        else if (action === "remove") delete multiQuery[name]; else if (action === "append") multiQuery[name] = [...(multiQuery[name] ?? []), value]; else multiQuery[name] = [value];
+        continue;
+      }
+      if (key === "overwrite:path") { const value = this.requestExpression(expression, input); rawPath = value.startsWith("/") ? value : `/${value}`; fullPath = rawPath; }
+    }
+    const query = Object.fromEntries(Object.entries(multiQuery).map(([name, values]) => [name, values.join(",")])); const rawQueryString = Object.entries(multiQuery).flatMap(([name, values]) => values.map(value => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)).join("&");
+    return { ...input, headers, multiHeaders, query, multiQuery, rawQueryString, rawPath, fullPath };
+  }
+
   private async invokeLambdaIntegration(integration: HttpApiIntegrationState, input: HttpInvocationInput, authorizer: HttpAuthorizerResult): Promise<HttpBackendResult> {
-    const started = performance.now(); const sourceArn = this.methodArn(input); const functionArn = this.lambdaArn(integration.integrationUri); let invocation: InvokeResult; this.assertGatewayRole(integration.credentialsArn, "integration", true); if (integration.credentialsArn && evaluateRoleAuthorization(this.store.ensureAccount().iam, integration.credentialsArn, "lambda:InvokeFunction", functionArn).decision !== "allowed") throw new AwsError("InternalServerErrorException", "The integration role cannot invoke the Lambda function", 500);
-    try { invocation = await this.lambda.invoke(functionArn, Buffer.from(JSON.stringify(this.lambdaEvent(input, integration, authorizer))), id(24), { principal: "apigateway.amazonaws.com", sourceArn, sourceAccount: this.store.accountId, enforceResourcePolicy: !integration.credentialsArn, lineage: input.principal?.lambdaLineage }); }
-    catch (error) { if (error instanceof AwsError && error.code === "AccessDeniedException") throw new AwsError("InternalServerErrorException", "Internal Server Error", 500); throw error; }
-    return this.parseLambdaResponse(invocation, integration.payloadFormatVersion, started);
+    const started = performance.now(); const sourceArn = this.methodArn(input); const functionArn = this.lambdaArn(this.stageUri(integration.integrationUri, input)); let invocation: InvokeResult; this.assertGatewayRole(integration.credentialsArn, "integration", true); if (integration.credentialsArn && evaluateRoleAuthorization(this.store.ensureAccount().iam, integration.credentialsArn, "lambda:InvokeFunction", functionArn).decision !== "allowed") { input.observed.integrationError = "The integration role cannot invoke the Lambda function"; throw new AwsError("InternalServerErrorException", "The integration role cannot invoke the Lambda function", 500); }
+    const mapped = this.mappedLambdaInput(integration, input);
+    try { invocation = await this.lambda.invoke(functionArn, Buffer.from(JSON.stringify(this.lambdaEvent(mapped, integration, authorizer))), id(24), { principal: "apigateway.amazonaws.com", sourceArn, sourceAccount: this.store.accountId, enforceResourcePolicy: !integration.credentialsArn, lineage: input.principal?.lambdaLineage }); }
+    catch (error) { input.observed.integrationError = error instanceof Error ? error.message : String(error); throw new AwsError("InternalServerErrorException", "Internal Server Error", 500); }
+    return this.applyResponseParameters(integration, this.parseLambdaResponse(invocation, integration.payloadFormatVersion, started, input), input);
   }
 
   private privateAddress(address: string): boolean {
@@ -999,11 +1217,14 @@ export class ApiGatewayV2Service {
     const addresses = isIP(hostname) ? [{ address: hostname }] : await lookup(hostname, { all: true }).catch(() => []); if (!addresses.length || addresses.some(value => this.privateAddress(value.address))) throw new AwsError("InternalServerErrorException", "Private HTTP integration endpoints are disabled", 502);
   }
 
+  /** Evaluate a parameter-mapping value: a static value, one selection expression, or text with ${...} / $context.* style variables. */
   private requestExpression(expression: string, input: HttpInvocationInput): string {
-    const value = String(expression); if (/^'.*'$/.test(value)) return value.slice(1, -1);
-    if (value === "$request.body") return input.body.toString("utf8"); const bodyPath = value.match(/^\$request\.body\.([A-Za-z0-9_.-]+)$/)?.[1]; if (bodyPath) { try { let current: any = JSON.parse(input.body.toString("utf8")); for (const part of bodyPath.split(".")) current = current?.[part]; return current === undefined ? "" : typeof current === "string" ? current : JSON.stringify(current); } catch { return ""; } }
-    return this.identityValue(value, input) || value.replace(/\$context\.requestId/g, input.requestId).replace(/\$context\.routeKey/g, input.route.routeKey).replace(/\$context\.stage/g, input.stage.stageName);
+    const value = String(expression); if (/^'[\s\S]*'$/.test(value)) return value.slice(1, -1);
+    const whole = this.selectionValue(value, input); if (whole !== undefined) return whole;
+    return value.replace(/\$\{((?:request|context|stageVariables)\.[^}]+)\}|\$((?:request|context|stageVariables)\.[A-Za-z0-9_.-]+)/g, (match: string, braced: string | undefined, bare: string | undefined) => this.selectionValue(`$${braced ?? bare}`, input) ?? (braced ? "" : match));
   }
+
+  private integrationFailure(input: HttpInvocationInput, message: string, status = 500): AwsError { input.observed.integrationError = message; return new AwsError("InternalServerErrorException", message, status); }
 
   private sqsObjectParameter(value: string, name: string): Record<string, any> {
     let parsed: unknown;
@@ -1015,12 +1236,12 @@ export class ApiGatewayV2Service {
 
   private async invokeSqsIntegration(integration: HttpApiIntegrationState, input: HttpInvocationInput): Promise<HttpBackendResult> {
     const started = performance.now();
-    if (!this.sqs) throw new AwsError("InternalServerErrorException", "The SQS integration service is not available", 500);
+    if (!this.sqs) throw this.integrationFailure(input, "The SQS integration service is not available");
     const request = {} as SendMessageInput;
     for (const [name, expression] of Object.entries(integration.requestParameters)) {
       const value = this.requestExpression(expression, input);
       if (name === "Region") {
-        if (value !== this.region) throw new AwsError("InternalServerErrorException", "SQS-SendMessage targets must use the API Region", 500);
+        if (value !== this.region) throw this.integrationFailure(input, "SQS-SendMessage targets must use the API Region");
       } else if (name === "DelaySeconds") {
         if (value !== "") (request as any).DelaySeconds = Number(value);
       } else if (name === "MessageAttributes" || name === "MessageSystemAttributes") {
@@ -1031,25 +1252,75 @@ export class ApiGatewayV2Service {
     try { queueArn = this.sqs.resolveQueueUrl(String(request.QueueUrl ?? "")).queueArn; }
     catch (error) {
       const aws = error instanceof AwsError ? error : new AwsError("InternalFailure", error instanceof Error ? error.message : String(error), 500);
-      throw new AwsError("InternalServerErrorException", `SQS SendMessage failed: ${aws.message}`, 500);
+      throw this.integrationFailure(input, `SQS SendMessage failed: ${aws.message}`);
     }
-    if (!integration.credentialsArn) throw new AwsError("InternalServerErrorException", "The integration role cannot send messages to the SQS queue", 500);
+    if (!integration.credentialsArn) throw this.integrationFailure(input, "The integration role cannot send messages to the SQS queue");
     this.assertGatewayRole(integration.credentialsArn, "integration", true);
     try {
       const { QueueUrl: _queueUrl, ...message } = request;
       const sourceArn = `arn:aws:execute-api:${this.region}:${this.store.accountId}:${input.api.apiId}/${input.stage.stageName}/${input.route.routeKey}`;
       const response = await this.sqs.sendAuthorizedMessageToArn(queueArn, message, { kind: "role", roleArn: integration.credentialsArn, sourceArn, sourceAccount: this.store.accountId });
+      input.observed.integrationStatus = 200;
       return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify(response)), integrationLatency: performance.now() - started };
     } catch (error) {
       const aws = error instanceof AwsError ? error : new AwsError("InternalFailure", error instanceof Error ? error.message : String(error), 500);
-      throw new AwsError("InternalServerErrorException", `SQS SendMessage failed: ${aws.message}`, 500);
+      throw this.integrationFailure(input, `SQS SendMessage failed: ${aws.message}`);
     }
+  }
+
+  private listParameter(value: string | undefined): string[] | undefined {
+    if (value === undefined || value === "") return undefined;
+    if (value.trim().startsWith("[")) { try { const parsed = JSON.parse(value); if (Array.isArray(parsed)) return parsed.map(String); } catch { /* fall back to a comma-separated list */ } }
+    return value.split(",").map(item => item.trim()).filter(Boolean);
+  }
+
+  private numberParameter(value: string | undefined, name: string): number | undefined {
+    if (value === undefined || value === "") return undefined; const number = Number(value); if (!Number.isFinite(number)) throw new AwsError("InvalidParameterValue", `${name} must evaluate to a number`, 400); return number;
+  }
+
+  /** AWS service integrations (integrationSubtype): evaluate the mapped request parameters, authorize the integration role, and return the service's JSON response. */
+  private async invokeServiceIntegration(integration: HttpApiIntegrationState, input: HttpInvocationInput): Promise<HttpBackendResult> {
+    const subtype = String(integration.integrationSubtype); if (subtype === "SQS-SendMessage") return this.invokeSqsIntegration(integration, input);
+    const started = performance.now(); const parameters = Object.fromEntries(Object.entries(integration.requestParameters).map(([name, expression]) => [name, this.requestExpression(expression, input)]));
+    if (parameters.Region !== undefined && parameters.Region !== "" && parameters.Region !== this.region) throw this.integrationFailure(input, `${subtype} targets must use the API Region`);
+    const roleArn = integration.credentialsArn; if (!roleArn) throw this.integrationFailure(input, `${subtype} requires an integration role`);
+    this.assertGatewayRole(roleArn, "integration", true);
+    const sourceArn = `arn:aws:execute-api:${this.region}:${this.store.accountId}:${input.api.apiId}/${input.stage.stageName}/${input.route.routeKey}`;
+    const authorize = (action: string, resource: string): void => { if (evaluateRoleAuthorization(this.store.ensureAccount().iam, roleArn, action, resource, roleSessionAuthorizationContext(roleArn, this.region, this.clock.now(), { "aws:SourceArn": sourceArn, "aws:SourceAccount": this.store.accountId })).decision !== "allowed") throw new AwsError("AccessDeniedException", `The integration role ${roleArn} is not authorized to perform ${action} on ${resource}`, 403); };
+    let response: unknown;
+    try {
+      if (subtype === "EventBridge-PutEvents") {
+        if (!this.eventbridge) throw new AwsError("InternalFailure", "EventBridge is not connected to API Gateway v2 in this StackSim instance", 500);
+        const bus = parameters.EventBusName || "default"; const busArn = bus.startsWith("arn:") ? bus : `arn:aws:events:${this.region}:${this.store.accountId}:event-bus/${bus}`; authorize("events:PutEvents", busArn);
+        const time = parameters.Time ? /^\d+(?:\.\d+)?$/.test(parameters.Time) ? Number(parameters.Time) : parameters.Time : undefined;
+        response = await this.eventbridge.PutEvents({ Entries: [present({ Source: parameters.Source, DetailType: parameters.DetailType, Detail: parameters.Detail, Time: time, EventBusName: parameters.EventBusName || undefined, Resources: this.listParameter(parameters.Resources), TraceHeader: parameters.TraceHeader || undefined })] });
+      } else if (subtype === "StepFunctions-StartExecution") {
+        if (!this.stepfunctions) throw new AwsError("InternalFailure", "Step Functions is not connected to API Gateway v2 in this StackSim instance", 500);
+        response = await this.stepfunctions.startExecutionFromProducer({ stateMachineArn: parameters.StateMachineArn, input: parameters.Input || "{}", ...(parameters.Name ? { name: parameters.Name } : {}), roleArn, sourceArn });
+      } else if (subtype === "StepFunctions-StopExecution") {
+        if (!this.stepfunctions) throw new AwsError("InternalFailure", "Step Functions is not connected to API Gateway v2 in this StackSim instance", 500);
+        authorize("states:StopExecution", parameters.ExecutionArn);
+        response = await this.stepfunctions.StopExecution({ executionArn: parameters.ExecutionArn, ...(parameters.Error ? { error: parameters.Error } : {}), ...(parameters.Cause ? { cause: parameters.Cause } : {}) });
+      } else {
+        if (!this.sqs) throw new AwsError("InternalFailure", "The SQS integration service is not available", 500);
+        const queueUrl = parameters.QueueUrl ?? ""; const queueArn = this.sqs.resolveQueueUrl(queueUrl).queueArn;
+        if (subtype === "SQS-ReceiveMessage") { authorize("sqs:ReceiveMessage", queueArn); response = await this.sqs.ReceiveMessage(present({ QueueUrl: queueUrl, AttributeNames: this.listParameter(parameters.AttributeNames), MaxNumberOfMessages: this.numberParameter(parameters.MaxNumberOfMessages, "MaxNumberOfMessages"), MessageAttributeNames: this.listParameter(parameters.MessageAttributeNames), ReceiveRequestAttemptId: parameters.ReceiveRequestAttemptId || undefined, VisibilityTimeout: this.numberParameter(parameters.VisibilityTimeout, "VisibilityTimeout"), WaitTimeSeconds: this.numberParameter(parameters.WaitTimeSeconds, "WaitTimeSeconds") })); }
+        else if (subtype === "SQS-DeleteMessage") { authorize("sqs:DeleteMessage", queueArn); response = await this.sqs.DeleteMessage({ QueueUrl: queueUrl, ReceiptHandle: parameters.ReceiptHandle ?? "" }); }
+        else if (subtype === "SQS-PurgeQueue") { authorize("sqs:PurgeQueue", queueArn); response = await this.sqs.PurgeQueue({ QueueUrl: queueUrl }); }
+        else throw new AwsError("InternalFailure", `Unsupported integration subtype ${subtype}`, 500);
+      }
+    } catch (error) {
+      const aws = error instanceof AwsError ? error : new AwsError("InternalFailure", error instanceof Error ? error.message : String(error), 500);
+      throw this.integrationFailure(input, `${subtype} failed: ${aws.code}: ${aws.message}`);
+    }
+    input.observed.integrationStatus = 200;
+    return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify(response ?? {})), integrationLatency: performance.now() - started };
   }
 
   private applyRequestParameters(integration: HttpApiIntegrationState, input: HttpInvocationInput, target: URL): { headers: Record<string, string>; method: string } {
     const headers = Object.fromEntries(Object.entries(input.headers).filter(([name]) => !new Set(["host", "content-length"]).has(name))); target.search = ""; for (const [name, values] of Object.entries(input.multiQuery)) for (const value of values) target.searchParams.append(name, value);
     for (const [key, expression] of Object.entries(integration.requestParameters)) {
-      const match = key.match(/^(append|overwrite|remove):(header|querystring)\.([A-Za-z0-9._-]+)$/i); if (match) { const [, action, location, name] = match; const value = this.requestExpression(expression, input); if (location.toLowerCase() === "header") { const normalized = name.toLowerCase(); if (action === "remove") delete headers[normalized]; else if (action === "append" && headers[normalized]) headers[normalized] += `,${value}`; else headers[normalized] = value; } else { if (action === "remove") target.searchParams.delete(name); else if (action === "append") target.searchParams.append(name, value); else { target.searchParams.delete(name); target.searchParams.set(name, value); } } continue; }
+      const match = key.match(/^(append|overwrite|remove):(header|querystring)\.([A-Za-z0-9._-]+)$/i); if (match) { const [, rawAction, location, name] = match; const action = rawAction.toLowerCase(); const value = this.requestExpression(expression, input); if (location.toLowerCase() === "header") { const normalized = name.toLowerCase(); if (action === "remove") delete headers[normalized]; else if (action === "append" && headers[normalized]) headers[normalized] += `,${value}`; else headers[normalized] = value; } else { if (action === "remove") target.searchParams.delete(name); else if (action === "append") target.searchParams.append(name, value); else { target.searchParams.delete(name); target.searchParams.set(name, value); } } continue; }
       if (key === "overwrite:path") { const path = this.requestExpression(expression, input); target.pathname = path.startsWith("/") ? path : `/${path}`; continue; }
       throw new AwsError("InternalServerErrorException", `Invalid request parameter mapping ${key}`, 500);
     }
@@ -1057,19 +1328,28 @@ export class ApiGatewayV2Service {
   }
 
   private responseExpression(expression: string, result: HttpBackendResult, input: HttpInvocationInput): string {
-    const value = String(expression); if (/^'.*'$/.test(value)) return value.slice(1, -1); const header = value.match(/^\$response\.header\.([A-Za-z0-9._-]+)$/i)?.[1]; if (header) { const found = Object.entries(result.headers).find(([name]) => name.toLowerCase() === header.toLowerCase())?.[1]; return Array.isArray(found) ? found.join(",") : found ?? ""; } if (value === "$response.body") return result.body.toString("utf8"); return value.replace(/\$context\.requestId/g, input.requestId).replace(/\$context\.routeKey/g, input.route.routeKey);
+    const value = String(expression); if (/^'[\s\S]*'$/.test(value)) return value.slice(1, -1);
+    const select = (selection: string): string | undefined => {
+      const header = selection.match(/^\$response\.header\.([A-Za-z0-9._-]+)$/i)?.[1]; if (header !== undefined) { const found = Object.entries(result.headers).find(([name]) => name.toLowerCase() === header.toLowerCase())?.[1]; return Array.isArray(found) ? found.join(",") : found ?? ""; }
+      if (selection === "$response.body") return result.body.toString("utf8");
+      const bodyPath = selection.match(/^\$response\.body((?:\.[A-Za-z0-9_-]+|\[\d+\])+)$/)?.[1]; if (bodyPath !== undefined) return jsonPathValue(result.body.toString("utf8"), bodyPath);
+      return /^\$(?:context|stageVariables)\./.test(selection) ? this.selectionValue(selection, input) : undefined;
+    };
+    const whole = select(value); if (whole !== undefined) return whole;
+    return value.replace(/\$\{((?:response|context|stageVariables)\.[^}]+)\}|\$((?:response|context|stageVariables)\.[A-Za-z0-9_.-]+)/g, (match: string, braced: string | undefined, bare: string | undefined) => select(`$${braced ?? bare}`) ?? (braced ? "" : match));
   }
 
   private applyResponseParameters(integration: HttpApiIntegrationState, result: HttpBackendResult, input: HttpInvocationInput): HttpBackendResult {
-    const mappings = integration.responseParameters[String(result.status)] ?? integration.responseParameters.$default; if (!mappings) return result; const output: HttpBackendResult = { ...result, headers: { ...result.headers } };
-    for (const [key, expression] of Object.entries(mappings)) { if (key === "overwrite:statuscode") { const status = Number(this.responseExpression(expression, result, input)); if (!Number.isInteger(status) || status < 100 || status > 599) throw new AwsError("InternalServerErrorException", "Invalid response status mapping", 500); output.status = status; continue; } const match = key.match(/^(append|overwrite|remove):header\.([A-Za-z0-9._-]+)$/i); if (!match) throw new AwsError("InternalServerErrorException", `Invalid response parameter mapping ${key}`, 500); const [, action, name] = match; const normalized = name.toLowerCase(); if (action === "remove") delete output.headers[normalized]; else { const value = this.responseExpression(expression, result, input); const current = output.headers[normalized]; output.headers[normalized] = action === "append" && current ? `${Array.isArray(current) ? current.join(",") : current},${value}` : value; } }
+    const mappings = integration.responseParameters[String(result.status)]; if (!mappings) return result; const output: HttpBackendResult = { ...result, headers: { ...result.headers } };
+    for (const [key, expression] of Object.entries(mappings)) { if (key === "overwrite:statuscode") { const status = Number(this.responseExpression(expression, result, input)); if (!Number.isInteger(status) || status < 100 || status > 599) throw new AwsError("InternalServerErrorException", "Invalid response status mapping", 500); output.status = status; continue; } const match = key.match(/^(append|overwrite|remove):header\.([A-Za-z0-9._-]+)$/i); if (!match) throw new AwsError("InternalServerErrorException", `Invalid response parameter mapping ${key}`, 500); const [, rawAction, name] = match; const action = rawAction.toLowerCase(); const normalized = name.toLowerCase(); if (action === "remove") delete output.headers[normalized]; else { const value = this.responseExpression(expression, result, input); const current = output.headers[normalized]; output.headers[normalized] = action === "append" && current ? `${Array.isArray(current) ? current.join(",") : current},${value}` : value; } }
     return output;
   }
 
   private async invokeHttpIntegration(integration: HttpApiIntegrationState, input: HttpInvocationInput): Promise<HttpBackendResult> {
-    const target = new URL(integration.integrationUri!); await this.assertHttpTarget(target); const mapped = this.applyRequestParameters(integration, input, target); const started = performance.now(); const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), integration.timeoutInMillis);
-    try { const response = await fetch(target, { method: mapped.method, headers: mapped.headers, body: new Set(["GET", "HEAD"]).has(mapped.method) ? undefined : Uint8Array.from(input.body), redirect: "manual", signal: controller.signal }); const headers: Record<string, string | string[]> = {}; response.headers.forEach((value, name) => { headers[name.toLowerCase()] = name.toLowerCase() === "set-cookie" && typeof response.headers.getSetCookie === "function" ? response.headers.getSetCookie() : value; }); const result = { status: response.status, headers, body: Buffer.from(await response.arrayBuffer()), integrationLatency: performance.now() - started }; return this.applyResponseParameters(integration, result, input); }
-    catch (error) { if ((error as any)?.name === "AbortError") throw new AwsError("InternalServerErrorException", "Endpoint request timed out", 504); throw new AwsError("InternalServerErrorException", "Internal Server Error", 502); } finally { clearTimeout(timer); }
+    let target: URL; try { target = new URL(this.stageUri(integration.integrationUri, input)!); } catch { throw this.integrationFailure(input, "The integration URI is not a valid URL after stage variable substitution"); }
+    await this.assertHttpTarget(target); const mapped = this.applyRequestParameters(integration, input, target); const started = performance.now(); const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), integration.timeoutInMillis);
+    try { const response = await fetch(target, { method: mapped.method, headers: mapped.headers, body: new Set(["GET", "HEAD"]).has(mapped.method) ? undefined : Uint8Array.from(input.body), redirect: "manual", signal: controller.signal }); const headers: Record<string, string | string[]> = {}; response.headers.forEach((value, name) => { headers[name.toLowerCase()] = name.toLowerCase() === "set-cookie" && typeof response.headers.getSetCookie === "function" ? response.headers.getSetCookie() : value; }); const result = { status: response.status, headers, body: Buffer.from(await response.arrayBuffer()), integrationLatency: performance.now() - started }; input.observed.integrationStatus = response.status; return this.applyResponseParameters(integration, result, input); }
+    catch (error) { if ((error as any)?.name === "AbortError") throw this.integrationFailure(input, "Endpoint request timed out", 504); if (error instanceof AwsError) throw error; throw this.integrationFailure(input, error instanceof Error ? error.message : String(error), 502); } finally { clearTimeout(timer); }
   }
 
   private corsHeaders(cors: HttpApiCorsState, origin: string | undefined, preflight: boolean): Record<string, string> {
@@ -1088,11 +1368,22 @@ export class ApiGatewayV2Service {
 
   private accessLogGroup(destinationArn: string): string | undefined { return destinationArn.match(/:log-group:([^:*]+)(?::\*)?$/)?.[1]; }
 
+  private errorResponseType(status: number, input: HttpInvocationInput): string {
+    if (status === 401) return "UNAUTHORIZED"; if (status === 403) return input.observed.authorizerError ? "ACCESS_DENIED" : "MISSING_AUTHENTICATION_TOKEN"; if (status === 404) return "RESOURCE_NOT_FOUND"; if (status === 429) return "THROTTLED";
+    if (status === 504) return "INTEGRATION_TIMEOUT"; if (status >= 500) return input.observed.authorizerError ? "AUTHORIZER_FAILURE" : input.observed.integrationError ? "INTEGRATION_FAILURE" : "DEFAULT_5XX"; return "DEFAULT_4XX";
+  }
+
+  /** Render the stage's access log format with the HTTP API $context variables and append it to one log stream per stage. */
   private async writeAccessLog(input: HttpInvocationInput, result: HttpBackendResult, latency: number, error?: AwsError): Promise<void> {
-    if (!this.logs || !input.stage.accessLogSettings) return; const group = this.accessLogGroup(input.stage.accessLogSettings.destinationArn); if (!group) return; const values: Record<string, unknown> = { accountId: this.store.accountId, apiId: input.api.apiId, domainName: input.headers.host, httpMethod: input.method, integrationErrorMessage: error?.message, integrationLatency: result.integrationLatency, integrationStatus: result.status, path: input.path, protocol: "HTTP/1.1", requestId: input.requestId, requestTime: new Date(this.clock.now()).toUTCString(), requestTimeEpoch: this.clock.now(), responseLatency: latency, responseLength: result.body.length, routeKey: input.route.routeKey, stage: input.stage.stageName, status: result.status };
-    const message = input.stage.accessLogSettings.format.replace(/\$context\.([A-Za-z0-9_.]+)/g, (_match, key) => values[key] === undefined ? "-" : String(values[key])); const stream = `${new Date(this.clock.now()).toISOString().slice(0, 10).replace(/-/g, "/")}/${input.requestId}`;
-    try { await this.logs.CreateLogStream({ logGroupName: group, logStreamName: stream }); } catch (caught) { if (!(caught instanceof AwsError) || caught.code !== "ResourceAlreadyExistsException") return; }
-    await this.logs.PutLogEvents({ logGroupName: group, logStreamName: stream, logEvents: [{ timestamp: this.clock.now(), message }] }).catch(() => undefined);
+    if (!this.logs || !input.stage.accessLogSettings) return; const group = this.accessLogGroup(input.stage.accessLogSettings.destinationArn); if (!group) return;
+    const message = error ? (new Set([401, 403, 404, 429]).has(result.status) ? result.status === 401 ? "Unauthorized" : result.status === 403 ? "Forbidden" : result.status === 404 ? "Not Found" : "Too Many Requests" : result.status === 504 ? "Endpoint request timed out" : "Internal Server Error") : undefined;
+    const values = this.contextVariables(input, { status: result.status, responseLength: result.body.length, responseLatency: Math.round(latency), dataProcessed: input.body.length + result.body.length, "error.message": message, "error.messageString": message === undefined ? undefined : JSON.stringify(message), "error.responseType": error ? this.errorResponseType(result.status, input) : undefined, ...(input.observed.integrationLatency === undefined && result.integrationLatency ? { integrationLatency: Math.round(result.integrationLatency), "integration.latency": Math.round(result.integrationLatency) } : {}) });
+    const render = (key: string): string => { const value = values[key]; return value === undefined || value === null ? "-" : typeof value === "object" ? JSON.stringify(value) : String(value); };
+    const line = input.stage.accessLogSettings.format.replace(/\$context\.([A-Za-z0-9_.-]+)/g, (_match, raw: string) => { const key = raw.replace(/[.-]+$/, ""); return `${render(key)}${raw.slice(key.length)}`; });
+    const stream = `${input.api.apiId}_${input.stage.stageName}`; const marker = `${group}\0${stream}`;
+    if (!this.accessLogStreams.has(marker)) { try { await this.logs.CreateLogStream({ logGroupName: group, logStreamName: stream }); } catch (caught) { if (!(caught instanceof AwsError) || caught.code !== "ResourceAlreadyExistsException") return; } this.accessLogStreams.add(marker); }
+    try { await this.logs.PutLogEvents({ logGroupName: group, logStreamName: stream, logEvents: [{ timestamp: this.clock.now(), message: line }] }); }
+    catch (caught) { if (caught instanceof AwsError && caught.code === "ResourceNotFoundException") this.accessLogStreams.delete(marker); }
   }
 
   customDomainInvocation(host: string | undefined, pathname: string): HttpApiDomainResolution {
@@ -1101,10 +1392,10 @@ export class ApiGatewayV2Service {
     const segments = pathname.replace(/^\/+/, "").split("/"); const mappings = Object.values(domain.apiMappings).sort((a, b) => (b.apiMappingKey?.length ?? 0) - (a.apiMappingKey?.length ?? 0));
     const mapping = mappings.find(candidate => { const key = candidate.apiMappingKey?.split("/") ?? []; return key.every((part, index) => segments[index] === part); });
     if (!mapping) return { matched: true };
-    const consumed = mapping.apiMappingKey?.split("/").length ?? 0; const tail = `/${segments.slice(consumed).join("/")}`; return { matched: true, pathname: `/${mapping.apiId}/${encodeURIComponent(mapping.stage)}${tail === "/" ? "" : tail}` };
+    const consumed = mapping.apiMappingKey?.split("/").length ?? 0; const tail = `/${segments.slice(consumed).join("/")}`; return { matched: true, pathname: `/${mapping.apiId}/${encodeURIComponent(mapping.stage)}${tail === "/" ? "" : tail}`, basePath: mapping.apiMappingKey };
   }
 
-  invocationAuthorizationType(pathname: string, method: string): HttpApiRouteState["authorizationType"] { return this.resolveInvocation(pathname, method).route.authorizationType; }
+  invocationAuthorizationType(pathname: string, method: string): HttpApiRouteState["authorizationType"] { return this.resolveInvocation(pathname, method, true).route.authorizationType; }
 
   canonicalAuthorizationPath(pathname: string, method: string): string {
     const resolved = this.resolveInvocation(pathname, method); return `/${resolved.api.apiId}/${encodeURIComponent(resolved.stage.stageName)}${resolved.path === "/" ? "/" : resolved.path}`;
@@ -1117,21 +1408,23 @@ export class ApiGatewayV2Service {
   async invoke(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL): Promise<void> {
     const started = performance.now(); let input: HttpInvocationInput | undefined; let result: HttpBackendResult | undefined; let failure: AwsError | undefined;
     try {
-      const resolved = this.resolveInvocation(pathname, req.method ?? "GET"); const { headers, multiHeaders } = this.requestHeaders(req); const { query, multiQuery } = this.requestQueries(url); const customDomain = this.customDomainInvocation(req.headers.host, url.pathname).matched;
+      const resolved = this.resolveInvocation(pathname, req.method ?? "GET", true); const { headers, multiHeaders } = this.requestHeaders(req); const { query, multiQuery } = this.requestQueries(url); const domain = this.customDomainInvocation(req.headers.host, url.pathname); const customDomain = domain.matched;
       if (resolved.api.disableExecuteApiEndpoint && !customDomain) throw new AwsError("ForbiddenException", "Forbidden", 403);
-      input = { method: req.method ?? "GET", path: resolved.path, rawQueryString: url.search.slice(1), headers, multiHeaders, query, multiQuery, pathParameters: resolved.pathParameters, body: await readBody(req), requestId: String(res.getHeader("x-amzn-requestid") ?? id(24)), sourceIp: req.socket.remoteAddress?.replace(/^::ffff:/, ""), stage: resolved.stage, api: resolved.api, route: resolved.route, snapshot: resolved.snapshot, principal: (req as any).awsPrincipal as PrincipalContext | undefined, identityAuthorization: (req as any).awsIdentityAuthorization as AuthorizationResult | undefined };
+      const apiPrefix = `/${resolved.api.apiId}`; const rawPath = customDomain ? resolved.path : pathname.startsWith(apiPrefix) ? pathname.slice(apiPrefix.length) || "/" : resolved.path; // `pathname` carries the `/{apiId}` prefix for host-based execute-api requests too.
+      input = { method: req.method ?? "GET", path: resolved.path, rawPath, fullPath: customDomain ? url.pathname : rawPath, rawQueryString: url.search.slice(1), headers, multiHeaders, query, multiQuery, pathParameters: resolved.pathParameters, body: await readBody(req), requestId: String(res.getHeader("x-amzn-requestid") ?? id(24)), requestTimeEpoch: this.clock.now(), sourceIp: req.socket.remoteAddress?.replace(/^::ffff:/, ""), stage: resolved.stage, api: resolved.api, route: resolved.route, snapshot: resolved.snapshot, principal: (req as any).awsPrincipal as PrincipalContext | undefined, identityAuthorization: (req as any).awsIdentityAuthorization as AuthorizationResult | undefined, ...(customDomain && domain.basePath !== undefined ? { customDomainBasePath: domain.basePath } : {}), observed: {} };
       const cors = input.snapshot.corsConfiguration; const preflight = input.method === "OPTIONS" && Boolean(input.headers.origin) && Boolean(input.headers["access-control-request-method"]);
+      if (input.route.routeId === "-") throw new AwsError("NotFoundException", "Not Found", 404);
       if (preflight && cors) result = { status: 204, headers: this.corsHeaders(cors, input.headers.origin, true), body: Buffer.alloc(0), integrationLatency: 0 };
       else {
         const settings = input.stage.routeSettings[input.route.routeKey] ?? input.stage.defaultRouteSettings;
         if (!this.consumeBucket(`account:${this.region}`) || !this.consumeBucket(`stage:${input.api.apiId}:${input.stage.stageName}:${input.route.routeKey}`, settings.throttlingRateLimit ?? this.accountRateLimit, settings.throttlingBurstLimit ?? this.accountBurstLimit)) throw new AwsError("TooManyRequestsException", "Too Many Requests", 429);
-        const authorization = await this.authorizeInvocation(input); const integrationId = input.route.target?.match(/^integrations\/(.+)$/)?.[1]; const integration = integrationId ? input.snapshot.integrations[integrationId] : undefined; if (!integration) throw new AwsError("NotFoundException", "Not Found", 404);
-        result = integration.integrationSubtype === "SQS-SendMessage" ? await this.invokeSqsIntegration(integration, input) : integration.integrationType === "AWS_PROXY" ? await this.invokeLambdaIntegration(integration, input, authorization) : await this.invokeHttpIntegration(integration, input); result = this.applyCors(result, cors, input.headers.origin);
+        const authorization = await this.authorizeInvocation(input); input.authorization = authorization; const integrationId = input.route.target?.match(/^integrations\/(.+)$/)?.[1]; const integration = integrationId ? input.snapshot.integrations[integrationId] : undefined; if (!integration) throw new AwsError("NotFoundException", "Not Found", 404);
+        result = integration.integrationSubtype ? await this.invokeServiceIntegration(integration, input) : integration.integrationType === "AWS_PROXY" ? await this.invokeLambdaIntegration(integration, input, authorization) : await this.invokeHttpIntegration(integration, input); input.observed.integrationLatency = Math.round(result.integrationLatency); result = this.applyCors(result, cors, input.headers.origin);
       }
       const latency = performance.now() - started; await Promise.all([this.publishMetrics(input, result, latency), this.writeAccessLog(input, result, latency)]);
       res.statusCode = result.status; for (const [name, value] of Object.entries(result.headers)) if (!new Set(["connection", "content-length", "transfer-encoding"]).has(name.toLowerCase())) res.setHeader(name, value); if (!res.hasHeader("content-length")) res.setHeader("content-length", String(result.body.length)); res.end(result.body); return;
     } catch (error) {
-      failure = error instanceof AwsError ? error : new AwsError("InternalServerErrorException", error instanceof Error ? error.message : String(error), 500); const message = new Set([401, 403, 404, 429]).has(failure.status) ? failure.status === 401 ? "Unauthorized" : failure.status === 403 ? "Forbidden" : failure.status === 404 ? "Not Found" : "Too Many Requests" : "Internal Server Error"; result = { status: failure.status >= 400 && failure.status <= 599 ? failure.status : 500, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message })), integrationLatency: 0 }; if (input) { result = this.applyCors(result, input.snapshot.corsConfiguration, input.headers.origin); const latency = performance.now() - started; await Promise.all([this.publishMetrics(input, result, latency), this.writeAccessLog(input, result, latency, failure)]); } res.statusCode = result.status; for (const [name, value] of Object.entries(result.headers)) res.setHeader(name, value); res.setHeader("content-length", String(result.body.length)); res.end(result.body);
+      failure = error instanceof AwsError ? error : new AwsError("InternalServerErrorException", error instanceof Error ? error.message : String(error), 500); const message = new Set([401, 403, 404, 429]).has(failure.status) ? failure.status === 401 ? "Unauthorized" : failure.status === 403 ? "Forbidden" : failure.status === 404 ? "Not Found" : "Too Many Requests" : failure.status === 503 ? "Service Unavailable" : "Internal Server Error"; result = { status: failure.status >= 400 && failure.status <= 599 ? failure.status : 500, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message })), integrationLatency: 0 }; if (input) { result = this.applyCors(result, input.snapshot.corsConfiguration, input.headers.origin); const latency = performance.now() - started; await Promise.all([this.publishMetrics(input, result, latency), this.writeAccessLog(input, result, latency, failure)]); } res.statusCode = result.status; for (const [name, value] of Object.entries(result.headers)) res.setHeader(name, value); res.setHeader("content-length", String(result.body.length)); res.end(result.body);
     }
   }
 }

@@ -1138,3 +1138,13 @@ a.method-split-monitor:focus-visible{position:relative;z-index:1;outline:2px sol
 .code-highlight.hljs{margin:0;padding:14px;overflow-x:auto;overflow-y:hidden;border:1px solid var(--line-soft);border-radius:4px;font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;line-height:1.55;white-space:pre}
 .code-highlight.hljs .hljs-attr,.code-highlight.hljs .hljs-attribute{color:#0550ae}
 .code-box.code-highlight{max-height:none;overflow-x:auto;overflow-y:hidden}
+/* API Gateway console: integration cards, Lambda permission confirmation, response editors, invoke URLs */
+.integration-type-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin:0 0 17px;padding:0;border:0}.integration-type-cards legend{font-weight:700;margin-bottom:8px;padding:0}
+.integration-type-card{display:flex;align-items:flex-start;gap:9px;border:1px solid var(--line);border-radius:4px;padding:11px 12px;cursor:pointer;background:#fff}.integration-type-card:has(input:checked){border-color:var(--blue);background:var(--blue-light)}.integration-type-card input{flex:0 0 auto;margin-top:3px}.integration-type-card span{display:grid;gap:3px;min-width:0}.integration-type-card small{color:var(--muted);line-height:1.35}
+.lambda-permission-notice .lambda-permission-toggle{margin:8px 0 4px;font-weight:700}.lambda-permission-notice p{margin:4px 0 8px}.lambda-permission-notice .code-box{margin:0;max-height:220px;overflow-wrap:anywhere}
+.response-block{border:1px solid var(--line-soft);border-radius:4px;padding:12px 14px 2px;margin-bottom:12px}.response-block-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.response-block-header h4{margin:0;overflow-wrap:anywhere}
+.method-invoke-urls{display:grid;gap:8px}.method-invoke-url code,.stage-invoke-url code{overflow-wrap:anywhere;white-space:normal}.method-invoke-url .method-badge{flex:0 0 auto;font-size:11px;font-weight:700;padding:2px 6px;border-radius:2px;background:#d5dbdb}
+.stage-invoke-url{min-width:260px}.stage-invoke-url code{padding:6px;font-size:12px}.ws-stage-urls{display:grid;gap:4px;min-width:280px}
+.authorizer-test-result{margin-top:12px}.authorizer-test-result h4{margin:12px 0 6px}.authorizer-test-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:4px 16px;margin:0}.authorizer-test-summary dd{margin-bottom:8px}
+[data-theme="dark"] .integration-type-card{background:#111820}[data-theme="dark"] .method-invoke-url .method-badge{background:#414d5c}
+@media(max-width:700px){.integration-type-cards{grid-template-columns:1fr}.stage-invoke-url,.ws-stage-urls{min-width:200px}.response-block-header{align-items:flex-start;flex-direction:column}}

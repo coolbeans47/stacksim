@@ -1495,9 +1495,10 @@ console.log(httpApi.ApiEndpoint);
 | Bounded public S3 website | `http://127.0.0.1:4566/_stacksim/s3-website/{bucket}/{key}` |
 | CloudFront local viewer | Separately reported `https://d<label>.localhost:{persistedPort}/{path}` with the installation CA |
 | Web console | `http://127.0.0.1:4566/_stacksim/console` |
-| API invocation | `http://127.0.0.1:4567/{apiId}/{stage}/{path}` |
-| WebSocket API | `ws://127.0.0.1:4567/{apiId}/{stage}` |
-| WebSocket management API | `http://127.0.0.1:4567/{apiId}/{stage}/@connections/{connectionId}` |
+| API invocation | `http://127.0.0.1:4567/{apiId}/{stage}/{path}`; HTTP API `$default` stage: `http://127.0.0.1:4567/{apiId}/{path}` |
+| API invocation (host-based) | `http://{apiId}.execute-api.localhost:4567/{stage}/{path}`; a `Host: {apiId}.execute-api.{region}.amazonaws.com` header also routes |
+| WebSocket API | `ws://127.0.0.1:4567/{apiId}/{stage}` or `ws://{apiId}.execute-api.localhost:4567/{stage}` |
+| WebSocket management API | `http://127.0.0.1:4567/{apiId}/{stage}/@connections/{connectionId}`, `http://127.0.0.1:4567/{stage}/@connections/{connectionId}`, or `http://127.0.0.1:4566/@connections/{connectionId}` (SigV4 service `execute-api`) |
 | Lambda function URL | `http://127.0.0.1:4567/lambda-url/{durableId}/{path}` |
 | Health | `http://127.0.0.1:4566/_stacksim/health` |
 | Control-plane state | `.stacksim/state.json` |

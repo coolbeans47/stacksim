@@ -76,13 +76,12 @@ test("Cognito control state paginates, isolates Regions, rejects inert features,
     );
     assert.equal((await west.send(new ListUserPoolsCommand({ MaxResults: 60 }))).UserPools?.length, 4);
 
-    await assert.rejects(
-      west.send(new CreateUserPoolClientCommand({
-        UserPoolId: ids[0],
-        ClientName: "implicit-unsupported-defaults",
-      })),
-      (error: unknown) => error instanceof InvalidParameterException && /ExplicitAuthFlows/.test(error.message),
-    );
+    // AWS: an omitted ExplicitAuthFlows means ALLOW_REFRESH_TOKEN_AUTH, ALLOW_USER_SRP_AUTH, and ALLOW_CUSTOM_AUTH.
+    const implicitDefaults = await west.send(new CreateUserPoolClientCommand({
+      UserPoolId: ids[0],
+      ClientName: "implicit-defaults",
+    }));
+    assert.deepEqual([...(implicitDefaults.UserPoolClient?.ExplicitAuthFlows ?? [])].sort(), ["ALLOW_CUSTOM_AUTH", "ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_USER_SRP_AUTH"]);
     await assert.rejects(
       west.send(new CreateUserPoolClientCommand({
         UserPoolId: ids[0],
