@@ -18,6 +18,7 @@ import { combineIdentityAndResourceAuthorization, evaluateResourcePolicy, type A
 import { readBody } from "./util.js";
 import { checksumHeaderName, providedChecksumAlgorithms, requestedChecksumAlgorithm, S3_CHECKSUM_ALGORITHMS, S3Checksums, type S3ChecksumAlgorithm, type S3ChecksumValues, validateProvidedChecksums } from "./s3/checksums.js";
 import { S3Storage, type S3BucketIndex, type S3MultipartUploadState, type S3ObjectPartState, type S3ObjectVersionState, type StagedS3Object } from "./s3/storage.js";
+import { virtualHostedBucket } from "./s3/address.js";
 import { aclAllows, aclFromRequest, aclIsPublic, aclXml, canonicalOwnerId, effectivePublicAccessBlock, LOCAL_OWNER_DISPLAY_NAME, objectAcl, policyIsPublic, privateAcl, type S3PublicAccessBlockState } from "./s3/access.js";
 import { DYNAMODB_S3_SERVICE_PRINCIPAL, type S3AdmittedBucket, type S3PinnedObject, type S3TransferCaller, type S3TransferPort, type S3TransferWriteOptions } from "./s3/transfer-port.js";
 import { CLOUDFRONT_S3_SERVICE_PRINCIPAL, type CloudFrontS3OriginPort, type CloudFrontS3OriginRequest, type CloudFrontS3OriginResponse } from "./s3/cloudfront-origin-port.js";
@@ -65,6 +66,8 @@ export interface S3BucketConfigurationInput {
   name: string;
   versioning: "unversioned" | "enabled" | "suspended";
   encryption: "AES256" | "aws:kms" | "aws:kms:dsse";
+  /** `aws:kms` key as configured; only the AWS managed key aws/s3 (absent, its alias, or its ID/ARN) is available. */
+  kmsKeyId?: string;
   /** S3 Bucket Keys for the default encryption rule; they reduce KMS calls and are otherwise inert. */
   bucketKeyEnabled?: boolean;
   objectOwnership?: "BucketOwnerEnforced";
@@ -298,7 +301,7 @@ function parseXmlBoolean(xml: string, name: string): boolean {
 interface CanonicalBucketConfiguration {
   versioning: "unversioned" | "enabled" | "suspended";
   encryption: "AES256";
-  encryptionConfiguration: { algorithm: "AES256"; bucketKeyEnabled: boolean };
+  encryptionConfiguration: { algorithm: "AES256" | "aws:kms"; kmsKeyId?: string; bucketKeyEnabled: boolean };
   objectOwnership: "BucketOwnerEnforced";
   cloudFormationConfiguration: {
     ownershipControls: boolean;
@@ -310,14 +313,16 @@ interface CanonicalBucketConfiguration {
   corsConfiguration?: S3BucketCorsRule[];
 }
 
-function canonicalBucketConfiguration(input: S3BucketConfigurationUpdate): CanonicalBucketConfiguration {
+function canonicalBucketConfiguration(input: S3BucketConfigurationUpdate, managedKeyArn: string): CanonicalBucketConfiguration {
   if (!new Set(["unversioned", "enabled", "suspended"]).has(input.versioning)) throw new AwsError("InvalidArgument", "Unsupported bucket versioning state", 400);
-  if (input.encryption !== "AES256") throw new AwsError("InvalidEncryptionAlgorithmError", "Only SSE-S3 AES256 encryption is supported", 400);
+  if (input.encryption !== "AES256" && input.encryption !== "aws:kms") throw new AwsError("InvalidEncryptionAlgorithmError", "Only SSE-S3 (AES256) and SSE-KMS (aws:kms) with the AWS managed key aws/s3 are supported", 400);
+  if (input.encryption === "AES256" && input.kmsKeyId !== undefined) throw new AwsError("InvalidArgument", "KMSMasterKeyID is valid only for KMS encryption", 400);
+  if (input.encryption === "aws:kms") resolveSseKmsKey(input.kmsKeyId, managedKeyArn);
   if (input.objectOwnership !== undefined && input.objectOwnership !== "BucketOwnerEnforced") throw new AwsError("InvalidRequest", "The bounded CloudFormation bucket profile supports only BucketOwnerEnforced ownership", 400);
   return {
     versioning: input.versioning,
     encryption: "AES256",
-    encryptionConfiguration: { algorithm: "AES256", bucketKeyEnabled: input.bucketKeyEnabled === true },
+    encryptionConfiguration: { algorithm: input.encryption, ...(input.kmsKeyId !== undefined ? { kmsKeyId: input.kmsKeyId } : {}), bucketKeyEnabled: input.bucketKeyEnabled === true },
     objectOwnership: "BucketOwnerEnforced",
     cloudFormationConfiguration: {
       ownershipControls: input.objectOwnership !== undefined,
@@ -337,7 +342,7 @@ function sameBucketConfiguration(bucket: S3BucketState, desired: CanonicalBucket
     && current.encryption === canonical.encryption
     && current.encryptionConfiguration?.algorithm === canonical.encryptionConfiguration.algorithm
     && Boolean(current.encryptionConfiguration?.bucketKeyEnabled) === canonical.encryptionConfiguration.bucketKeyEnabled
-    && current.encryptionConfiguration?.kmsKeyId === undefined
+    && current.encryptionConfiguration?.kmsKeyId === canonical.encryptionConfiguration.kmsKeyId
     && current.objectOwnership === canonical.objectOwnership
     && JSON.stringify(current.cloudFormationConfiguration ?? { ownershipControls: false, publicAccessBlock: false }) === JSON.stringify(canonical.cloudFormationConfiguration)
     && JSON.stringify(current.tags) === JSON.stringify(canonical.tags)
@@ -366,8 +371,7 @@ function decodePathComponent(value: string): string {
 function parseAddress(req: IncomingMessage): Address {
   const rawPath = String(req.url ?? "/").split("?", 1)[0] || "/"; const host = String(req.headers.host ?? "").replace(/:\d+$/, "");
   let virtualBucket: string | undefined;
-  const virtualMatch = host.match(/^(.+)\.(?:s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com|localhost|127\.0\.0\.1)$/i);
-  if (virtualMatch) virtualBucket = virtualMatch[1];
+  virtualBucket = virtualHostedBucket(host);
   if (virtualBucket) {
     const rawKey = rawPath.replace(/^\//, ""); return { bucket: decodePathComponent(virtualBucket), key: rawKey ? decodePathComponent(rawKey) : undefined, resource: rawPath };
   }
@@ -486,21 +490,68 @@ function validateKmsContext(value: string | string[] | undefined): void {
   if (decoded.length > 8 * 1024) throw new AwsError("InvalidArgument", "The KMS encryption context is too large", 400);
 }
 
-function objectEncryption(req: IncomingMessage, bucket: S3BucketState, inherited?: S3ObjectVersionState): ObjectEncryption {
+/**
+ * The ARN of the AWS managed key `aws/s3` of one account and Region. StackSim
+ * models it as an S3 encryption descriptor, not as a KMS service: its key ID is
+ * derived from the installation, so it is stable across restarts without state.
+ */
+export function awsManagedS3KeyArn(installationId: string, accountId: string, region: string): string {
+  const hex = createHash("sha256").update(`stacksim:kms:aws/s3:${installationId}:${accountId}:${region}`).digest("hex");
+  const variant = (8 | (parseInt(hex[16], 16) & 3)).toString(16);
+  return `arn:aws:kms:${region}:${accountId}:key/${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** Whether an SSE-KMS key identifier names the AWS managed key `aws/s3` whose ARN is given. */
+export function isAwsManagedS3Key(value: string | undefined, managedKeyArn: string): boolean {
+  if (value === undefined || value === "") return true;
+  const [, , , region, accountId, resource] = managedKeyArn.split(":");
+  return value === "alias/aws/s3"
+    || value === `arn:aws:kms:${region}:${accountId}:alias/aws/s3`
+    || value === managedKeyArn
+    || value === resource.slice("key/".length);
+}
+
+/**
+ * Resolve an SSE-KMS key identifier to the AWS managed key `aws/s3`. Customer
+ * managed keys fail before any bytes are staged, so no object is ever labeled
+ * with a key StackSim does not provide.
+ */
+function resolveSseKmsKey(value: string | undefined, managedKeyArn: string): string {
+  const kmsKeyId = validateKmsKeyId(value === "" ? undefined : value);
+  if (isAwsManagedS3Key(kmsKeyId, managedKeyArn)) return managedKeyArn;
+  throw new AwsError("KMS.NotFoundException", `KMS key ${kmsKeyId} is unavailable: StackSim provides only the AWS managed key aws/s3 (${managedKeyArn}); customer managed KMS keys are not supported`, 400);
+}
+
+/**
+ * Encryption of a new object: the request's headers, else the bucket default.
+ * As on AWS, a copy without encryption headers takes the destination bucket's
+ * default rather than the source object's encryption.
+ */
+function objectEncryption(req: IncomingMessage, bucket: S3BucketState, managedKeyArn: string): ObjectEncryption {
   const customer = customerEncryption(req);
   if (customer) return { encryption: "AES256", sseCustomerKeyMd5: customer.md5 };
   const configured = bucket.encryptionConfiguration ?? { algorithm: "AES256" as const, bucketKeyEnabled: false };
-  const algorithm = String(req.headers["x-amz-server-side-encryption"] ?? inherited?.encryption ?? configured.algorithm);
+  const requested = req.headers["x-amz-server-side-encryption"]?.toString();
+  const algorithm = requested ?? configured.algorithm;
   if (!["AES256", "aws:kms", "aws:kms:dsse"].includes(algorithm)) throw new AwsError("InvalidEncryptionAlgorithmError", "The encryption method specified is not supported", 400);
-  if (algorithm !== "AES256") {
-    const kmsKeyId = validateKmsKeyId(req.headers["x-amz-server-side-encryption-aws-kms-key-id"]?.toString() ?? inherited?.kmsKeyId ?? configured.kmsKeyId);
-    validateKmsContext(req.headers["x-amz-server-side-encryption-context"]);
-    // The descriptor is valid, but no KMS service exists. Failing before staging
-    // keeps prior object versions and bytes atomic and never labels local AES-GCM
-    // blobs as KMS-encrypted.
-    throw new AwsError("KMS.NotFoundException", `KMS key ${kmsKeyId ?? "(default)"} is unavailable because the KMS service is not implemented`, 400);
+  if (algorithm === "AES256") {
+    if (requested !== undefined && req.headers["x-amz-server-side-encryption-aws-kms-key-id"] !== undefined) throw new AwsError("InvalidArgument", "x-amz-server-side-encryption-aws-kms-key-id is valid only with aws:kms or aws:kms:dsse", 400);
+    return { encryption: "AES256", bucketKeyEnabled: false };
   }
-  return { encryption: "AES256", bucketKeyEnabled: false };
+  const suppliedKey = req.headers["x-amz-server-side-encryption-aws-kms-key-id"]?.toString() ?? (requested === undefined ? configured.kmsKeyId : undefined);
+  validateKmsContext(req.headers["x-amz-server-side-encryption-context"]);
+  if (algorithm === "aws:kms:dsse") {
+    // Dual-layer SSE-KMS is not modeled. Failing before staging keeps prior
+    // object versions and bytes atomic.
+    throw new AwsError("KMS.NotFoundException", `DSSE-KMS with key ${validateKmsKeyId(suppliedKey) ?? "aws/s3"} is unavailable: StackSim supports SSE-KMS (aws:kms) with the AWS managed key aws/s3 only`, 400);
+  }
+  const bucketKeyHeader = req.headers["x-amz-server-side-encryption-bucket-key-enabled"]?.toString().toLowerCase();
+  if (bucketKeyHeader !== undefined && bucketKeyHeader !== "true" && bucketKeyHeader !== "false") throw new AwsError("InvalidArgument", "x-amz-server-side-encryption-bucket-key-enabled must be true or false", 400);
+  return {
+    encryption: "aws:kms",
+    kmsKeyId: resolveSseKmsKey(suppliedKey, managedKeyArn),
+    bucketKeyEnabled: bucketKeyHeader !== undefined ? bucketKeyHeader === "true" : requested === undefined && configured.bucketKeyEnabled === true,
+  };
 }
 
 function requireCustomerKey(req: IncomingMessage, object: S3ObjectVersionState, copySource = false): void {
@@ -510,6 +561,18 @@ function requireCustomerKey(req: IncomingMessage, object: S3ObjectVersionState, 
   }
   const supplied = customerEncryption(req, copySource);
   if (!supplied || supplied.md5 !== object.sseCustomerKeyMd5) throw new AwsError("InvalidRequest", "The object was stored using SSE-C; the correct customer key is required", 400);
+}
+
+/**
+ * Decrypting an SSE-KMS object needs its key. The AWS managed key aws/s3 is
+ * usable only by callers in its own account, so anonymous and cross-account
+ * reads fail even when policies allow s3:GetObject, as on AWS.
+ */
+function requireManagedKeyAccess(req: IncomingMessage, object: S3ObjectVersionState, keyAccountId: string): void {
+  if (object.encryption !== "aws:kms") return;
+  const principal = (req as any).awsPrincipal as PrincipalContext | undefined;
+  if (!principal || principal.accountId === keyAccountId) return;
+  throw new AwsError("AccessDenied", `The object is encrypted with the AWS managed key aws/s3 of account ${keyAccountId}; an AWS managed key cannot be used by ${principal.accountId ? `account ${principal.accountId}` : "anonymous requests"}`, 403);
 }
 
 function selectObject(index: S3BucketIndex, key: string, versionId?: string | null): SelectedObject {
@@ -662,7 +725,7 @@ export class S3Service {
   async createBucketInternal(input: S3BucketConfigurationInput): Promise<S3BucketState> {
     await this.start();
     validateBucketName(input.name);
-    const desired = canonicalBucketConfiguration(input);
+    const desired = canonicalBucketConfiguration(input, awsManagedS3KeyArn(this.store.state.installation.id, this.store.accountId, this.region));
     return this.namespaceLocked(input.name, async () => {
       const existing = this.findBucket(input.name);
       if (existing) {
@@ -704,8 +767,8 @@ export class S3Service {
   /** Replace the bounded bucket configuration supported by this implementation slice. */
   async updateBucketInternal(name: string, input: S3BucketConfigurationUpdate): Promise<S3BucketState> {
     await this.start();
-    const desired = canonicalBucketConfiguration(input);
     const located = this.requireBucket(name);
+    const desired = canonicalBucketConfiguration(input, this.awsManagedKeyArn(located.bucket));
     if (located.bucket.managedBy) throw new AwsError("AccessDenied", "Simulator-managed bootstrap buckets cannot be configured as application buckets", 403);
     if (located.bucket.versioning !== "unversioned" && desired.versioning === "unversioned") throw new AwsError("InvalidBucketState", "Bucket versioning cannot return to the unversioned state after it has been enabled", 409);
     if (!sameBucketConfiguration(located.bucket, desired)) {
@@ -772,6 +835,11 @@ export class S3Service {
       this.indexes.delete(this.cacheKey(located));
       await Promise.all([this.store.save(), this.storage.deleteBucket(located.accountId, located.region, name)]);
     }));
+  }
+
+  /** ARN of the AWS managed key `aws/s3` in a bucket's account and Region. */
+  awsManagedKeyArn(bucket: Pick<S3BucketState, "ownerAccountId" | "region">): string {
+    return awsManagedS3KeyArn(this.store.state.installation.id, bucket.ownerAccountId, bucket.region);
   }
 
   async putBucketPolicyInternal(name: string, value: PolicyDocument): Promise<void> {
@@ -1056,6 +1124,9 @@ export class S3Service {
 
     const index = await this.bucketIndex(located);
     const selected = selectObject(index, input.key).version;
+    // The AWS managed key aws/s3 has no key policy CloudFront could be granted;
+    // on AWS an OAC origin needs a customer managed key for SSE-KMS objects.
+    if (selected.encryption === "aws:kms") throw new AwsError("AccessDenied", "Access Denied", 403);
     if (selected.size > input.maximumBytes) throw new AwsError("EntityTooLarge", "The origin object exceeds the local CloudFront response limit", 400);
     const headers: Record<string, string> = {
       etag: quotedEtag(selected.etag),
@@ -1305,6 +1376,8 @@ export class S3Service {
         if (!object || object.deleteMarker) throw new AwsError("NoSuchKey", "The specified key does not exist.", 404);
         status = 404;
       }
+      // Anonymous website requests cannot use the AWS managed key aws/s3.
+      if (object.encryption === "aws:kms") throw new AwsError("AccessDenied", "Access Denied", 403);
       setObjectHeaders(res, object);
       res.statusCode = status;
       res.setHeader("content-length", String(object.size));
@@ -1681,15 +1754,17 @@ export class S3Service {
     const checksums = new S3Checksums(); await checksums.update(body); validateProvidedChecksums(req.headers, {}, await checksums.digest());
     const xml = body.toString("utf8"); const sseS3 = /<(?:SSE-S3|SSES3)(?:\s[^>]*)?(?:\/>|>[\s\S]*?<\/(?:SSE-S3|SSES3)>)/i.test(xml); const sseKms = /<(?:SSE-KMS|SSEKMS)(?:\s|>)/i.test(xml);
     if (!/<ObjectEncryption(?:\s|>)/i.test(xml) || sseS3 === sseKms) throw new AwsError("MalformedXML", "ObjectEncryption requires exactly one SSE-S3 or SSE-KMS member", 400);
-    if (sseKms) {
-      const kmsKeyArn = xmlValue(xml, "KMSKeyArn");
-      if (!kmsKeyArn || !/^arn:aws:kms:[a-z0-9-]+:\d{12}:key\/[A-Za-z0-9/_+=,.@:-]+$/i.test(kmsKeyArn)) throw new AwsError("InvalidArgument", "SSE-KMS object updates require a full KMS key ARN", 400);
-      throw new AwsError("KMS.NotFoundException", `KMS key ${kmsKeyArn} is unavailable because the KMS service is not implemented`, 400);
-    }
     const located = this.requireBucket(bucketName);
+    let kmsKeyArn: string | undefined;
+    if (sseKms) {
+      const supplied = xmlValue(xml, "KMSKeyArn");
+      if (!supplied || !/^arn:aws:kms:[a-z0-9-]+:\d{12}:key\/[A-Za-z0-9/_+=,.@:-]+$/i.test(supplied)) throw new AwsError("InvalidArgument", "SSE-KMS object updates require a full KMS key ARN", 400);
+      kmsKeyArn = resolveSseKmsKey(supplied, this.awsManagedKeyArn(located.bucket));
+    }
     await this.locked(located, async () => {
       const index = await this.bucketIndex(located); const object = this.selectedVersion(index, key, url);
-      object.encryption = "AES256"; delete object.kmsKeyId; delete object.bucketKeyEnabled; delete object.sseCustomerKeyMd5;
+      delete object.kmsKeyId; delete object.bucketKeyEnabled; delete object.sseCustomerKeyMd5;
+      if (kmsKeyArn) { object.encryption = "aws:kms"; object.kmsKeyId = kmsKeyArn; object.bucketKeyEnabled = false; } else object.encryption = "AES256";
       await this.saveBucket(located, index);
     });
     res.statusCode = 200; res.end();
@@ -2474,7 +2549,7 @@ export class S3Service {
   }
 
   private objectState(req: IncomingMessage, bucket: S3BucketState, staged: StagedS3Object, blobId: string, inherited?: S3ObjectVersionState, etag = staged.digest.etag, parts?: S3ObjectPartState[]): S3ObjectVersionState {
-    const details = requestDetails(req, inherited); const checksumAlgorithm = checksumAlgorithmFor(req, inherited, staged.trailers); const access = this.writeAccess(req, bucket); const encryption = objectEncryption(req, bucket, inherited);
+    const details = requestDetails(req, inherited); const checksumAlgorithm = checksumAlgorithmFor(req, inherited, staged.trailers); const access = this.writeAccess(req, bucket); const encryption = objectEncryption(req, bucket, this.awsManagedKeyArn(bucket));
     return { versionId: versionIdForWrite(bucket), blobId, size: staged.size, etag, lastModified: this.clock.now(), ...details, ...access, ...encryption, ...this.writeLock(req, bucket), checksums: { [checksumAlgorithm]: staged.digest.values[checksumAlgorithm] }, checksumAlgorithm, checksumType: parts ? "COMPOSITE" : "FULL_OBJECT", storageClass: details.storageClass, parts };
   }
 
@@ -2483,7 +2558,7 @@ export class S3Service {
     await this.locked(located, async () => {
       const index = await this.bucketIndex(located); enforceWriteConditions(req, currentObject(index, key));
       if (req.headers["x-amz-copy-source"]) return await this.copyObject(req, res, url, located, index, key);
-      objectEncryption(req, located.bucket);
+      objectEncryption(req, located.bucket, this.awsManagedKeyArn(located.bucket));
       const staged = await this.storage.stageRequest(req, this.maximumObjectBytes);
       try { await this.ensureCapacity(located, index, key, staged.size); const blobId = await this.storage.publish(staged); const object = this.objectState(req, located.bucket, staged, blobId); publishVersion(located.bucket, index, key, object); await this.saveBucket(located, index); await this.enqueueObjectEvent(located, index, key, object, "s3:ObjectCreated:Put", {}, this.notificationCaller(req)); res.statusCode = 200; setObjectHeaders(res, object); if (object.versionId !== "null") res.setHeader("x-amz-version-id", object.versionId); const algorithm = activeChecksum(object); if (algorithm && (req.headers["x-amz-checksum-algorithm"] !== undefined || req.headers["x-amz-sdk-checksum-algorithm"] !== undefined || providedChecksumAlgorithms(req.headers, staged.trailers).length)) res.setHeader(checksumHeaderName(algorithm), object.checksums[algorithm]!); res.end(); }
       catch (error) { await this.storage.discardStaged(staged); throw error; }
@@ -2503,7 +2578,7 @@ export class S3Service {
   }
 
   private async copyObject(req: IncomingMessage, res: ServerResponse, _url: URL, destination: LocatedBucket, destinationIndex: S3BucketIndex, destinationKey: string): Promise<void> {
-    const source = this.parseCopySource(req); const sourceIndex = await this.bucketIndex(source.located); const selected = selectObject(sourceIndex, source.key, source.versionId); this.enforceCopyConditions(req, selected.version); requireCustomerKey(req, selected.version, true); this.ensureArchiveReadable(selected.version);
+    const source = this.parseCopySource(req); const sourceIndex = await this.bucketIndex(source.located); const selected = selectObject(sourceIndex, source.key, source.versionId); this.enforceCopyConditions(req, selected.version); requireCustomerKey(req, selected.version, true); requireManagedKeyAccess(req, selected.version, source.located.accountId); this.ensureArchiveReadable(selected.version);
     if (!source.versionId && source.located.bucket.name === destination.bucket.name && source.key === destinationKey && String(req.headers["x-amz-metadata-directive"] ?? "COPY").toUpperCase() !== "REPLACE" && String(req.headers["x-amz-tagging-directive"] ?? "COPY").toUpperCase() !== "REPLACE" && !req.headers["x-amz-storage-class"] && !req.headers["x-amz-checksum-algorithm"]) throw new AwsError("InvalidRequest", "This copy request is illegal because it is trying to copy an object to itself without changing metadata, tags, storage class, or encryption attributes.", 400);
     const staged = await this.storage.stageFromBlobs([selected.version.blobId!], this.maximumObjectBytes);
     try { await this.ensureCapacity(destination, destinationIndex, destinationKey, staged.size); const blobId = await this.storage.publish(staged); const object = this.objectState(req, destination.bucket, staged, blobId, selected.version); publishVersion(destination.bucket, destinationIndex, destinationKey, object); await this.saveBucket(destination, destinationIndex); await this.enqueueObjectEvent(destination, destinationIndex, destinationKey, object, "s3:ObjectCreated:Copy", {}, this.notificationCaller(req)); res.statusCode = 200; res.setHeader("content-type", "application/xml"); setObjectHeaders(res, object); if (selected.version.versionId !== "null") res.setHeader("x-amz-copy-source-version-id", selected.version.versionId); if (object.versionId !== "null") res.setHeader("x-amz-version-id", object.versionId); const algorithm = activeChecksum(object)!; res.end(restXml(`<LastModified>${iso(object.lastModified)}</LastModified><ETag>${xmlEscape(quotedEtag(object.etag))}</ETag><Checksum${algorithm}>${xmlEscape(object.checksums[algorithm]!)}</Checksum${algorithm}><ChecksumType>FULL_OBJECT</ChecksumType>`, "CopyObjectResult")); }
@@ -2519,7 +2594,7 @@ export class S3Service {
   }
 
   private async getObject(req: IncomingMessage, res: ServerResponse, url: URL, bucketName: string, key: string, head: boolean): Promise<void> {
-    const located = this.requireBucket(bucketName); const index = await this.bucketIndex(located); const selected = selectObject(index, key, url.searchParams.get("versionId")); const object = selected.version; requireCustomerKey(req, object); this.refreshRestore(object); if (!head) this.ensureArchiveReadable(object); if (enforceReadConditions(req, object) === "not-modified") { res.statusCode = 304; setObjectHeaders(res, object); res.end(); return; }
+    const located = this.requireBucket(bucketName); const index = await this.bucketIndex(located); const selected = selectObject(index, key, url.searchParams.get("versionId")); const object = selected.version; requireCustomerKey(req, object); if (!head) requireManagedKeyAccess(req, object, located.accountId); this.refreshRestore(object); if (!head) this.ensureArchiveReadable(object); if (enforceReadConditions(req, object) === "not-modified") { res.statusCode = 304; setObjectHeaders(res, object); res.end(); return; }
     let selectedRange: { start: number; end: number } | undefined; const partNumberValue = url.searchParams.get("partNumber");
     if (partNumberValue !== null) {
       const partNumber = Number(partNumberValue); if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10_000) throw new AwsError("InvalidArgument", "Part number must be an integer between 1 and 10000", 400); if (req.headers.range) throw new AwsError("InvalidRequest", "Cannot specify both Range and partNumber", 400);
@@ -2589,7 +2664,7 @@ export class S3Service {
   }
 
   private async createMultipartUpload(req: IncomingMessage, res: ServerResponse, bucketName: string, key: string): Promise<void> {
-    const located = this.requireBucket(bucketName); await this.locked(located, async () => { const index = await this.bucketIndex(located); const details = requestDetails(req); const access = this.writeAccess(req, located.bucket); const encryption = objectEncryption(req, located.bucket); const lock = this.writeLock(req, located.bucket); const uploadId = randomUUID(); const requestedAlgorithm = requestedChecksumAlgorithm(req.headers["x-amz-checksum-algorithm"] ?? req.headers["x-amz-sdk-checksum-algorithm"]); const algorithm = requestedAlgorithm ?? "CRC32"; const checksumType = String(req.headers["x-amz-checksum-type"] ?? (!requestedAlgorithm || algorithm === "CRC64NVME" ? "FULL_OBJECT" : "COMPOSITE")).toUpperCase(); if (!["COMPOSITE", "FULL_OBJECT"].includes(checksumType)) throw new AwsError("InvalidRequest", "Invalid checksum type", 400); if (checksumType === "FULL_OBJECT" && !["CRC32", "CRC32C", "CRC64NVME"].includes(algorithm)) throw new AwsError("InvalidRequest", `${algorithm} does not support full-object multipart checksums`, 400); if (checksumType === "COMPOSITE" && algorithm === "CRC64NVME") throw new AwsError("InvalidRequest", "CRC64NVME does not support composite multipart checksums", 400); index.multipartUploads[uploadId] = { uploadId, key, initiatedAt: this.clock.now(), ...details, ...access, ...encryption, ...lock, checksumAlgorithm: algorithm, checksumType: checksumType as "COMPOSITE" | "FULL_OBJECT", parts: {} }; await this.saveBucket(located, index); res.statusCode = 200; res.setHeader("content-type", "application/xml"); res.setHeader("x-amz-server-side-encryption", encryption.encryption); res.end(restXml(`<Bucket>${xmlEscape(bucketName)}</Bucket><Key>${xmlEscape(key)}</Key><UploadId>${xmlEscape(uploadId)}</UploadId><ChecksumAlgorithm>${algorithm}</ChecksumAlgorithm><ChecksumType>${checksumType}</ChecksumType>`, "InitiateMultipartUploadResult")); });
+    const located = this.requireBucket(bucketName); await this.locked(located, async () => { const index = await this.bucketIndex(located); const details = requestDetails(req); const access = this.writeAccess(req, located.bucket); const encryption = objectEncryption(req, located.bucket, this.awsManagedKeyArn(located.bucket)); const lock = this.writeLock(req, located.bucket); const uploadId = randomUUID(); const requestedAlgorithm = requestedChecksumAlgorithm(req.headers["x-amz-checksum-algorithm"] ?? req.headers["x-amz-sdk-checksum-algorithm"]); const algorithm = requestedAlgorithm ?? "CRC32"; const checksumType = String(req.headers["x-amz-checksum-type"] ?? (!requestedAlgorithm || algorithm === "CRC64NVME" ? "FULL_OBJECT" : "COMPOSITE")).toUpperCase(); if (!["COMPOSITE", "FULL_OBJECT"].includes(checksumType)) throw new AwsError("InvalidRequest", "Invalid checksum type", 400); if (checksumType === "FULL_OBJECT" && !["CRC32", "CRC32C", "CRC64NVME"].includes(algorithm)) throw new AwsError("InvalidRequest", `${algorithm} does not support full-object multipart checksums`, 400); if (checksumType === "COMPOSITE" && algorithm === "CRC64NVME") throw new AwsError("InvalidRequest", "CRC64NVME does not support composite multipart checksums", 400); index.multipartUploads[uploadId] = { uploadId, key, initiatedAt: this.clock.now(), ...details, ...access, ...encryption, ...lock, checksumAlgorithm: algorithm, checksumType: checksumType as "COMPOSITE" | "FULL_OBJECT", parts: {} }; await this.saveBucket(located, index); res.statusCode = 200; res.setHeader("content-type", "application/xml"); res.setHeader("x-amz-server-side-encryption", encryption.encryption); if (encryption.kmsKeyId) res.setHeader("x-amz-server-side-encryption-aws-kms-key-id", encryption.kmsKeyId); res.end(restXml(`<Bucket>${xmlEscape(bucketName)}</Bucket><Key>${xmlEscape(key)}</Key><UploadId>${xmlEscape(uploadId)}</UploadId><ChecksumAlgorithm>${algorithm}</ChecksumAlgorithm><ChecksumType>${checksumType}</ChecksumType>`, "InitiateMultipartUploadResult")); });
   }
 
   private async *blobSlice(blobId: string, start: number, end: number): AsyncGenerator<Buffer> {

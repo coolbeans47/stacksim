@@ -376,10 +376,17 @@ test("S3 CloudFormation providers freeze the CDK subset and replacement/retentio
     const extraOwnership = structuredClone(bucketProperties());
     (extraOwnership.OwnershipControls as any).Rules[0].Unknown = true;
     assert.ok(bucketProvider.validate(extraOwnership, context()).some(item => item.path === "Properties.OwnershipControls.Rules.0.Unknown"));
+    // SAM-05: SSE-KMS with the AWS managed key aws/s3 is admitted; customer managed keys and DSSE are not.
+    const awsManagedKms = structuredClone(bucketProperties());
+    (awsManagedKms.BucketEncryption as any).ServerSideEncryptionConfiguration[0].ServerSideEncryptionByDefault = { SSEAlgorithm: "aws:kms", KMSMasterKeyID: "alias/aws/s3" };
+    assert.equal(bucketProvider.validate(awsManagedKms, context()).length, 0);
     const kms = structuredClone(bucketProperties());
-    (kms.BucketEncryption as any).ServerSideEncryptionConfiguration[0].ServerSideEncryptionByDefault = { SSEAlgorithm: "aws:kms", KMSMasterKeyID: "alias/aws/s3" };
-    assert.ok(bucketProvider.validate(kms, context()).some(item => item.path.includes("SSEAlgorithm") && /KMS/.test(item.message)));
+    (kms.BucketEncryption as any).ServerSideEncryptionConfiguration[0].ServerSideEncryptionByDefault = { SSEAlgorithm: "aws:kms", KMSMasterKeyID: "alias/customer-key" };
+    assert.ok(bucketProvider.validate(kms, context()).some(item => item.path.includes("KMSMasterKeyID") && /customer managed KMS keys are not supported/.test(item.message)));
     assert.throws(() => bucketProvider.canonicalize(kms, context()), /KMS/);
+    const dsse = structuredClone(bucketProperties());
+    (dsse.BucketEncryption as any).ServerSideEncryptionConfiguration[0].ServerSideEncryptionByDefault = { SSEAlgorithm: "aws:kms:dsse" };
+    assert.ok(bucketProvider.validate(dsse, context()).some(item => item.path.includes("SSEAlgorithm") && /DSSE/.test(item.message)));
 
     const broadPolicy = policyProperties("provider-react-site");
     (broadPolicy.PolicyDocument as any).Statement[0].Action = "s3:*";

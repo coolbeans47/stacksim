@@ -31,7 +31,7 @@ export const S3_BUCKET_TYPE = "AWS::S3::Bucket";
 
 export interface S3BucketEncryptionModel {
   readonly ServerSideEncryptionConfiguration: readonly [{
-    readonly ServerSideEncryptionByDefault: { readonly SSEAlgorithm: "AES256" };
+    readonly ServerSideEncryptionByDefault: { readonly SSEAlgorithm: "AES256" | "aws:kms"; readonly KMSMasterKeyID?: string };
     readonly BucketKeyEnabled?: true;
   }];
 }
@@ -100,17 +100,43 @@ const AES256_ENCRYPTION: S3BucketEncryptionModel = Object.freeze({
   ]) as unknown as S3BucketEncryptionModel["ServerSideEncryptionConfiguration"],
 });
 
-/** SSE-S3, with S3 Bucket Keys when requested. */
-function encryptionModel(bucketKeyEnabled: boolean): S3BucketEncryptionModel {
-  return bucketKeyEnabled
-    ? { ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" }, BucketKeyEnabled: true }] }
-    : AES256_ENCRYPTION;
+/**
+ * SSE-S3, or SSE-KMS with the AWS managed key aws/s3 (KMSMasterKeyID absent or
+ * an aws/s3 form, kept as written), with S3 Bucket Keys when requested.
+ */
+function encryptionModel(algorithm: "AES256" | "aws:kms", kmsKeyId: string | undefined, bucketKeyEnabled: boolean): S3BucketEncryptionModel {
+  if (algorithm === "AES256" && !bucketKeyEnabled) return AES256_ENCRYPTION;
+  const defaults = { SSEAlgorithm: algorithm, ...(algorithm === "aws:kms" && kmsKeyId !== undefined ? { KMSMasterKeyID: kmsKeyId } : {}) };
+  return { ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: defaults, ...(bucketKeyEnabled ? { BucketKeyEnabled: true as const } : {}) }] };
 }
 
-/** BucketKeyEnabled of the single encryption rule in template properties. */
-function bucketKeyEnabled(value: unknown): boolean {
+/** CloudFormation accepts a boolean property as a boolean or its "true"/"false" string. */
+function booleanValue(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string" && /^(?:true|false)$/i.test(value)) return value.toLowerCase() === "true";
+  return undefined;
+}
+
+/** The single encryption rule's settings in template properties. */
+function encryptionSettings(value: unknown): { algorithm: "AES256" | "aws:kms"; kmsKeyId?: string; bucketKeyEnabled: boolean } {
   const rule = isRecord(value) && Array.isArray(value.ServerSideEncryptionConfiguration) ? value.ServerSideEncryptionConfiguration[0] : undefined;
-  return isRecord(rule) && rule.BucketKeyEnabled === true;
+  const defaults = isRecord(rule) && isRecord(rule.ServerSideEncryptionByDefault) ? rule.ServerSideEncryptionByDefault : undefined;
+  const algorithm = defaults?.SSEAlgorithm === "aws:kms" ? "aws:kms" : "AES256";
+  return {
+    algorithm,
+    ...(algorithm === "aws:kms" && typeof defaults?.KMSMasterKeyID === "string" ? { kmsKeyId: defaults.KMSMasterKeyID } : {}),
+    bucketKeyEnabled: isRecord(rule) && booleanValue(rule.BucketKeyEnabled) === true,
+  };
+}
+
+/** Whether a KMSMasterKeyID names the AWS managed key aws/s3 of the stack's account and Region. */
+function awsManagedKeyForm(value: string, context: ProviderContext | undefined, managedKeyArn: string | undefined): boolean {
+  if (value === "alias/aws/s3") return true;
+  if (managedKeyArn && (value === managedKeyArn || value === managedKeyArn.split("/").pop())) return true;
+  const partition = context?.partition ?? "aws";
+  const region = context?.region ?? "[a-z0-9-]+";
+  const account = context?.accountId ?? "\\d{12}";
+  return new RegExp(`^arn:${partition}:kms:${region}:${account}:alias/aws/s3$`).test(value);
 }
 
 export const S3_BUCKET_SCHEMA: ProviderSchema = Object.freeze({
@@ -143,7 +169,7 @@ export const S3_BUCKET_SCHEMA: ProviderSchema = Object.freeze({
   tags: Object.freeze({ behavior: "STACK_AND_RESOURCE", propertyName: "Tags", propagatesCloudFormationTags: true }),
 });
 
-function validateEncryption(value: unknown, issues: ProviderValidationIssue[]): void {
+function validateEncryption(value: unknown, issues: ProviderValidationIssue[], context?: ProviderContext, managedKeyArn?: string): void {
   const path = "Properties.BucketEncryption";
   if (!isRecord(value)) return;
   exactKeys(value, ["ServerSideEncryptionConfiguration"], path, issues);
@@ -159,7 +185,7 @@ function validateEncryption(value: unknown, issues: ProviderValidationIssue[]): 
     return;
   }
   exactKeys(rule, ["BucketKeyEnabled", "ServerSideEncryptionByDefault"], rulePath, issues);
-  if (rule.BucketKeyEnabled !== undefined && typeof rule.BucketKeyEnabled !== "boolean") issue(issues, `${rulePath}.BucketKeyEnabled`, "BucketKeyEnabled must be a boolean");
+  if (rule.BucketKeyEnabled !== undefined && booleanValue(rule.BucketKeyEnabled) === undefined) issue(issues, `${rulePath}.BucketKeyEnabled`, "BucketKeyEnabled must be a boolean");
   const defaultsPath = `${rulePath}.ServerSideEncryptionByDefault`;
   const defaults = rule.ServerSideEncryptionByDefault;
   // Without a default rule, S3 applies its default SSE-S3 encryption.
@@ -168,9 +194,16 @@ function validateEncryption(value: unknown, issues: ProviderValidationIssue[]): 
     issue(issues, defaultsPath, "ServerSideEncryptionByDefault must be an object");
     return;
   }
-  exactKeys(defaults, ["SSEAlgorithm"], defaultsPath, issues);
-  if (defaults.SSEAlgorithm !== "AES256") {
-    issue(issues, `${defaultsPath}.SSEAlgorithm`, "Only SSE-S3 encryption with SSEAlgorithm AES256 is supported; KMS and DSSE are unavailable");
+  exactKeys(defaults, ["KMSMasterKeyID", "SSEAlgorithm"], defaultsPath, issues);
+  if (defaults.SSEAlgorithm !== "AES256" && defaults.SSEAlgorithm !== "aws:kms") {
+    issue(issues, `${defaultsPath}.SSEAlgorithm`, "Only SSE-S3 (AES256) and SSE-KMS (aws:kms) with the AWS managed key aws/s3 are supported; DSSE-KMS (aws:kms:dsse) is unavailable");
+    return;
+  }
+  if (defaults.KMSMasterKeyID === undefined) return;
+  if (defaults.SSEAlgorithm === "AES256") {
+    issue(issues, `${defaultsPath}.KMSMasterKeyID`, "KMSMasterKeyID is valid only with SSEAlgorithm aws:kms");
+  } else if (typeof defaults.KMSMasterKeyID !== "string" || !awsManagedKeyForm(defaults.KMSMasterKeyID, context, managedKeyArn)) {
+    issue(issues, `${defaultsPath}.KMSMasterKeyID`, "Only the AWS managed KMS key aws/s3 is available (omit KMSMasterKeyID or use alias/aws/s3); customer managed KMS keys are not supported by StackSim");
   }
 }
 
@@ -204,7 +237,7 @@ function validatePublicAccessBlock(value: unknown, issues: ProviderValidationIss
   const path = "Properties.PublicAccessBlockConfiguration";
   exactKeys(value, PUBLIC_ACCESS_FIELDS, path, issues);
   for (const field of PUBLIC_ACCESS_FIELDS) {
-    if (value[field] !== undefined && typeof value[field] !== "boolean") {
+    if (value[field] !== undefined && booleanValue(value[field]) === undefined) {
       issue(issues, `${path}.${field}`, `${field} must be a boolean`);
     }
   }
@@ -359,13 +392,13 @@ function validateLifecycle(value: unknown, issues: ProviderValidationIssue[]): v
   }
 }
 
-function validateBucketProperties(properties: unknown): ProviderValidationIssue[] {
+function validateBucketProperties(properties: unknown, context?: ProviderContext, managedKeyArn?: string): ProviderValidationIssue[] {
   const issues = validateDeclaredProperties(properties ?? {}, S3_BUCKET_SCHEMA);
   if (!isRecord(properties)) return issues;
   if (properties.BucketName !== undefined && (typeof properties.BucketName !== "string" || !validS3BucketName(properties.BucketName))) {
     issue(issues, "Properties.BucketName", "BucketName must satisfy the S3 general-purpose bucket naming rules");
   }
-  if (properties.BucketEncryption !== undefined) validateEncryption(properties.BucketEncryption, issues);
+  if (properties.BucketEncryption !== undefined) validateEncryption(properties.BucketEncryption, issues, context, managedKeyArn);
   if (properties.VersioningConfiguration !== undefined) validateVersioning(properties.VersioningConfiguration, issues);
   if (properties.OwnershipControls !== undefined) validateOwnershipControls(properties.OwnershipControls, issues);
   if (properties.PublicAccessBlockConfiguration !== undefined) validatePublicAccessBlock(properties.PublicAccessBlockConfiguration, issues);
@@ -380,10 +413,10 @@ function validateBucketProperties(properties: unknown): ProviderValidationIssue[
 function publicAccessBlock(value: unknown): S3PublicAccessBlockModel | undefined {
   if (!isRecord(value)) return undefined;
   const model = {
-    BlockPublicAcls: Boolean(value.BlockPublicAcls),
-    IgnorePublicAcls: Boolean(value.IgnorePublicAcls),
-    BlockPublicPolicy: Boolean(value.BlockPublicPolicy),
-    RestrictPublicBuckets: Boolean(value.RestrictPublicBuckets),
+    BlockPublicAcls: booleanValue(value.BlockPublicAcls) === true,
+    IgnorePublicAcls: booleanValue(value.IgnorePublicAcls) === true,
+    BlockPublicPolicy: booleanValue(value.BlockPublicPolicy) === true,
+    RestrictPublicBuckets: booleanValue(value.RestrictPublicBuckets) === true,
   };
   return model;
 }
@@ -447,9 +480,10 @@ function canonicalBucket(properties: Record<string, unknown>, context: ProviderC
   const cors = canonicalCors(properties.CorsConfiguration);
   const notification = canonicalNotification(properties.NotificationConfiguration);
   const lifecycle = canonicalLifecycle(properties.LifecycleConfiguration);
+  const encryption = encryptionSettings(properties.BucketEncryption);
   return {
     BucketName: String(properties.BucketName ?? generatedS3BucketName(context)),
-    BucketEncryption: encryptionModel(bucketKeyEnabled(properties.BucketEncryption)),
+    BucketEncryption: encryptionModel(encryption.algorithm, encryption.kmsKeyId, encryption.bucketKeyEnabled),
     ...(versioning ? { VersioningConfiguration: versioning } : {}),
     ...(ownership ? { OwnershipControls: ownership } : {}),
     ...(pab ? { PublicAccessBlockConfiguration: pab } : {}),
@@ -491,7 +525,10 @@ function inputFor(model: S3BucketModel, context: ProviderContext): S3BucketConfi
     versioning: model.VersioningConfiguration?.Status === "Enabled"
       ? "enabled"
       : model.VersioningConfiguration?.Status === "Suspended" ? "suspended" : "unversioned",
-    encryption: "AES256",
+    encryption: model.BucketEncryption.ServerSideEncryptionConfiguration[0].ServerSideEncryptionByDefault.SSEAlgorithm,
+    ...(model.BucketEncryption.ServerSideEncryptionConfiguration[0].ServerSideEncryptionByDefault.KMSMasterKeyID !== undefined
+      ? { kmsKeyId: model.BucketEncryption.ServerSideEncryptionConfiguration[0].ServerSideEncryptionByDefault.KMSMasterKeyID }
+      : {}),
     bucketKeyEnabled: model.BucketEncryption.ServerSideEncryptionConfiguration[0].BucketKeyEnabled === true,
     ...(model.OwnershipControls ? { objectOwnership: "BucketOwnerEnforced" as const } : {}),
     tags: {
@@ -566,7 +603,11 @@ function modelFromState(state: S3BucketState): S3BucketModel {
   }
   return {
     BucketName: state.name,
-    BucketEncryption: encryptionModel(state.encryptionConfiguration?.bucketKeyEnabled === true),
+    BucketEncryption: encryptionModel(
+      state.encryptionConfiguration?.algorithm === "aws:kms" ? "aws:kms" : "AES256",
+      state.encryptionConfiguration?.kmsKeyId,
+      state.encryptionConfiguration?.bucketKeyEnabled === true,
+    ),
     ...(state.versioning === "enabled" ? { VersioningConfiguration: { Status: "Enabled" as const } }
       : state.versioning === "suspended" ? { VersioningConfiguration: { Status: "Suspended" as const } } : {}),
     ...(state.cloudFormationConfiguration?.ownershipControls ? { OwnershipControls: { Rules: [{ ObjectOwnership: "BucketOwnerEnforced" as const }] } } : {}),
@@ -609,6 +650,7 @@ function notFound(error: unknown): boolean {
 
 export function createS3BucketProvider(s3: S3Service): ProductionResourceProvider<S3BucketModel> {
   const owned = (state: S3BucketState, context: ProviderContext): boolean => isS3ResourceOwner(tagsFromState(state), context);
+  const managedKeyArn = (context: ProviderContext | undefined): string | undefined => context ? s3.awsManagedKeyArn({ ownerAccountId: context.accountId, region: context.region }) : undefined;
   const ownershipFailure = (name: string) => ({
     status: "FAILED" as const,
     errorCode: "OwnershipConflict",
@@ -621,13 +663,13 @@ export function createS3BucketProvider(s3: S3Service): ProductionResourceProvide
     visibility: "production",
     schema: S3_BUCKET_SCHEMA,
 
-    validate(properties: unknown): readonly ProviderValidationIssue[] {
-      return validateBucketProperties(properties);
+    validate(properties: unknown, context?: ProviderContext): readonly ProviderValidationIssue[] {
+      return validateBucketProperties(properties, context, managedKeyArn(context));
     },
 
     canonicalize(properties: unknown, context: ProviderContext): S3BucketModel {
       if (!isRecord(properties)) throw new TypeError(`${S3_BUCKET_TYPE} Properties must be an object`);
-      const issues = validateBucketProperties(properties);
+      const issues = validateBucketProperties(properties, context, managedKeyArn(context));
       if (issues.length) throw new TypeError(issues.map(item => `${item.path}: ${item.message}`).join("; "));
       return canonicalBucket(properties, context);
     },

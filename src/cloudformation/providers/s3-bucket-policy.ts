@@ -49,7 +49,7 @@ export const S3_BUCKET_POLICY_SCHEMA: ProviderSchema = Object.freeze({
   tags: Object.freeze({ behavior: "NONE", propagatesCloudFormationTags: false }),
 });
 
-type PolicyRole = "public-read" | "tls-deny" | "auto-delete" | "cloudfront-oac" | "cleanup-deny";
+type PolicyRole = "public-read" | "tls-deny" | "auto-delete" | "cloudfront-oac" | "cleanup-deny" | "serverlessrepo-read";
 
 const AUTO_DELETE_ACTIONS = ["s3:DeleteObject*", "s3:GetBucket*", "s3:List*", "s3:PutBucketPolicy"] as const;
 
@@ -76,6 +76,7 @@ function autoDeleteRoleArn(value: unknown, context?: ProviderContext): boolean {
 }
 
 function likelyRole(statement: Record<string, unknown>): PolicyRole {
+  if (isRecord(statement.Principal) && statement.Principal.Service === "serverlessrepo.amazonaws.com") return "serverlessrepo-read";
   if (isRecord(statement.Principal) && statement.Principal.Service !== undefined) return "cloudfront-oac";
   if (statement.Effect === "Deny" && statement.Condition !== undefined) return "tls-deny";
   if (statement.Effect === "Deny") return "cleanup-deny";
@@ -91,13 +92,14 @@ function validateStatement(
   context: ProviderContext | undefined,
   issues: ProviderValidationIssue[],
 ): void {
-  exactKeys(statement, role === "tls-deny" || role === "cloudfront-oac" ? ["Action", "Condition", "Effect", "Principal", "Resource", "Sid"] : ["Action", "Effect", "Principal", "Resource", "Sid"], statementPath, issues);
+  exactKeys(statement, role === "tls-deny" || role === "cloudfront-oac" || role === "serverlessrepo-read" ? ["Action", "Condition", "Effect", "Principal", "Resource", "Sid"] : ["Action", "Effect", "Principal", "Resource", "Sid"], statementPath, issues);
   const bucketArn = `arn:aws:s3:::${bucket}`;
   const objectArn = `${bucketArn}/*`;
   if (role === "tls-deny") {
     if (!exactSet(statement.Action, ["s3:*"])) issue(issues, `${statementPath}.Action`, "The TLS-only statement requires only s3:*");
     if (statement.Effect !== "Deny") issue(issues, `${statementPath}.Effect`, "The TLS-only statement must deny insecure transport");
-    if (!same(statement.Principal, { AWS: "*" })) issue(issues, `${statementPath}.Principal`, "The TLS-only statement requires the public AWS principal");
+    // CDK enforceSSL writes {"AWS": "*"}; the SAM CLI managed bucket writes "*".
+    if (!same(statement.Principal, { AWS: "*" }) && statement.Principal !== "*") issue(issues, `${statementPath}.Principal`, "The TLS-only statement requires the public principal");
     if (!same(statement.Condition, { Bool: { "aws:SecureTransport": "false" } })) issue(issues, `${statementPath}.Condition`, "The TLS-only statement requires only aws:SecureTransport=false");
     if (!exactSet(statement.Resource, [bucketArn, objectArn])) issue(issues, `${statementPath}.Resource`, "The TLS-only statement requires exactly the selected bucket and object ARNs");
     return;
@@ -107,6 +109,21 @@ function validateStatement(
     if (statement.Effect !== "Allow") issue(issues, `${statementPath}.Effect`, "The auto-delete statement must allow its generated role");
     if (!isRecord(statement.Principal) || !autoDeleteRoleArn(statement.Principal.AWS, context) || Object.keys(statement.Principal).some(key => key !== "AWS")) issue(issues, `${statementPath}.Principal`, "The auto-delete principal must be the same-account generated provider role ARN");
     if (!exactSet(statement.Resource, [bucketArn, objectArn])) issue(issues, `${statementPath}.Resource`, "The auto-delete statement requires exactly the selected bucket and object ARNs");
+    return;
+  }
+  if (role === "serverlessrepo-read") {
+    // The SAM CLI managed bucket's grant to the Serverless Application Repository.
+    // It is stored and evaluated; no local caller is that service principal.
+    if (!exactSet(statement.Action, ["s3:GetObject"])) issue(issues, `${statementPath}.Action`, "The Serverless Application Repository statement requires only s3:GetObject");
+    if (statement.Effect !== "Allow") issue(issues, `${statementPath}.Effect`, "The Serverless Application Repository statement must allow object reads");
+    if (!same(statement.Principal, { Service: "serverlessrepo.amazonaws.com" })) issue(issues, `${statementPath}.Principal`, "The Serverless Application Repository statement requires only the serverlessrepo.amazonaws.com service principal");
+    if (!exactSet(statement.Resource, [objectArn])) issue(issues, `${statementPath}.Resource`, "The Serverless Application Repository statement requires only the selected bucket object ARN");
+    const sourceAccount = isRecord(statement.Condition) && isRecord(statement.Condition.StringEquals)
+      ? statement.Condition.StringEquals["aws:SourceAccount"]
+      : undefined;
+    if (!same(statement.Condition, { StringEquals: { "aws:SourceAccount": sourceAccount } }) || typeof sourceAccount !== "string" || sourceAccount !== (context?.accountId ?? sourceAccount) || !/^\d{12}$/.test(sourceAccount)) {
+      issue(issues, `${statementPath}.Condition`, "The Serverless Application Repository statement requires only aws:SourceAccount equal to the stack account");
+    }
     return;
   }
   if (role === "cloudfront-oac") {
@@ -142,7 +159,9 @@ function validateSupportedPolicy(bucket: unknown, value: unknown, context: Provi
   const path = "Properties.PolicyDocument";
   if (!isRecord(value)) return;
   exactKeys(value, ["Version", "Statement"], path, issues);
-  if (value.Version !== "2012-10-17") issue(issues, `${path}.Version`, "Only IAM policy language version 2012-10-17 is supported");
+  // Without Version the 2008-10-17 language applies; it differs only in policy
+  // variables, which no admitted profile uses. The SAM CLI managed bucket omits it.
+  if (value.Version !== undefined && value.Version !== "2012-10-17") issue(issues, `${path}.Version`, "Only IAM policy language version 2012-10-17 (or an omitted Version) is supported");
   if (!Array.isArray(value.Statement) || ![1, 2, 3, ...(allowCleanup ? [4] : [])].includes(value.Statement.length)) {
     issue(issues, `${path}.Statement`, allowCleanup ? "Only the exact supported steady-state profiles or generated four-statement cleanup profile are allowed" : "Only exact public-read, generated auto-delete/TLS, direct-S3 public-read, or CloudFront OAC profiles are allowed");
     return;
@@ -177,6 +196,7 @@ function validateSupportedPolicy(bucket: unknown, value: unknown, context: Provi
     || same(roleSet, ["auto-delete", "public-read"])
     || same(roleSet, ["auto-delete", "public-read", "tls-deny"])
     || same(roleSet, ["auto-delete", "cloudfront-oac", "tls-deny"])
+    || same(roleSet, ["serverlessrepo-read", "tls-deny"])
     || allowCleanup && same(roleSet, ["auto-delete", "cleanup-deny"])
     || allowCleanup && same(roleSet, ["auto-delete", "cleanup-deny", "tls-deny"])
     || allowCleanup && same(roleSet, ["auto-delete", "cleanup-deny", "public-read"])
@@ -204,7 +224,7 @@ function canonicalPolicy(properties: Record<string, unknown>): S3BucketPolicyMod
     if (Array.isArray(statement.Resource)) statement.Resource = [...statement.Resource].sort();
     return statement;
   }).sort((left, right) => {
-    const order: Record<PolicyRole, number> = { "tls-deny": 0, "auto-delete": 1, "cloudfront-oac": 2, "public-read": 3, "cleanup-deny": 4 };
+    const order: Record<PolicyRole, number> = { "tls-deny": 0, "auto-delete": 1, "cloudfront-oac": 2, "public-read": 3, "cleanup-deny": 4, "serverlessrepo-read": 5 };
     return order[likelyRole(left)] - order[likelyRole(right)];
   }) as any;
   return {

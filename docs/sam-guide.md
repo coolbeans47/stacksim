@@ -4,8 +4,6 @@ StackSim's CloudFormation expands the `AWS::Serverless-2016-10-31` transform its
 
 For a small application to start from, see [`examples/sam-notes-api`](../examples/sam-notes-api/README.md); the [AWS CLI cookbook](aws-cli-cookbook.md#aws-sam) has the SAM recipes.
 
-For a small application to start from, see [`examples/sam-notes-api`](../examples/sam-notes-api/README.md); the [AWS CLI cookbook](aws-cli-cookbook.md#aws-sam) has the SAM recipes.
-
 ## What works
 
 - `AWS::Serverless::Function` with zip packages: `CodeUri` or `InlineCode`, the generated `<Function>Role`, `Policies` (AWS managed policy names, ARNs, inline statements, and the [policy templates](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-policy-templates.html) for services StackSim implements), `Tracing`, `DeadLetterQueue`, and the other properties in the coverage table.
@@ -31,27 +29,59 @@ Connectors come in a later phase; a template that uses them fails with a message
 
 ## Point the SAM CLI at StackSim
 
-Use SAM CLI 1.91 or later; earlier releases bundle a botocore that ignores `AWS_ENDPOINT_URL`.
+Use SAM CLI 1.91 or later; earlier releases bundle a botocore that ignores `AWS_ENDPOINT_URL`. Every service uses the main endpoint, except S3, which uses the [HTTPS endpoint](#the-https-s3-endpoint) so that the SAM CLI's managed bucket accepts its uploads. First save the StackSim CA certificate:
 
 ```bash
+curl -o ~/stacksim-ca.pem http://127.0.0.1:4566/_stacksim/ca.pem
 export AWS_ENDPOINT_URL=http://127.0.0.1:4566
+export AWS_ENDPOINT_URL_S3=https://127.0.0.1:4569
+export AWS_CA_BUNDLE=~/stacksim-ca.pem
 export AWS_ACCESS_KEY_ID=admin AWS_SECRET_ACCESS_KEY=password AWS_REGION=eu-west-1
 ```
 
 In PowerShell:
 
 ```powershell
+curl.exe -o "$HOME\stacksim-ca.pem" http://127.0.0.1:4566/_stacksim/ca.pem
 $env:AWS_ENDPOINT_URL = "http://127.0.0.1:4566"
+$env:AWS_ENDPOINT_URL_S3 = "https://127.0.0.1:4569"
+$env:AWS_CA_BUNDLE = "$HOME\stacksim-ca.pem"
 $env:AWS_ACCESS_KEY_ID = "admin"; $env:AWS_SECRET_ACCESS_KEY = "password"; $env:AWS_REGION = "eu-west-1"
 ```
 
-## Create the artifact bucket
+`AWS_CA_BUNDLE` makes the SAM CLI (and the AWS CLI) trust StackSim's certificate. Plain-HTTP endpoints ignore it, so it is safe to set for every service. The certificate file is also in the data directory at `<data-dir>/data/cloudformation/custom-resource-pki/ca.pem`.
 
-Until the SAM CLI's managed bucket is supported (SAM-05), give `sam deploy` a bucket you create yourself. The managed bucket uses SSE-KMS and a TLS-only bucket policy that StackSim cannot satisfy yet, so `--resolve-s3` and the `sam deploy --guided` default fail.
+You can put the same settings in a profile instead. Do not mix the two: an `AWS_ENDPOINT_URL` environment variable overrides a profile's service-specific endpoint, which would send S3 back to plain HTTP.
 
-```bash
-aws s3 mb s3://sam-artifacts
+```ini
+[profile stacksim]
+region = eu-west-1
+endpoint_url = http://127.0.0.1:4566
+ca_bundle = /home/me/stacksim-ca.pem
+services = stacksim-services
+
+[services stacksim-services]
+s3 =
+  endpoint_url = https://127.0.0.1:4569
 ```
+
+## The managed artifact bucket
+
+`sam deploy --guided`, `sam deploy --resolve-s3`, and `resolve_s3 = true` in `samconfig.toml` work unchanged. The first time, the SAM CLI creates the stack `aws-sam-cli-managed-default` from its fixed template. StackSim deploys that template as written:
+
+- a bucket with versioning, a full public-access block, the tag `ManagedStackSource=AwsSamCli`, and default encryption `aws:kms` with the AWS managed key `aws/s3`;
+- a bucket policy that allows the Serverless Application Repository to read objects and denies every request that does not use TLS (`aws:SecureTransport` is `false`); and
+- the `SourceBucket` output that the SAM CLI reads.
+
+The SAM CLI then uploads your artifacts to that bucket over HTTPS. Because of the TLS-only policy, plain HTTP to the bucket is denied, including from the AWS CLI or an SDK on port 4566. The error names the HTTPS endpoint:
+
+```text
+AccessDenied: ... The bucket policy denies requests that do not use TLS (aws:SecureTransport is false over plain HTTP). Send S3 requests to the StackSim HTTPS endpoint https://127.0.0.1:4569 ...
+```
+
+If you see that error from `sam deploy`, check that `AWS_ENDPOINT_URL_S3` is set to the HTTPS endpoint, as shown above. Without `AWS_CA_BUNDLE`, the SAM CLI fails with `SSL validation failed ... CERTIFICATE_VERIFY_FAILED`.
+
+You can still use a bucket of your own instead: `aws s3 mb s3://sam-artifacts`, then `sam deploy --s3-bucket sam-artifacts` (or `resolve_s3 = false` and `s3_bucket = "sam-artifacts"` in `samconfig.toml`). That works over plain HTTP, because your bucket has no TLS-only policy.
 
 ## Deploy the Hello World quick start
 
@@ -59,10 +89,16 @@ aws s3 mb s3://sam-artifacts
 sam init --runtime nodejs22.x --dependency-manager npm --app-template hello-world --name sam-app --no-interactive
 cd sam-app
 sam build
-sam deploy --stack-name hello --s3-bucket sam-artifacts --capabilities CAPABILITY_IAM
+sam deploy --guided
 ```
 
-`--capabilities CAPABILITY_IAM` is required because SAM generates an IAM role for the function. Without it, the deployment fails with `Requires capabilities : [CAPABILITY_IAM]`, as on AWS. In `samconfig.toml`, set `resolve_s3 = false` and `s3_bucket = "sam-artifacts"` to avoid typing the flags.
+Answer the prompts: the stack name (`hello`), the Region (`eu-west-1`), `N` to confirm changes, `Y` to allow IAM role creation, `N` to disable rollback, and `y` when it warns that `HelloWorldFunction has no authentication`. Then save the answers to `samconfig.toml`. The SAM CLI prints `Managed S3 bucket: aws-sam-cli-managed-default-samclisourcebucket-...`, and later `sam deploy` runs reuse the saved settings. Without prompts:
+
+```bash
+sam deploy --stack-name hello --resolve-s3 --capabilities CAPABILITY_IAM
+```
+
+`--capabilities CAPABILITY_IAM` is required because SAM generates an IAM role for the function. Without it, the deployment fails with `Requires capabilities : [CAPABILITY_IAM]`, as on AWS.
 
 Only Node.js runtimes (`nodejs18.x` through `nodejs24.x`) run locally, so use the Node.js `sam init` templates.
 
@@ -85,7 +121,7 @@ The Node.js `sqs`, `sns`, `s3`, and `cw-event` quick starts deploy the same way:
 sam init --runtime nodejs22.x --dependency-manager npm --app-template sqs --name sam-app --no-interactive
 cd sam-app
 sam build
-sam deploy --stack-name sqs-app --s3-bucket sam-artifacts --capabilities CAPABILITY_IAM
+sam deploy --stack-name sqs-app --resolve-s3 --capabilities CAPABILITY_IAM
 ```
 
 Send a message (or publish to the topic, or put a `.json` object in the bucket), then read the function's output:
@@ -105,7 +141,7 @@ The Node.js `step-func` quick start deploys a stock-trading state machine, three
 sam init --runtime nodejs22.x --dependency-manager npm --app-template step-func --name sam-app --no-interactive
 cd sam-app
 sam build
-sam deploy --stack-name step-func-app --s3-bucket sam-artifacts --capabilities CAPABILITY_IAM
+sam deploy --stack-name step-func-app --resolve-s3 --capabilities CAPABILITY_IAM
 ```
 
 `sam deploy` uploads `statemachine/stock_trader.asl.json` as it is, and the stack reads it through `DefinitionS3Location`. The template ships its hourly schedule disabled, as on AWS, so nothing runs until you enable the rule:
@@ -123,7 +159,7 @@ A REST API with a Cognito authorizer accepts the user pool's ID token in the `Au
 
 ## Update and delete
 
-Running `sam deploy` again with no changes prints `No changes to deploy`. A code change updates only the function. `sam delete --stack-name hello` removes everything the stack created, including the generated role.
+Running `sam deploy` again with no changes prints `No changes to deploy`. A code change updates only the function. `sam delete --stack-name hello` removes everything the stack created, including the generated role, and deletes the stack's artifacts from the managed bucket. It leaves `aws-sam-cli-managed-default` and its bucket in place for your other applications, as on AWS. Because the bucket is versioned, the deleted artifacts remain as noncurrent versions.
 
 ## Inspect the expansion
 
@@ -133,6 +169,46 @@ aws cloudformation get-template --stack-name hello --template-stage Processed
 
 The **Template** tab in the StackSim console has the same **View processed template** toggle as the AWS console.
 
+## The HTTPS S3 endpoint
+
+StackSim serves the same API as `http://127.0.0.1:4566` over TLS at `https://127.0.0.1:4569` (set the port with `STACKSIM_S3_TLS_PORT`). It listens on loopback only. Requests on it carry `aws:SecureTransport=true`, so bucket policies that require TLS allow them; the same requests on port 4566 carry `false`.
+
+- **Path style:** `https://127.0.0.1:4569/<bucket>/<key>`. botocore (the SAM CLI and the AWS CLI) and the AWS SDKs use path style for an IP endpoint, so this is the setting to use.
+- **Virtual-hosted style:** `https://<bucket>.s3.localhost:4569/<key>`, with the endpoint `https://s3.localhost:4569`. This works only if your system resolves `*.s3.localhost` to `127.0.0.1`. Many systems do not, including Windows; add a hosts-file entry per bucket if you need it. AWS CLI 2.36 used path style for this endpoint too, unless the profile sets `s3 = addressing_style = virtual`.
+
+The certificate's names are `localhost`, `s3.localhost`, `*.s3.localhost`, `127.0.0.1`, and `::1`. It is issued by StackSim's installation CA, the same CA that signs the CloudFront local viewers. Download the CA from `http://127.0.0.1:4566/_stacksim/ca.pem`. The certificate and the CA persist in the data directory across restarts.
+
+### Trust the StackSim CA
+
+The SAM CLI and the AWS CLI need only `AWS_CA_BUNDLE` (or `ca_bundle` in the profile). They use their own CA bundle, not the operating system's. Node.js programs need `NODE_EXTRA_CA_CERTS=<path>/stacksim-ca.pem`.
+
+Add the CA to your operating system's trust store only if another tool (a browser, or `curl` without `--cacert`) needs it. The CA's private key is in your StackSim data directory, and the CA is not limited to particular host names. Anyone who can read that directory could issue a certificate your machine would trust for any site. Prefer `AWS_CA_BUNDLE`, and remove the CA from the trust store when you no longer need it.
+
+- **Windows** (current user; confirm the security prompt):
+
+  ```powershell
+  Import-Certificate -FilePath "$HOME\stacksim-ca.pem" -CertStoreLocation Cert:\CurrentUser\Root
+  ```
+
+  To remove it, delete the `stacksim CloudFormation development CA` certificate from `certmgr.msc` under **Trusted Root Certification Authorities**.
+- **macOS** (login keychain):
+
+  ```bash
+  security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db ~/stacksim-ca.pem
+  ```
+
+  To remove it, delete `stacksim CloudFormation development CA` in Keychain Access.
+- **Linux** (Debian and Ubuntu):
+
+  ```bash
+  sudo cp ~/stacksim-ca.pem /usr/local/share/ca-certificates/stacksim-ca.crt
+  sudo update-ca-certificates
+  ```
+
+  On Fedora and RHEL, copy the file to `/etc/pki/ca-trust/source/anchors/` and run `sudo update-ca-trust`. To remove it, delete the file and run the same command again (`update-ca-certificates --fresh` on Debian and Ubuntu).
+
+To check the connection, `curl --cacert ~/stacksim-ca.pem https://127.0.0.1:4569/_stacksim/health` returns StackSim's health document (without `--cacert` once the CA is trusted). On Windows, `curl.exe` also needs `--ssl-no-revoke`, because the local CA publishes no revocation list. S3 requests need SigV4 signatures, so use the AWS CLI for those, for example `aws s3 ls s3://<managed-bucket>/` with the settings above.
+
 ## Local differences
 
 - REST API deployment logical IDs (`ServerlessRestApiDeployment<hash>`) change exactly when AWS's would, but the hash itself differs: AWS hashes a Python `repr()` of the API definition, and StackSim hashes its canonical JSON.
@@ -140,3 +216,7 @@ The **Template** tab in the StackSim console has the same **View processed templ
 - A transform error lists its causes in template order. SAM's own tests sort them by logical ID, so a multi-error message can list the same causes in a different order than the translator's fixtures.
 - Unquoted YAML floats such as `2.0` stay text in StackSim's YAML reader, where SAM's Python loader yields a number. API Gateway and Step Functions read either form the same way.
 - A state machine's `Logging` and `Tracing` expand exactly as SAM writes them, but StackSim's Step Functions accepts only `Level: OFF` and disabled tracing, so other settings fail when the stack deploys.
+- StackSim has no KMS service. SSE-KMS works only with the AWS managed key `aws/s3`. StackSim models that key as an encryption descriptor: its key ID is fixed for your installation, account, and Region, objects record and report its ARN (`HeadObject` shows `x-amz-server-side-encryption: aws:kms` and the key ARN), and decryption is implicit for callers in the bucket's account. Callers from other accounts cannot use it, as on AWS. `GetBucketEncryption` returns the configuration as written, as AWS does, so the managed bucket shows `aws:kms` with no key ID; the console shows the key ARN with a local-difference note. Object data is encrypted at rest with StackSim's local installation key either way. Customer managed keys and DSSE-KMS fail with `KMS.NotFoundException`.
+- The SAM CLI uploads artifacts with `ServerSideEncryption=AES256` unless you pass `--kms-key-id`, so its objects in the managed bucket use SSE-S3, as on AWS. Objects you put without an encryption header use the bucket default, SSE-KMS.
+- The bucket policy's statement for `serverlessrepo.amazonaws.com` is stored and evaluated, but StackSim has no Serverless Application Repository to use it.
+- The HTTPS endpoint's certificate is issued by StackSim's own CA, which no system trusts until you configure it.

@@ -31,12 +31,23 @@ aws cloudformation deploy --template-file packaged.yaml --stack-name notes --cap
 
 ## Deploy with the SAM CLI
 
+Point the SAM CLI at StackSim first, as the [SAM guide](../../docs/sam-guide.md#point-the-sam-cli-at-stacksim) shows. S3 must use StackSim's HTTPS endpoint, because the SAM CLI's managed bucket denies plain HTTP:
+
 ```console
-sam build
-sam deploy --stack-name notes --s3-bucket sam-artifacts --capabilities CAPABILITY_IAM
+curl -o ~/stacksim-ca.pem http://127.0.0.1:4566/_stacksim/ca.pem
+export AWS_ENDPOINT_URL=http://127.0.0.1:4566
+export AWS_ENDPOINT_URL_S3=https://127.0.0.1:4569
+export AWS_CA_BUNDLE=~/stacksim-ca.pem
 ```
 
-Point the SAM CLI at StackSim first with `AWS_ENDPOINT_URL=http://127.0.0.1:4566`, as the [SAM guide](../../docs/sam-guide.md#point-the-sam-cli-at-stacksim) shows. Use an explicit `--s3-bucket`: StackSim does not support the SAM CLI's managed bucket yet.
+Then build and deploy. No bucket is needed: the SAM CLI creates its managed stack, `aws-sam-cli-managed-default`, the first time, and uploads the code there.
+
+```console
+sam build
+sam deploy --guided
+```
+
+Name the stack `notes` and answer `Y` to allow IAM role creation. The SAM CLI then asks `NotesFunction has no authentication. Is this okay?` once for each of the two routes; answer `y` both times. Without prompts, run `sam deploy --stack-name notes --resolve-s3 --capabilities CAPABILITY_IAM`. To use your own bucket instead, pass `--s3-bucket sam-artifacts`.
 
 ## Try it
 
@@ -79,3 +90,5 @@ aws cloudformation wait stack-delete-complete --stack-name notes
 ```
 
 Deleting the stack removes the API, the role, the table, and the function with all of its versions. The artifact bucket is yours to keep or remove.
+
+If you deployed with the SAM CLI, `sam delete --stack-name notes` deletes the stack and its artifacts in the managed bucket, and keeps `aws-sam-cli-managed-default` for your next application, as on AWS.
