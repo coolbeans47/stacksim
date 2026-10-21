@@ -173,11 +173,16 @@ function depthAndNumbers(value: unknown): void {
   }
 }
 
+// Event envelopes carry whole-second RFC 3339 times ("2026-10-21T10:00:00Z"); sub-second precision is truncated.
+function eventTimeText(millis: number): string {
+  return new Date(Math.floor(millis / 1000) * 1000).toISOString().replace(/\.000Z$/, "Z");
+}
+
 function eventTime(value: unknown, now: number): string {
-  if (value === undefined) return new Date(now).toISOString();
+  if (value === undefined) return eventTimeText(now);
   const millis = typeof value === "number" ? value * 1000 : value instanceof Date ? value.getTime() : Date.parse(String(value));
   const date = new Date(millis); if (!Number.isFinite(millis) || !Number.isFinite(date.getTime())) throw new AwsError("ValidationException", "Time must be a valid timestamp.");
-  return date.toISOString();
+  return eventTimeText(millis);
 }
 
 function putEventsEntrySize(raw: unknown): number {
@@ -972,7 +977,8 @@ export class EventBridgeService {
     const traceHeader = entry.TraceHeader === undefined ? undefined : text(entry.TraceHeader, "TraceHeader", 1, 500);
     const bus = this.resolveBusIdentifier(entry.EventBusName, false); const generatedId = entryAttempt ? deterministicEventId(entryAttempt.attemptId) : randomUUID();
     const envelope: JsonObject = options.preservedEnvelope
-      ? { ...structuredClone(options.preservedEnvelope), ...(options.replayName ? { "replay-name": options.replayName } : {}) }
+      // A lossless JSON copy: structuredClone drops the symbol tag on raw event numbers, so replay would serialize them as objects.
+      ? { ...(parseEventJson(stringifyEventJson(options.preservedEnvelope)) as JsonObject), ...(options.replayName ? { "replay-name": options.replayName } : {}) }
       : { version: "0", id: generatedId, "detail-type": detailType, source, account: this.store.accountId, time: eventTime(entry.Time, this.clock.now()), region: this.region, ...(options.replayName ? { "replay-name": options.replayName } : {}), resources, detail };
     const id = typeof envelope.id === "string" && envelope.id ? envelope.id : generatedId; envelope.id = id;
     if (!Object.hasOwn(this.buses, bus)) { const output = { EventId: id }; if (entryAttempt) await this.deliveries.putMany([], [], acceptedIntegrationAttempt(entryAttempt, output, this.clock.now())); return output; }
@@ -1041,6 +1047,7 @@ export class EventBridgeService {
       const entry = Object.entries(this.rules).filter(([, rule]) => rule.state !== "DISABLED" && rule.scheduleExpression && rule.scheduleNextAt !== undefined && rule.scheduleNextAt <= now).sort(([, left], [, right]) => left.scheduleNextAt! - right.scheduleNextAt! || left.name.localeCompare(right.name))[0];
       if (!entry) return;
       const [key, rule] = entry; const scheduledAt = rule.scheduleNextAt!;
+      // Time stays in its original input form so persisted slot-receipt digests still match; acceptEvent emits the whole-second envelope time.
       const event = { Source: "aws.events", DetailType: "Scheduled Event", Detail: "{}", Resources: [rule.arn], Time: new Date(scheduledAt).toISOString(), EventBusName: "default" };
       const attempt: ServiceIntegrationAttempt = {
         attemptId: `legacy-schedule:${createHash("sha256").update(`${rule.arn}\0${scheduledAt}`).digest("hex")}`,
