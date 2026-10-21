@@ -7,7 +7,23 @@ import { EventBridgeArchiveStore } from "../src/eventbridge/archive-store.js";
 
 const account = "000000000000"; const region = "eu-west-1"; const now = Date.parse("2026-08-08T12:00:00Z");
 function metadata(name: string) { return { name, arn: `arn:aws:events:${region}:${account}:archive/${name}`, eventSourceArn: `arn:aws:events:${region}:${account}:event-bus/default`, eventBusName: "default", retentionDays: 0, state: "ENABLED" as const, createdAt: now, lastModified: now }; }
-function event(id: string, time = now) { return JSON.stringify({ version: "0", id, "detail-type": "Recovery", source: "store.test", account, time: new Date(time).toISOString(), region, resources: [], detail: { id } }); }
+function event(id: string, time = now) { return JSON.stringify({ version: "0", id, "detail-type": "Recovery", source: "store.test", account, time: new Date(time).toISOString().replace(/\.000Z$/, "Z"), region, resources: [], detail: { id } }); }
+
+test("archive store indexes whole-second and persisted millisecond envelope times and returns both byte-identical after restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-archive-store-time-")); const key = Buffer.alloc(32, 9);
+  try {
+    let store = new EventBridgeArchiveStore(root, account, region, key); await store.start(now); await store.createArchive(metadata("times"));
+    const current = event("whole-second", now - 60_000); assert.match(current, /"time":"2026-08-08T11:59:00Z"/);
+    const legacy = JSON.stringify({ version: "0", id: "millisecond", "detail-type": "Recovery", source: "store.test", account, time: "2026-08-08T11:58:00.123Z", region, resources: [], detail: { id: "millisecond" } });
+    await store.publish(["times"], current, now); await store.publish(["times"], legacy, now); await store.stop();
+    store = new EventBridgeArchiveStore(root, account, region, key); await store.start(now);
+    const records = store.archive("times")!.records; assert.equal(records.length, 2);
+    const byEvent = new Map(records.map(record => [record.eventId, record]));
+    assert.equal(byEvent.get("whole-second")!.eventTime, Date.parse("2026-08-08T11:59:00Z")); assert.equal(byEvent.get("millisecond")!.eventTime, Date.parse("2026-08-08T11:58:00.123Z"));
+    assert.equal(await store.readEvent("times", byEvent.get("whole-second")!.id), current); assert.equal(await store.readEvent("times", byEvent.get("millisecond")!.id), legacy);
+    await store.stop();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test("archive store recovers renamed orphan segments, removes torn temporaries, diagnoses corruption, and cleans exact ownership", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-archive-store-")); const key = Buffer.alloc(32, 7);
