@@ -72,7 +72,12 @@ Parameter key, value, resolved value, previous value (on updates).
 
 ### Template tab
 
-**Original** vs **Processed** template JSON (selector). Editor accepts JSON templates used by supported profile.
+**Original** shows the submitted template byte for byte, so a YAML template keeps its formatting, comments, and short-form tags such as `!Ref` and `!GetAtt`. The **View processed template** toggle shows the **Processed** stage:
+
+- For a template that declares `Transform: AWS::Serverless-2016-10-31`, the transform output as JSON, without the `Transform` key, as in AWS.
+- For a template without transforms, StackSim's condition-processed, asset-pinned template used for planning and execution. **Local difference:** AWS returns the original template here; StackSim shows the plan it executes.
+
+The create-change-set and update-stack editors accept JSON or YAML.
 
 ---
 
@@ -144,8 +149,8 @@ Automatic reduced bootstrap creates file-asset bucket and roles by default (`STA
 
 | Feature | StackSim behavior |
 |---------|-------------------|
-| Template format | JSON in console |
-| YAML editing | Unavailable in console |
+| Template format | JSON or YAML (YAML 1.1 as CloudFormation reads it; no anchors, aliases, or merge keys) |
+| Transforms | `AWS::Serverless-2016-10-31` only, with `CAPABILITY_AUTO_EXPAND` on CreateStack/UpdateStack. `AWS::Serverless::*` resources wait for SAM-02 and fail with the AWS transform error format |
 | Drift / import | Unavailable |
 | StackSets | Unavailable |
 | Supported providers | Documented subset per release |

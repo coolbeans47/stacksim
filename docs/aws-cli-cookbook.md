@@ -179,6 +179,17 @@ aws cloudformation validate-template --template-body file://template.yaml
 
 Validation confirms the bounded StackSim template contract; it does not imply support for every AWS CloudFormation resource type.
 
+### How to deploy a YAML template
+
+`aws cloudformation deploy` works with YAML templates, including the short-form tags (`!Ref`, `!Sub`, `!GetAtt`, and the rest):
+
+```console
+aws cloudformation deploy --template-file template.yaml --stack-name my-stack
+aws cloudformation get-template --stack-name my-stack
+```
+
+`get-template` returns the YAML exactly as you wrote it. A template that declares `Transform: AWS::Serverless-2016-10-31` also deploys this way, because `deploy` uses a change set. `create-stack` and `update-stack` need `--capabilities CAPABILITY_AUTO_EXPAND` for such a template, as on AWS. Use `--template-stage Processed` to see the expanded template. `AWS::Serverless::*` resources are not expanded yet; they fail with the AWS-format `Transform AWS::Serverless-2016-10-31 failed with: ...` error until SAM-02.
+
 ## DynamoDB and DynamoDB Streams
 
 The seeded learning environment includes a `LearningNotes` table whose partition key is the string attribute `id`.

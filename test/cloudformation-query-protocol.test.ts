@@ -239,7 +239,7 @@ test("raw Query covers missing stacks, template input failures, and durable clie
     await expectRawError({ Action: "DescribeStackResource", StackName: "missing-stack", LogicalResourceId: "Missing" }, "ValidationError", /does not exist/);
     await expectRawError({ Action: "CreateStack", StackName: "missing-template" }, "ValidationError", /TemplateBody or TemplateURL is required/);
     await expectRawError({ Action: "CreateStack", StackName: "conflicting-template", TemplateBody: emptyTemplate, TemplateURL: "https://example.com/template.json" }, "ValidationError", /exactly one/);
-    await expectRawError({ Action: "CreateStack", StackName: "malformed-template", TemplateBody: "{" }, "ValidationError", /valid JSON/);
+    await expectRawError({ Action: "CreateStack", StackName: "malformed-template", TemplateBody: "{" }, "ValidationError", /^Template format error: JSON not well-formed\. \(line 1, column 2\)$/);
     await expectRawError({ Action: "CreateStack", StackName: "wrong-template-shape", TemplateBody: "[]" }, "ValidationError", /JSON object/);
     await expectRawError({ Action: "CreateStack", StackName: "external-template", TemplateURL: "http://169.254.169.254/latest/meta-data/template" }, "ValidationError", /local S3|HTTPS S3|TemplateURL/i);
     await expectRawError({ Action: "CreateStack", StackName: "oversized-template", TemplateBody: " ".repeat(51_201) }, "ValidationError", /1-51200 bytes/);

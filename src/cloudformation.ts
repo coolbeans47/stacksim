@@ -27,6 +27,7 @@ import { buildResourceDependencyGraph } from "./cloudformation/dependencies.js";
 import { collectImportValueNames, collectIntrinsicReferences, evaluateIntrinsicValue } from "./cloudformation/intrinsics.js";
 import { cloudFormationPseudoParameters, conditionallyProcessedTemplate, evaluateTemplateConditions, resolveTemplateParameters, validateTemplateRules, type ResolvedParameters } from "./cloudformation/parameters.js";
 import { parseCloudFormationTemplate, TemplateValidationError, type CloudFormationTemplate } from "./cloudformation/template.js";
+import { partitionForRegion, prepareCloudFormationTemplate } from "./cloudformation/transforms.js";
 import { collectDynamicReferences, containsDynamicReference, dynamicReferencesInString, type ParsedDynamicReference } from "./cloudformation/dynamic-references.js";
 import {
   createDefaultCloudFormationProviderRegistry,
@@ -94,9 +95,14 @@ const MUTATING_ACTIONS = new Set([
 
 interface ParsedTemplate {
   body: string;
+  /** The structurally validated template after any declared transforms. */
   value: CloudFormationTemplate;
   digest: string;
   source?: TemplateSourceArtifact;
+  /** DeclaredTransforms of the submitted template. */
+  transforms: string[];
+  /** AWS's Processed template stage: the transform output as JSON. */
+  transformedBody?: string;
 }
 
 interface TemplateSourceArtifact {
@@ -254,6 +260,8 @@ interface ChangeSetExecutionArtifact {
   ssmParameters: Array<{ name: string; value: string; generationId?: string; version?: number }>;
   nestedTemplateManifest?: NestedTemplateManifest;
   templateSource?: TemplateSourceArtifact;
+  /** The transform output, retained so execution stores the Processed stage. */
+  transformedTemplateBody?: string;
 }
 
 interface DynamicReferenceResolution {
@@ -311,6 +319,7 @@ interface PreparedTemplateArtifact {
   readonly assetManifest?: CloudFormationAssetManifest;
   readonly nestedTemplateManifest?: NestedTemplateManifest;
   readonly templateSource?: TemplateSourceArtifact;
+  readonly transformedBody?: string;
 }
 
 class ProviderDeferred extends Error {
@@ -1023,7 +1032,7 @@ export class CloudFormationService {
       const values = prefixReachable.get(collection) ?? new Set<string>(); values.add(prefix); prefixReachable.set(collection, values);
     };
     const markTemplate = (artifactId: string): void => {
-      mark("templates", `${artifactId}.original.template`); mark("templates", `${artifactId}.processed.template`); mark("templates", `${artifactId}.previous.template`);
+      mark("templates", `${artifactId}.original.template`); mark("templates", `${artifactId}.processed.template`); mark("templates", `${artifactId}.previous.template`); mark("templates", `${artifactId}.transformed.template`);
       mark("parameters", `${artifactId}.private.json`); mark("execution", `${artifactId}.principal.json`); mark("assets", `${artifactId}.json`);
       for (const suffix of ["conditions", "graph", "imports", "stack", "provider-models", "nested-templates", "template-source"]) mark("plans", `${artifactId}.${suffix}.json`);
     };
@@ -1170,7 +1179,7 @@ export class CloudFormationService {
     const parsed = await this.template(input, principal);
     const declared = parsed.value.Parameters && typeof parsed.value.Parameters === "object" ? Object.entries(parsed.value.Parameters).map(([ParameterKey, definition]: [string, any]) => ({ ParameterKey, DefaultValue: definition?.Default !== undefined ? String(definition.Default) : undefined, NoEcho: Boolean(definition?.NoEcho), Description: definition?.Description })) : [];
     const capabilities = this.requiredCapabilities(parsed.value);
-    return { Parameters: declared, Description: parsed.value.Description, Capabilities: capabilities, CapabilitiesReason: capabilities.length ? "The template contains IAM resources" : undefined, DeclaredTransforms: [] };
+    return { Parameters: declared, Description: parsed.value.Description, Capabilities: capabilities, CapabilitiesReason: capabilities.length ? "The template contains IAM resources" : undefined, DeclaredTransforms: parsed.transforms };
   }
 
   async GetTemplateSummary(input: any, principal: PrincipalContext): Promise<any> {
@@ -1188,7 +1197,7 @@ export class CloudFormationService {
       ResourceTypes: [...new Set(Object.values(parsed.value.Resources).map(resource => resource.Type))].sort(),
       Version: parsed.value.AWSTemplateFormatVersion,
       Metadata: JSON.stringify(parsed.value.Metadata ?? {}),
-      DeclaredTransforms: [],
+      DeclaredTransforms: parsed.transforms,
       ResourceIdentifierSummaries: [],
     };
   }
@@ -1222,6 +1231,7 @@ export class CloudFormationService {
     const now = this.clock.now(); const stackId = reviewStack?.stackId ?? hierarchy?.stackId ?? `arn:aws:cloudformation:${this.region}:${this.store.accountId}:stack/${stackName}/${randomUUID()}`; const templateArtifactId = this.artifactId(stackId);
     const notificationArns = this.normalizedNotificationArns(input.NotificationARNs);
     const suppliedCapabilities = list<string>(input.Capabilities).map(String);
+    this.assertTransformCapability(parsed, suppliedCapabilities);
     const desiredTags = tags(input.Tags);
     let resolvedParameters: ResolvedParameters; let conditions: Record<string, boolean>; let processed: CloudFormationTemplate; let graph: ReturnType<typeof buildResourceDependencyGraph>; let importNames: string[];
     const typedSsmGenerations = new Map<string, string>();
@@ -1247,6 +1257,7 @@ export class CloudFormationService {
     this.event(stack, stackName, "AWS::CloudFormation::Stack", "CREATE_IN_PROGRESS", undefined, stackId, clientRequestToken);
     await this.journal.replaceTemplate(templateArtifactId, prepared?.originalBody ?? parsed.body, "original");
     await this.journal.replaceTemplate(templateArtifactId, processedBody, "processed");
+    await this.replaceTransformedTemplate(templateArtifactId, prepared?.transformedBody ?? parsed.transformedBody);
     await this.journal.replaceJsonArtifact("parameters", `${templateArtifactId}.private.json`, { values: resolvedParameters.values, entries: resolvedParameters.entries });
     await this.journal.replaceJsonArtifact("operations", `${operationId}.typed-ssm-pins.json`, typedPins);
     await this.journal.replaceJsonArtifact("execution", `${templateArtifactId}.principal.json`, executionPrincipal);
@@ -1275,6 +1286,7 @@ export class CloudFormationService {
     const inputDigest = createHash("sha256").update(canonical({ action: "UpdateStack", stackId: stack.stackId, template: requestTemplateDigest, parameters: input.Parameters, tags: input.Tags, capabilities: input.Capabilities, roleArn: input.RoleARN, notificationArns: input.NotificationARNs, disableRollback, retainExceptOnCreate, rollbackConfiguration })).digest("hex"); if (clientRequestToken) { const prior = this.state.clientTokens[clientRequestToken]; if (prior) { if (prior.operation !== "UpdateStack" || prior.inputDigest !== inputDigest) throw new AwsError("TokenAlreadyExistsException", `A different request already uses client token ${clientRequestToken}`, 400); return { StackId: stack.stackId, OperationId: prior.operationId }; } }
     const desiredTemplateArtifactId = `${this.artifactId(stack.stackId)}-${operationId}`; const previousValues = Object.fromEntries(stack.parameters.filter(parameter => parameter.parameterValue !== undefined).map(parameter => [parameter.parameterKey, parameter.parameterValue!])); const suppliedParameterInputs = parameters(input.Parameters); const suppliedNames = new Set(suppliedParameterInputs.map(parameter => parameter.parameterKey)); for (const name of Object.keys(parsed.value.Parameters ?? {})) if (!suppliedNames.has(name) && previousValues[name] !== undefined) suppliedParameterInputs.push({ parameterKey: name, usePreviousValue: true });
     const notificationArns = input.NotificationARNs === undefined ? [...stack.notificationArns] : this.normalizedNotificationArns(input.NotificationARNs); const suppliedCapabilities = input.Capabilities === undefined ? [...stack.capabilities] : list<string>(input.Capabilities).map(String); const desiredTags = input.Tags === undefined ? structuredClone(stack.tags) : tags(input.Tags);
+    this.assertTransformCapability(parsed, suppliedCapabilities);
     let resolvedParameters: ResolvedParameters; let conditions: Record<string, boolean>; let processed: CloudFormationTemplate; let graph: ReturnType<typeof buildResourceDependencyGraph>; let importNames: string[];
     const typedSsmGenerations = new Map<string, string>();
     try { await this.authorizeTypedSsmParameters(parsed.value, suppliedParameterInputs, executionPrincipal, previousValues); resolvedParameters = resolveTemplateParameters(parsed.value.Parameters, suppliedParameterInputs, { previous: previousValues, resolveSsmParameter: (name, type) => this.resolveBootstrapSsmParameter(name, type, typedSsmGenerations) }); const pseudos = { ...cloudFormationPseudoParameters(this.store.accountId, this.region, stack.stackId, stack.stackName), "AWS::NotificationARNs": notificationArns }; const availableExports = this.exportValues(); conditions = evaluateTemplateConditions(parsed.value, resolvedParameters.values, pseudos, availableExports); validateTemplateRules(parsed.value, resolvedParameters.values, pseudos, conditions, availableExports); processed = conditionallyProcessedTemplate(parsed.value, conditions); const openingEvaluation = { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, resourceRefs: {}, resourceAttributes: {}, imports: availableExports }; processed = await this.pinStaticFileAssets(processed, openingEvaluation, desiredTemplateArtifactId, executionPrincipal, false, stack.resources, prepared?.assetManifest); await this.pinNestedTemplateAssets(processed, openingEvaluation, desiredTemplateArtifactId, executionPrincipal, prepared?.nestedTemplateManifest, { stackId: stack.stackId, stackName: stack.stackName, logicalPath: stack.parentLogicalId, capabilities: suppliedCapabilities, tags: desiredTags, previousResources: stack.resources }); this.assertCapabilities(processed, suppliedCapabilities); importNames = this.plannedImportNames(processed, resolvedParameters.values, pseudos, conditions, stack.stackId); graph = buildResourceDependencyGraph(processed); this.validateOpeningResources(processed, stack.stackId, operationId, executionPrincipal); this.validateProviderReferences(processed); await this.preflightProviderModels(processed, { parameters: resolvedParameters.values, pseudoParameters: pseudos, mappings: processed.Mappings, conditions, imports: availableExports }, stack.stackId, operationId, executionPrincipal, desiredTags, stack.resources, new Set(), undefined, new Set(), desiredTemplateArtifactId); } catch (error) { throw this.validationError(error); }
@@ -1282,7 +1294,7 @@ export class CloudFormationService {
     const sameDefinitionAssets = await this.sameStateMachineDefinitionAssets(stack.templateArtifactId, desiredTemplateArtifactId);
     const processedBody = JSON.stringify(processed); const processedDigest = createHash("sha256").update(processedBody).digest("hex"); const sameParameters = canonical(resolvedParameters.entries.map(entry => [entry.parameterKey, entry.parameterValue, entry.resolvedValue])) === canonical(stack.parameters.map(entry => [entry.parameterKey, entry.parameterValue, entry.resolvedValue])); if (sameDefinitionAssets && processedDigest === stack.processedTemplateDigest && sameParameters && canonical(desiredTags) === canonical(stack.tags) && canonical(suppliedCapabilities) === canonical(stack.capabilities) && canonical(notificationArns) === canonical(stack.notificationArns) && canonical(rollbackConfiguration) === canonical(stack.rollbackConfiguration ?? { rollbackTriggers: [] }) && (input.RoleARN ?? stack.roleArn) === stack.roleArn) throw new AwsError("ValidationError", "No updates are to be performed.", 400);
     const snapshot = { resources: stack.resources, outputs: stack.outputs, parameters: stack.parameters, tags: stack.tags, capabilities: stack.capabilities, notificationArns: stack.notificationArns, rollbackConfiguration: stack.rollbackConfiguration, roleArn: stack.roleArn, description: stack.description, nestedStackSource: stack.nestedStackSource, templateArtifactId: stack.templateArtifactId, templateDigest: stack.templateDigest, processedTemplateDigest: stack.processedTemplateDigest };
-    await this.journal.replaceTemplate(desiredTemplateArtifactId, prepared?.originalBody ?? parsed.body, "original"); await this.journal.replaceTemplate(desiredTemplateArtifactId, processedBody, "processed"); await this.journal.replaceJsonArtifact("parameters", `${desiredTemplateArtifactId}.private.json`, { values: resolvedParameters.values, entries: resolvedParameters.entries }); await this.journal.replaceJsonArtifact("operations", `${operationId}.typed-ssm-pins.json`, typedPins); await this.journal.replaceJsonArtifact("execution", `${desiredTemplateArtifactId}.principal.json`, executionPrincipal); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.conditions.json`, conditions); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.graph.json`, graph); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.imports.json`, importNames); if (prepared?.templateSource ?? parsed.source) await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.template-source.json`, prepared?.templateSource ?? parsed.source); await this.journal.replaceJsonArtifact("rollback", `${operationId}.snapshot.json`, snapshot); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.stack.json`, { parameters: resolvedParameters.entries, tags: desiredTags, capabilities: suppliedCapabilities, notificationArns, rollbackConfiguration, roleArn: desiredRoleArn, description: processed.Description, templateDigest: requestTemplateDigest, processedTemplateDigest: processedDigest });
+    await this.journal.replaceTemplate(desiredTemplateArtifactId, prepared?.originalBody ?? parsed.body, "original"); await this.journal.replaceTemplate(desiredTemplateArtifactId, processedBody, "processed"); await this.replaceTransformedTemplate(desiredTemplateArtifactId, prepared?.transformedBody ?? parsed.transformedBody); await this.journal.replaceJsonArtifact("parameters", `${desiredTemplateArtifactId}.private.json`, { values: resolvedParameters.values, entries: resolvedParameters.entries }); await this.journal.replaceJsonArtifact("operations", `${operationId}.typed-ssm-pins.json`, typedPins); await this.journal.replaceJsonArtifact("execution", `${desiredTemplateArtifactId}.principal.json`, executionPrincipal); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.conditions.json`, conditions); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.graph.json`, graph); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.imports.json`, importNames); if (prepared?.templateSource ?? parsed.source) await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.template-source.json`, prepared?.templateSource ?? parsed.source); await this.journal.replaceJsonArtifact("rollback", `${operationId}.snapshot.json`, snapshot); await this.journal.replaceJsonArtifact("plans", `${desiredTemplateArtifactId}.stack.json`, { parameters: resolvedParameters.entries, tags: desiredTags, capabilities: suppliedCapabilities, notificationArns, rollbackConfiguration, roleArn: desiredRoleArn, description: processed.Description, templateDigest: requestTemplateDigest, processedTemplateDigest: processedDigest });
     const removed = Object.keys(stack.resources).filter(logicalId => !processed.Resources[logicalId]).reverse(); const acceptedAt = this.clock.now(); stack.stackStatus = "UPDATE_IN_PROGRESS"; stack.stackStatusReason = undefined; stack.lastClientRequestToken = clientRequestToken; if (nestedSource) stack.nestedStackSource = structuredClone(nestedSource) as unknown as Record<string, unknown>; stack.activeOperation = { operationId, kind: "UPDATE", status: "PENDING", acceptedAt, clientRequestToken, orderedLogicalIds: [...graph.order, ...removed], completedLogicalIds: [], rollbackLogicalIds: [], desiredTemplateArtifactId, previousTemplateArtifactId: stack.templateArtifactId, desiredTemplateDigest: requestTemplateDigest, desiredProcessedTemplateDigest: processedDigest, disableRollback, retainExceptOnCreate, ...(owningParentOperationId ? { owningParentOperationId } : {}) }; if (clientRequestToken) this.state.clientTokens[clientRequestToken] = { operation: "UpdateStack", stackId: stack.stackId, operationId, inputDigest, createdAt: acceptedAt }; this.event(stack, stack.stackName, "AWS::CloudFormation::Stack", "UPDATE_IN_PROGRESS", undefined, stack.stackId, clientRequestToken); await this.checkpoint(stack, "accepted"); await this.store.save(); this.schedule(stack.stackId); return { StackId: stack.stackId, OperationId: operationId };
   }
 
@@ -1567,7 +1579,7 @@ export class CloudFormationService {
         ?? (Buffer.byteLength(artifact.processedTemplateBody) > TEMPLATE_BODY_MAXIMUM_BYTES
           ? TEMPLATE_URL_MAXIMUM_BYTES
           : TEMPLATE_BODY_MAXIMUM_BYTES);
-      const prepared = { originalBody: artifact.originalTemplateBody, originalDigest: artifact.originalTemplateDigest, templateBodyMaximumBytes, assetManifest: manifest, nestedTemplateManifest: artifact.nestedTemplateManifest, templateSource: artifact.templateSource };
+      const prepared = { originalBody: artifact.originalTemplateBody, originalDigest: artifact.originalTemplateDigest, templateBodyMaximumBytes, assetManifest: manifest, nestedTemplateManifest: artifact.nestedTemplateManifest, templateSource: artifact.templateSource, transformedBody: artifact.transformedTemplateBody };
       if (value.changeSetType === "CREATE") await this.CreateStack(executionInput, principal, stack, prepared);
       else await this.UpdateStack(executionInput, principal, prepared);
       const active = this.state.stacks[value.stackId]?.activeOperation; if (!active) throw new Error("Executing the change set did not accept a stack operation"); value.executionOperationId = active.operationId; value.executionStatus = "EXECUTE_IN_PROGRESS"; value.lastUpdatedTime = this.clock.now(); this.markLinkedNestedChangeSetsExecuting(value, active.operationId); for (const other of Object.values(this.state.changeSets)) if (other.stackId === value.stackId && other.changeSetId !== value.changeSetId && other.executionStatus === "AVAILABLE") other.executionStatus = "OBSOLETE"; await this.store.save(); return {};
@@ -1645,7 +1657,12 @@ export class CloudFormationService {
       }
       label = `stack ${stack.stackName}`;
     }
-    const body = await this.journal.readTemplate(artifactId, stage === "Processed" ? "processed" : "original");
+    // A transform template's Processed stage is the transform output, as on
+    // AWS. Other templates keep StackSim's condition-processed, asset-pinned
+    // execution template, which is how the local engine exposes its plan.
+    const body = stage === "Processed"
+      ? await this.journal.readTemplate(artifactId, "transformed") ?? await this.journal.readTemplate(artifactId, "processed")
+      : await this.journal.readTemplate(artifactId, "original");
     if (body === undefined) throw new AwsError("ValidationError", `Template artifact for ${label} is unavailable`, 400);
     return { TemplateBody: body, StagesAvailable: ["Original", "Processed"] };
   }
@@ -1696,8 +1713,9 @@ export class CloudFormationService {
 
   private async templateFromBody(body: string): Promise<ParsedTemplate> {
     try {
-      const value = parseCloudFormationTemplate(body); if (value.Description !== undefined && value.Description.length > 1024) throw new AwsError("ValidationError", "Template Description must be no longer than 1024 characters", 400);
-      return { body, value, digest: createHash("sha256").update(body).digest("hex") };
+      const prepared = prepareCloudFormationTemplate(body, { region: this.region, partition: partitionForRegion(this.region), accountId: this.store.accountId });
+      const value = prepared.template; if (value.Description !== undefined && value.Description.length > 1024) throw new AwsError("ValidationError", "Template Description must be no longer than 1024 characters", 400);
+      return { body, value, digest: createHash("sha256").update(body).digest("hex"), transforms: prepared.transforms, ...(prepared.transformedBody === undefined ? {} : { transformedBody: prepared.transformedBody }) };
     } catch (error) { throw this.validationError(error); }
   }
 
@@ -1972,6 +1990,7 @@ export class CloudFormationService {
         let parsed: ParsedTemplate;
         try { parsed = await this.templateFromBody(baseAsset.body); }
         catch (error) { throw new AwsError("ValidationError", `${logicalPath}: ${error instanceof Error ? error.message : String(error)}; owning future requirement: CFN-16`, 400); }
+        this.assertTransformCapability(parsed, capabilities);
         addTemplateLimits(parsed.value, parsed.digest, baseAsset.size, logicalPath);
         const versionKey = `${baseAsset.bucket}\0${baseAsset.key}\0${baseAsset.versionId}`;
         if (activeTemplates.has(versionKey)) throw new AwsError("ValidationError", `${logicalPath} forms a recursive nested-template cycle through s3://${baseAsset.bucket}/${baseAsset.key}?versionId=${baseAsset.versionId}; owning future requirement: CFN-16`, 400);
@@ -2459,6 +2478,15 @@ export class CloudFormationService {
     }) ? ["CAPABILITY_NAMED_IAM"] : ["CAPABILITY_IAM"];
   }
 
+  /** CreateStack and UpdateStack acknowledge transforms; change sets do not need to. */
+  private assertTransformCapability(parsed: ParsedTemplate, supplied: readonly string[]): void {
+    if (parsed.transforms.length && !supplied.includes("CAPABILITY_AUTO_EXPAND")) throw new AwsError("InsufficientCapabilitiesException", "Requires capabilities : [CAPABILITY_AUTO_EXPAND]", 400);
+  }
+
+  private async replaceTransformedTemplate(artifactId: string, transformedBody: string | undefined): Promise<void> {
+    if (transformedBody !== undefined) await this.journal.replaceTemplate(artifactId, transformedBody, "transformed");
+  }
+
   private assertCapabilities(template: CloudFormationTemplate, supplied: readonly string[]): void {
     const known = new Set(["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"]);
     if (supplied.some(capability => !known.has(capability))) throw new AwsError("ValidationError", "Capabilities contains an invalid value", 400);
@@ -2798,6 +2826,7 @@ export class CloudFormationService {
       value.lastUpdatedTime = this.clock.now();
       await this.journal.replaceTemplate(artifactId, parsed.body, "original");
       await this.journal.replaceTemplate(artifactId, processedBody, "processed");
+      await this.replaceTransformedTemplate(artifactId, parsed.transformedBody);
       await this.journal.replaceJsonArtifact("parameters", `${artifactId}.private.json`, { values: resolvedParameters.values, entries: resolvedParameters.entries });
       await this.journal.replaceJsonArtifact("execution", `${artifactId}.principal.json`, executionPrincipal);
       await this.journal.replaceJsonArtifact("plans", `${artifactId}.conditions.json`, conditions);
@@ -2812,7 +2841,7 @@ export class CloudFormationService {
         const generationId = typedSsmGenerations.get(name);
         return { name, value: String(entry?.resolvedValue ?? resolvedParameters.values[parameterKey] ?? ""), ...(generationId ? { generationId } : {}) };
       });
-      const executionArtifact: ChangeSetExecutionArtifact = { schemaVersion: 2, StackName: stack.stackName, processedTemplateBody: processedBody, originalTemplateBody: parsed.body, originalTemplateDigest: parsed.digest, processedTemplateDigest: processedDigest, templateBodyMaximumBytes: input.TemplateURL !== undefined || input.UsePreviousTemplate === true ? TEMPLATE_URL_MAXIMUM_BYTES : TEMPLATE_BODY_MAXIMUM_BYTES, Parameters: list<any>(input.Parameters), Capabilities: capabilities, RoleARN: desiredRoleArn, NotificationARNs: notificationArns, RollbackConfiguration: input.RollbackConfiguration, Tags: Object.entries(desiredTags).map(([Key, Value]) => ({ Key, Value })), baselineTemplateDigest: value.changeSetType === "UPDATE" ? stack.templateDigest : undefined, baselineProcessedTemplateDigest: value.changeSetType === "UPDATE" ? stack.processedTemplateDigest : undefined, imports: Object.fromEntries(importNames.map(name => [name, String(planning.availableExports[name])])), ssmParameters, nestedTemplateManifest, templateSource: parsed.source };
+      const executionArtifact: ChangeSetExecutionArtifact = { schemaVersion: 2, StackName: stack.stackName, processedTemplateBody: processedBody, originalTemplateBody: parsed.body, originalTemplateDigest: parsed.digest, processedTemplateDigest: processedDigest, templateBodyMaximumBytes: input.TemplateURL !== undefined || input.UsePreviousTemplate === true ? TEMPLATE_URL_MAXIMUM_BYTES : TEMPLATE_BODY_MAXIMUM_BYTES, Parameters: list<any>(input.Parameters), Capabilities: capabilities, RoleARN: desiredRoleArn, NotificationARNs: notificationArns, RollbackConfiguration: input.RollbackConfiguration, Tags: Object.entries(desiredTags).map(([Key, Value]) => ({ Key, Value })), baselineTemplateDigest: value.changeSetType === "UPDATE" ? stack.templateDigest : undefined, baselineProcessedTemplateDigest: value.changeSetType === "UPDATE" ? stack.processedTemplateDigest : undefined, imports: Object.fromEntries(importNames.map(name => [name, String(planning.availableExports[name])])), ssmParameters, nestedTemplateManifest, templateSource: parsed.source, ...(parsed.transformedBody === undefined ? {} : { transformedTemplateBody: parsed.transformedBody }) };
       await this.journal.replaceJsonArtifact("change-sets", `${artifactId}.input.json`, executionArtifact);
       if (noUpdates) {
         value.status = "FAILED";
@@ -2942,6 +2971,7 @@ export class CloudFormationService {
       this.state.changeSetNames[this.changeSetKey(child.stackId, changeSetName)] = changeSetId;
       await this.journal.replaceTemplate(artifactId, parsed.body, "original");
       await this.journal.replaceTemplate(artifactId, JSON.stringify(processed), "processed");
+      await this.replaceTransformedTemplate(artifactId, parsed.transformedBody);
       await this.journal.replaceJsonArtifact("change-sets", `${artifactId}.changes.json`, childChanges);
       await this.journal.replaceJsonArtifact("parameters", `${artifactId}.private.json`, { values: resolved.values, entries: resolved.entries });
 

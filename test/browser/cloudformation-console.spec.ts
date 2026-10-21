@@ -6,6 +6,7 @@ import {
   DeleteStackCommand,
   DescribeChangeSetCommand,
   DescribeStacksCommand,
+  ExecuteChangeSetCommand,
   UpdateStackCommand,
   type StackStatus,
 } from "@aws-sdk/client-cloudformation";
@@ -324,7 +325,7 @@ test.describe("CFN-01 through CFN-08 console", () => {
     await expectPanelHelp(page, "Parameters", "previous-value reuse");
     await page.goto(`${consoleUrl}#/cloudformation/stacks/${stackName}/template`);
     await expectPanelHelp(page, "Template", "YAML editing");
-    await page.getByLabel("Template stage").selectOption("Processed");
+    await page.getByLabel("View processed template").check();
     await expectPanelHelp(page, "Template", "condition-resolved document");
     await page.goto(`${consoleUrl}#/cloudformation/stacks/${stackName}/change-sets`);
     await expectPanelHelp(page, "Change sets", "reviewable plan");
@@ -342,6 +343,48 @@ test.describe("CFN-01 through CFN-08 console", () => {
     expect(box).not.toBeNull();
     expect(box!.x).toBeGreaterThanOrEqual(0);
     expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+    await expectNoDocumentOverflow(page);
+    expect(errors).toEqual([]);
+  });
+
+  test("creates a YAML SAM-transform change set and toggles the processed template", async ({ page }) => {
+    const errors = browserErrors(page);
+    const yaml = [
+      "AWSTemplateFormatVersion: '2010-09-09'",
+      "Transform: AWS::Serverless-2016-10-31",
+      "Resources:",
+      "  # Formatting and comments are kept in the original template.",
+      "  Topic:",
+      "    Type: AWS::SNS::Topic",
+      "    Properties:",
+      "      DisplayName: !Sub \"${AWS::StackName}-alerts\"",
+      "",
+    ].join("\n");
+    await page.goto(`${consoleUrl}#/cloudformation/stacks`);
+    await page.getByRole("button", { name: "Create change set", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel("Stack name").fill("console-sam-stack");
+    await dialog.getByLabel("Change set type").selectOption("CREATE");
+    await dialog.getByLabel("Change set name").fill("initial");
+    await dialog.getByLabel("Template (JSON or YAML)").fill(yaml);
+    await dialog.getByRole("button", { name: "Create change set", exact: true }).click();
+    await expect(page).toHaveURL(/#\/cloudformation\/stacks\/console-sam-stack\/change-sets\/initial$/);
+    await waitForChangeSet("initial", "CREATE_COMPLETE", 120, "console-sam-stack");
+    await cloudformation.send(new ExecuteChangeSetCommand({ ChangeSetName: "initial", StackName: "console-sam-stack" }));
+    await waitForStackStatus("console-sam-stack", "CREATE_COMPLETE");
+
+    await page.goto(`${consoleUrl}#/cloudformation/stacks/console-sam-stack/template`);
+    const template = page.locator(".cloudformation-template");
+    const toggle = page.getByLabel("View processed template");
+    await expect(toggle).not.toBeChecked();
+    await expect(template).toHaveText(yaml.trimEnd());
+    await toggle.check();
+    await expect(toggle).toBeChecked();
+    await expect(template).toContainText('"Fn::Sub": "${AWS::StackName}-alerts"');
+    await expect(template).not.toContainText("AWS::Serverless-2016-10-31");
+    await toggle.uncheck();
+    await expect(template).toContainText("# Formatting and comments are kept in the original template.");
+    await page.setViewportSize({ width: 390, height: 844 });
     await expectNoDocumentOverflow(page);
     expect(errors).toEqual([]);
   });
@@ -419,16 +462,16 @@ test.describe("CFN-01 through CFN-08 console", () => {
     await expect(page.getByRole("cell", { name: "browser", exact: true })).toBeVisible();
 
     await page.getByRole("tab", { name: "Template" }).click();
-    await expect(page.getByLabel("Template stage")).toHaveValue("Original");
+    await expect(page.getByLabel("View processed template")).not.toBeChecked();
     await expect(page.locator(".cloudformation-template")).toContainText("ExcludedQueue");
     await expect(page.locator(".cloudformation-template")).toContainText("AWS::ApiGateway::Stage");
     await expect(page.locator(".cloudformation-template")).toContainText("AWS::DynamoDB::Table");
-    await page.getByLabel("Template stage").selectOption("Processed");
-    await expect(page.getByLabel("Template stage")).toHaveValue("Processed");
+    await page.getByLabel("View processed template").check();
+    await expect(page.getByLabel("View processed template")).toBeChecked();
     await expect(page.locator(".cloudformation-template")).not.toContainText("ExcludedQueue");
     await expect(page.locator(".cloudformation-template")).toContainText("AWS::DynamoDB::Table");
-    await page.getByLabel("Template stage").selectOption("Original");
-    await expect(page.getByLabel("Template stage")).toHaveValue("Original");
+    await page.getByLabel("View processed template").uncheck();
+    await expect(page.getByLabel("View processed template")).not.toBeChecked();
     await expect(page.locator(".cloudformation-template")).toContainText("ExcludedQueue");
 
     await page.getByRole("tab", { name: "Change sets" }).click();
@@ -581,7 +624,7 @@ test.describe("CFN-01 through CFN-08 console", () => {
     await page.getByRole("button", { name: "Update", exact: true }).click();
     const updateDialog = page.getByRole("dialog");
     await expect(updateDialog.getByText("Direct stack update", { exact: true })).toBeVisible();
-    const updateEditor = updateDialog.getByLabel("Template (JSON)");
+    const updateEditor = updateDialog.getByLabel("Template (JSON or YAML)");
     const updateTemplate = JSON.parse(await updateEditor.inputValue());
     updateTemplate.Resources.Metadata.Properties.Analytics = "browser-v2";
     updateTemplate.Outputs.Release.Value = "browser-v2";
@@ -612,7 +655,7 @@ test.describe("CFN-01 through CFN-08 console", () => {
     await expect(updateChangeSetDialog.getByLabel("Change set type")).toHaveValue("UPDATE");
     await updateChangeSetDialog.getByLabel("Change set name").fill("replacement-review");
     await updateChangeSetDialog.getByLabel("Description").fill("Review a physical log-group replacement");
-    const changeSetEditor = updateChangeSetDialog.getByLabel("Template (JSON)");
+    const changeSetEditor = updateChangeSetDialog.getByLabel("Template (JSON or YAML)");
     const replacementTemplate = JSON.parse(await changeSetEditor.inputValue());
     replacementTemplate.Resources.Group.Properties.LogGroupName = "/stacksim/browser-new";
     replacementTemplate.Resources.Metadata.Properties.Analytics = "browser-v3";
@@ -645,7 +688,7 @@ test.describe("CFN-01 through CFN-08 console", () => {
     await createChangeSetDialog.getByLabel("Change set type").selectOption("CREATE");
     await createChangeSetDialog.getByLabel("Change set name").fill("initial-create");
     await createChangeSetDialog.getByLabel("Description").fill("Review a new stack before execution");
-    await createChangeSetDialog.getByLabel("Template (JSON)").fill(replacementReviewTemplate("/stacksim/planned", "planned-v1"));
+    await createChangeSetDialog.getByLabel("Template (JSON or YAML)").fill(replacementReviewTemplate("/stacksim/planned", "planned-v1"));
     await createChangeSetDialog.getByLabel("On create failure").selectOption("ROLLBACK");
     await createChangeSetDialog.getByRole("button", { name: "Create change set", exact: true }).click();
     await expect(page).toHaveURL(/#\/cloudformation\/stacks\/planned-console-stack\/change-sets\/initial-create$/);

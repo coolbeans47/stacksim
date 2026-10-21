@@ -106,8 +106,12 @@ test("object templates are validated as JSON and cloned from caller mutation", (
 
 test("parser is JSON-first and validates required top-level structure", () => {
   let error = captureTemplateError(() => parseCloudFormationTemplate("Resources:\n  Example: {}"));
-  assert.equal(error.kind, "InvalidJson");
-  assert.match(error.message, /YAML is not supported/);
+  assert.equal(error.kind, "InvalidTemplate", "a non-JSON body is read as YAML and then validated structurally");
+  assert.equal(error.path, "$.Resources.Example.Type");
+
+  error = captureTemplateError(() => parseCloudFormationTemplate("Resources:\n  Example: {\n"));
+  assert.equal(error.kind, "InvalidYaml");
+  assert.match(error.message, /^Template format error: YAML not well-formed\. \(line 2, column 12\)/);
 
   error = captureTemplateError(() => parseCloudFormationTemplate({ Description: "missing resources" }));
   assert.equal(error.kind, "InvalidTemplate");
