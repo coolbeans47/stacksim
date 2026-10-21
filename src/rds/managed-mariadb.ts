@@ -3,7 +3,7 @@ import { spawn as nodeSpawn, type ChildProcessByStdio, type SpawnOptions } from 
 import { constants as fsConstants } from "node:fs";
 import { access, chmod, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer, type Server as NetServer } from "node:net";
-import { basename, delimiter, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, parse, relative, resolve, sep, win32 } from "node:path";
 import type { Readable } from "node:stream";
 import {
   RdsEngineProviderError,
@@ -689,16 +689,26 @@ export class ManagedMariaDbProvider implements RdsEngineProvider {
 
   private async protectWindowsPrivateRoot(rdsRoot: string): Promise<void> {
     try {
-      const identity = await this.runCommand("whoami.exe", ["/user", "/fo", "csv", "/nh"], Math.min(this.startupTimeoutMs, 5_000));
+      // Use the Windows tools themselves: a PATH lookup can find another
+      // whoami.exe first (Git for Windows ships the coreutils one), which
+      // cannot report a SID and would make this hardening step fail.
+      const identity = await this.runCommand(this.windowsSystemTool("whoami.exe"), ["/user", "/fo", "csv", "/nh"], Math.min(this.startupTimeoutMs, 5_000));
       const sid = identity.stdout.match(/"S-(?:\d+-)+\d+"/)?.[0]?.slice(1, -1);
       if (!sid) throw new Error("missing current-user SID");
-      await this.runCommand("icacls.exe", [rdsRoot, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`, "/Q"], Math.min(this.startupTimeoutMs, 10_000));
+      const icacls = this.windowsSystemTool("icacls.exe");
+      await this.runCommand(icacls, [rdsRoot, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`, "/Q"], Math.min(this.startupTimeoutMs, 10_000));
       for (const child of [this.instancesRoot, this.secretsRoot]) {
-        await this.runCommand("icacls.exe", [child, "/reset", "/T", "/Q"], Math.min(this.startupTimeoutMs, 10_000));
+        await this.runCommand(icacls, [child, "/reset", "/T", "/Q"], Math.min(this.startupTimeoutMs, 10_000));
       }
     } catch {
       throw new RdsEngineProviderError("CREDENTIAL_UNAVAILABLE", "Owner-only Windows permissions could not be applied to the local RDS data root.");
     }
+  }
+
+  /** `%SystemRoot%\System32\<name>`, so system tools never come from PATH. */
+  private windowsSystemTool(name: string): string {
+    const systemRoot = this.environment.SystemRoot ?? this.environment.SYSTEMROOT ?? this.environment.windir ?? this.environment.WINDIR ?? "C:\\Windows";
+    return win32.join(systemRoot, "System32", name);
   }
 
   private async assertSafeResourceDirectory(resourceDir: string, mustExist: boolean): Promise<void> {

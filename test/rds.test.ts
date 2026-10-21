@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
+import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
@@ -32,6 +34,7 @@ import { AttachRolePolicyCommand, CreatePolicyCommand, CreateRoleCommand, IAMCli
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import type { RdsEngineConfig, RdsEngineDiscovery, RdsEngineProvider, RdsEngineRuntime } from "../src/rds/provider.js";
 import { EmbeddedSqliteProvider } from "../src/rds/embedded-sqlite.js";
+import { ManagedMariaDbProvider } from "../src/rds/managed-mariadb.js";
 import { authorizationTarget } from "../src/auth/target.js";
 import { StackSim } from "../src/server.js";
 
@@ -619,6 +622,30 @@ test("RDS enforce mode requires tagged-create permission and exposes resource ta
   } finally {
     clients.forEach(client => client.destroy());
     if (running) await simulator.stop().catch(() => undefined);
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("managed MariaDB hardens the Windows data root with System32 tools, not PATH lookups", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "stacksim-rds-windows-acl-"));
+  const commands: string[] = [];
+  const spawnProcess = (command: string) => {
+    commands.push(command);
+    const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; kill(): boolean };
+    child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
+    setImmediate(() => {
+      if (command.endsWith("whoami.exe")) child.stdout.write('"host\\developer","S-1-5-21-1-2-3-1001"\r\n');
+      child.stdout.end(); child.stderr.end(); child.emit("close", 0);
+    });
+    return child as any;
+  };
+  const provider = new ManagedMariaDbProvider({ instancesRoot: join(dataDir, "rds", "instances"), platform: "win32", environment: { SystemRoot: "D:\\Windows", PATH: "" }, spawnProcess });
+  try {
+    await provider.discover().catch(() => undefined);
+    const whoami = "D:\\Windows\\System32\\whoami.exe";
+    const icacls = "D:\\Windows\\System32\\icacls.exe";
+    assert.deepEqual(commands.slice(0, 4), [whoami, icacls, icacls, icacls]);
+  } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
 });
