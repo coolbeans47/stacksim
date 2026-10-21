@@ -219,7 +219,8 @@ export class LambdaSqsEventSource {
     if (target.timeout > queue.visibilityTimeoutSeconds) throw new AwsError("InvalidParameterValueException", `The function timeout (${target.timeout} seconds) exceeds the queue visibility timeout (${queue.visibilityTimeoutSeconds} seconds)`);
     if (this.authMode !== "enforce") return;
     const iam = this.store.ensureAccount().iam;
-    const actions = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueAttributes"];
+    // The execution-role permissions AWS documents for SQS event sources (and AWSLambdaSQSQueueExecutionRole grants).
+    const actions = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"];
     if (actions.some(action => evaluateRoleAuthorization(iam, target.role, action, queue.queueArn).decision !== "allowed")) throw new AwsError("InvalidParameterValueException", `The function execution role is not authorized to consume SQS queue ${queue.queueArn}`);
   }
 

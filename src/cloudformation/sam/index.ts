@@ -1,5 +1,5 @@
 import { applyDefaultRestDefinitionBody, applyImplicitRestApi, recordFunctionNames, translateApi } from "./api.js";
-import { SamCause, SamDocumentError, clone, eventError, isObject, resourceError, templateError, type JsonObject } from "./common.js";
+import { SamCause, SamDocumentError, SamInvalidDocument, clone, eventError, isObject, resourceError, templateError, type JsonObject } from "./common.js";
 import type { SamContext } from "./context.js";
 import { SAM_RESOURCE_ATTRIBUTE_COVERAGE, eventCoverage, propertyCoverage, resourceCoverage, unsupported } from "./coverage.js";
 import { translateFunction } from "./function.js";
@@ -8,9 +8,11 @@ import { mergeGlobals, parseGlobals } from "./globals.js";
 import { applyDefaultHttpDefinitionBody, applyImplicitHttpApi, translateHttpApi } from "./http-api.js";
 import { samParameterValues } from "./parameters.js";
 import { expandPolicyTemplates } from "./policies.js";
-import { resolveSamReferences } from "./references.js";
+import { resolveChangedLogicalIds, resolveSamReferences } from "./references.js";
 import { translateSimpleTable } from "./simple-table.js";
 import { isOpenApi3Version } from "./swagger.js";
+import { translateLayerVersion } from "./layer.js";
+import { translateStateMachine } from "./state-machine.js";
 
 export const SERVERLESS_TRANSFORM = "AWS::Serverless-2016-10-31";
 
@@ -35,11 +37,15 @@ export class ServerlessTransformError extends Error {
   }
 }
 
+const SHARED_USAGE_PLAN_IDS = new Set(["ServerlessUsagePlan", "ServerlessApiKey", "ServerlessUsagePlanKey"]);
+
 const GLOBALS_SECTION: Readonly<Record<string, string>> = {
   "AWS::Serverless::Function": "Function",
   "AWS::Serverless::Api": "Api",
   "AWS::Serverless::HttpApi": "HttpApi",
   "AWS::Serverless::SimpleTable": "SimpleTable",
+  "AWS::Serverless::LayerVersion": "LayerVersion",
+  "AWS::Serverless::StateMachine": "StateMachine",
 };
 
 /** Reject every SAM resource type, property, event, and attribute StackSim does not implement. */
@@ -47,6 +53,10 @@ function checkCoverage(resources: Record<string, JsonObject>): void {
   const causes: SamCause[] = [];
   for (const [logicalId, resource] of Object.entries(resources)) {
     const type = resource.Type;
+    // SAM embeds Connectors on any resource, not only AWS::Serverless ones.
+    if ((typeof type !== "string" || !type.startsWith("AWS::Serverless::")) && Object.hasOwn(resource, "Connectors")) {
+      causes.push(resourceError(logicalId, unsupported("Attribute 'Connectors'", SAM_RESOURCE_ATTRIBUTE_COVERAGE.Connectors)));
+    }
     if (typeof type !== "string" || !type.startsWith("AWS::Serverless::")) continue;
     const coverage = resourceCoverage(type);
     if (coverage === undefined) { causes.push(resourceError(logicalId, `Resource type ${type} is not supported by StackSim.`)); continue; }
@@ -64,21 +74,21 @@ function checkCoverage(resources: Record<string, JsonObject>): void {
       if (propertyState !== "implemented") causes.push(resourceError(logicalId, unsupported(`Property '${property}'`, propertyState)));
     }
     const events = resource.Properties.Events;
-    if (type !== "AWS::Serverless::Function" || !isObject(events)) continue;
+    if ((type !== "AWS::Serverless::Function" && type !== "AWS::Serverless::StateMachine") || !isObject(events)) continue;
     let hasApiEvent = false;
     for (const [eventId, event] of Object.entries(events)) {
       if (!isObject(event) || typeof event.Type !== "string") continue;
       const state = eventCoverage(type, event.Type);
       if (!state) continue;
       if (state.event !== "implemented") { causes.push(resourceError(logicalId, eventError(eventId, unsupported(`Event type '${event.Type}'`, state.event)).message)); continue; }
-      hasApiEvent = true;
+      if (event.Type === "Api" || event.Type === "HttpApi") hasApiEvent = true;
       if (!isObject(event.Properties)) continue;
       for (const property of Object.keys(event.Properties)) {
-        const propertyState = state.properties?.[property];
+        const propertyState = state.properties?.[property] ?? state.extraProperties?.[property];
         if (propertyState !== undefined && propertyState !== "implemented") causes.push(resourceError(logicalId, eventError(eventId, unsupported(`Property '${property}'`, propertyState)).message));
       }
     }
-    if (hasApiEvent && resource.Condition !== undefined) causes.push(resourceError(logicalId, "A Condition on an AWS::Serverless::Function with Api or HttpApi events is not supported by StackSim."));
+    if (hasApiEvent && resource.Condition !== undefined) causes.push(resourceError(logicalId, `A Condition on an ${type} with Api or HttpApi events is not supported by StackSim.`));
   }
   if (causes.length) throw new SamDocumentError(causes);
 }
@@ -108,8 +118,8 @@ function expand(document: JsonObject, context: ServerlessExpansionContext): Json
   checkCoverage(resources);
   applyDefaultRestDefinitionBody(resources);
   applyDefaultHttpDefinitionBody(resources);
-  applyImplicitRestApi(resources);
-  applyImplicitHttpApi(resources);
+  applyImplicitRestApi(resources, template.Globals);
+  applyImplicitHttpApi(resources, template.Globals);
   const causes: SamCause[] = [];
   for (const [logicalId, resource] of Object.entries(resources)) {
     const section = GLOBALS_SECTION[resource.Type as string];
@@ -125,7 +135,7 @@ function expand(document: JsonObject, context: ServerlessExpansionContext): Json
   delete template.Globals;
   fixOpenApiDefinitions(resources);
   for (const [logicalId, resource] of Object.entries(resources)) {
-    if (resource.Type !== "AWS::Serverless::Function" || !isObject(resource.Properties) || resource.Properties.Policies === undefined) continue;
+    if ((resource.Type !== "AWS::Serverless::Function" && resource.Type !== "AWS::Serverless::StateMachine") || !isObject(resource.Properties) || resource.Properties.Policies === undefined) continue;
     try { resource.Properties.Policies = expandPolicyTemplates(logicalId, resource.Properties.Policies); }
     catch (error) { if (error instanceof SamCause) causes.push(error); else throw error; }
   }
@@ -141,38 +151,48 @@ function expand(document: JsonObject, context: ServerlessExpansionContext): Json
     references: new Map(),
     functionNames: new Map(),
     now: context.now ?? 0,
+    bucketTags: new Map(),
+    changedLogicalIds: new Map(),
+    sharedUsagePlan: { dependsOn: [], apiStages: [], stageKeys: [], conditions: [], anyApiWithoutCondition: false },
   };
   const functions = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::Serverless::Function");
+  const stateMachines = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::Serverless::StateMachine");
   const apis = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::Serverless::Api" || resource.Type === "AWS::Serverless::HttpApi");
-  const others = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::Serverless::SimpleTable");
+  const others = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::Serverless::SimpleTable" || resource.Type === "AWS::Serverless::LayerVersion");
   for (const [, resource] of functions) recordFunctionNames(samContext, resource);
   const failed = new Set(causes.map(cause => cause.message));
   const generated: Record<string, JsonObject> = {};
-  for (const [logicalId, resource] of [...functions, ...apis, ...others]) {
+  for (const [logicalId, resource] of [...functions, ...stateMachines, ...apis, ...others]) {
     if ([...failed].some(message => message.startsWith(`Resource with id [${logicalId}] `))) continue;
     try {
       const output = resource.Type === "AWS::Serverless::Function" ? translateFunction(samContext, logicalId, resource)
+        : resource.Type === "AWS::Serverless::StateMachine" ? translateStateMachine(samContext, logicalId, resource)
         : resource.Type === "AWS::Serverless::Api" ? translateApi(samContext, logicalId, resource)
           : resource.Type === "AWS::Serverless::HttpApi" ? translateHttpApi(samContext, logicalId, resource)
-            : translateSimpleTable(logicalId, resource);
+            : resource.Type === "AWS::Serverless::LayerVersion" ? translateLayerVersion(samContext, logicalId, resource)
+              : translateSimpleTable(logicalId, resource);
       for (const [generatedId, generatedResource] of Object.entries(output)) {
-        if (generatedId !== logicalId && (Object.hasOwn(resources, generatedId) || Object.hasOwn(generated, generatedId))) {
+        // APIs with a SHARED usage plan each write the plan they share; the last one holds every API.
+        if (generatedId !== logicalId && (Object.hasOwn(resources, generatedId) || (Object.hasOwn(generated, generatedId) && !SHARED_USAGE_PLAN_IDS.has(generatedId)))) {
           causes.push(new SamCause(`Transforming resource with id [${logicalId}] attempts to create a new resource with id [${generatedId}] and type "${String(generatedResource.Type)}". A resource with that id already exists within this template. Please use a different id for that resource.`));
           continue;
         }
         generated[generatedId] = generatedResource;
       }
     } catch (error) {
+      // SAM's translator does not catch InvalidDocumentException per resource: it ends the transform.
+      if (error instanceof SamInvalidDocument) throw new SamDocumentError(error.causes);
       if (error instanceof SamDocumentError) causes.push(...error.causes);
       else if (error instanceof SamCause) causes.push(error.message.startsWith("Resource with id [") || error.message.startsWith("Structure of the SAM template") ? error : resourceError(logicalId, error.message));
       else throw error;
     }
   }
   if (causes.length) throw new SamDocumentError(causes);
-  for (const [logicalId] of [...functions, ...apis, ...others]) delete resources[logicalId];
+  for (const [logicalId] of [...functions, ...stateMachines, ...apis, ...others]) delete resources[logicalId];
   Object.assign(resources, generated);
+  for (const [bucketId, tags] of samContext.bucketTags) (resources[bucketId].Properties as JsonObject).Tags = tags;
   delete template.Transform;
-  return resolveSamReferences(template, samContext.references) as JsonObject;
+  return resolveSamReferences(resolveChangedLogicalIds(template, samContext.changedLogicalIds), samContext.references) as JsonObject;
 }
 
 /**

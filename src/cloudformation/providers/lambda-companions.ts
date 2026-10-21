@@ -54,6 +54,7 @@ const SUPPORTED_LOCAL_INVOCATION_PRINCIPALS: ReadonlySet<string> = new Set([
   "apigateway.amazonaws.com",
   "cognito-idp.amazonaws.com",
   "events.amazonaws.com",
+  "logs.amazonaws.com",
   "s3.amazonaws.com",
   "secretsmanager.amazonaws.com",
   "sns.amazonaws.com",

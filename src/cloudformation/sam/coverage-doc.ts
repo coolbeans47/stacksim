@@ -25,11 +25,20 @@ export function renderSamCoverageMarkdown(): string {
     lines.push("", `## \`${type}\` properties`, "", "| Property | Status | Notes |", "|---|---|---|");
     for (const property of SAM_SCHEMA_RESOURCE_PROPERTIES[type] ?? []) lines.push(`| \`${property}\` | ${label(entry.properties?.[property] ?? entry.resource)} | ${entry.notes?.[property] ?? ""} |`);
     if (!entry.events) continue;
-    lines.push("", `### \`${type}\` event types`, "", "| Event type | Status | Properties not yet implemented |", "|---|---|---|");
+    lines.push("", `### \`${type}\` event types`, "", "| Event type | Status | Properties not yet implemented | Notes |", "|---|---|---|---|");
     for (const eventType of Object.keys(SAM_SCHEMA_EVENT_PROPERTIES[type] ?? {})) {
       const event = entry.events[eventType];
-      const pending = event?.event === "implemented" ? Object.entries(event.properties ?? {}).filter(([, coverage]) => coverage !== "implemented").map(([property, coverage]) => `\`${property}\` (${label(coverage)})`).join(", ") : "";
-      lines.push(`| \`${eventType}\` | ${label(event?.event ?? "non-goal")} | ${pending} |`);
+      const implemented = event?.event === "implemented";
+      const pending = implemented ? Object.entries(event.properties ?? {}).filter(([, coverage]) => coverage !== "implemented").map(([property, coverage]) => `\`${property}\` (${label(coverage)})`).join(", ") : "";
+      const extra = implemented ? Object.entries(event.extraProperties ?? {}) : [];
+      const accepted = extra.filter(([, coverage]) => coverage === "implemented").map(([property]) => `\`${property}\``);
+      const rejected = extra.filter(([, coverage]) => coverage !== "implemented").map(([property]) => `\`${property}\``);
+      const notes = [
+        ...(accepted.length ? [`Also implemented: ${accepted.join(", ")}, which SAM accepts although its schema omits them.`] : []),
+        ...(rejected.length ? [`SAM's translator also accepts ${rejected.join(", ")}; not supported (non-goal).`] : []),
+        ...(event?.note ? [event.note] : []),
+      ];
+      lines.push(`| \`${eventType}\` | ${label(event?.event ?? "non-goal")} | ${pending} | ${notes.join(" ")} |`);
     }
   }
   lines.push("", "## Globals", "", "A Globals key has the status of the same property on its resource type.", "", "| Section | Status |", "|---|---|");

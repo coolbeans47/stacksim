@@ -1,6 +1,9 @@
 import { addImplicitApiTags, applyImplicitPolicies, lambdaPermission, parseS3Uri } from "./api.js";
-import { cfnResource, clone, eventError, fnSub, generatedLogicalId, isIntrinsic, isObject, passthroughAttributes, primaryAttributes, ref, resourceError, SamCause, SamDocumentError, type JsonObject } from "./common.js";
+import { cfnResource, clone, eventError, validateProperties, type PropertySpec, fnSub, generatedLogicalId, isIntrinsic, isObject, passthroughAttributes, primaryAttributes, ref, resourceError, SamCause, SamDocumentError, type JsonObject } from "./common.js";
 import { addReference, type SamContext } from "./context.js";
+import type { EventTarget } from "./events/common.js";
+import { addHttpAuth, addHttpRouteAuth, httpAuthorizerPermissions } from "./http-auth.js";
+import { truthy } from "./events/common.js";
 import { resolveParameterRefs } from "./parameters.js";
 import { HTTP_DEFAULT_PATH, X_ANY_METHOD, X_INTEGRATION, addPath, hasIntegration, isOpenApiDocument, lambdaIntegrationUri, normalizeMethod, openApiSkeleton, pathItem, permissionPath } from "./swagger.js";
 
@@ -30,7 +33,7 @@ function expectEventString(eventId: string, value: unknown, property: string): s
 }
 
 /** ImplicitHttpApiPlugin. */
-export function applyImplicitHttpApi(resources: Record<string, JsonObject>): void {
+export function applyImplicitHttpApi(resources: Record<string, JsonObject>, globals?: unknown): void {
   const existing = resources[IMPLICIT_HTTP_API] ? clone(resources[IMPLICIT_HTTP_API]) : undefined;
   resources[IMPLICIT_HTTP_API] = { Type: HTTP_API_TYPE, Properties: { DefinitionBody: openApiSkeleton(), __MANAGE_SWAGGER: true } };
   const causes: SamCause[] = [];
@@ -45,7 +48,7 @@ export function applyImplicitHttpApi(resources: Record<string, JsonObject>): voi
         if (properties === undefined || properties === null) properties = {};
         if (!isObject(properties)) throw eventError(eventId, "Properties should be a map.");
         event.Properties = properties;
-        addImplicitApiTags(resources, resource, properties, "ApiId", IMPLICIT_HTTP_API);
+        addImplicitApiTags(resources, resource, properties, "ApiId", IMPLICIT_HTTP_API, globals);
         if (!Object.hasOwn(properties, "ApiId")) properties.ApiId = ref(IMPLICIT_HTTP_API);
         if (!properties.Path && !properties.Method) { properties.Path = HTTP_DEFAULT_PATH; properties.Method = X_ANY_METHOD; }
         const apiId = apiIdString(properties.ApiId);
@@ -92,7 +95,8 @@ function defaultRouteFunctionMatches(body: JsonObject, functionLogicalId: string
 }
 
 /** HttpApi event source: the permission and the OpenAPI integration. */
-export function translateHttpApiEvent(context: SamContext, fn: JsonObject, functionLogicalId: string, eventId: string, event: JsonObject): Record<string, JsonObject> {
+export function translateHttpApiEvent(context: SamContext, target: EventTarget, eventId: string, event: JsonObject): Record<string, JsonObject> {
+  const functionLogicalId = target.functionLogicalId;
   const properties = isObject(event.Properties) ? event.Properties : {};
   const path = expectEventString(eventId, properties.Path, "Path");
   const method = expectEventString(eventId, properties.Method, "Method").toLowerCase();
@@ -106,27 +110,30 @@ export function translateHttpApiEvent(context: SamContext, fn: JsonObject, funct
   let createPermission = true;
   if (explicit.DefinitionBody && !isOpenApiDocument(explicit.DefinitionBody)) throw resourceError(apiId, INVALID_OPENAPI);
   if (permissionResourcePath === HTTP_DEFAULT_PATH) permissionResourcePath = "";
-  else if (isOpenApiDocument(explicit.DefinitionBody) && defaultRouteFunctionMatches(explicit.DefinitionBody, functionLogicalId)) createPermission = false;
+  else if (isOpenApiDocument(explicit.DefinitionBody) && defaultRouteFunctionMatches(explicit.DefinitionBody, target.invokeLogicalId)) createPermission = false;
   if (createPermission) {
     permissionResourcePath = permissionPath(permissionResourcePath, false);
     const permissionMethod = method === "any" || method === X_ANY_METHOD ? "*" : method.toUpperCase();
     const resource = method === "any" && permissionResourcePath === `/${HTTP_DEFAULT_PATH}` ? `\${__ApiId__}/\${__Stage__}${permissionResourcePath}` : `\${__ApiId__}/\${__Stage__}/${permissionMethod}${permissionResourcePath}`;
     const sourceArn = fnSub(`arn:\${AWS::Partition}:execute-api:\${AWS::Region}:\${AWS::AccountId}:${resource}`, { __ApiId__: properties.ApiId, __Stage__: "*" });
-    output[`${functionLogicalId}${eventId}Permission`] = lambdaPermission(functionLogicalId, sourceArn, passthroughAttributes(fn));
+    output[`${functionLogicalId}${eventId}Permission`] = lambdaPermission(target.functionName, sourceArn, passthroughAttributes(target.fn));
   }
 
-  const body = explicit.DefinitionBody;
-  if (body === undefined || body === null) return output;
-  if (!isOpenApiDocument(body)) throw new SamCause(INVALID_OPENAPI);
-  if (explicit.__MANAGE_SWAGGER && hasIntegration(body, path, method)) throw eventError(eventId, `API method '${method}' defined multiple times for path '${path}'.`);
+  const original = explicit.DefinitionBody;
+  if (original === undefined || original === null) return output;
+  if (!isOpenApiDocument(original)) throw new SamCause(INVALID_OPENAPI);
+  if (explicit.__MANAGE_SWAGGER && hasIntegration(original, path, method)) throw eventError(eventId, `API method '${method}' defined multiple times for path '${path}'.`);
+  // SAM's editor works on a copy and writes it back only when the event succeeds.
+  const body = clone(original);
   const normalized = normalizeMethod(method) as string;
   if (!hasIntegration(body, path, method)) {
     addPath(body, path, method);
     const definition = pathItem(body, path)[normalized] as JsonObject;
-    definition[X_INTEGRATION] = { type: "aws_proxy", httpMethod: "POST", payloadFormatVersion: "2.0", uri: lambdaIntegrationUri("${AWS::Partition}", functionLogicalId) };
+    definition[X_INTEGRATION] = { type: "aws_proxy", httpMethod: "POST", payloadFormatVersion: "2.0", uri: lambdaIntegrationUri("${AWS::Partition}", target.functionArn) };
     if (path === HTTP_DEFAULT_PATH && normalized === X_ANY_METHOD) definition.isDefaultRoute = true;
     if (definition.responses === undefined) definition.responses = {};
   }
+  if (truthy(properties.Auth)) addHttpRouteAuth(eventId, explicit, apiId, body, properties.Auth as JsonObject, method, path);
   const definition = pathItem(body, path)[normalized] as JsonObject;
   if (properties.TimeoutInMillis && isObject(definition[X_INTEGRATION])) (definition[X_INTEGRATION] as JsonObject).timeoutInMillis = properties.TimeoutInMillis;
   const pathParameters = [...path.matchAll(/\{(.*?)\}/g)].map(match => match[1]);
@@ -138,6 +145,7 @@ export function translateHttpApiEvent(context: SamContext, fn: JsonObject, funct
     }
   }
   if (properties.PayloadFormatVersion && isObject(definition[X_INTEGRATION])) (definition[X_INTEGRATION] as JsonObject).payloadFormatVersion = properties.PayloadFormatVersion;
+  explicit.DefinitionBody = body;
   return output;
 }
 
@@ -171,9 +179,30 @@ function addCors(logicalId: string, body: JsonObject, value: unknown): void {
   body["x-amazon-apigateway-cors"] = cors;
 }
 
+/** SamHttpApi.property_types, in SAM's order. */
+const HTTP_API_PROPERTIES: Readonly<Record<string, PropertySpec>> = {
+  __MANAGE_SWAGGER: { type: "boolean" },
+  StageName: { type: "string-or-map", generic: true },
+  Tags: { type: "map" },
+  PropagateTags: { type: "boolean" },
+  DefinitionBody: { type: "map" },
+  DefinitionUri: { type: "string-or-map", generic: true },
+  StageVariables: { type: "map" },
+  CorsConfiguration: { type: "boolean-or-map", generic: true },
+  AccessLogSettings: { type: "map" },
+  DefaultRouteSettings: { type: "map" },
+  Auth: { type: "map" },
+  RouteSettings: { type: "map" },
+  Domain: { type: "map" },
+  FailOnWarnings: { type: "boolean" },
+  Description: { type: "string" },
+  DisableExecuteApiEndpoint: { type: "boolean" },
+};
+
 /** AWS::Serverless::HttpApi → ApiGatewayV2 Api and Stage. */
 export function translateHttpApi(context: SamContext, logicalId: string, resource: JsonObject): Record<string, JsonObject> {
   const properties = isObject(resource.Properties) ? resource.Properties : {};
+  validateProperties(logicalId, properties, HTTP_API_PROPERTIES);
   const passthrough = passthroughAttributes(resource);
   if (properties.DefinitionUri && properties.DefinitionBody) throw resourceError(logicalId, "Specify either 'DefinitionUri' or 'DefinitionBody' property and not both.");
   const body = isObject(properties.DefinitionBody) ? properties.DefinitionBody : undefined;
@@ -182,6 +211,7 @@ export function translateHttpApi(context: SamContext, logicalId: string, resourc
     if (!body) throw resourceError(logicalId, "Cors works only with inline OpenApi specified in 'DefinitionBody' property.");
     addCors(logicalId, body, corsConfiguration);
   }
+  addHttpAuth(logicalId, properties.Auth, body, context.partition, isOpenApiDocument);
   let tags = isObject(properties.Tags) ? properties.Tags : undefined;
   if (tags && Object.keys(tags).length && !body) throw resourceError(logicalId, "Tags works only with inline OpenApi specified in the 'DefinitionBody' property.");
   if (body) {
@@ -240,6 +270,7 @@ export function translateHttpApi(context: SamContext, logicalId: string, resourc
 
   const output: Record<string, JsonObject> = {};
   output[logicalId] = cfnResource("AWS::ApiGatewayV2::Api", api, primaryAttributes(resource));
+  Object.assign(output, httpAuthorizerPermissions(logicalId, properties.Auth, passthrough));
   const stageName = properties.StageName === undefined || properties.StageName === null || properties.StageName === "" ? HTTP_DEFAULT_PATH : properties.StageName;
   const prefix = typeof stageName === "string" ? stageName : "";
   const stageLogicalId = /^[A-Za-z0-9]+$/.test(prefix) ? `${logicalId}${prefix}Stage` : prefix === HTTP_DEFAULT_PATH ? `${logicalId}ApiGatewayDefaultStage` : generatedLogicalId(`${logicalId}Stage`, prefix);

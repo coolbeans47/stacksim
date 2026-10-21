@@ -19,23 +19,24 @@ JSON examples use quoting accepted by Bash, zsh, and PowerShell. Windows Command
 1. [Install the AWS CLI on macOS or Windows](#recipe-1-install-the-aws-cli-on-macos-or-windows)
 2. [Configure the default StackSim profile](#recipe-2-configure-the-default-stacksim-profile)
 3. [CloudFormation](#cloudformation)
-4. [DynamoDB and DynamoDB Streams](#dynamodb-and-dynamodb-streams)
-5. [Lambda](#lambda)
-6. [Step Functions](#step-functions)
-7. [API Gateway](#api-gateway)
-8. [AppSync](#appsync)
-9. [S3](#s3)
-10. [SQS](#sqs)
-11. [SNS](#sns)
-12. [EventBridge and Scheduler](#eventbridge-and-scheduler)
-13. [CloudWatch Logs, metrics, alarms, and dashboards](#cloudwatch-logs-metrics-alarms-and-dashboards)
-14. [IAM and STS](#iam-and-sts)
-15. [Cognito user pools](#cognito-user-pools)
-16. [SES](#ses)
-17. [Systems Manager Parameter Store](#systems-manager-parameter-store)
-18. [Secrets Manager](#secrets-manager)
-19. [RDS](#rds)
-20. [Troubleshooting](#troubleshooting)
+4. [AWS SAM](#aws-sam)
+5. [DynamoDB and DynamoDB Streams](#dynamodb-and-dynamodb-streams)
+6. [Lambda](#lambda)
+7. [Step Functions](#step-functions)
+8. [API Gateway](#api-gateway)
+9. [AppSync](#appsync)
+10. [S3](#s3)
+11. [SQS](#sqs)
+12. [SNS](#sns)
+13. [EventBridge and Scheduler](#eventbridge-and-scheduler)
+14. [CloudWatch Logs, metrics, alarms, and dashboards](#cloudwatch-logs-metrics-alarms-and-dashboards)
+15. [IAM and STS](#iam-and-sts)
+16. [Cognito user pools](#cognito-user-pools)
+17. [SES](#ses)
+18. [Systems Manager Parameter Store](#systems-manager-parameter-store)
+19. [Secrets Manager](#secrets-manager)
+20. [RDS](#rds)
+21. [Troubleshooting](#troubleshooting)
 
 ## Recipe 1: Install the AWS CLI on macOS or Windows
 
@@ -188,7 +189,65 @@ aws cloudformation deploy --template-file template.yaml --stack-name my-stack
 aws cloudformation get-template --stack-name my-stack
 ```
 
-`get-template` returns the YAML exactly as you wrote it. A template that declares `Transform: AWS::Serverless-2016-10-31` also deploys this way, because `deploy` uses a change set. `create-stack` and `update-stack` need `--capabilities CAPABILITY_AUTO_EXPAND` for such a template, as on AWS. Use `--template-stage Processed` to see the expanded template. SAM functions, APIs, and simple tables are expanded as described in the [SAM guide](sam-guide.md); anything StackSim does not implement yet fails with the AWS-format `Transform AWS::Serverless-2016-10-31 failed with: ...` error.
+`get-template` returns the YAML exactly as you wrote it. A template that declares `Transform: AWS::Serverless-2016-10-31` also deploys this way, because `deploy` uses a change set. `create-stack` and `update-stack` need `--capabilities CAPABILITY_AUTO_EXPAND` for such a template, as on AWS. Use `--template-stage Processed` to see the expanded template. SAM templates are covered in [AWS SAM](#aws-sam) below; anything StackSim does not implement yet fails with the AWS-format `Transform AWS::Serverless-2016-10-31 failed with: ...` error.
+
+## AWS SAM
+
+StackSim's CloudFormation expands AWS SAM templates (`Transform: AWS::Serverless-2016-10-31`) itself, as AWS does server-side, so the AWS CLI and the unmodified SAM CLI both deploy them. The [SAM guide](sam-guide.md) describes what is supported, and [SAM coverage](sam-coverage.md) lists every SAM property. A complete, runnable application is in [`examples/sam-notes-api`](../examples/sam-notes-api/README.md).
+
+### How to deploy a SAM template with the AWS CLI
+
+Creates a bucket, a stack, and its resources. Run from the directory that holds `template.yaml`:
+
+```console
+aws s3 mb s3://sam-artifacts
+aws cloudformation package --template-file template.yaml --s3-bucket sam-artifacts --output-template-file packaged.yaml
+aws cloudformation deploy --template-file packaged.yaml --stack-name sam-app --capabilities CAPABILITY_IAM
+```
+
+`package` uploads each local `CodeUri`, `ContentUri`, and `DefinitionUri` and rewrites them to `s3://` locations. `CAPABILITY_IAM` is needed when SAM generates roles. `deploy` uses a change set, so it needs no `CAPABILITY_AUTO_EXPAND`; `create-stack` and `update-stack` do.
+
+### How to deploy with the SAM CLI
+
+Use SAM CLI 1.91 or later, point it at StackSim, and give it the bucket explicitly; the SAM CLI's managed bucket is not supported yet:
+
+```console
+export AWS_ENDPOINT_URL=http://127.0.0.1:4566
+sam build
+sam deploy --stack-name sam-app --s3-bucket sam-artifacts --capabilities CAPABILITY_IAM
+```
+
+In PowerShell, set the endpoint with `$env:AWS_ENDPOINT_URL = "http://127.0.0.1:4566"`.
+
+### How to call a SAM API
+
+SAM templates usually output AWS-shaped URLs such as `https://API_ID.execute-api.eu-west-1.amazonaws.com/Prod/hello`. Call the same API ID on StackSim's invoke port. A REST API keeps its stage in the path; an HTTP API's `$default` stage has none:
+
+```console
+curl http://API_ID.execute-api.localhost:4567/Prod/hello
+curl http://API_ID.execute-api.localhost:4567/notes
+```
+
+On Windows, type `curl.exe` in PowerShell.
+
+### How to see what SAM generated
+
+```console
+aws cloudformation get-template --stack-name sam-app --template-stage Processed
+aws cloudformation list-stack-resources --stack-name sam-app --query 'StackResourceSummaries[].{LogicalId:LogicalResourceId,Type:ResourceType,Status:ResourceStatus}' --output table
+```
+
+The processed template is the expansion: generated roles such as `<Function>Role`, `ServerlessRestApi` or `ServerlessHttpApi`, permissions, versions and aliases, and event resources.
+
+### How to read a transform error
+
+A SAM property or event that StackSim does not support fails the whole template before anything is created. `aws cloudformation deploy` prints the reason; for a change set you created yourself:
+
+```console
+aws cloudformation describe-change-set --stack-name sam-app --change-set-name CHANGE_SET_NAME --query StatusReason --output text
+```
+
+The reason has the AWS format, `Transform AWS::Serverless-2016-10-31 failed with: Invalid Serverless Application Specification document. ...`, and names the resource and property.
 
 ## DynamoDB and DynamoDB Streams
 

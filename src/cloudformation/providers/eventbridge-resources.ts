@@ -1,5 +1,6 @@
 import type { EventBridgeService } from "../../eventbridge.js";
 import { AwsError } from "../../errors.js";
+import { parseScheduleExpression } from "../../eventbridge/schedule-expression.js";
 import {
   ProviderReferenceError,
   type ProductionResourceProvider,
@@ -58,12 +59,17 @@ export interface EventRuleTargetModel {
   readonly InputPath?: string;
   readonly InputTransformer?: EventRuleInputTransformerModel;
   readonly RetryPolicy?: EventRuleRetryPolicyModel;
+  readonly DeadLetterConfig?: { readonly Arn: string };
+  /** The role EventBridge assumes to start a Step Functions target. */
+  readonly RoleArn?: string;
 }
 
 export interface EventRuleModel {
   readonly Name: string;
   readonly EventBusName: string;
-  readonly EventPattern: Readonly<Record<string, unknown>>;
+  readonly EventPattern?: Readonly<Record<string, unknown>>;
+  /** A legacy scheduled rule on the default bus; EventPattern is then optional. */
+  readonly ScheduleExpression?: string;
   readonly Description?: string;
   readonly State: "ENABLED" | "DISABLED" | "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS";
   readonly Tags: readonly Cfn09Tag[];
@@ -93,8 +99,9 @@ export const EVENT_RULE_SCHEMA: ProviderSchema = Object.freeze({
   properties: Object.freeze({
     Description: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
     EventBusName: Object.freeze({ valueType: "string", updateBehavior: "REPLACEMENT", description: "CFN-09 pins bus moves to replacement because PutRule cannot move an existing rule." }),
-    EventPattern: Object.freeze({ valueType: "object", required: true, updateBehavior: "MUTABLE" }),
+    EventPattern: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE", description: "Required unless ScheduleExpression is set." }),
     Name: Object.freeze({ valueType: "string", updateBehavior: "REPLACEMENT" }),
+    ScheduleExpression: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE", description: "rate() or cron(); scheduled rules run on the default bus." }),
     State: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
     Tags: Object.freeze({ valueType: "array", updateBehavior: "MUTABLE" }),
     Targets: Object.freeze({ valueType: "array", updateBehavior: "MUTABLE" }),
@@ -231,16 +238,21 @@ function validateRetryPolicy(value: unknown, path: string, issues: ProviderValid
 
 function validateTargets(value: unknown, context: ProviderContext, issues: ProviderValidationIssue[]): void {
   if (!Array.isArray(value)) return;
-  if (value.length > 5) issue(issues, "Properties.Targets", "A CFN-09 EventBridge rule can contain at most five Lambda targets");
+  if (value.length > 5) issue(issues, "Properties.Targets", "A CFN-09 EventBridge rule can contain at most five targets");
   const ids = new Set<string>();
   for (const [index, raw] of value.entries()) {
     const path = `Properties.Targets.${index}`;
     if (!isRecord(raw)) { issue(issues, path, "Each target must be an object"); continue; }
-    exactKeys(raw, ["Arn", "Id", "Input", "InputPath", "InputTransformer", "RetryPolicy"], path, issues);
+    exactKeys(raw, ["Arn", "DeadLetterConfig", "Id", "Input", "InputPath", "InputTransformer", "RetryPolicy", "RoleArn"], path, issues);
     if (typeof raw.Id !== "string" || !/^[._A-Za-z0-9-]{1,64}$/.test(raw.Id)) issue(issues, `${path}.Id`, "Id must contain 1-64 supported characters");
     else if (ids.has(raw.Id)) issue(issues, `${path}.Id`, "Target IDs must be unique"); else ids.add(raw.Id);
     const arn = typeof raw.Arn === "string" ? /^arn:aws:lambda:([^:]+):(\d{12}):function:[A-Za-z0-9-_]{1,64}(?::[A-Za-z0-9-_.$]+)?$/.exec(raw.Arn) : undefined;
-    if (!arn || arn[1] !== context.region || arn[2] !== context.accountId) issue(issues, `${path}.Arn`, "CFN-09 rule targets must identify a Lambda function in this simulator account and Region; other target families belong to later EventBridge phases");
+    const stateMachine = typeof raw.Arn === "string" ? STATE_MACHINE_TARGET.exec(raw.Arn) : undefined;
+    const target = arn ?? stateMachine;
+    if (!target || target[1] !== context.region || target[2] !== context.accountId) issue(issues, `${path}.Arn`, "Rule targets must identify a Lambda function or a Step Functions state machine in this simulator account and Region; other target families belong to later EventBridge phases");
+    // EventBridge assumes RoleArn to call StartExecution; Lambda targets use the function's resource policy instead.
+    if (stateMachine && (typeof raw.RoleArn !== "string" || !/^arn:[^:]+:iam::\d{12}:role\/.+$/.test(raw.RoleArn))) issue(issues, `${path}.RoleArn`, "A Step Functions target requires the ARN of an IAM role that EventBridge can assume");
+    if (!stateMachine && raw.RoleArn !== undefined) issue(issues, `${path}.RoleArn`, "RoleArn applies only to Step Functions targets");
     const selectors = [raw.Input, raw.InputPath, raw.InputTransformer].filter(item => item !== undefined);
     if (selectors.length > 1) issue(issues, path, "Input, InputPath, and InputTransformer are mutually exclusive");
     if (raw.Input !== undefined) {
@@ -250,6 +262,13 @@ function validateTargets(value: unknown, context: ProviderContext, issues: Provi
     if (raw.InputPath !== undefined && (typeof raw.InputPath !== "string" || !raw.InputPath.startsWith("$") || raw.InputPath.length > 256)) issue(issues, `${path}.InputPath`, "InputPath must be a JSONPath string of at most 256 characters");
     if (raw.InputTransformer !== undefined) validateInputTransformer(raw.InputTransformer, `${path}.InputTransformer`, issues);
     if (raw.RetryPolicy !== undefined) validateRetryPolicy(raw.RetryPolicy, `${path}.RetryPolicy`, issues);
+    if (raw.DeadLetterConfig !== undefined) {
+      if (!isRecord(raw.DeadLetterConfig)) issue(issues, `${path}.DeadLetterConfig`, "DeadLetterConfig must be an object");
+      else {
+        exactKeys(raw.DeadLetterConfig, ["Arn"], `${path}.DeadLetterConfig`, issues);
+        if (typeof raw.DeadLetterConfig.Arn !== "string" || !/^arn:[^:]+:sqs:[^:]+:\d{12}:[^:]+$/.test(raw.DeadLetterConfig.Arn)) issue(issues, `${path}.DeadLetterConfig.Arn`, "DeadLetterConfig.Arn must be an SQS queue ARN");
+      }
+    }
   }
 }
 
@@ -263,6 +282,16 @@ function validateRule(properties: unknown, context: ProviderContext): ProviderVa
   }
   if (properties.Description !== undefined && (typeof properties.Description !== "string" || [...properties.Description].length > 512)) issue(issues, "Properties.Description", "Description must not exceed 512 characters");
   if (isRecord(properties.EventPattern) && (!Object.keys(properties.EventPattern).length || Buffer.byteLength(JSON.stringify(properties.EventPattern)) > 4_096)) issue(issues, "Properties.EventPattern", "EventPattern must be a nonempty JSON object no larger than 4096 bytes");
+  if (properties.EventPattern === undefined && properties.ScheduleExpression === undefined) issue(issues, "Properties", "EventPattern or ScheduleExpression is required");
+  if (properties.ScheduleExpression !== undefined) {
+    if (typeof properties.ScheduleExpression !== "string") issue(issues, "Properties.ScheduleExpression", "ScheduleExpression must be a string");
+    else {
+      try {
+        if (parseScheduleExpression(properties.ScheduleExpression).kind === "at") issue(issues, "Properties.ScheduleExpression", "Scheduled rules support only rate() and cron() expressions");
+      } catch (error) { issue(issues, "Properties.ScheduleExpression", error instanceof Error ? error.message : String(error)); }
+      if (canonicalBusName(properties.EventBusName, context) !== "default") issue(issues, "Properties.EventBusName", "Scheduled rules can be created only on the default event bus");
+    }
+  }
   if (properties.State !== undefined && !["ENABLED", "DISABLED", "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"].includes(String(properties.State))) issue(issues, "Properties.State", "State must be ENABLED, DISABLED, or ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS");
   if (properties.Tags !== undefined) validateTags(properties.Tags, "Properties.Tags", issues);
   if (properties.Targets !== undefined) validateTargets(properties.Targets, context, issues);
@@ -284,16 +313,20 @@ function canonicalTarget(value: Record<string, unknown>): EventRuleTargetModel {
     ...(value.InputPath !== undefined ? { InputPath: String(value.InputPath) } : {}),
     ...(transformer ? { InputTransformer: transformer } : {}),
     ...(retry ? { RetryPolicy: retry } : {}),
+    ...(isRecord(value.DeadLetterConfig) ? { DeadLetterConfig: { Arn: String(value.DeadLetterConfig.Arn) } } : {}),
+    ...(value.RoleArn !== undefined ? { RoleArn: String(value.RoleArn) } : {}),
   };
 }
 
+const STATE_MACHINE_TARGET = /^arn:aws:states:([^:]+):(\d{12}):stateMachine:[A-Za-z0-9-_]{1,80}$/;
+
 function targetFromView(value: Record<string, unknown>, context: ProviderContext): EventRuleTargetModel {
-  const supported = new Set(["Arn", "Id", "Input", "InputPath", "InputTransformer", "RetryPolicy"]);
+  const supported = new Set(["Arn", "DeadLetterConfig", "Id", "Input", "InputPath", "InputTransformer", "RetryPolicy", "RoleArn"]);
   const unsupported = Object.keys(value).filter(key => !supported.has(key)).sort();
   if (unsupported.length) throw new AwsError("UnsupportedResourceState", `EventBridge target ${String(value.Id)} uses unsupported fields: ${unsupported.join(", ")}`, 409);
-  const arn = typeof value.Arn === "string" ? /^arn:([^:]+):lambda:([^:]+):(\d{12}):function:[A-Za-z0-9-_]{1,64}(?::[A-Za-z0-9-_.$]+)?$/.exec(value.Arn) : undefined;
-  if (!arn || arn[1] !== context.partition || arn[2] !== context.region || arn[3] !== context.accountId) {
-    throw new AwsError("UnsupportedResourceState", `EventBridge target ${String(value.Id)} is not a local Lambda target supported by CFN-09`, 409);
+  const arn = typeof value.Arn === "string" ? /^arn:([^:]+):(?:lambda:([^:]+):(\d{12}):function:[A-Za-z0-9-_]{1,64}(?::[A-Za-z0-9-_.$]+)?|states:([^:]+):(\d{12}):stateMachine:[A-Za-z0-9-_]{1,80})$/.exec(value.Arn) : undefined;
+  if (!arn || arn[1] !== context.partition || (arn[2] ?? arn[4]) !== context.region || (arn[3] ?? arn[5]) !== context.accountId) {
+    throw new AwsError("UnsupportedResourceState", `EventBridge target ${String(value.Id)} is not a local Lambda or Step Functions target`, 409);
   }
   return canonicalTarget(value);
 }
@@ -302,11 +335,20 @@ function canonicalRule(properties: Record<string, unknown>, context: ProviderCon
   return {
     Name: String(properties.Name ?? generatedRuleName(context)),
     EventBusName: canonicalBusName(properties.EventBusName, context),
-    EventPattern: stable(structuredClone(properties.EventPattern as Record<string, unknown>)),
+    ...(properties.EventPattern !== undefined ? { EventPattern: stable(structuredClone(properties.EventPattern as Record<string, unknown>)) } : {}),
+    ...(properties.ScheduleExpression !== undefined ? { ScheduleExpression: String(properties.ScheduleExpression) } : {}),
     ...(properties.Description !== undefined ? { Description: String(properties.Description) } : {}),
     State: String(properties.State ?? "ENABLED") as EventRuleModel["State"],
     Tags: canonicalTags(properties.Tags),
     Targets: (Array.isArray(properties.Targets) ? properties.Targets : []).map(item => canonicalTarget(item as Record<string, unknown>)).sort((left, right) => left.Id.localeCompare(right.Id)),
+  };
+}
+
+/** The PutRule pattern and schedule of a rule model. */
+function ruleDefinition(model: EventRuleModel): { EventPattern?: string; ScheduleExpression?: string } {
+  return {
+    ...(model.EventPattern !== undefined ? { EventPattern: JSON.stringify(stable(model.EventPattern)) } : {}),
+    ...(model.ScheduleExpression !== undefined ? { ScheduleExpression: model.ScheduleExpression } : {}),
   };
 }
 
@@ -328,10 +370,12 @@ export function createEventRuleProvider(events: EventBridgeService): ProductionR
     const targetResult = await events.ListTargetsByRule({ Rule: identity.name, EventBusName: identity.bus, Limit: 100 });
     const listedTags = await events.ListTagsForResource({ ResourceARN: rule.Arn });
     const tags = Object.fromEntries((listedTags.Tags ?? []).map((tag: any) => [String(tag.Key), String(tag.Value)]));
-    const pattern = JSON.parse(String(rule.EventPattern));
+    const pattern = rule.EventPattern === undefined ? undefined : JSON.parse(String(rule.EventPattern));
     const targetModels = (targetResult.Targets ?? []).map((target: any) => targetFromView(target, context)).sort((left: EventRuleTargetModel, right: EventRuleTargetModel) => left.Id.localeCompare(right.Id));
     const current: EventRuleModel = {
-      Name: String(rule.Name), EventBusName: String(rule.EventBusName), EventPattern: stable(pattern),
+      Name: String(rule.Name), EventBusName: String(rule.EventBusName),
+      ...(pattern !== undefined ? { EventPattern: stable(pattern) } : {}),
+      ...(rule.ScheduleExpression !== undefined ? { ScheduleExpression: String(rule.ScheduleExpression) } : {}),
       ...(rule.Description !== undefined ? { Description: String(rule.Description) } : {}),
       State: String(rule.State) as EventRuleModel["State"], Tags: visibleTags(tags), Targets: targetModels,
     };
@@ -360,9 +404,9 @@ export function createEventRuleProvider(events: EventBridgeService): ProductionR
     let current = await describe(physicalId, context);
     if (!owns(current.tags, context)) return { status: "FAILED", errorCode: "OwnershipConflict", message: `Event rule ${current.model.Name} is not owned by this stack resource` };
     if (current.model.Name !== desired.Name || current.model.EventBusName !== desired.EventBusName) return { status: "FAILED", errorCode: "RequiresReplacement", message: "Name and EventBusName changes require replacement in CFN-09" };
-    const ruleFields = ["Description", "EventPattern", "State"] as const;
+    const ruleFields = ["Description", "EventPattern", "ScheduleExpression", "State"] as const;
     if (ruleFields.some(field => !same(current.model[field], desired[field]))) {
-      await events.PutRule({ Name: desired.Name, EventBusName: desired.EventBusName, EventPattern: JSON.stringify(stable(desired.EventPattern)), State: desired.State, ...(desired.Description !== undefined ? { Description: desired.Description } : {}) });
+      await events.PutRule({ Name: desired.Name, EventBusName: desired.EventBusName, ...ruleDefinition(desired), State: desired.State, ...(desired.Description !== undefined ? { Description: desired.Description } : {}) });
       current = await describe(physicalId, context);
     }
     await putTargets(desired, current.model);
@@ -416,7 +460,7 @@ export function createEventRuleProvider(events: EventBridgeService): ProductionR
           if (!owns(existing.tags, context)) return { status: "FAILED", errorCode: "AlreadyExists", message: `Event rule ${desired.Name} already exists and is not owned by this stack resource` };
           return await reconcile(existing.arn, desired, context);
         } catch (error) { if (!isNotFound(error, ["ResourceNotFoundException"])) throw error; }
-        const created = await events.PutRule({ Name: desired.Name, EventBusName: desired.EventBusName, EventPattern: JSON.stringify(stable(desired.EventPattern)), State: desired.State, ...(desired.Description !== undefined ? { Description: desired.Description } : {}), Tags: eventTags(desired.Tags, context) });
+        const created = await events.PutRule({ Name: desired.Name, EventBusName: desired.EventBusName, ...ruleDefinition(desired), State: desired.State, ...(desired.Description !== undefined ? { Description: desired.Description } : {}), Tags: eventTags(desired.Tags, context) });
         createdHere = true;
         return await reconcile(String(created.RuleArn), desired, context);
       } catch (error) {

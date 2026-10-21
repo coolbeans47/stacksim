@@ -89,10 +89,21 @@ function tags(input: unknown): Record<string, string> {
   const result: Record<string, string> = {}; for (const [key, value] of Object.entries(input as object)) { if (!key || key.length > 128 || typeof value !== "string" || value.length > 256) throw new AwsError("InvalidParameterValueException", "Invalid tag"); result[key] = value; } if (Object.keys(result).length > 50) throw new AwsError("InvalidParameterValueException", "A maximum of 50 tags is allowed"); return result;
 }
 
+/**
+ * CloudWatch Logs delivers to Lambda as either its global or its Regional
+ * service principal; AWS accepts a permission for either form.
+ */
+function sameServicePrincipal(granted: unknown, caller: string): boolean {
+  const regional = /^logs\.[a-z0-9-]+\.amazonaws\.com$/;
+  return (granted === "logs.amazonaws.com" && regional.test(caller)) || (caller === "logs.amazonaws.com" && typeof granted === "string" && regional.test(granted));
+}
+
 export class LambdaService {
   private readonly children = new Set<ChildProcess>();
   private readonly dockerRuntime = new LambdaDockerRuntime();
   private asyncWorkerCancel?: () => void;
+  /** When the pending async worker wake fires; an event due sooner replaces it. */
+  private asyncWorkerWakeAt?: number;
   private asyncWorkerRunning = false;
   private asyncWorker = Promise.resolve();
   private stopped = true;
@@ -460,7 +471,7 @@ export class LambdaService {
     const resolved = this.resolve(nameOrArn, qualifier); if (!always && this.authMode !== "enforce") return; const keys = [resolved.requestedQualifier ?? "", ""]; let allowed = false;
     for (const key of keys) for (const statement of resolved.fn.policies?.[key]?.statements ?? []) {
       if (statement.Action !== "lambda:InvokeFunction" && statement.Action !== "lambda:*") continue;
-      const p = typeof statement.Principal === "string" ? statement.Principal : statement.Principal.Service ?? statement.Principal.AWS; if (p !== "*" && p !== principal) continue;
+      const p = typeof statement.Principal === "string" ? statement.Principal : statement.Principal.Service ?? statement.Principal.AWS; if (p !== "*" && p !== principal && !sameServicePrincipal(p, principal)) continue;
       if (statement.Resource !== resolved.qualifiedArn && statement.Resource !== resolved.fn.functionArn) continue; const conditions = statement.Condition ?? {};
       const arnLike = conditions.ArnLike?.["AWS:SourceArn"] ?? conditions.ArnLike?.["aws:SourceArn"]; if (arnLike && !new RegExp(`^${arnLike.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`).test(sourceArn ?? "")) continue;
       const account = conditions.StringEquals?.["AWS:SourceAccount"] ?? conditions.StringEquals?.["aws:SourceAccount"]; if (account && account !== sourceAccount) continue; allowed = true;
@@ -561,7 +572,10 @@ export class LambdaService {
     const now = this.clock.now(); this.asyncQueue[eventId] = { eventId, functionName: resolved.fn.functionName, ...(resolved.requestedQualifier ? { qualifier: resolved.requestedQualifier } : {}), payloadBase64, enqueuedAt: now, nextAttemptAt: now, attempts: 0, status: "QUEUED", ...(lineage?.length ? { lineage: [...lineage] } : {}) }; await this.store.save(); await this.publishAsyncMetric("AsyncEventsReceived", resolved.fn.functionName); await this.publishQueueDepth(resolved.fn.functionName); this.scheduleAsyncWorker(0); return eventId;
   }
   private scheduleAsyncWorker(delayMs: number): void {
-    if (this.stopped || this.asyncWorkerRunning || this.asyncWorkerCancel) return; const callback = () => { this.asyncWorkerCancel = undefined; this.asyncWorker = this.runAsyncWorker(); };
+    if (this.stopped || this.asyncWorkerRunning) return; const wakeAt = this.clock.now() + Math.max(0, delayMs);
+    // A retry scheduled for later must not hold back an event that is due sooner.
+    if (this.asyncWorkerCancel) { if (this.asyncWorkerWakeAt !== undefined && this.asyncWorkerWakeAt <= wakeAt) return; this.asyncWorkerCancel(); this.asyncWorkerCancel = undefined; }
+    this.asyncWorkerWakeAt = wakeAt; const callback = () => { this.asyncWorkerCancel = undefined; this.asyncWorkerWakeAt = undefined; this.asyncWorker = this.runAsyncWorker(); };
     if (this.scheduler) this.asyncWorkerCancel = this.scheduler.schedule(callback, Math.max(0, delayMs)); else { const handle = this.clock.setTimeout(callback, Math.max(0, delayMs)); this.asyncWorkerCancel = () => this.clock.clearTimeout(handle); }
   }
   private scheduleNextAsyncWorker(): void {
@@ -575,7 +589,11 @@ export class LambdaService {
       event.status = "LEASED"; event.leaseId = id(24); event.leaseUntil = now + 30_000; await this.store.save(); await this.processAsyncEvent(event);
     } finally { this.asyncWorkerRunning = false; this.scheduleNextAsyncWorker(); }
   }
-  private eventConfigFor(event: LambdaAsyncInvocationState): LambdaEventInvokeConfigState | undefined { return this.store.regionState(this.region).functions[event.functionName]?.eventInvokeConfigs?.[this.configKey(event.qualifier)]; }
+  private eventConfigFor(event: LambdaAsyncInvocationState): LambdaEventInvokeConfigState | undefined {
+    const configs = this.store.regionState(this.region).functions[event.functionName]?.eventInvokeConfigs; const key = this.configKey(event.qualifier);
+    // An unqualified invocation runs $LATEST, so a config put on either applies to both.
+    return configs?.[key] ?? (key === "" ? configs?.["$LATEST"] : key === "$LATEST" ? configs?.[""] : undefined);
+  }
   private async processAsyncEvent(event: LambdaAsyncInvocationState): Promise<void> {
     const config = this.eventConfigFor(event); const maxAgeMs = (config?.maximumEventAgeInSeconds ?? 21_600) * 1000; const age = this.clock.now() - event.enqueuedAt; if (age >= maxAgeMs) { await this.finishAsyncEvent(event, "EventAgeExceeded"); return; }
     event.attempts++; event.lastAttemptAt = this.clock.now(); await this.publishAsyncMetric("AsyncEventAge", event.functionName, age, "Milliseconds");

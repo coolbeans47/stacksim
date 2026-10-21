@@ -78,6 +78,16 @@ test("tagged scalars keep their text and tags may introduce block nodes", () => 
   assert.equal(yamlError("A: !Ref [x]").detail, "!Ref requires a scalar value");
 });
 
+test("a tagged mapping value may continue as a block sequence at the key's indentation", () => {
+  // As in SAM's error_function_with_no_alias_provisioned_concurrency fixture.
+  assert.deepEqual(parseCloudFormationYaml("Properties:\n  Config: !If\n  - Enabled\n  - Executions: !Ref Count\n  - !Ref 'AWS::NoValue'\n  Other: 1\n"), {
+    Properties: { Config: { "Fn::If": ["Enabled", { Executions: { Ref: "Count" } }, { Ref: "AWS::NoValue" }] }, Other: 1 },
+  });
+  assert.deepEqual(parseCloudFormationYaml("A: !If\n- C\n- 1\n- 2\nB: 3\n"), { A: { "Fn::If": ["C", 1, 2] }, B: 3 });
+  // A sequence entry still may not appear among the keys of a mapping.
+  assert.equal(yamlError("A:\n  B: 1\n  - 2\n").detail, "a sequence entry cannot appear inside a mapping");
+});
+
 test("plain scalars resolve with CloudFormation's YAML 1.1 rules", () => {
   const parsed = parseCloudFormationYaml(`
 version: 2010-09-09

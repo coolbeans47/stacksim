@@ -7,13 +7,17 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { CloudFormationClient, DescribeStackResourceCommand, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
+import { CloudWatchLogsClient, FilterLogEventsCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { CreateBucketCommand, S3Client } from "@aws-sdk/client-s3";
+import { DescribeExecutionCommand, SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
+import { GetQueueUrlCommand, SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { StackSim } from "../src/server.js";
 
 const execFileAsync = promisify(execFile);
 const region = "eu-west-1";
 const credentials = { accessKeyId: "admin", secretAccessKey: "password" };
-const quickstart = resolve("test", "fixtures", "sam", "quickstarts", "hello-world");
+const quickstarts = resolve("test", "fixtures", "sam", "quickstarts");
+const quickstart = join(quickstarts, "hello-world");
 const INSTALL = "Install AWS SAM CLI 1.91 or later (https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html; for example `winget install Amazon.SAM-CLI`, `brew install aws-sam-cli`, or `pip install aws-sam-cli`) to run this fixture";
 
 /** The installed SAM CLI version, or undefined when `sam` is not on PATH. */
@@ -25,6 +29,24 @@ async function samVersion(): Promise<[number, number, number] | undefined> {
   } catch {
     return undefined;
   }
+}
+
+/** The environment that points the unmodified SAM CLI at a StackSim endpoint. */
+function samEnvironment(root: string, endpoint: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    AWS_ENDPOINT_URL: endpoint,
+    AWS_ACCESS_KEY_ID: credentials.accessKeyId,
+    AWS_SECRET_ACCESS_KEY: credentials.secretAccessKey,
+    AWS_REGION: region,
+    AWS_DEFAULT_REGION: region,
+    AWS_CONFIG_FILE: join(root, "missing-config"),
+    AWS_SHARED_CREDENTIALS_FILE: join(root, "missing-credentials"),
+    AWS_EC2_METADATA_DISABLED: "true",
+    SAM_CLI_TELEMETRY: "0",
+  };
+  delete env.AWS_PROFILE;
+  return env;
 }
 
 function invoke(port: number, apiId: string, path: string): Promise<{ status: number; body: string }> {
@@ -56,19 +78,7 @@ test("the unmodified SAM CLI builds, deploys, redeploys, updates, and deletes sa
     await s3.send(new CreateBucketCommand({ Bucket: "sam-cli-artifacts" }));
     const project = join(root, "sam-app");
     await cp(quickstart, project, { recursive: true });
-    const env = {
-      ...process.env,
-      AWS_ENDPOINT_URL: endpoint,
-      AWS_ACCESS_KEY_ID: credentials.accessKeyId,
-      AWS_SECRET_ACCESS_KEY: credentials.secretAccessKey,
-      AWS_REGION: region,
-      AWS_DEFAULT_REGION: region,
-      AWS_CONFIG_FILE: join(root, "missing-config"),
-      AWS_SHARED_CREDENTIALS_FILE: join(root, "missing-credentials"),
-      AWS_EC2_METADATA_DISABLED: "true",
-      SAM_CLI_TELEMETRY: "0",
-    };
-    delete (env as Record<string, string | undefined>).AWS_PROFILE;
+    const env = samEnvironment(root, endpoint);
     const sam = (args: string[]) => execFileAsync("sam", args, { cwd: project, env, timeout: 300_000, windowsHide: true, shell: process.platform === "win32", maxBuffer: 16 * 1024 * 1024 });
     const deploy = () => sam(["deploy", "--stack-name", "hello", "--s3-bucket", "sam-cli-artifacts", "--capabilities", "CAPABILITY_IAM", "--region", region, "--no-confirm-changeset", "--no-fail-on-empty-changeset"]);
 
@@ -92,6 +102,89 @@ test("the unmodified SAM CLI builds, deploys, redeploys, updates, and deletes sa
     await assert.rejects(cloudformation.send(new DescribeStacksCommand({ StackName: "hello" })), /does not exist/);
   } finally {
     cloudformation?.destroy(); s3?.destroy();
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the unmodified SAM CLI builds and deploys sam init sqs, and the queued message reaches the function's log", async t => {
+  const version = await samVersion();
+  if (!version) { t.skip(`AWS SAM CLI is not installed or not on PATH. ${INSTALL}.`); return; }
+  if (version[0] < 1 || (version[0] === 1 && version[1] < 91)) { t.skip(`AWS SAM CLI ${version.join(".")} is older than 1.91, whose bundled botocore first honors AWS_ENDPOINT_URL. ${INSTALL}.`); return; }
+
+  const root = await mkdtemp(join(tmpdir(), "stacksim-sam-cli-sqs-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: join(root, "data"), region, authMode: "off" });
+  const clients: Array<{ destroy(): void }> = [];
+  try {
+    await simulator.start();
+    const endpoint = `http://127.0.0.1:${simulator.port}`;
+    const cloudformation = new CloudFormationClient({ endpoint, region, credentials, maxAttempts: 1 });
+    const s3 = new S3Client({ endpoint, region, credentials, forcePathStyle: true, maxAttempts: 1 });
+    const sqs = new SQSClient({ endpoint, region, credentials, maxAttempts: 1 });
+    const logs = new CloudWatchLogsClient({ endpoint, region, credentials, maxAttempts: 1 });
+    clients.push(cloudformation, s3, sqs, logs);
+    await s3.send(new CreateBucketCommand({ Bucket: "sam-cli-artifacts" }));
+    const project = join(root, "sam-app");
+    await cp(join(quickstarts, "sqs"), project, { recursive: true });
+    const sam = (args: string[]) => execFileAsync("sam", args, { cwd: project, env: samEnvironment(root, endpoint), timeout: 300_000, windowsHide: true, shell: process.platform === "win32", maxBuffer: 16 * 1024 * 1024 });
+
+    await sam(["build"]);
+    await sam(["deploy", "--stack-name", "sqs-app", "--s3-bucket", "sam-cli-artifacts", "--capabilities", "CAPABILITY_IAM", "--region", region, "--no-confirm-changeset", "--no-fail-on-empty-changeset"]);
+    const physical = async (logicalId: string) => (await cloudformation.send(new DescribeStackResourceCommand({ StackName: "sqs-app", LogicalResourceId: logicalId }))).StackResourceDetail!.PhysicalResourceId!;
+    const { QueueUrl } = await sqs.send(new GetQueueUrlCommand({ QueueName: await physical("SimpleQueue") }));
+    await sqs.send(new SendMessageCommand({ QueueUrl, MessageBody: "hello through the SAM CLI" }));
+    const functionName = await physical("SQSPayloadLogger");
+    let logged = false;
+    for (let attempt = 0; attempt < 200 && !logged; attempt++) {
+      try { logged = Boolean((await logs.send(new FilterLogEventsCommand({ logGroupName: `/aws/lambda/${functionName}`, filterPattern: '"hello through the SAM CLI"' }))).events?.length); } catch { /* the log group appears with the first invocation */ }
+      if (!logged) await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
+    }
+    assert.ok(logged, "the function logs the queued message");
+
+    await sam(["delete", "--stack-name", "sqs-app", "--region", region, "--no-prompts"]);
+    await assert.rejects(cloudformation.send(new DescribeStacksCommand({ StackName: "sqs-app" })), /does not exist/);
+  } finally {
+    clients.forEach(client => client.destroy());
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the unmodified SAM CLI builds and deploys sam init step-func, and a started execution trades", async t => {
+  const version = await samVersion();
+  if (!version) { t.skip(`AWS SAM CLI is not installed or not on PATH. ${INSTALL}.`); return; }
+  if (version[0] < 1 || (version[0] === 1 && version[1] < 91)) { t.skip(`AWS SAM CLI ${version.join(".")} is older than 1.91, whose bundled botocore first honors AWS_ENDPOINT_URL. ${INSTALL}.`); return; }
+
+  const root = await mkdtemp(join(tmpdir(), "stacksim-sam-cli-step-func-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: join(root, "data"), region, authMode: "off" });
+  const clients: Array<{ destroy(): void }> = [];
+  try {
+    await simulator.start();
+    const endpoint = `http://127.0.0.1:${simulator.port}`;
+    const cloudformation = new CloudFormationClient({ endpoint, region, credentials, maxAttempts: 1 });
+    const s3 = new S3Client({ endpoint, region, credentials, forcePathStyle: true, maxAttempts: 1 });
+    const sfn = new SFNClient({ endpoint, region, credentials, maxAttempts: 1 });
+    clients.push(cloudformation, s3, sfn);
+    await s3.send(new CreateBucketCommand({ Bucket: "sam-cli-artifacts" }));
+    const project = join(root, "sam-app");
+    await cp(join(quickstarts, "step-func"), project, { recursive: true });
+    const sam = (args: string[]) => execFileAsync("sam", args, { cwd: project, env: samEnvironment(root, endpoint), timeout: 300_000, windowsHide: true, shell: process.platform === "win32", maxBuffer: 16 * 1024 * 1024 });
+
+    await sam(["build"]);
+    await sam(["deploy", "--stack-name", "step-func-app", "--s3-bucket", "sam-cli-artifacts", "--capabilities", "CAPABILITY_IAM", "--region", region, "--no-confirm-changeset", "--no-fail-on-empty-changeset"]);
+    const stateMachineArn = (await cloudformation.send(new DescribeStackResourceCommand({ StackName: "step-func-app", LogicalResourceId: "StockTradingStateMachine" }))).StackResourceDetail!.PhysicalResourceId!;
+    const { executionArn } = await sfn.send(new StartExecutionCommand({ stateMachineArn }));
+    let status: string | undefined;
+    for (let attempt = 0; attempt < 600 && (status === undefined || status === "RUNNING"); attempt++) {
+      status = (await sfn.send(new DescribeExecutionCommand({ executionArn }))).status;
+      if (status === "RUNNING") await new Promise(resolvePromise => setTimeout(resolvePromise, 100));
+    }
+    assert.equal(status, "SUCCEEDED");
+
+    await sam(["delete", "--stack-name", "step-func-app", "--region", region, "--no-prompts"]);
+    await assert.rejects(cloudformation.send(new DescribeStacksCommand({ StackName: "step-func-app" })), /does not exist/);
+  } finally {
+    clients.forEach(client => client.destroy());
     await simulator.stop().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }

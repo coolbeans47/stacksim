@@ -80,3 +80,26 @@ test("CloudWatch Logs Lambda subscriptions validate permission, deliver gzip env
     await logs.send(new DeleteSubscriptionFilterCommand({ logGroupName: groupName, filterName: "lambda-errors" })); assert.equal((await logs.send(new DescribeSubscriptionFiltersCommand({ logGroupName: groupName }))).subscriptionFilters?.length, 0);
   } finally { clients.forEach(client => client.destroy()); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
 });
+
+test("a Lambda subscription delivers the first events of a log stream created after the filter, permitted for logs.amazonaws.com", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-logs-new-stream-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, authMode: "enforce", cdkBootstrap: true });
+  const clients: Array<{ destroy(): void }> = [];
+  try {
+    await simulator.start(); const logs = new CloudWatchLogsClient(options(simulator)); const lambda = new LambdaClient(options(simulator)); const iam = new IAMClient(options(simulator)); clients.push(logs, lambda, iam);
+    const role = await iam.send(new CreateRoleCommand({ RoleName: "new-stream-subscriber", AssumeRolePolicyDocument: JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { Service: "lambda.amazonaws.com" }, Action: "sts:AssumeRole" }] }) }));
+    await iam.send(new PutRolePolicyCommand({ RoleName: "new-stream-subscriber", PolicyName: "logs", PolicyDocument: JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"], Resource: "*" }] }) }));
+    const code = createZip([{ name: "index.mjs", content: `import { gunzipSync } from "node:zlib"; export async function handler(event) { console.log("DELIVERED " + gunzipSync(Buffer.from(event.awslogs.data, "base64")).toString("utf8")); }\n` }]);
+    const fn = await lambda.send(new CreateFunctionCommand({ FunctionName: "new-stream-subscriber", Runtime: "nodejs22.x", Role: role.Role!.Arn, Handler: "index.handler", Code: { ZipFile: code } }));
+    await logs.send(new CreateLogGroupCommand({ logGroupName: "/new-stream/source" }));
+    // The global service principal, as AWS SAM generates it, admits the Regional delivery principal.
+    await lambda.send(new AddPermissionCommand({ FunctionName: "new-stream-subscriber", StatementId: "logs", Action: "lambda:InvokeFunction", Principal: "logs.amazonaws.com", SourceArn: `arn:aws:logs:${region}:000000000000:log-group:/new-stream/source:*` }));
+    await logs.send(new PutSubscriptionFilterCommand({ logGroupName: "/new-stream/source", filterName: "all", filterPattern: "", destinationArn: fn.FunctionArn! }));
+    await logs.send(new CreateLogStreamCommand({ logGroupName: "/new-stream/source", logStreamName: "created-later" }));
+    await logs.send(new PutLogEventsCommand({ logGroupName: "/new-stream/source", logStreamName: "created-later", logEvents: [{ timestamp: Date.now(), message: "first event in a new stream" }] }));
+    const delivered = await waitFor(async () => {
+      try { return (await logs.send(new FilterLogEventsCommand({ logGroupName: "/aws/lambda/new-stream-subscriber", filterPattern: "DELIVERED" }))).events ?? []; } catch { return []; }
+    }, events => events.length > 0);
+    assert.deepEqual(JSON.parse(delivered[0].message!.slice("DELIVERED ".length)).logEvents.map((event: { message: string }) => event.message), ["first event in a new stream"]);
+  } finally { clients.forEach(client => client.destroy()); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
+});
