@@ -45,8 +45,8 @@ test("EVB-04 SDK lifecycle proves independent capture, selected replay identity,
   await h.client.send(new UpdateArchiveCommand({ ArchiveName: "orders", Description: "Updated", RetentionDays: 0 })); assert.equal((await h.client.send(new DescribeArchiveCommand({ ArchiveName: "orders" }))).Description, "Updated");
   await h.client.send(new PutRuleCommand({ Name: "selected", EventBusName: "learning", EventPattern: JSON.stringify({ source: ["learning.orders"] }) })); await h.client.send(new PutRuleCommand({ Name: "other", EventBusName: "learning", EventPattern: JSON.stringify({ source: ["learning.orders"] }) }));
   await h.client.send(new PutTargetsCommand({ Rule: "selected", EventBusName: "learning", Targets: [{ Id: "selected", Arn: targetArn, RetryPolicy: { MaximumRetryAttempts: 0, MaximumEventAgeInSeconds: 60 } }] })); await h.client.send(new PutTargetsCommand({ Rule: "other", EventBusName: "learning", Targets: [{ Id: "other", Arn: targetArn, RetryPolicy: { MaximumRetryAttempts: 0, MaximumEventAgeInSeconds: 60 } }] }));
-  let broken = true; const received: any[] = []; (h.simulator.lambda as any).enqueueEventBridgeInvocation = async (_arn: string, payload: Buffer, sourceArn: string) => { if (broken) throw new Error("broken target"); received.push({ payload: JSON.parse(payload.toString("utf8")), sourceArn }); return "accepted"; };
-  const eventTime = new Date(h.clock.now() - 60_000);
+  let broken = true; const received: any[] = []; const firstDelivered: string[] = []; (h.simulator.lambda as any).enqueueEventBridgeInvocation = async (_arn: string, payload: Buffer, sourceArn: string) => { if (broken) { if (sourceArn === selectedArn) firstDelivered.push(payload.toString("utf8")); throw new Error("broken target"); } received.push({ payload: JSON.parse(payload.toString("utf8")), sourceArn }); return "accepted"; };
+  const eventTime = new Date(h.clock.now() - 60_000 + 456);
   const published = await h.client.send(new PutEventsCommand({ Entries: [{ EventBusName: "learning", Source: "learning.orders", DetailType: "Order", Detail: "{\"id\":1}", Time: eventTime }, { EventBusName: "learning", Source: "learning.inventory", DetailType: "Inventory", Detail: "{}", Time: eventTime }] }));
   const originalEventId = published.Entries?.[0].EventId;
   await drive(h.clock, () => h.simulator.eventbridge.deliveryDiagnostics().failed >= 2);
@@ -59,7 +59,8 @@ test("EVB-04 SDK lifecycle proves independent capture, selected replay identity,
   await drive(h.clock, () => (h.simulator.eventbridge as any).archiveStore.replay("fixed-consumer")?.state === "COMPLETED");
   await drive(h.clock, () => received.length >= 1);
   const described = await h.client.send(new DescribeReplayCommand({ ReplayName: "fixed-consumer" })); assert.equal(described.State, "COMPLETED"); assert(described.EventLastReplayedTime instanceof Date); assert.deepEqual(described.Destination?.FilterArns, [selectedArn]);
-  assert.equal(received.length, 1); assert.equal(received[0].sourceArn, selectedArn); assert.equal(received[0].payload["replay-name"], "fixed-consumer"); assert.equal(received[0].payload.id, originalEventId, "replay preserves the archived event identity"); assert.equal(received[0].payload.account, account); assert.equal(received[0].payload.region, region); assert.equal(received[0].payload.time, eventTime.toISOString()); assert.notEqual(received[0].sourceArn, otherArn);
+  assert.equal(received.length, 1); assert.equal(received[0].sourceArn, selectedArn); assert.equal(received[0].payload["replay-name"], "fixed-consumer"); assert.equal(received[0].payload.id, originalEventId, "replay preserves the archived event identity"); assert.equal(received[0].payload.account, account); assert.equal(received[0].payload.region, region); assert.equal(received[0].payload.time, "2026-08-08T11:59:00Z", "replay keeps the whole-second time first delivered"); assert.notEqual(received[0].sourceArn, otherArn);
+  assert.equal(firstDelivered.length, 1); const { "replay-name": _replayName, ...replayedEnvelope } = received[0].payload; assert.equal(JSON.stringify(replayedEnvelope), firstDelivered[0], "the replayed envelope matches the first delivery byte for byte apart from replay-name");
   assert.equal((await h.client.send(new DescribeArchiveCommand({ ArchiveName: "orders" }))).EventCount, 1, "replayed events are not archived again");
   await h.client.send(new StartReplayCommand({ ReplayName: "fixed-consumer-2", EventSourceArn: created.ArchiveArn!, EventStartTime: new Date(eventTime.getTime() - 1_000), EventEndTime: new Date(eventTime.getTime() + 1_000), Destination: { Arn: busArn, FilterArns: [selectedArn] } }));
   await drive(h.clock, () => (h.simulator.eventbridge as any).archiveStore.replay("fixed-consumer-2")?.state === "COMPLETED");
@@ -105,4 +106,25 @@ test("EVB-04 does not acknowledge PutEvents before archive publication and recov
   const tracked = active.find(item => item.simulator === h.simulator)!; tracked.client.destroy(); await h.simulator.stop(); active.splice(active.indexOf(tracked), 1);
   const restarted = new StackSim({ port: 0, invokePort: 0, dataDir: h.root, region, clock: h.clock, authMode: "off" }); await restarted.start(); const client = new EventBridgeClient({ endpoint: `http://127.0.0.1:${restarted.port}`, region, credentials }); active.push({ simulator: restarted, client, root: h.root });
   assert.equal((await client.send(new DescribeArchiveCommand({ ArchiveName: "publication-boundary" }))).EventCount, 1, "restart re-indexes the committed segment after the failed acknowledgement boundary");
+});
+
+test("EVB-04 replays persisted millisecond-precision archive envelopes unchanged after restart", async () => {
+  const h = await harness(); const busArn = `arn:aws:events:${region}:${account}:event-bus/learning`; const ruleArn = `arn:aws:events:${region}:${account}:rule/learning/legacy-consumer`;
+  await h.client.send(new CreateEventBusCommand({ Name: "learning" })); const created = await h.client.send(new CreateArchiveCommand({ ArchiveName: "legacy", EventSourceArn: busArn }));
+  await h.client.send(new PutRuleCommand({ Name: "legacy-consumer", EventBusName: "learning", EventPattern: JSON.stringify({ source: ["learning.orders"] }) }));
+  await h.client.send(new PutTargetsCommand({ Rule: "legacy-consumer", EventBusName: "learning", Targets: [{ Id: "legacy", Arn: `arn:aws:lambda:${region}:${account}:function:learning-target`, RetryPolicy: { MaximumRetryAttempts: 0, MaximumEventAgeInSeconds: 60 } }] }));
+  // An archive written before whole-second envelope times holds the millisecond form.
+  const legacyEnvelope = JSON.stringify({ version: "0", id: "legacy-millisecond-event", "detail-type": "Order", source: "learning.orders", account, time: "2026-08-08T11:59:00.123Z", region, resources: [], detail: { id: 7 } });
+  await (h.simulator.eventbridge as any).archiveStore.publish(["legacy"], legacyEnvelope, h.clock.now());
+
+  const tracked = active.find(item => item.simulator === h.simulator)!; tracked.client.destroy(); await h.simulator.stop(); active.splice(active.indexOf(tracked), 1);
+  const restarted = new StackSim({ port: 0, invokePort: 0, dataDir: h.root, region, clock: h.clock, authMode: "off" }); await restarted.start(); const client = new EventBridgeClient({ endpoint: `http://127.0.0.1:${restarted.port}`, region, credentials }); active.push({ simulator: restarted, client, root: h.root });
+  const received: Array<{ payload: string; sourceArn: string }> = []; (restarted.lambda as any).enqueueEventBridgeInvocation = async (_arn: string, payload: Buffer, sourceArn: string) => { received.push({ payload: payload.toString("utf8"), sourceArn }); return "accepted"; };
+  assert.equal((await client.send(new DescribeArchiveCommand({ ArchiveName: "legacy" }))).EventCount, 1, "the persisted millisecond-time segment loads after restart");
+
+  await client.send(new StartReplayCommand({ ReplayName: "legacy-replay", EventSourceArn: created.ArchiveArn!, EventStartTime: new Date("2026-08-08T11:59:00Z"), EventEndTime: new Date("2026-08-08T11:59:01Z"), Destination: { Arn: busArn } }));
+  await drive(h.clock, () => (restarted.eventbridge as any).archiveStore.replay("legacy-replay")?.state === "COMPLETED");
+  await drive(h.clock, () => received.length >= 1);
+  assert.equal(received.length, 1); assert.equal(received[0].sourceArn, ruleArn);
+  assert.equal(received[0].payload, `${legacyEnvelope.slice(0, -1)},"replay-name":"legacy-replay"}`, "replay keeps the archived millisecond time and every other byte of the original envelope");
 });
