@@ -1,4 +1,4 @@
-import { SAM_GLOBALS_SECTIONS, SAM_RESOURCE_ATTRIBUTE_COVERAGE, SAM_RESOURCE_COVERAGE, type Coverage } from "./coverage.js";
+import { SAM_CONNECTOR_PAIR_COVERAGE, SAM_GLOBALS_SECTIONS, SAM_RESOURCE_ATTRIBUTE_COVERAGE, SAM_RESOURCE_COVERAGE, type Coverage } from "./coverage.js";
 import { SAM_SCHEMA_EVENT_PROPERTIES, SAM_SCHEMA_GLOBALS, SAM_SCHEMA_RESOURCE_PROPERTIES } from "./generated/schema.js";
 
 const label = (coverage: Coverage): string => coverage === "implemented" ? "Implemented" : coverage === "non-goal" ? "Not supported (non-goal)" : `Planned: ${coverage}`;
@@ -40,6 +40,14 @@ export function renderSamCoverageMarkdown(): string {
       ];
       lines.push(`| \`${eventType}\` | ${label(event?.event ?? "non-goal")} | ${pending} | ${notes.join(" ")} |`);
     }
+  }
+  lines.push(
+    "", "## Connector pairs", "",
+    "`AWS::Serverless::Connector` and embedded `Connectors` support every source/destination pair in SAM's connector profiles that StackSim can back: both services exist locally, the generated policy deploys, and the service that uses it enforces it. Any other pair fails the transform, naming the pair.",
+    "", "| Source | Destination | Status | Notes |", "|---|---|---|---|",
+  );
+  for (const [source, destinations] of Object.entries(SAM_CONNECTOR_PAIR_COVERAGE)) {
+    for (const [destination, pair] of Object.entries(destinations)) lines.push(`| \`${source}\` | \`${destination}\` | ${label(pair.coverage)} | ${pair.note ? `${pair.note.replace(/\.$/, "")}.` : ""} |`);
   }
   lines.push("", "## Globals", "", "A Globals key has the status of the same property on its resource type.", "", "| Section | Status |", "|---|---|");
   for (const section of Object.keys(SAM_SCHEMA_GLOBALS)) lines.push(`| \`${section}\` | ${label(SAM_RESOURCE_COVERAGE[SAM_GLOBALS_SECTIONS[section]]?.resource ?? "non-goal")} |`);

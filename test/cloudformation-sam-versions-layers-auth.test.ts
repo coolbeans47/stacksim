@@ -332,7 +332,12 @@ test("AWS::Events::Rule accepts Step Functions targets with the role EventBridge
   assert.deepEqual(issues({ Arn: stateMachine, RoleArn: "arn:aws:iam::000000000000:role/events" }), []);
   assert.deepEqual(issues({ Arn: stateMachine }), ["Properties.Targets.0.RoleArn: A Step Functions target requires the ARN of an IAM role that EventBridge can assume"]);
   assert.deepEqual(issues({ Arn: `arn:aws:lambda:${region}:000000000000:function:f`, RoleArn: "arn:aws:iam::000000000000:role/events" }), ["Properties.Targets.0.RoleArn: RoleArn applies only to Step Functions targets"]);
-  assert.deepEqual(issues({ Arn: `arn:aws:sqs:${region}:000000000000:queue` }), ["Properties.Targets.0.Arn: Rule targets must identify a Lambda function or a Step Functions state machine in this simulator account and Region; other target families belong to later EventBridge phases"]);
+  // SAM-06: standard queues and topics are targets too; FIFO ones and other families are not.
+  assert.deepEqual(issues({ Arn: `arn:aws:sqs:${region}:000000000000:queue` }), []);
+  assert.deepEqual(issues({ Arn: `arn:aws:sns:${region}:000000000000:topic` }), []);
+  assert.deepEqual(issues({ Arn: `arn:aws:sqs:${region}:000000000000:queue`, RoleArn: "arn:aws:iam::000000000000:role/events" }), ["Properties.Targets.0.RoleArn: RoleArn applies only to Step Functions targets"]);
+  assert.deepEqual(issues({ Arn: `arn:aws:sqs:${region}:000000000000:queue.fifo` }), ["Properties.Targets.0.Arn: FIFO queue and topic targets need SqsParameters, which this simulator's AWS::Events::Rule does not support yet"]);
+  assert.deepEqual(issues({ Arn: `arn:aws:events:${region}:000000000000:event-bus/other` }), ["Properties.Targets.0.Arn: Rule targets must identify a Lambda function, a Step Functions state machine, a standard SQS queue, or a standard SNS topic in this simulator account and Region; other target families belong to later EventBridge phases"]);
 });
 
 test("an HTTP API JWT authorizer, a REST Lambda TOKEN authorizer, and a state machine Api event deploy and enforce as expanded", async () => {

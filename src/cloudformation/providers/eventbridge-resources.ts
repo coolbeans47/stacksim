@@ -248,9 +248,12 @@ function validateTargets(value: unknown, context: ProviderContext, issues: Provi
     else if (ids.has(raw.Id)) issue(issues, `${path}.Id`, "Target IDs must be unique"); else ids.add(raw.Id);
     const arn = typeof raw.Arn === "string" ? /^arn:aws:lambda:([^:]+):(\d{12}):function:[A-Za-z0-9-_]{1,64}(?::[A-Za-z0-9-_.$]+)?$/.exec(raw.Arn) : undefined;
     const stateMachine = typeof raw.Arn === "string" ? STATE_MACHINE_TARGET.exec(raw.Arn) : undefined;
-    const target = arn ?? stateMachine;
-    if (!target || target[1] !== context.region || target[2] !== context.accountId) issue(issues, `${path}.Arn`, "Rule targets must identify a Lambda function or a Step Functions state machine in this simulator account and Region; other target families belong to later EventBridge phases");
-    // EventBridge assumes RoleArn to call StartExecution; Lambda targets use the function's resource policy instead.
+    // Queues and topics authorize EventBridge through their resource policies (SAM-06 connectors generate them).
+    const queueOrTopic = typeof raw.Arn === "string" ? QUEUE_OR_TOPIC_TARGET.exec(raw.Arn) : undefined;
+    const target = arn ?? stateMachine ?? queueOrTopic;
+    if (typeof raw.Arn === "string" && /^arn:aws:(?:sqs|sns):[^:]+:\d{12}:[^:]+\.fifo$/.test(raw.Arn)) issue(issues, `${path}.Arn`, "FIFO queue and topic targets need SqsParameters, which this simulator's AWS::Events::Rule does not support yet");
+    else if (!target || target[1] !== context.region || target[2] !== context.accountId) issue(issues, `${path}.Arn`, "Rule targets must identify a Lambda function, a Step Functions state machine, a standard SQS queue, or a standard SNS topic in this simulator account and Region; other target families belong to later EventBridge phases");
+    // EventBridge assumes RoleArn to call StartExecution; Lambda, queue, and topic targets use resource policies instead.
     if (stateMachine && (typeof raw.RoleArn !== "string" || !/^arn:[^:]+:iam::\d{12}:role\/.+$/.test(raw.RoleArn))) issue(issues, `${path}.RoleArn`, "A Step Functions target requires the ARN of an IAM role that EventBridge can assume");
     if (!stateMachine && raw.RoleArn !== undefined) issue(issues, `${path}.RoleArn`, "RoleArn applies only to Step Functions targets");
     const selectors = [raw.Input, raw.InputPath, raw.InputTransformer].filter(item => item !== undefined);
@@ -319,14 +322,15 @@ function canonicalTarget(value: Record<string, unknown>): EventRuleTargetModel {
 }
 
 const STATE_MACHINE_TARGET = /^arn:aws:states:([^:]+):(\d{12}):stateMachine:[A-Za-z0-9-_]{1,80}$/;
+const QUEUE_OR_TOPIC_TARGET = /^arn:aws:(?:sqs|sns):([^:]+):(\d{12}):[A-Za-z0-9-_]{1,256}$/;
 
 function targetFromView(value: Record<string, unknown>, context: ProviderContext): EventRuleTargetModel {
   const supported = new Set(["Arn", "DeadLetterConfig", "Id", "Input", "InputPath", "InputTransformer", "RetryPolicy", "RoleArn"]);
   const unsupported = Object.keys(value).filter(key => !supported.has(key)).sort();
   if (unsupported.length) throw new AwsError("UnsupportedResourceState", `EventBridge target ${String(value.Id)} uses unsupported fields: ${unsupported.join(", ")}`, 409);
-  const arn = typeof value.Arn === "string" ? /^arn:([^:]+):(?:lambda:([^:]+):(\d{12}):function:[A-Za-z0-9-_]{1,64}(?::[A-Za-z0-9-_.$]+)?|states:([^:]+):(\d{12}):stateMachine:[A-Za-z0-9-_]{1,80})$/.exec(value.Arn) : undefined;
-  if (!arn || arn[1] !== context.partition || (arn[2] ?? arn[4]) !== context.region || (arn[3] ?? arn[5]) !== context.accountId) {
-    throw new AwsError("UnsupportedResourceState", `EventBridge target ${String(value.Id)} is not a local Lambda or Step Functions target`, 409);
+  const arn = typeof value.Arn === "string" ? /^arn:([^:]+):(?:lambda:([^:]+):(\d{12}):function:[A-Za-z0-9-_]{1,64}(?::[A-Za-z0-9-_.$]+)?|states:([^:]+):(\d{12}):stateMachine:[A-Za-z0-9-_]{1,80}|(?:sqs|sns):([^:]+):(\d{12}):[A-Za-z0-9-_]{1,256})$/.exec(value.Arn) : undefined;
+  if (!arn || arn[1] !== context.partition || (arn[2] ?? arn[4] ?? arn[6]) !== context.region || (arn[3] ?? arn[5] ?? arn[7]) !== context.accountId) {
+    throw new AwsError("UnsupportedResourceState", `EventBridge target ${String(value.Id)} is not a local Lambda, Step Functions, standard SQS, or standard SNS target`, 409);
   }
   return canonicalTarget(value);
 }

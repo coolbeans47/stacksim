@@ -145,11 +145,37 @@ const EQUAL = [
   "state_machine_with_schedule_cloudwatch_event_target_id", "state_machine_with_schedule_role", "state_machine_with_schedule_target_id",
   "state_machine_with_standard_logging", "state_machine_with_tags", "state_machine_with_xray_policies", "state_machine_with_xray_role",
   "version_deletion_policy_precedence",
+  // SAM-06: connectors and embedded Connectors.
+  "connector_api_to_function", "connector_api_to_multiple_function", "connector_appsync_to_table", "connector_bucket_to_function",
+  "connector_dependson_replace", "connector_depends_on_attribute", "connector_esm_dependson", "connector_function_to_multiple_s3",
+  "connector_function_to_s3", "connector_function_to_sqs", "connector_function_to_table", "connector_hardcoded_lambda_arn", "connector_hardcoded_props",
+  "connector_hardcoded_rolename", "connector_mix_destination", "connector_resource_attributes", "connector_rule_to_multiple_sns", "connector_rule_to_sns",
+  "connector_sns_to_function", "connector_sns_to_sqs", "connector_sqs_to_function", "connector_sqs_to_multiple_function", "connector_table_to_function",
+  "connector_table_to_function_read", "embedded_connectors_api_to_function", "embedded_connectors_depends_on_attribute",
+  "embedded_connectors_depends_on_connector", "embedded_connectors_esm_depends_on", "embedded_connectors_function_to", "embedded_connectors_hardcoded_props",
+  "embedded_connectors_resource_attributes", "embedded_connectors_sns_to", "embedded_connectors_table_to_function", "embedded_connector_function_to_multi_dest",
+  "schema_validation_2", "schema_validation_5",
 ];
 
 for (const name of EQUAL) {
   test(`SAM golden fixture ${name} expands exactly as the SAM translator does`, () => {
     assert.deepEqual(normalize(expandServerlessTransform(input(name), context)), normalize(output(name)));
+  });
+}
+
+/**
+ * Connector fixtures whose only unsupported feature is an EXPRESS state
+ * machine (a boundary below): with STANDARD on both sides, the connector
+ * expansion equals SAM's.
+ */
+for (const name of [
+  "connector_rule_to_sfn", "connector_sfn_to_function", "connector_sfn_to_function_without_policy", "connector_sfn_to_sfn",
+  "connector_with_non_id_source_and_destination", "embedded_connectors_sfn_to",
+]) {
+  test(`SAM golden fixture ${name} with STANDARD state machines expands exactly as the SAM translator does`, () => {
+    const standard = parseCloudFormationYaml(readFileSync(join(fixtures, "input", `${name}.yaml`), "utf8").replace(/Type: EXPRESS/g, "Type: STANDARD")) as Record<string, unknown>;
+    const expected = JSON.parse(readFileSync(join(fixtures, "output", `${name}.json`), "utf8").replace(/"StateMachineType": "EXPRESS"/g, "\"StateMachineType\": \"STANDARD\""));
+    assert.deepEqual(normalize(expandServerlessTransform(standard, context)), normalize(expected));
   });
 }
 
@@ -174,7 +200,19 @@ const BOUNDARY: Array<[string, RegExp]> = [
   ["function_with_event_dest_s3_bucket", /EventInvokeConfig destinations of Type 'S3Bucket' are not supported by StackSim\./],
   ["layer_with_s3_object_storage_mode", /'StorageMode' in 'ContentUri' is not supported by StackSim\./],
   ["function_with_s3_object_storage_mode", /'StorageMode' in 'CodeUri' is not supported by StackSim\./],
-  ["embedded_connectors_sns_to", /Resource with id \[MySNSTopic\] is invalid\. Attribute 'Connectors' is not supported by StackSim \(owning phase: SAM-06\)\./],
+  // SAM-06: connector pairs StackSim cannot back, and connector fixtures with EXPRESS state machines.
+  ["connector_appsync_api_to_lambda", /Connector from AWS::AppSync::GraphQLApi to AWS::Lambda::Function is not supported by StackSim: AppSync in StackSim does not invoke Lambda functions/],
+  ["connector_appsync_to_eventbus", /Connector from AWS::AppSync::DataSource to AWS::Events::EventBus is not supported by StackSim: AppSync in StackSim supports only NONE and AMAZON_DYNAMODB data sources\./],
+  ["connector_appsync_to_lambda", /Connector from AWS::AppSync::DataSource to AWS::Lambda::Function is not supported by StackSim: AppSync in StackSim supports only NONE and AMAZON_DYNAMODB data sources\./],
+  ["connector_function_to_location", /Resource with id \[MyConnector\] is invalid\. Connector from AWS::Lambda::Function to AWS::Location::PlaceIndex is not supported by StackSim: StackSim has no Amazon Location Service\./],
+  ["connector_rule_to_eventbus", /Resource with id \[MyConnector\] is invalid\. Connector from AWS::Events::Rule to AWS::Events::EventBus is not supported by StackSim: EventBridge in StackSim cannot deliver to an event bus target\./],
+  ["embedded_connectors_rule_to", /Resource with id \[MyEventsRule2MyEVBusConnector\] is invalid\. Connector from AWS::Events::Rule to AWS::Events::EventBus is not supported by StackSim/],
+  ["connector_rule_to_sfn", /Type 'EXPRESS' is not supported by StackSim/],
+  ["connector_sfn_to_function", /Type 'EXPRESS' is not supported by StackSim/],
+  ["connector_sfn_to_function_without_policy", /Type 'EXPRESS' is not supported by StackSim/],
+  ["connector_sfn_to_sfn", /Type 'EXPRESS' is not supported by StackSim/],
+  ["connector_with_non_id_source_and_destination", /Resource with id \[SamStateMachine\] is invalid\. Type 'EXPRESS' is not supported by StackSim/],
+  ["embedded_connectors_sfn_to", /Type 'EXPRESS' is not supported by StackSim/],
   ["error_version_deletion_policy_without_auto_publish_alias", /Property 'DeploymentPreference' is not supported by StackSim\./],
   ["error_function_with_no_alias_provisioned_concurrency", /Property 'DeploymentPreference' is not supported by StackSim\./],
 ];
@@ -252,6 +290,8 @@ for (const name of [
   "error_state_machine_with_schedule_invalid_dlq_type", "error_state_machine_with_schedule_missing_dlq_property",
   "error_state_machine_with_undefined_api_authorizer", "error_swagger_security_definitions_not_dict", "error_swagger_security_not_dict",
   "error_swagger_security_not_dict_with_api_key_required",
+  // SAM-06
+  "error_connector", "error_embedded_connectors", "error_schema_validation_wrong_property", "error_schema_validation_wrong_type",
 ]) {
   test(`SAM error fixture ${name} reports the translator's message`, () => {
     const expected = (output(name) as { errorMessage: string }).errorMessage;

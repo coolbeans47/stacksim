@@ -261,6 +261,50 @@ aws cloudformation list-stack-resources --stack-name sam-app --query 'StackResou
 
 The processed template is the expansion: generated roles such as `<Function>Role`, `ServerlessRestApi` or `ServerlessHttpApi`, permissions, versions and aliases, and event resources.
 
+### How to connect a function to a table with a connector
+
+A [connector](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/managing-permissions-connectors.html) grants one resource `Read` or `Write` access to another, without writing a policy. Save this as `connector.yaml`; the code is inline, so it needs no `package` step:
+
+```yaml
+Transform: AWS::Serverless-2016-10-31
+Resources:
+  Notes:
+    Type: AWS::Serverless::SimpleTable
+  Writer:
+    Type: AWS::Serverless::Function
+    Connectors:
+      NotesAccess:
+        Properties:
+          Destination:
+            Id: Notes
+          Permissions:
+            - Read
+            - Write
+    Properties:
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Environment:
+        Variables:
+          TABLE: !Ref Notes
+      InlineCode: |
+        const { DynamoDBClient, PutItemCommand } = require("@aws-sdk/client-dynamodb");
+        exports.handler = async () => {
+          await new DynamoDBClient({}).send(new PutItemCommand({ TableName: process.env.TABLE, Item: { id: { S: "1" } } }));
+          return "saved";
+        };
+```
+
+Deploy it, read the policy the connector generated, and call the function:
+
+```console
+aws cloudformation deploy --template-file connector.yaml --stack-name connector-demo --capabilities CAPABILITY_IAM
+aws cloudformation get-template --stack-name connector-demo --template-stage Processed --query "TemplateBody.Resources.WriterNotesAccessPolicy"
+aws cloudformation describe-stack-resource --stack-name connector-demo --logical-resource-id Writer --query StackResourceDetail.PhysicalResourceId --output text
+aws lambda invoke --function-name FUNCTION_NAME out.json
+```
+
+An embedded connector is named `<Resource><Connector>`, so `WriterNotesAccess` generates the managed policy `WriterNotesAccessPolicy`. It is attached to `WriterRole` and lists the DynamoDB read and write actions on the table and its indexes. Its `Metadata` records the connector under `aws:sam:connectors`. `out.json` contains `"saved"`. Remove the `Connectors` block and deploy again: the policy is deleted, and the same invoke fails with `AccessDeniedException`, because StackSim enforces IAM by default. The [SAM guide](sam-guide.md#connectors) lists the source and destination pairs StackSim supports.
+
 ### How to read a transform error
 
 A SAM property or event that StackSim does not support fails the whole template before anything is created. `aws cloudformation deploy` prints the reason; for a change set you created yourself:

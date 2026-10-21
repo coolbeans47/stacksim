@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import { SAM_GLOBALS_SECTIONS, SAM_RESOURCE_COVERAGE } from "../src/cloudformation/sam/coverage.js";
+import { SAM_CONNECTOR_PAIR_COVERAGE, SAM_GLOBALS_SECTIONS, SAM_RESOURCE_COVERAGE } from "../src/cloudformation/sam/coverage.js";
+import { SAM_CONNECTOR_PROFILES } from "../src/cloudformation/sam/generated/connector-profiles.js";
 import { renderSamCoverageMarkdown } from "../src/cloudformation/sam/coverage-doc.js";
 import { SAM_SCHEMA_EVENT_PROPERTIES, SAM_SCHEMA_GLOBALS, SAM_SCHEMA_RESOURCE_PROPERTIES } from "../src/cloudformation/sam/generated/schema.js";
 
@@ -23,6 +24,16 @@ test("the coverage table classifies every resource type, property, event, and Gl
   for (const [section, type] of Object.entries(SAM_GLOBALS_SECTIONS)) {
     const entry = SAM_RESOURCE_COVERAGE[type];
     if (entry.resource === "implemented") for (const key of SAM_SCHEMA_GLOBALS[section]) assert.ok(entry.properties?.[key], `Globals ${section}.${key} has a coverage state`);
+  }
+});
+
+test("the connector pair table classifies exactly the pairs in SAM's connector profiles", () => {
+  const pairs = (table: Readonly<Record<string, Readonly<Record<string, unknown>>>>) => Object.entries(table).flatMap(([source, destinations]) => Object.keys(destinations).map(destination => `${source} -> ${destination}`)).sort();
+  assert.deepEqual(pairs(SAM_CONNECTOR_PAIR_COVERAGE), pairs(SAM_CONNECTOR_PROFILES));
+  for (const [source, destinations] of Object.entries(SAM_CONNECTOR_PAIR_COVERAGE)) {
+    for (const [destination, pair] of Object.entries(destinations)) {
+      if (pair.coverage !== "implemented") assert.ok(pair.coverage === "non-goal" && pair.note, `${source} -> ${destination} names why StackSim cannot back it`);
+    }
   }
 });
 

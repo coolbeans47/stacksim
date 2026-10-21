@@ -2,6 +2,7 @@ import { applyDefaultRestDefinitionBody, applyImplicitRestApi, recordFunctionNam
 import { SamCause, SamDocumentError, SamInvalidDocument, clone, eventError, isObject, resourceError, templateError, type JsonObject } from "./common.js";
 import type { SamContext } from "./context.js";
 import { SAM_RESOURCE_ATTRIBUTE_COVERAGE, eventCoverage, propertyCoverage, resourceCoverage, unsupported } from "./coverage.js";
+import { CONNECTOR_TYPE, extractEmbeddedConnectors, translateConnector, type ConnectorView } from "./connector.js";
 import { translateFunction } from "./function.js";
 import { SAM_SCHEMA_RESOURCE_PROPERTIES } from "./generated/schema.js";
 import { mergeGlobals, parseGlobals } from "./globals.js";
@@ -53,10 +54,7 @@ function checkCoverage(resources: Record<string, JsonObject>): void {
   const causes: SamCause[] = [];
   for (const [logicalId, resource] of Object.entries(resources)) {
     const type = resource.Type;
-    // SAM embeds Connectors on any resource, not only AWS::Serverless ones.
-    if ((typeof type !== "string" || !type.startsWith("AWS::Serverless::")) && Object.hasOwn(resource, "Connectors")) {
-      causes.push(resourceError(logicalId, unsupported("Attribute 'Connectors'", SAM_RESOURCE_ATTRIBUTE_COVERAGE.Connectors)));
-    }
+    // Embedded Connectors (on any resource) are expanded by extractEmbeddedConnectors.
     if (typeof type !== "string" || !type.startsWith("AWS::Serverless::")) continue;
     const coverage = resourceCoverage(type);
     if (coverage === undefined) { causes.push(resourceError(logicalId, `Resource type ${type} is not supported by StackSim.`)); continue; }
@@ -134,6 +132,11 @@ function expand(document: JsonObject, context: ServerlessExpansionContext): Json
   }
   delete template.Globals;
   fixOpenApiDefinitions(resources);
+  // SAM collects embedded-connector errors and still translates the rest of the template.
+  const embeddedCauses: SamCause[] = [];
+  extractEmbeddedConnectors(resources, embeddedCauses);
+  const originalIds = new Set(Object.keys(resources));
+  const originalTypes = new Map(Object.entries(resources).map(([logicalId, resource]) => [logicalId, resource.Type]));
   for (const [logicalId, resource] of Object.entries(resources)) {
     if ((resource.Type !== "AWS::Serverless::Function" && resource.Type !== "AWS::Serverless::StateMachine") || !isObject(resource.Properties) || resource.Properties.Policies === undefined) continue;
     try { resource.Properties.Policies = expandPolicyTemplates(logicalId, resource.Properties.Policies); }
@@ -159,9 +162,11 @@ function expand(document: JsonObject, context: ServerlessExpansionContext): Json
   const stateMachines = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::Serverless::StateMachine");
   const apis = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::Serverless::Api" || resource.Type === "AWS::Serverless::HttpApi");
   const others = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::Serverless::SimpleTable" || resource.Type === "AWS::Serverless::LayerVersion");
+  const connectors = Object.entries(resources).filter(([, resource]) => resource.Type === CONNECTOR_TYPE);
   for (const [, resource] of functions) recordFunctionNames(samContext, resource);
   const failed = new Set(causes.map(cause => cause.message));
   const generated: Record<string, JsonObject> = {};
+  const translated: string[] = [];
   for (const [logicalId, resource] of [...functions, ...stateMachines, ...apis, ...others]) {
     if ([...failed].some(message => message.startsWith(`Resource with id [${logicalId}] `))) continue;
     try {
@@ -179,6 +184,7 @@ function expand(document: JsonObject, context: ServerlessExpansionContext): Json
         }
         generated[generatedId] = generatedResource;
       }
+      translated.push(logicalId);
     } catch (error) {
       // SAM's translator does not catch InvalidDocumentException per resource: it ends the transform.
       if (error instanceof SamInvalidDocument) throw new SamDocumentError(error.causes);
@@ -187,9 +193,26 @@ function expand(document: JsonObject, context: ServerlessExpansionContext): Json
       else throw error;
     }
   }
-  if (causes.length) throw new SamDocumentError(causes);
-  for (const [logicalId] of [...functions, ...stateMachines, ...apis, ...others]) delete resources[logicalId];
+  for (const logicalId of translated) delete resources[logicalId];
   Object.assign(resources, generated);
+  // Connectors come last: their profiles read the CloudFormation resources the rest of the template became.
+  const view: ConnectorView = { resources, originalTypes };
+  for (const [logicalId, resource] of connectors) {
+    try {
+      const output = translateConnector(view, logicalId, resource);
+      delete resources[logicalId];
+      for (const [generatedId, generatedResource] of Object.entries(output)) {
+        if (originalIds.has(generatedId)) {
+          causes.push(new SamCause(`Transforming resource with id [${logicalId}] attempts to create a new resource with id [${generatedId}] and type "${String(generatedResource.Type)}". A resource with that id already exists within this template. Please use a different id for that resource.`));
+          continue;
+        }
+        resources[generatedId] = generatedResource;
+      }
+    } catch (error) {
+      if (error instanceof SamCause) causes.push(error); else throw error;
+    }
+  }
+  if (embeddedCauses.length || causes.length) throw new SamDocumentError([...embeddedCauses, ...causes]);
   for (const [bucketId, tags] of samContext.bucketTags) (resources[bucketId].Properties as JsonObject).Tags = tags;
   delete template.Transform;
   return resolveSamReferences(resolveChangedLogicalIds(template, samContext.changedLogicalIds), samContext.references) as JsonObject;

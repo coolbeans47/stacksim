@@ -11,7 +11,7 @@ StackSim expands the `AWS::Serverless-2016-10-31` transform itself. Every SAM re
 | `AWS::Serverless::Api` | Implemented |
 | `AWS::Serverless::Application` | Not supported (non-goal) |
 | `AWS::Serverless::CapacityProvider` | Not supported (non-goal) |
-| `AWS::Serverless::Connector` | Planned: SAM-06 |
+| `AWS::Serverless::Connector` | Implemented |
 | `AWS::Serverless::Function` | Implemented |
 | `AWS::Serverless::GraphQLApi` | Not supported (non-goal) |
 | `AWS::Serverless::HttpApi` | Implemented |
@@ -33,7 +33,7 @@ StackSim expands the `AWS::Serverless-2016-10-31` transform itself. Every SAM re
 | `IgnoreGlobals` | Implemented |
 | `Metadata` | Implemented |
 | `UpdateReplacePolicy` | Implemented |
-| `Connectors` | Planned: SAM-06 |
+| `Connectors` | Implemented |
 
 ## `AWS::Serverless::Function` properties
 
@@ -226,6 +226,52 @@ StackSim expands the `AWS::Serverless-2016-10-31` transform itself. Every SAM re
 | `EventBridgeRule` | Implemented |  | Also implemented: `State`, which SAM accepts although its schema omits them. |
 | `Schedule` | Implemented |  |  |
 | `ScheduleV2` | Not supported (non-goal) |  |  |
+
+## `AWS::Serverless::Connector` properties
+
+| Property | Status | Notes |
+|---|---|---|
+| `Destination` | Implemented |  |
+| `Permissions` | Implemented |  |
+| `Source` | Implemented | Every source/destination pair StackSim can back is implemented; see [Connector pairs](#connector-pairs). The others fail explicitly. |
+
+## Connector pairs
+
+`AWS::Serverless::Connector` and embedded `Connectors` support every source/destination pair in SAM's connector profiles that StackSim can back: both services exist locally, the generated policy deploys, and the service that uses it enforces it. Any other pair fails the transform, naming the pair.
+
+| Source | Destination | Status | Notes |
+|---|---|---|---|
+| `AWS::DynamoDB::Table` | `AWS::Lambda::Function` | Implemented | A managed policy on the function's role; the stream event source mapping checks it. |
+| `AWS::Events::Rule` | `AWS::SNS::Topic` | Implemented | A topic policy for `events.amazonaws.com`; EventBridge's delivery checks it. |
+| `AWS::Events::Rule` | `AWS::Events::EventBus` | Not supported (non-goal) | EventBridge in StackSim cannot deliver to an event bus target. |
+| `AWS::Events::Rule` | `AWS::StepFunctions::StateMachine` | Implemented | A managed policy on the rule target's role; EventBridge's StartExecution checks it. |
+| `AWS::Events::Rule` | `AWS::Lambda::Function` | Implemented | A Lambda permission for `events.amazonaws.com`. |
+| `AWS::Events::Rule` | `AWS::SQS::Queue` | Implemented | A queue policy for `events.amazonaws.com`; EventBridge's delivery checks it. |
+| `AWS::Lambda::Function` | `AWS::Lambda::Function` | Implemented |  |
+| `AWS::Lambda::Function` | `AWS::S3::Bucket` | Implemented |  |
+| `AWS::Lambda::Function` | `AWS::DynamoDB::Table` | Implemented |  |
+| `AWS::Lambda::Function` | `AWS::SQS::Queue` | Implemented |  |
+| `AWS::Lambda::Function` | `AWS::SNS::Topic` | Implemented |  |
+| `AWS::Lambda::Function` | `AWS::StepFunctions::StateMachine` | Implemented |  |
+| `AWS::Lambda::Function` | `AWS::Events::EventBus` | Implemented |  |
+| `AWS::Lambda::Function` | `AWS::Location::PlaceIndex` | Not supported (non-goal) | StackSim has no Amazon Location Service. |
+| `AWS::ApiGatewayV2::Api` | `AWS::Lambda::Function` | Implemented | A Lambda permission for `apigateway.amazonaws.com`. |
+| `AWS::ApiGateway::RestApi` | `AWS::Lambda::Function` | Implemented | A Lambda permission for `apigateway.amazonaws.com`. |
+| `AWS::SNS::Topic` | `AWS::SQS::Queue` | Implemented | A queue policy for `sns.amazonaws.com`. |
+| `AWS::SNS::Topic` | `AWS::Lambda::Function` | Implemented | A Lambda permission for `sns.amazonaws.com`. |
+| `AWS::SQS::Queue` | `AWS::Lambda::Function` | Implemented | A managed policy on the function's role; the event source mapping checks it. |
+| `AWS::S3::Bucket` | `AWS::Lambda::Function` | Implemented | A Lambda permission for `s3.amazonaws.com`. |
+| `AWS::StepFunctions::StateMachine` | `AWS::Lambda::Function` | Implemented |  |
+| `AWS::StepFunctions::StateMachine` | `AWS::SNS::Topic` | Implemented |  |
+| `AWS::StepFunctions::StateMachine` | `AWS::SQS::Queue` | Implemented |  |
+| `AWS::StepFunctions::StateMachine` | `AWS::S3::Bucket` | Implemented | The policy is enforced for the role, but StackSim's Step Functions has no S3 task integration. |
+| `AWS::StepFunctions::StateMachine` | `AWS::DynamoDB::Table` | Implemented |  |
+| `AWS::StepFunctions::StateMachine` | `AWS::StepFunctions::StateMachine` | Implemented |  |
+| `AWS::StepFunctions::StateMachine` | `AWS::Events::EventBus` | Implemented |  |
+| `AWS::AppSync::DataSource` | `AWS::DynamoDB::Table` | Implemented | A managed policy on the data source's service role; AppSync's DynamoDB resolvers check it. |
+| `AWS::AppSync::DataSource` | `AWS::Lambda::Function` | Not supported (non-goal) | AppSync in StackSim supports only NONE and AMAZON_DYNAMODB data sources. |
+| `AWS::AppSync::DataSource` | `AWS::Events::EventBus` | Not supported (non-goal) | AppSync in StackSim supports only NONE and AMAZON_DYNAMODB data sources. |
+| `AWS::AppSync::GraphQLApi` | `AWS::Lambda::Function` | Not supported (non-goal) | AppSync in StackSim does not invoke Lambda functions, and AWS::Lambda::Permission does not accept the `appsync.amazonaws.com` principal. |
 
 ## Globals
 

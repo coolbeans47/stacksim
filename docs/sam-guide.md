@@ -24,8 +24,9 @@ For a small application to start from, see [`examples/sam-notes-api`](../example
 - `AWS::Serverless::SimpleTable`.
 - `Globals` for `Function`, `Api`, `HttpApi`, `SimpleTable`, `LayerVersion`, and `StateMachine`.
 - SAM references such as `!Ref MyApi.Stage`, `!Ref MyApi.Deployment`, `!Ref MyApi.ApiKey`, `!Ref MyFunction.Alias`, `!Ref MyFunction.Version`, and `!Ref MyFunction.DestinationQueue` or `.DestinationTopic`.
+- `AWS::Serverless::Connector` and embedded `Connectors` on any resource, for the source and destination pairs StackSim can back (see [Connectors](#connectors)).
 
-Connectors come in a later phase; a template that uses them fails with a message that names the owning phase. `DeploymentPreference`, custom `Domain`s, `EXPRESS` state machines, state machine aliases, Kinesis, MSK, MQ, DocumentDB, self-managed Kafka, IoT, Alexa, Cognito, and `ScheduleV2` events are not supported.
+`DeploymentPreference`, custom `Domain`s, `EXPRESS` state machines, state machine aliases, Kinesis, MSK, MQ, DocumentDB, self-managed Kafka, IoT, Alexa, Cognito, and `ScheduleV2` events are not supported.
 
 ## Point the SAM CLI at StackSim
 
@@ -157,6 +158,37 @@ The schedule runs on StackSim's clock. Each execution invokes the functions thro
 
 A REST API with a Cognito authorizer accepts the user pool's ID token in the `Authorization` header and answers `401` without one. With `DefaultAuthorizer: AWS_IAM`, SAM's integrations use the caller's credentials (`arn:aws:iam::*:user/*`): sign requests with SigV4, and the caller needs `lambda:InvokeFunction` on the function as well as `execute-api:Invoke`. An HTTP API JWT authorizer whose issuer is a StackSim user pool (`https://cognito-idp.<region>.amazonaws.com/<pool-id>`) validates that pool's tokens locally.
 
+## Connectors
+
+A connector grants its source `Read` or `Write` access to its destination. SAM turns it into the policy the pair needs, and StackSim enforces that policy:
+
+- an `AWS::IAM::ManagedPolicy` named `<Connector>Policy`, attached to the role of the resource that acts (usually the source);
+- an `AWS::Lambda::Permission` (`<Connector>WriteLambdaPermission`), when a service invokes a function;
+- an `AWS::SQS::QueuePolicy` (`<Connector>QueuePolicy`) or `AWS::SNS::TopicPolicy` (`<Connector>TopicPolicy`), when SNS or EventBridge sends to a queue or topic.
+
+With a list of destinations, the names end in `Destination<index>`. An embedded connector `Connectors: { NotesAccess: … }` on `Writer` becomes the connector `WriterNotesAccess`. Every generated resource carries `Metadata.aws:sam:connectors`, plus the connector's `Condition`, `DeletionPolicy`, `UpdateReplacePolicy`, `DependsOn`, and `Metadata`. A `DependsOn` that names the connector itself is rewritten to name what it generated. As in SAM, a queue or stream connector to a function also makes the event source mapping depend on the policy, and a connector between two state machines makes the source depend on it.
+
+These pairs are supported. A reference by `Id` may name the SAM resource (`AWS::Serverless::Function`, `StateMachine`, `Api`, `HttpApi`, or `SimpleTable`) or the CloudFormation resource:
+
+| Source | Destinations |
+|---|---|
+| Lambda function | Lambda function, S3 bucket, DynamoDB table, SQS queue, SNS topic, state machine, event bus |
+| State machine | Lambda function, SNS topic, SQS queue, S3 bucket, DynamoDB table, state machine, event bus |
+| EventBridge rule | Lambda function, SQS queue, SNS topic, state machine |
+| REST API or HTTP API | Lambda function |
+| SNS topic | SQS queue, Lambda function |
+| SQS queue, or DynamoDB table (streams) | Lambda function |
+| S3 bucket | Lambda function |
+| AppSync data source | DynamoDB table |
+
+These pairs fail the transform with an error that names the pair:
+
+- a function to an Amazon Location place index (StackSim has no Location service);
+- an EventBridge rule to an event bus (EventBridge in StackSim has no event-bus targets);
+- an AppSync data source to a function or an event bus, and an AppSync API to a function (StackSim's AppSync supports only `NONE` and `AMAZON_DYNAMODB` data sources).
+
+[SAM coverage](sam-coverage.md#connector-pairs) has the full table. The [AWS CLI cookbook](aws-cli-cookbook.md#how-to-connect-a-function-to-a-table-with-a-connector) walks through a function-to-table connector.
+
 ## Update and delete
 
 Running `sam deploy` again with no changes prints `No changes to deploy`. A code change updates only the function. `sam delete --stack-name hello` removes everything the stack created, including the generated role, and deletes the stack's artifacts from the managed bucket. It leaves `aws-sam-cli-managed-default` and its bucket in place for your other applications, as on AWS. Because the bucket is versioned, the deleted artifacts remain as noncurrent versions.
@@ -220,3 +252,7 @@ To check the connection, `curl --cacert ~/stacksim-ca.pem https://127.0.0.1:4569
 - The SAM CLI uploads artifacts with `ServerSideEncryption=AES256` unless you pass `--kms-key-id`, so its objects in the managed bucket use SSE-S3, as on AWS. Objects you put without an encryption header use the bucket default, SSE-KMS.
 - The bucket policy's statement for `serverlessrepo.amazonaws.com` is stored and evaluated, but StackSim has no Serverless Application Repository to use it.
 - The HTTPS endpoint's certificate is issued by StackSim's own CA, which no system trusts until you configure it.
+- StackSim allows one policy resource per queue or topic. Two connectors that each generate a policy for the same queue (for example one from a topic and one from a rule), or a connector next to your own `AWS::SQS::QueuePolicy` or `AWS::SNS::TopicPolicy` for that queue or topic, fail when the stack deploys. On AWS the later policy silently replaces the earlier one. Write one queue or topic policy that covers every source instead.
+- `AWS::Events::Rule` accepts Lambda, Step Functions, and standard SQS and SNS targets. FIFO queue and topic targets, which need `SqsParameters`, and other target types fail when the stack deploys.
+- A connector from a state machine to an S3 bucket generates and enforces its policy, but StackSim's Step Functions has no S3 task integration to use it.
+- When an identity policy denies an SNS call, StackSim's error code is `AccessDenied`; AWS SNS returns `AuthorizationError`.

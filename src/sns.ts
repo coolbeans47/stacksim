@@ -761,6 +761,12 @@ export class SnsService {
     sourceAccount: string;
     identityAuthorization?: AuthorizationResult;
     lineage?: string[];
+    /**
+     * False for producers that, on AWS, do not set AWS:SourceOwner (EventBridge),
+     * so the default topic policy does not admit them and the topic needs a
+     * policy statement for their service principal.
+     */
+    setsSourceOwner?: boolean;
   }, attempt?: ServiceIntegrationAttempt): Promise<{ MessageId: string }> {
     if (attempt) { const prior = await this.reconcileIntegrationAttempt(attempt); if (prior !== undefined) return prior; }
     await this.ensureStarted();
@@ -771,7 +777,7 @@ export class SnsService {
       "aws:PrincipalServiceName": caller.principal.endsWith(".amazonaws.com") ? caller.principal : undefined,
       "aws:SourceArn": caller.sourceArn,
       "aws:SourceAccount": caller.sourceAccount,
-      "AWS:SourceOwner": caller.sourceAccount,
+      "AWS:SourceOwner": caller.setsSourceOwner === false ? undefined : caller.sourceAccount,
       "aws:RequestedRegion": this.region,
       ...Object.fromEntries(Object.entries(topic.tags).map(([key, value]) => [`aws:ResourceTag/${key}`, value])),
     };

@@ -202,7 +202,7 @@ export function expectMap(value: unknown, logicalId: string, property: string): 
 }
 
 /** How SAM's resource models type-check one property (samtranslator.model.types). */
-export type PropertyCheck = "string" | "map" | "boolean" | "integer" | "list" | "string-or-map" | "boolean-or-map" | "list-of-string-or-map" | "string-or-list-of-string-or-map" | { readonly enum: readonly string[] };
+export type PropertyCheck = "string" | "map" | "boolean" | "integer" | "list" | "string-or-map" | "boolean-or-map" | "list-of-string-or-map" | "string-or-list-of-string-or-map" | "list-of-string" | "map-or-list-of-map" | { readonly enum: readonly string[] };
 
 export interface PropertySpec {
   readonly type: PropertyCheck;
@@ -229,6 +229,8 @@ function checkValue(type: PropertyCheck, value: unknown): boolean {
     case "boolean-or-map": return typeof value === "boolean" || isObject(value);
     case "list-of-string-or-map": return Array.isArray(value) && value.every(item => typeof item === "string" || isObject(item));
     case "string-or-list-of-string-or-map": return typeof value === "string" || checkValue("list-of-string-or-map", value);
+    case "list-of-string": return Array.isArray(value) && value.every(item => typeof item === "string");
+    case "map-or-list-of-map": return isObject(value) || (Array.isArray(value) && value.every(isObject));
   }
 }
 

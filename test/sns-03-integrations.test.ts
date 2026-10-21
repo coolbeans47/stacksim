@@ -140,3 +140,41 @@ test("SNS-03 producer integrations publish durably from EventBridge, CloudWatch 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("EventBridge does not set AWS:SourceOwner, so a topic's default policy does not admit it (SAM-06 regression)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-sns03-default-policy-"));
+  const clock = new TestClock(Date.parse("2026-10-21T12:00:00Z"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region, clock, authMode: "off" });
+  const clients: Array<{ destroy(): void }> = [];
+  try {
+    await simulator.start();
+    const options = { endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials, systemClockOffset: clock.now() - Date.now() };
+    const sns = new SNSClient(options); const sqs = new SQSClient(options); const events = new EventBridgeClient(options);
+    clients.push(sns, sqs, events);
+    const topicArn = (await sns.send(new CreateTopicCommand({ Name: "default-policy" }))).TopicArn!;
+    const queueUrl = (await sqs.send(new CreateQueueCommand({ QueueName: "default-policy" }))).QueueUrl!;
+    const queueArn = (await sqs.send(new GetQueueAttributesCommand({ QueueUrl: queueUrl, AttributeNames: ["QueueArn"] }))).Attributes!.QueueArn!;
+    await sqs.send(new SetQueueAttributesCommand({ QueueUrl: queueUrl, Attributes: {
+      Policy: JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { Service: "sns.amazonaws.com" }, Action: "sqs:SendMessage", Resource: queueArn, Condition: { ArnEquals: { "aws:SourceArn": topicArn } } }] }),
+    } }));
+    await sns.send(new SubscribeCommand({ TopicArn: topicArn, Protocol: "sqs", Endpoint: queueArn, Attributes: { RawMessageDelivery: "true" } }));
+    await events.send(new PutRuleCommand({ Name: "default-policy", EventPattern: JSON.stringify({ source: ["default.policy"] }) }));
+    await events.send(new PutTargetsCommand({ Rule: "default-policy", Targets: [{ Id: "topic", Arn: topicArn, InputPath: "$.detail" }] }));
+    const putEvent = (id: string) => events.send(new PutEventsCommand({ Entries: [{ Source: "default.policy", DetailType: "Test", Detail: JSON.stringify({ id }) }] }));
+
+    // The default policy's AWS:SourceOwner condition admits CloudWatch alarms and CloudFormation, not EventBridge.
+    await putEvent("default");
+    await assert.rejects(receiveJson(sqs, queueUrl, clock, value => value.id === "default"), /Timed out/);
+
+    await sns.send(new SetTopicAttributesCommand({ TopicArn: topicArn, AttributeName: "Policy", AttributeValue: JSON.stringify({
+      Version: "2012-10-17",
+      Statement: [{ Effect: "Allow", Principal: { Service: "events.amazonaws.com" }, Action: "sns:Publish", Resource: topicArn, Condition: { ArnEquals: { "aws:SourceArn": `arn:aws:events:${region}:${accountId}:rule/default-policy` } } }],
+    }) }));
+    await putEvent("allowed");
+    assert.deepEqual(await receiveJson(sqs, queueUrl, clock, value => value.id === "allowed"), { id: "allowed" });
+  } finally {
+    clients.forEach(client => client.destroy());
+    await simulator.stop().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});

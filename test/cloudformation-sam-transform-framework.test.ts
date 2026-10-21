@@ -131,14 +131,12 @@ test("unimplemented AWS::Serverless resources, properties, and Globals fail the 
     Resources: {
       HelloWorldFunction: { Type: "AWS::Serverless::Function", Properties: { CodeUri: "s3://bucket/key", Handler: "app.handler", Runtime: "nodejs22.x", AutoPublishAlias: "live", DeploymentPreference: { Type: "AllAtOnce" } } },
       Bucket: { Type: "AWS::S3::Bucket" },
-      Connector: { Type: "AWS::Serverless::Connector" },
       App: { Type: "AWS::Serverless::Application" },
     },
   }, context));
   assert.equal(error.code, "ValidationError");
-  assert.equal(error.message, "Transform AWS::Serverless-2016-10-31 failed with: Invalid Serverless Application Specification document. Number of errors found: 3. "
+  assert.equal(error.message, "Transform AWS::Serverless-2016-10-31 failed with: Invalid Serverless Application Specification document. Number of errors found: 2. "
     + "Resource with id [HelloWorldFunction] is invalid. Property 'DeploymentPreference' is not supported by StackSim. "
-    + "Resource with id [Connector] is invalid. Resource type AWS::Serverless::Connector is not supported by StackSim (owning phase: SAM-06). "
     + "Resource with id [App] is invalid. Resource type AWS::Serverless::Application is not supported by StackSim.");
   assert.match(transformError(() => expandServerlessTransform({ Transform: SERVERLESS_TRANSFORM, Globals: { Function: { VpcConfig: { SubnetIds: [] } } }, Resources: {} }, context)).message, /Number of errors found: 1\. 'Globals' section is invalid\. 'VpcConfig' in 'Function' is not supported by StackSim\./);
 });

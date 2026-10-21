@@ -191,7 +191,13 @@ export const SAM_RESOURCE_COVERAGE: Readonly<Record<string, ResourceCoverage>> =
       UseAliasAsEventTarget: "Needs Step Functions versions and aliases, which StackSim does not model.",
     },
   },
-  "AWS::Serverless::Connector": { resource: "SAM-06" },
+  "AWS::Serverless::Connector": {
+    resource: "implemented",
+    properties: states("implemented", ["Destination", "Permissions", "Source"]),
+    notes: {
+      Source: "Every source/destination pair StackSim can back is implemented; see [Connector pairs](#connector-pairs). The others fail explicitly.",
+    },
+  },
   ...Object.fromEntries([
     "AWS::Serverless::Application", "AWS::Serverless::CapacityProvider", "AWS::Serverless::GraphQLApi", "AWS::Serverless::MicrovmImage",
     "AWS::Serverless::NetworkConnector", "AWS::Serverless::WebFunction", "AWS::Serverless::WebSocketApi",
@@ -220,8 +226,85 @@ export const SAM_RESOURCE_ATTRIBUTE_COVERAGE: CoverageTable = {
   IgnoreGlobals: "implemented",
   Metadata: "implemented",
   UpdateReplacePolicy: "implemented",
-  Connectors: "SAM-06",
+  Connectors: "implemented",
 };
+
+export interface ConnectorPairCoverage {
+  readonly coverage: Exclude<Coverage, Exclude<SamPhase, "SAM-02">>;
+  /** Why StackSim cannot back the pair, or what to know about it locally. */
+  readonly note?: string;
+}
+
+const NO_EVENT_BUS_TARGETS = "EventBridge in StackSim cannot deliver to an event bus target";
+const APPSYNC_DATA_SOURCES = "AppSync in StackSim supports only NONE and AMAZON_DYNAMODB data sources";
+
+/**
+ * Every source/destination pair in SAM's connector profiles. A pair is
+ * implemented when both services exist locally, its generated policy deploys
+ * through StackSim's providers, and the service path that uses it enforces it.
+ */
+export const SAM_CONNECTOR_PAIR_COVERAGE: Readonly<Record<string, Readonly<Record<string, ConnectorPairCoverage>>>> = {
+  "AWS::DynamoDB::Table": {
+    "AWS::Lambda::Function": { coverage: "implemented", note: "A managed policy on the function's role; the stream event source mapping checks it." },
+  },
+  "AWS::Events::Rule": {
+    "AWS::SNS::Topic": { coverage: "implemented", note: "A topic policy for `events.amazonaws.com`; EventBridge's delivery checks it." },
+    "AWS::Events::EventBus": { coverage: "non-goal", note: NO_EVENT_BUS_TARGETS },
+    "AWS::StepFunctions::StateMachine": { coverage: "implemented", note: "A managed policy on the rule target's role; EventBridge's StartExecution checks it." },
+    "AWS::Lambda::Function": { coverage: "implemented", note: "A Lambda permission for `events.amazonaws.com`." },
+    "AWS::SQS::Queue": { coverage: "implemented", note: "A queue policy for `events.amazonaws.com`; EventBridge's delivery checks it." },
+  },
+  "AWS::Lambda::Function": {
+    "AWS::Lambda::Function": { coverage: "implemented" },
+    "AWS::S3::Bucket": { coverage: "implemented" },
+    "AWS::DynamoDB::Table": { coverage: "implemented" },
+    "AWS::SQS::Queue": { coverage: "implemented" },
+    "AWS::SNS::Topic": { coverage: "implemented" },
+    "AWS::StepFunctions::StateMachine": { coverage: "implemented" },
+    "AWS::Events::EventBus": { coverage: "implemented" },
+    "AWS::Location::PlaceIndex": { coverage: "non-goal", note: "StackSim has no Amazon Location Service" },
+  },
+  "AWS::ApiGatewayV2::Api": {
+    "AWS::Lambda::Function": { coverage: "implemented", note: "A Lambda permission for `apigateway.amazonaws.com`." },
+  },
+  "AWS::ApiGateway::RestApi": {
+    "AWS::Lambda::Function": { coverage: "implemented", note: "A Lambda permission for `apigateway.amazonaws.com`." },
+  },
+  "AWS::SNS::Topic": {
+    "AWS::SQS::Queue": { coverage: "implemented", note: "A queue policy for `sns.amazonaws.com`." },
+    "AWS::Lambda::Function": { coverage: "implemented", note: "A Lambda permission for `sns.amazonaws.com`." },
+  },
+  "AWS::SQS::Queue": {
+    "AWS::Lambda::Function": { coverage: "implemented", note: "A managed policy on the function's role; the event source mapping checks it." },
+  },
+  "AWS::S3::Bucket": {
+    "AWS::Lambda::Function": { coverage: "implemented", note: "A Lambda permission for `s3.amazonaws.com`." },
+  },
+  "AWS::StepFunctions::StateMachine": {
+    "AWS::Lambda::Function": { coverage: "implemented" },
+    "AWS::SNS::Topic": { coverage: "implemented" },
+    "AWS::SQS::Queue": { coverage: "implemented" },
+    "AWS::S3::Bucket": { coverage: "implemented", note: "The policy is enforced for the role, but StackSim's Step Functions has no S3 task integration." },
+    "AWS::DynamoDB::Table": { coverage: "implemented" },
+    "AWS::StepFunctions::StateMachine": { coverage: "implemented" },
+    "AWS::Events::EventBus": { coverage: "implemented" },
+  },
+  "AWS::AppSync::DataSource": {
+    "AWS::DynamoDB::Table": { coverage: "implemented", note: "A managed policy on the data source's service role; AppSync's DynamoDB resolvers check it." },
+    "AWS::Lambda::Function": { coverage: "non-goal", note: APPSYNC_DATA_SOURCES },
+    "AWS::Events::EventBus": { coverage: "non-goal", note: APPSYNC_DATA_SOURCES },
+  },
+  "AWS::AppSync::GraphQLApi": {
+    "AWS::Lambda::Function": { coverage: "non-goal", note: "AppSync in StackSim does not invoke Lambda functions, and AWS::Lambda::Permission does not accept the `appsync.amazonaws.com` principal" },
+  },
+};
+
+/** Why a connector pair fails in StackSim, or undefined when it is implemented. */
+export function connectorPairCoverage(source: string, destination: string): string | undefined {
+  const pair = SAM_CONNECTOR_PAIR_COVERAGE[source]?.[destination];
+  if (pair?.coverage === "implemented") return undefined;
+  return `Connector from ${source} to ${destination} is not supported by StackSim${pair?.note ? `: ${pair.note}` : ""}.`;
+}
 
 export function resourceCoverage(type: string): Coverage | undefined {
   return SAM_RESOURCE_COVERAGE[type]?.resource;

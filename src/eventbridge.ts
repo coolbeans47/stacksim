@@ -1148,6 +1148,7 @@ export class EventBridgeService {
         sourceAccount: this.store.accountId,
         identityAuthorization,
         lineage: job.deliveryLineage,
+        setsSourceOwner: false,
       });
       return;
     }
