@@ -134,6 +134,8 @@ test("AMX-13B local verified access tokens, native directives, identity, signing
     await h.cognito.send(new AdminEnableUserCommand({ UserPoolId: h.pool.Id, Username: "alice@example.test" }));
     const beforeDeletion = await h.signIn("alice@example.test");
     assert.equal((await graphql(endpoint, beforeDeletion.AccessToken!, "{ onlyCognito }")).status, 200);
+    // Each signed success resets the SDK offset from the real-time Date header, five minutes behind the simulator clock.
+    h.cognito.config.systemClockOffset = h.clock.now() - Date.now();
     await h.cognito.send(new DeleteUserPoolCommand({ UserPoolId: h.pool.Id }));
     assert.equal((await graphql(endpoint, beforeDeletion.AccessToken!, "{ onlyCognito }")).status, 401);
     const persisted = await readFile(join(h.root, "state.json"), "utf8");
