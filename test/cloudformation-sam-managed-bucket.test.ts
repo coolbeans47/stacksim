@@ -589,3 +589,18 @@ test("SAM-05: AWS managed key reads are same-account only, and the providers adm
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("the HTTPS S3 port defaults to 4569 only when the caller does not choose the main port", { skip: process.env.STACKSIM_S3_TLS_PORT !== undefined && "STACKSIM_S3_TLS_PORT is set" }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-sam05-tls-port-"));
+  try {
+    // The CLI passes no port, so its HTTPS endpoint stays at the documented 4569.
+    assert.equal(new StackSim({ dataDir: root, region }).s3TlsPort, 4569);
+    // An embedded simulator that chooses its ports (tests restart on theirs) takes a free
+    // HTTPS port, so concurrent simulators never contend for 4569.
+    assert.equal(new StackSim({ port: 45_660, invokePort: 0, dataDir: root, region }).s3TlsPort, 0);
+    assert.equal(new StackSim({ port: 0, invokePort: 0, dataDir: root, region }).s3TlsPort, 0);
+    assert.equal(new StackSim({ port: 45_660, s3TlsPort: 45_690, dataDir: root, region }).s3TlsPort, 45_690);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

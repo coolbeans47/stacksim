@@ -259,7 +259,9 @@ export interface SimulatorOptions {
   /**
    * Loopback HTTPS listener serving the main endpoint's API over TLS under the
    * installation CA, so S3 requests there carry `aws:SecureTransport=true`.
-   * Defaults to 4569 (0 picks a free port when `port` is 0).
+   * Defaults to `STACKSIM_S3_TLS_PORT`, then to 4569 when `port` is not given
+   * (the CLI), and to a free port when the caller chooses `port`, so embedded
+   * simulators (tests that restart on their own ports) never contend for 4569.
    */
   s3TlsPort?: number;
   rdsProvider?: RdsEngineProvider;
@@ -426,7 +428,7 @@ export class StackSim {
     this.port = options.port ?? Number(process.env.STACKSIM_PORT ?? 4566);
     this.invokePort = options.invokePort ?? Number(process.env.STACKSIM_INVOKE_PORT ?? 4567);
     this.customResourceCallbackPort = options.cloudFormationCustomResourceCallbackPort ?? Number(process.env.STACKSIM_CLOUDFORMATION_CUSTOM_RESOURCE_CALLBACK_PORT ?? (options.port === 0 ? 0 : 4568));
-    this.s3TlsPort = options.s3TlsPort ?? Number(process.env.STACKSIM_S3_TLS_PORT ?? (options.port === 0 ? 0 : 4569));
+    this.s3TlsPort = options.s3TlsPort ?? Number(process.env.STACKSIM_S3_TLS_PORT ?? (options.port === undefined ? 4569 : 0));
     this.region = options.region ?? process.env.AWS_REGION ?? "eu-west-1";
     this.clock = options.clock ?? new SystemClock();
     this.scheduler = new Scheduler(this.clock);
