@@ -26,6 +26,7 @@ import type {
   WebSocketRouteState,
 } from "./types.js";
 import { id, json, readBody, readJson } from "./util.js";
+import { renderVtl, validateVtl } from "./apigateway-vtl.js";
 import { cloudFormationResourceId, getCloudFormationIdempotencyKey } from "./core/internal-request.js";
 
 const METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
@@ -192,6 +193,7 @@ interface LiveConnection extends ResolvedWebSocketStage {
   domainName: string;
   principal?: PrincipalContext;
   identityAuthorization?: AuthorizationResult;
+  authorizer?: WebSocketAuthorizerResult;
   buffer: Buffer;
   fragmentedOpcode?: number;
   fragments: Buffer[];
@@ -207,11 +209,50 @@ interface WebSocketIntegrationResult {
   statusCode: number;
   body: Buffer;
   integrationLatency: number;
+  headers?: Record<string, string[]>;
+  binary?: boolean;
+  mapped?: boolean;
   error?: AwsError;
 }
 
+interface WebSocketAuthorizerResult { principalId?: string; context: Record<string, string>; integrationLatency: number }
+interface WebSocketBackendResult { statusCode: number; body: Buffer; headers: Record<string, string[]>; selection: string; failed?: boolean }
+
+const INTEGRATION_PARAMETER_TARGET = /^integration\.request\.(?:header|querystring)\.[a-zA-Z0-9._$-]+$/;
+const INTEGRATION_PARAMETER_SOURCE = /^(?:route\.request\.(?:querystring|header|multivaluequerystring|multivalueheader)\.[a-zA-Z0-9._$-]+|route\.request\.body\.\S+|stageVariables\.[A-Za-z0-9_]+|context\.[A-Za-z0-9_.]+|'[^']*')$/;
+
+function jsonPathValue(value: any, path: string): any {
+  for (const part of path.replace(/^\$\.?/, "").match(/[^.[\]]+|\[(\d+)\]/g) ?? []) value = value?.[part.startsWith("[") ? part.slice(1, -1) : part];
+  return value;
+}
+
+function textValue(value: unknown): string { return value === undefined || value === null ? "" : typeof value === "string" ? value : JSON.stringify(value); }
+
+function headerValues(headers: Headers | Record<string, unknown> | undefined, multi?: Record<string, unknown>): Record<string, string[]> {
+  const output: Record<string, string[]> = {};
+  if (headers instanceof Headers) { headers.forEach((value, name) => { (output[name.toLowerCase()] ??= []).push(value); }); return output; }
+  for (const [name, value] of Object.entries(multi ?? {})) if (Array.isArray(value)) output[name.toLowerCase()] = value.map(String);
+  for (const [name, value] of Object.entries(headers ?? {})) if (value !== undefined && value !== null && !output[name.toLowerCase()]) output[name.toLowerCase()] = [String(value)];
+  return output;
+}
+
+/** Evaluates a WebSocket selection expression (template selection) per the AWS rules: `$var`/`${var}` substitution, `\$` escapes, static text. */
+function selectionKey(expression: string, sources: { body?: Buffer; statusCode?: number; headers?: Record<string, string[]> }): string {
+  const trimmed = expression.trim(); if (trimmed === "$default" || trimmed === "\\$default") return "$default";
+  let parsed: any; let parsedReady = false; const body = () => { if (!parsedReady) { parsedReady = true; try { parsed = JSON.parse(sources.body?.toString("utf8") ?? ""); } catch { parsed = undefined; } } return parsed; };
+  const resolve = (name: string): string => {
+    if (name === "request.body") return sources.body?.toString("utf8") ?? "";
+    if (name.startsWith("request.body.")) return textValue(jsonPathValue(body(), name.slice("request.body.".length)));
+    if (name === "integration.response.statuscode" || name === "response.statuscode") return sources.statusCode === undefined ? "" : String(sources.statusCode);
+    const header = name.match(/^integration\.response\.(header|multivalueheader)\.(.+)$/i); if (header) { const values = sources.headers?.[header[2].toLowerCase()] ?? []; return header[1].toLowerCase() === "header" ? values[values.length - 1] ?? "" : values.join(","); }
+    return "";
+  };
+  return trimmed.replace(/\\\$|\$\{([^}]*)\}|\$([A-Za-z][A-Za-z0-9_.\-]*(?:\[\d+\])*)/g, (match, braced, bare) => match === "\\$" ? "$" : resolve(String(braced ?? bare).trim()));
+}
+
+
 export class ApiGatewayWebSocketService {
-  private readonly authorizerCache = new Map<string, { expiresAt: number; value: { allowed: boolean; principalId?: string; context: Record<string, unknown> } }>();
+  private readonly authorizerCache = new Map<string, { expiresAt: number; value: { allowed: boolean } & WebSocketAuthorizerResult }>();
   private readonly connections = new Map<string, LiveConnection>();
   private readonly sockets = new Set<Socket>();
   private readonly finalizations = new Set<Promise<void>>();
@@ -373,6 +414,7 @@ export class ApiGatewayWebSocketService {
   private validateIntegration(input: any, existing?: WebSocketIntegrationState): WebSocketIntegrationState {
     const type = String(input.integrationType ?? existing?.integrationType ?? "") as WebSocketIntegrationState["integrationType"];
     if (!INTEGRATION_TYPES.has(type)) throw new AwsError("BadRequestException", "Invalid IntegrationType");
+    if (input && typeof input === "object" && Object.prototype.hasOwnProperty.call(input, "tlsConfig")) throw new AwsError("BadRequestException", "TlsConfig is supported only for HTTP API private integrations; it is not supported for WebSocket APIs");
     if (input.connectionType !== undefined && input.connectionType !== "INTERNET") throw new AwsError("BadRequestException", "WebSocket APIs support INTERNET integrations");
     const uri = input.integrationUri === undefined ? existing?.integrationUri : String(input.integrationUri || "") || undefined;
     if (type !== "MOCK" && !uri) throw new AwsError("BadRequestException", "IntegrationUri is required");
@@ -389,16 +431,30 @@ export class ApiGatewayWebSocketService {
     if (passthroughBehavior !== undefined && !new Set(["WHEN_NO_MATCH", "NEVER", "WHEN_NO_TEMPLATES"]).has(passthroughBehavior)) throw new AwsError("BadRequestException", "Invalid PassthroughBehavior");
     const credentialsArn = input.credentialsArn ?? existing?.credentialsArn;
     this.assertGatewayRole(credentialsArn, "integration");
+    const requestParameters = input.requestParameters === undefined ? structuredClone(existing?.requestParameters ?? {}) : map(input.requestParameters, "RequestParameters");
+    for (const [target, source] of Object.entries(requestParameters)) if (!INTEGRATION_PARAMETER_TARGET.test(target) || !INTEGRATION_PARAMETER_SOURCE.test(source.trim())) throw new AwsError("BadRequestException", `Invalid mapping expression specified: ${target}=${source}. Use integration.request.header|querystring.{name} with a route.request, stageVariables, context, or 'static' source`);
+    const requestTemplates = input.requestTemplates === undefined ? structuredClone(existing?.requestTemplates ?? {}) : map(input.requestTemplates, "RequestTemplates");
+    if (input.requestTemplates !== undefined) { if (type.endsWith("PROXY") && Object.keys(requestTemplates).length) throw new AwsError("BadRequestException", "RequestTemplates are supported only for non-proxy integrations"); this.validateTemplates(requestTemplates, "RequestTemplates"); }
     return {
       integrationId: existing?.integrationId ?? id(10), description: input.description ?? existing?.description, integrationType: type,
       integrationMethod: method, integrationUri: uri, credentialsArn, connectionType: "INTERNET",
-      contentHandlingStrategy, passthroughBehavior, requestParameters: input.requestParameters === undefined ? structuredClone(existing?.requestParameters ?? {}) : map(input.requestParameters, "RequestParameters"),
-      requestTemplates: input.requestTemplates === undefined ? structuredClone(existing?.requestTemplates ?? {}) : map(input.requestTemplates, "RequestTemplates"),
+      contentHandlingStrategy, passthroughBehavior, requestParameters, requestTemplates,
       templateSelectionExpression: input.templateSelectionExpression ?? existing?.templateSelectionExpression, timeoutInMillis: timeout,
-      tlsConfig: structuredClone(input.tlsConfig ?? existing?.tlsConfig), integrationResponseSelectionExpression: input.integrationResponseSelectionExpression ?? existing?.integrationResponseSelectionExpression,
+      tlsConfig: structuredClone(existing?.tlsConfig), integrationResponseSelectionExpression: input.integrationResponseSelectionExpression ?? existing?.integrationResponseSelectionExpression,
       apiGatewayManaged: existing?.apiGatewayManaged ?? false, integrationResponses: structuredClone(existing?.integrationResponses ?? {}),
       cloudFormationOperationToken: existing?.cloudFormationOperationToken,
     };
+  }
+
+  private validateTemplates(templates: Record<string, string>, name: string): void {
+    for (const [key, template] of Object.entries(templates)) { if (!key) throw new AwsError("BadRequestException", `${name} keys must not be empty`); try { validateVtl(template); } catch (error) { throw new AwsError("BadRequestException", `Invalid mapping template for ${name} key ${key}: ${error instanceof Error ? error.message : String(error)}`); } }
+  }
+
+  private validateIntegrationResponseInput(integration: WebSocketIntegrationState, input: any): void {
+    if (input.integrationResponseKey !== undefined) { const key = String(input.integrationResponseKey); const pattern = key.match(/^\/([\s\S]*)\/$/); if (key !== "$default" && !pattern) throw new AwsError("BadRequestException", "IntegrationResponseKey must be $default or a /regular expression/"); if (pattern) { try { new RegExp(pattern[1]); } catch { throw new AwsError("BadRequestException", "IntegrationResponseKey contains an invalid regular expression"); } } }
+    if (input.contentHandlingStrategy !== undefined && input.contentHandlingStrategy !== null && !new Set(["CONVERT_TO_BINARY", "CONVERT_TO_TEXT"]).has(input.contentHandlingStrategy)) throw new AwsError("BadRequestException", "Invalid ContentHandlingStrategy");
+    if (input.responseTemplates !== undefined) this.validateTemplates(map(input.responseTemplates, "ResponseTemplates"), "ResponseTemplates");
+    if (integration.integrationType.endsWith("PROXY")) throw new AwsError("BadRequestException", "Proxy integrations do not use integration responses");
   }
 
   private validateAuthorizer(input: any, existing?: WebSocketAuthorizerState): WebSocketAuthorizerState {
@@ -499,11 +555,11 @@ export class ApiGatewayWebSocketService {
       }
       if (tail === "/integrationresponses") {
         if (integration.integrationType.endsWith("PROXY")) throw new AwsError("BadRequestException", "Proxy integrations do not use integration responses");
-        if (req.method === "POST") { const operationToken = getCloudFormationIdempotencyKey(req); const responseId = cloudFormationResourceId(operationToken, "integration-response"); const replay = responseId ? this.replayCreated(integration.integrationResponses[responseId], operationToken, "integration response") : undefined; if (replay) return json(res, integrationResponseView(replay), 201); const input = await readJson(req); const key = String(input.integrationResponseKey ?? ""); if (!key) throw new AwsError("BadRequestException", "IntegrationResponseKey is required"); if (Object.values(integration.integrationResponses).some(item => item.integrationResponseKey === key)) throw new AwsError("ConflictException", "An integration response with this key already exists", 409); const item: WebSocketIntegrationResponseState = { integrationResponseId: responseId ?? id(10), integrationResponseKey: key, contentHandlingStrategy: input.contentHandlingStrategy, responseParameters: map(input.responseParameters, "ResponseParameters"), responseTemplates: map(input.responseTemplates, "ResponseTemplates"), templateSelectionExpression: input.templateSelectionExpression, cloudFormationOperationToken: operationToken }; integration.integrationResponses[item.integrationResponseId] = item; await this.autoDeploy(api); return json(res, integrationResponseView(item), 201); }
+        if (req.method === "POST") { const operationToken = getCloudFormationIdempotencyKey(req); const responseId = cloudFormationResourceId(operationToken, "integration-response"); const replay = responseId ? this.replayCreated(integration.integrationResponses[responseId], operationToken, "integration response") : undefined; if (replay) return json(res, integrationResponseView(replay), 201); const input = await readJson(req); const key = String(input.integrationResponseKey ?? ""); if (!key) throw new AwsError("BadRequestException", "IntegrationResponseKey is required"); this.validateIntegrationResponseInput(integration, input); if (Object.values(integration.integrationResponses).some(item => item.integrationResponseKey === key)) throw new AwsError("ConflictException", "An integration response with this key already exists", 409); const item: WebSocketIntegrationResponseState = { integrationResponseId: responseId ?? id(10), integrationResponseKey: key, contentHandlingStrategy: input.contentHandlingStrategy, responseParameters: map(input.responseParameters, "ResponseParameters"), responseTemplates: map(input.responseTemplates, "ResponseTemplates"), templateSelectionExpression: input.templateSelectionExpression, cloudFormationOperationToken: operationToken }; integration.integrationResponses[item.integrationResponseId] = item; await this.autoDeploy(api); return json(res, integrationResponseView(item), 201); }
         if (req.method === "GET") return json(res, this.page("GetIntegrationResponses", `${api.apiId}:${integration.integrationId}`, Object.values(integration.integrationResponses).sort((a, b) => a.integrationResponseKey.localeCompare(b.integrationResponseKey)).map(integrationResponseView), url));
       }
       const responseMatch = tail.match(/^\/integrationresponses\/([^/]+)$/);
-      if (responseMatch) { const item = integration.integrationResponses[decodeURIComponent(responseMatch[1])]; if (!item) throw new AwsError("NotFoundException", "Invalid IntegrationResponse identifier specified", 404); if (req.method === "GET") return json(res, integrationResponseView(item)); if (req.method === "PATCH") { const input = await readJson(req); const updated = structuredClone(item); const key = String(input.integrationResponseKey ?? item.integrationResponseKey); if (!key || Object.values(integration.integrationResponses).some(value => value.integrationResponseKey === key && value.integrationResponseId !== item.integrationResponseId)) throw new AwsError("ConflictException", "Invalid or duplicate IntegrationResponseKey", 409); if (input.integrationResponseKey !== undefined) updated.integrationResponseKey = key; if (input.contentHandlingStrategy !== undefined) updated.contentHandlingStrategy = input.contentHandlingStrategy; if (input.responseParameters !== undefined) updated.responseParameters = map(input.responseParameters, "ResponseParameters"); if (input.responseTemplates !== undefined) updated.responseTemplates = map(input.responseTemplates, "ResponseTemplates"); if (input.templateSelectionExpression !== undefined) updated.templateSelectionExpression = input.templateSelectionExpression || undefined; integration.integrationResponses[item.integrationResponseId] = updated; await this.autoDeploy(api); return json(res, integrationResponseView(updated)); } if (req.method === "DELETE") { delete integration.integrationResponses[item.integrationResponseId]; await this.autoDeploy(api); res.statusCode = 204; res.end(); return; } }
+      if (responseMatch) { const item = integration.integrationResponses[decodeURIComponent(responseMatch[1])]; if (!item) throw new AwsError("NotFoundException", "Invalid IntegrationResponse identifier specified", 404); if (req.method === "GET") return json(res, integrationResponseView(item)); if (req.method === "PATCH") { const input = await readJson(req); this.validateIntegrationResponseInput(integration, input); const updated = structuredClone(item); const key = String(input.integrationResponseKey ?? item.integrationResponseKey); if (!key || Object.values(integration.integrationResponses).some(value => value.integrationResponseKey === key && value.integrationResponseId !== item.integrationResponseId)) throw new AwsError("ConflictException", "Invalid or duplicate IntegrationResponseKey", 409); if (input.integrationResponseKey !== undefined) updated.integrationResponseKey = key; if (input.contentHandlingStrategy !== undefined) updated.contentHandlingStrategy = input.contentHandlingStrategy; if (input.responseParameters !== undefined) updated.responseParameters = map(input.responseParameters, "ResponseParameters"); if (input.responseTemplates !== undefined) updated.responseTemplates = map(input.responseTemplates, "ResponseTemplates"); if (input.templateSelectionExpression !== undefined) updated.templateSelectionExpression = input.templateSelectionExpression || undefined; integration.integrationResponses[item.integrationResponseId] = updated; await this.autoDeploy(api); return json(res, integrationResponseView(updated)); } if (req.method === "DELETE") { delete integration.integrationResponses[item.integrationResponseId]; await this.autoDeploy(api); res.statusCode = 204; res.end(); return; } }
     }
 
     if (suffix === "/authorizers") {
@@ -562,7 +618,7 @@ export class ApiGatewayWebSocketService {
     if (!socket.destroyed) socket.end(`HTTP/1.1 ${status} ${title}\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body.toString("utf8")}`);
   }
 
-  async upgrade(req: IncomingMessage, socket: Socket, head: Buffer, pathname: string, url: URL, customDomain = false): Promise<void> {
+  async upgrade(req: IncomingMessage, socket: Socket, head: Buffer, pathname: string, url: URL, customDomain = false, domainName?: string): Promise<void> {
     let connection: LiveConnection | undefined;
     this.sockets.add(socket); socket.once("close", () => this.sockets.delete(socket));
     try {
@@ -572,25 +628,29 @@ export class ApiGatewayWebSocketService {
       const { headers, multiHeaders } = this.requestHeaders(req); const { query, multiQuery } = this.requestQueries(url); const connectedAt = this.clock.now();
       connection = {
         ...resolved, connectionId: id(12), socket, connectedAt, lastActiveAt: connectedAt, headers, multiHeaders, query, multiQuery,
-        sourceIp: req.socket.remoteAddress?.replace(/^::ffff:/, ""), userAgent: headers["user-agent"] ?? "", domainName: headers.host ?? "",
+        sourceIp: req.socket.remoteAddress?.replace(/^::ffff:/, ""), userAgent: headers["user-agent"] ?? "", domainName: domainName ?? headers.host ?? "",
         principal: (req as any).awsPrincipal, identityAuthorization: (req as any).awsIdentityAuthorization,
         buffer: Buffer.alloc(0), fragments: [], fragmentBytes: 0, closing: false, finalized: false, work: Promise.resolve(),
       };
       const connectRoute = Object.values(resolved.snapshot.routes).find(route => route.routeKey === "$connect");
-      let authorizer: { allowed: boolean; principalId?: string; context: Record<string, unknown> } = { allowed: true, context: {} };
       if (connectRoute?.authorizationType === "CUSTOM") {
         const configured = connectRoute.authorizerId ? resolved.snapshot.authorizers[connectRoute.authorizerId] : undefined;
         if (!configured) throw new AwsError("UnauthorizedException", "Unauthorized", 401);
-        authorizer = await this.runAuthorizer(configured, connection, connectRoute);
+        const authorizer = await this.runAuthorizer(configured, connection, connectRoute);
         if (!authorizer.allowed) throw new AwsError("ForbiddenException", "Forbidden", 403);
+        connection.authorizer = { principalId: authorizer.principalId, context: authorizer.context, integrationLatency: authorizer.integrationLatency };
       } else if (connectRoute?.authorizationType === "AWS_IAM" && this.authMode === "enforce" && connection.identityAuthorization?.decision !== "allowed") throw new AwsError("ForbiddenException", "Forbidden", 403);
+      let responseHeaders: Record<string, string[]> = {};
       if (connectRoute?.target) {
-        const result = await this.invokeIntegration(connection, connectRoute, "CONNECT", undefined, authorizer);
+        const result = await this.invokeIntegration(connection, connectRoute, "CONNECT");
         if (result.error) throw result.error;
         if (result.statusCode < 200 || result.statusCode >= 300) throw new AwsError(result.statusCode === 401 ? "UnauthorizedException" : "ForbiddenException", result.statusCode === 401 ? "Unauthorized" : "Forbidden", result.statusCode === 401 ? 401 : 403);
+        responseHeaders = result.headers ?? {};
       }
       const key = String(req.headers["sec-websocket-key"]); const accept = createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
-      socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+      // AWS relays the $connect integration's Sec-WebSocket-Protocol choice into the handshake; the client validates it against what it offered.
+      const offered = String(req.headers["sec-websocket-protocol"] ?? "").split(",").map(value => value.trim()).filter(Boolean); const selected = (responseHeaders["sec-websocket-protocol"] ?? []).join(", ").replace(/[\r\n]/g, "").trim();
+      socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n${offered.length && selected ? `Sec-WebSocket-Protocol: ${selected}\r\n` : ""}\r\n`);
       this.connections.set(connection.connectionId, connection); this.armTimers(connection);
       socket.on("data", chunk => this.receive(connection!, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
       socket.on("end", () => this.scheduleFinalize(connection!, 1000, "Client disconnected"));
@@ -614,7 +674,8 @@ export class ApiGatewayWebSocketService {
   }
 
   private requestQueries(url: URL): { query: Record<string, string>; multiQuery: Record<string, string[]> } {
-    const names = [...new Set(url.searchParams.keys())]; return { query: Object.fromEntries(names.map(name => [name, url.searchParams.getAll(name).join(",")])), multiQuery: Object.fromEntries(names.map(name => [name, url.searchParams.getAll(name)])) };
+    // Like REST v1 Lambda proxy events, repeated keys keep the last value here; multiValueQueryStringParameters carries every value.
+    const names = [...new Set(url.searchParams.keys())]; return { query: Object.fromEntries(names.map(name => [name, url.searchParams.getAll(name).at(-1) ?? ""])), multiQuery: Object.fromEntries(names.map(name => [name, url.searchParams.getAll(name)])) };
   }
 
   private methodArn(connection: LiveConnection, routeKey: string): string {
@@ -632,20 +693,22 @@ export class ApiGatewayWebSocketService {
     return "";
   }
 
-  private requestContext(connection: LiveConnection, routeKey: string, eventType: "CONNECT" | "MESSAGE" | "DISCONNECT", authorizer?: { principalId?: string; context: Record<string, unknown> }): any {
-    const now = this.clock.now(); return present({
+  private requestContext(connection: LiveConnection, routeKey: string, eventType: "CONNECT" | "MESSAGE" | "DISCONNECT", disconnect?: { statusCode: number; reason: string }): any {
+    const now = this.clock.now(); const authorizer = connection.authorizer; return present({
       routeKey, eventType, extendedRequestId: id(16), requestTime: new Date(now).toUTCString(), messageDirection: "IN",
       stage: connection.stage.stageName, connectedAt: connection.connectedAt, requestTimeEpoch: now, requestId: id(24),
       domainName: connection.domainName, connectionId: connection.connectionId, apiId: connection.api.apiId, messageId: eventType === "MESSAGE" ? id(16) : undefined,
       identity: { sourceIp: connection.sourceIp ?? "", userAgent: connection.userAgent },
-      authorizer: authorizer?.principalId || Object.keys(authorizer?.context ?? {}).length ? { principalId: authorizer?.principalId, ...authorizer?.context } : undefined,
+      // The $connect Lambda authorizer result is cached on the connection and surfaced on every later route, as AWS does.
+      authorizer: authorizer ? { ...authorizer.context, principalId: authorizer.principalId, integrationLatency: authorizer.integrationLatency } : undefined,
+      disconnectStatusCode: disconnect?.statusCode, disconnectReason: disconnect?.reason,
     });
   }
 
-  private async runAuthorizer(authorizer: WebSocketAuthorizerState, connection: LiveConnection, route: WebSocketRouteState): Promise<{ allowed: boolean; principalId?: string; context: Record<string, unknown> }> {
+  private async runAuthorizer(authorizer: WebSocketAuthorizerState, connection: LiveConnection, route: WebSocketRouteState): Promise<{ allowed: boolean } & WebSocketAuthorizerResult> {
     this.assertGatewayRole(authorizer.authorizerCredentialsArn, "authorizer", true);
     const identities = authorizer.identitySource.map(source => this.identityValue(source, connection)); if (identities.some(value => !value)) throw new AwsError("UnauthorizedException", "Unauthorized", 401);
-    const cacheKey = `${connection.api.apiId}\0${authorizer.authorizerId}\0${connection.stage.stageName}\0${identities.join("\0")}`; const cached = this.authorizerCache.get(cacheKey); if (cached && cached.expiresAt > this.clock.now()) return cached.value;
+    const cacheKey = `${connection.api.apiId}\0${authorizer.authorizerId}\0${connection.stage.stageName}\0${identities.join("\0")}`; const cached = this.authorizerCache.get(cacheKey); if (cached && cached.expiresAt > this.clock.now()) return { ...cached.value, integrationLatency: 0 };
     const methodArn = this.methodArn(connection, route.routeKey); const event = {
       type: "REQUEST", methodArn, headers: connection.headers, multiValueHeaders: connection.multiHeaders,
       queryStringParameters: connection.query, multiValueQueryStringParameters: connection.multiQuery,
@@ -653,52 +716,120 @@ export class ApiGatewayWebSocketService {
     };
     const functionArn = this.lambdaArn(authorizer.authorizerUri);
     if (authorizer.authorizerCredentialsArn && evaluateRoleAuthorization(this.store.ensureAccount().iam, authorizer.authorizerCredentialsArn, "lambda:InvokeFunction", functionArn).decision !== "allowed") throw new AwsError("InternalServerErrorException", "The authorizer role cannot invoke the Lambda function", 500);
-    let invocation: InvokeResult;
+    let invocation: InvokeResult; const started = performance.now();
     try { invocation = await this.lambda.invoke(functionArn, Buffer.from(JSON.stringify(event)), id(24), { principal: "apigateway.amazonaws.com", sourceArn: `arn:aws:execute-api:${this.region}:${this.store.accountId}:${connection.api.apiId}/authorizers/${authorizer.authorizerId}`, sourceAccount: this.store.accountId, enforceResourcePolicy: !authorizer.authorizerCredentialsArn, lineage: connection.principal?.lambdaLineage }); }
     catch (error) { if (error instanceof AwsError && error.code === "AccessDeniedException") throw new AwsError("InternalServerErrorException", "API Gateway is not authorized to invoke the authorizer", 500); throw error; }
+    const integrationLatency = Math.round(performance.now() - started);
     if (invocation.functionError) throw new AwsError("InternalServerErrorException", "Authorizer execution failed", 500);
     let output: any; try { output = JSON.parse(invocation.payload.toString("utf8")); } catch { throw new AwsError("InternalServerErrorException", "Invalid authorizer response", 500); }
     if (!output?.principalId || !output.policyDocument?.Statement) throw new AwsError("InternalServerErrorException", "Authorizer response requires principalId and policyDocument", 500);
-    const result = { allowed: evaluateIdentityPolicy(output.policyDocument, "execute-api:Invoke", methodArn).decision === "allowed", principalId: String(output.principalId), context: output.context && typeof output.context === "object" ? output.context : {} };
+    // AWS accepts only string, number, and boolean context values and hands them to later integrations as strings.
+    const context: Record<string, string> = {}; const rawContext = output.context && typeof output.context === "object" && !Array.isArray(output.context) ? output.context : {};
+    for (const [name, value] of Object.entries(rawContext as Record<string, unknown>)) { if (value === null || value === undefined) continue; if (typeof value === "object") throw new AwsError("InternalServerErrorException", "Authorizer context values must be strings, numbers, or booleans", 500); context[name] = String(value); }
+    const result = { allowed: evaluateIdentityPolicy(output.policyDocument, "execute-api:Invoke", methodArn).decision === "allowed", principalId: String(output.principalId), context, integrationLatency };
     if (authorizer.authorizerResultTtlInSeconds > 0) this.authorizerCache.set(cacheKey, { expiresAt: this.clock.now() + authorizer.authorizerResultTtlInSeconds * 1000, value: result }); return result;
   }
 
-  private lambdaEvent(connection: LiveConnection, route: WebSocketRouteState, eventType: "CONNECT" | "MESSAGE" | "DISCONNECT", body?: Buffer, authorizer?: { principalId?: string; context: Record<string, unknown> }, disconnect?: { statusCode: number; reason: string }): any {
-    const base: any = { requestContext: this.requestContext(connection, route.routeKey, eventType, authorizer), isBase64Encoded: false };
+  private lambdaEvent(connection: LiveConnection, route: WebSocketRouteState, eventType: "CONNECT" | "MESSAGE" | "DISCONNECT", body?: Buffer, disconnect?: { statusCode: number; reason: string }): any {
+    const base: any = { requestContext: this.requestContext(connection, route.routeKey, eventType, disconnect), isBase64Encoded: false };
     if (eventType === "CONNECT") Object.assign(base, { headers: connection.headers, multiValueHeaders: connection.multiHeaders, queryStringParameters: connection.query, multiValueQueryStringParameters: connection.multiQuery });
     if (eventType === "MESSAGE") base.body = body?.toString("utf8") ?? "";
-    if (eventType === "DISCONNECT") Object.assign(base.requestContext, { disconnectStatusCode: disconnect?.statusCode, disconnectReason: disconnect?.reason });
     return base;
   }
 
-  private async invokeIntegration(connection: LiveConnection, route: WebSocketRouteState, eventType: "CONNECT" | "MESSAGE" | "DISCONNECT", body?: Buffer, authorizer?: { principalId?: string; context: Record<string, unknown> }): Promise<WebSocketIntegrationResult> {
+  private async invokeLambda(connection: LiveConnection, route: WebSocketRouteState, integration: WebSocketIntegrationState, payload: () => Buffer): Promise<InvokeResult> {
+    const functionArn = this.lambdaArn(integration.integrationUri);
+    this.assertGatewayRole(integration.credentialsArn, "integration", true);
+    if (integration.credentialsArn && evaluateRoleAuthorization(this.store.ensureAccount().iam, integration.credentialsArn, "lambda:InvokeFunction", functionArn).decision !== "allowed") throw new AwsError("InternalServerErrorException", "The integration role cannot invoke the Lambda function", 500);
+    try { return await this.lambda.invoke(functionArn, payload(), id(24), { principal: "apigateway.amazonaws.com", sourceArn: this.methodArn(connection, route.routeKey), sourceAccount: this.store.accountId, enforceResourcePolicy: !integration.credentialsArn, lineage: connection.principal?.lambdaLineage }); }
+    catch (error) { if (error instanceof AwsError && error.code === "AccessDeniedException") throw new AwsError("InternalServerErrorException", "Internal Server Error", 500); throw error; }
+  }
+
+  private renderTemplate(template: string, connection: LiveConnection, body: Buffer, context: any): string {
+    const connect = context?.eventType === "CONNECT"; // Route request headers and query strings exist only on $connect.
+    return renderVtl(template, { body: body.toString("utf8"), headers: connect ? connection.headers : {}, query: connect ? connection.query : {}, path: {}, context, stageVariables: connection.stage.stageVariables });
+  }
+
+  /** Selects Integration.RequestTemplates by TemplateSelectionExpression ($default catch-all) and applies PassthroughBehavior when nothing matches. */
+  private integrationRequestBody(connection: LiveConnection, integration: WebSocketIntegrationState, message: Buffer, context: any): { body: Buffer; templated: boolean } {
+    const templates = integration.requestTemplates ?? {}; const expression = integration.templateSelectionExpression;
+    const template = templates[expression ? selectionKey(expression, { body: message }) : "$default"] ?? templates.$default ?? (expression ? undefined : templates["application/json"]);
+    if (template === undefined) {
+      const passthrough = integration.passthroughBehavior ?? "WHEN_NO_MATCH";
+      if (passthrough === "NEVER" || passthrough === "WHEN_NO_TEMPLATES" && Object.keys(templates).length) throw new AwsError("UnsupportedMediaTypeException", "Unsupported Media Type", 415);
+      return { body: integration.contentHandlingStrategy === "CONVERT_TO_BINARY" ? Buffer.from(message.toString("utf8"), "base64") : message, templated: false };
+    }
+    return { body: Buffer.from(this.renderTemplate(template, connection, message, context)), templated: true };
+  }
+
+  private parameterValue(source: string, connection: LiveConnection, body: Buffer, context: any): string | undefined {
+    const value = source.trim(); if (value.startsWith("'")) return value.slice(1, -1);
+    const route = value.match(/^route\.request\.(querystring|header|multivaluequerystring|multivalueheader)\.(.+)$/);
+    if (route) { if (context?.eventType !== "CONNECT") return undefined; const name = route[2]; return route[1] === "querystring" ? connection.query[name] : route[1] === "header" ? connection.headers[name.toLowerCase()] : route[1] === "multivaluequerystring" ? connection.multiQuery[name]?.join(",") : connection.multiHeaders[name.toLowerCase()]?.join(","); }
+    if (value.startsWith("route.request.body.")) { try { const found = jsonPathValue(JSON.parse(body.toString("utf8")), value.slice("route.request.body.".length)); return found === undefined ? undefined : textValue(found); } catch { return undefined; } }
+    if (value.startsWith("stageVariables.")) return connection.stage.stageVariables[value.slice("stageVariables.".length)];
+    if (value.startsWith("context.")) { const found = jsonPathValue(context, value.slice("context.".length)); return found === undefined ? undefined : textValue(found); }
+    return undefined;
+  }
+
+  private async fetchHttp(connection: LiveConnection, integration: WebSocketIntegrationState, body: Buffer, original: Buffer, context: any): Promise<{ statusCode: number; body: Buffer; headers: Record<string, string[]> }> {
+    if (process.env.STACKSIM_ALLOW_OUTBOUND_HTTP !== "true") throw new AwsError("InternalServerErrorException", "Outbound HTTP integrations require STACKSIM_ALLOW_OUTBOUND_HTTP=true", 502);
+    const target = new URL(integration.integrationUri!); if ((target.hostname === "localhost" || target.hostname === "127.0.0.1" || target.hostname === "::1" || target.hostname === "[::1]") && process.env.STACKSIM_ALLOW_PRIVATE_HTTP !== "true") throw new AwsError("InternalServerErrorException", "Private HTTP integration endpoints are disabled", 502);
+    const headers: Record<string, string> = {};
+    for (const [destination, source] of Object.entries(integration.requestParameters ?? {})) { const value = this.parameterValue(source, connection, original, context); const parsed = destination.match(/^integration\.request\.(header|querystring)\.(.+)$/); if (value === undefined || !parsed) continue; if (parsed[1] === "header") headers[parsed[2]] = value; else target.searchParams.set(parsed[2], value); }
+    const method = integration.integrationMethod ?? "POST"; const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), integration.timeoutInMillis);
+    try { const response = await fetch(target, { method, headers, body: body.length && method !== "GET" && method !== "HEAD" ? Uint8Array.from(body) : undefined, signal: controller.signal }); return { statusCode: response.status, body: Buffer.from(await response.arrayBuffer()), headers: headerValues(response.headers) }; } finally { clearTimeout(timer); }
+  }
+
+  /** Integration responses: keys are `$default` or `/regex/`, matched against the status code (HTTP, MOCK) or Lambda errorMessage (AWS). */
+  private selectIntegrationResponse(integration: WebSocketIntegrationState, backend: WebSocketBackendResult): WebSocketIntegrationResponseState | undefined {
+    const responses = Object.values(integration.integrationResponses ?? {}); const fallback = responses.find(item => item.integrationResponseKey === "$default");
+    if (integration.integrationType === "AWS" && !backend.failed) return fallback;
+    for (const item of responses.filter(value => value.integrationResponseKey !== "$default").sort((a, b) => a.integrationResponseKey.localeCompare(b.integrationResponseKey))) {
+      const pattern = item.integrationResponseKey.match(/^\/([\s\S]*)\/$/); try { if (pattern ? new RegExp(`^(?:${pattern[1]})$`, "s").test(backend.selection) : item.integrationResponseKey === backend.selection) return item; } catch {}
+    }
+    return fallback;
+  }
+
+  private integrationResponse(connection: LiveConnection, integration: WebSocketIntegrationState, backend: WebSocketBackendResult, message: Buffer, context: any): Omit<WebSocketIntegrationResult, "integrationLatency"> {
+    const statusCode = backend.failed ? 500 : backend.statusCode; const selected = this.selectIntegrationResponse(integration, backend);
+    if (!selected) { if (backend.failed) throw new AwsError("InternalServerErrorException", `Lambda invocation failed: ${backend.body.toString("utf8")}`, 500); return { statusCode, body: backend.body, headers: backend.headers }; }
+    const templates = selected.responseTemplates ?? {}; const expression = selected.templateSelectionExpression;
+    const template = templates[expression ? selectionKey(expression, { body: message, statusCode: backend.statusCode, headers: backend.headers }) : "$default"] ?? templates.$default;
+    if (template !== undefined) return { statusCode, body: Buffer.from(this.renderTemplate(template, connection, backend.body, context)), headers: backend.headers, mapped: true };
+    if (selected.contentHandlingStrategy === "CONVERT_TO_TEXT") return { statusCode, body: Buffer.from(backend.body.toString("base64")), headers: backend.headers, mapped: true };
+    if (selected.contentHandlingStrategy === "CONVERT_TO_BINARY") return { statusCode, body: Buffer.from(backend.body.toString("utf8"), "base64"), headers: backend.headers, mapped: true, binary: true };
+    return { statusCode, body: backend.body, headers: backend.headers, mapped: true };
+  }
+
+  private async invokeIntegration(connection: LiveConnection, route: WebSocketRouteState, eventType: "CONNECT" | "MESSAGE" | "DISCONNECT", body?: Buffer, disconnect?: { statusCode: number; reason: string }): Promise<WebSocketIntegrationResult> {
     const started = performance.now(); const integrationId = route.target?.match(/^integrations\/(.+)$/)?.[1]; const integration = integrationId ? connection.snapshot.integrations[integrationId] : undefined;
     if (!integration) return { statusCode: 200, body: Buffer.alloc(0), integrationLatency: 0 };
+    const message = body ?? Buffer.alloc(0); const latency = () => performance.now() - started;
     try {
-      if (integration.integrationType === "MOCK") {
-        const response = Object.values(integration.integrationResponses).find(item => item.integrationResponseKey === "$default") ?? Object.values(integration.integrationResponses)[0]; const template = response?.responseTemplates.$default ?? "";
-        return { statusCode: 200, body: Buffer.from(template), integrationLatency: performance.now() - started };
-      }
-      if (integration.integrationType === "AWS_PROXY" || integration.integrationType === "AWS") {
-        const functionArn = this.lambdaArn(integration.integrationUri);
-        this.assertGatewayRole(integration.credentialsArn, "integration", true);
-        if (integration.credentialsArn && evaluateRoleAuthorization(this.store.ensureAccount().iam, integration.credentialsArn, "lambda:InvokeFunction", functionArn).decision !== "allowed") throw new AwsError("InternalServerErrorException", "The integration role cannot invoke the Lambda function", 500);
-        const event = this.lambdaEvent(connection, route, eventType, body, authorizer); let invocation: InvokeResult;
-        try { invocation = await this.lambda.invoke(functionArn, Buffer.from(JSON.stringify(event)), id(24), { principal: "apigateway.amazonaws.com", sourceArn: this.methodArn(connection, route.routeKey), sourceAccount: this.store.accountId, enforceResourcePolicy: !integration.credentialsArn, lineage: connection.principal?.lambdaLineage }); }
-        catch (error) { if (error instanceof AwsError && error.code === "AccessDeniedException") throw new AwsError("InternalServerErrorException", "Internal Server Error", 500); throw error; }
+      if (integration.integrationType === "AWS_PROXY") {
+        const invocation = await this.invokeLambda(connection, route, integration, () => Buffer.from(JSON.stringify(this.lambdaEvent(connection, route, eventType, body, disconnect))));
         if (invocation.functionError) throw new AwsError("InternalServerErrorException", `Lambda invocation failed: ${invocation.payload.toString("utf8")}`, 500);
         let output: any; try { output = invocation.payload.length ? JSON.parse(invocation.payload.toString("utf8")) : {}; } catch { output = { body: invocation.payload.toString("utf8") }; }
         const statusCode = Number(output?.statusCode ?? 200); const responseBody = output?.body === undefined ? Buffer.alloc(0) : Buffer.from(typeof output.body === "string" ? output.body : JSON.stringify(output.body));
-        return { statusCode: Number.isInteger(statusCode) ? statusCode : 500, body: output?.isBase64Encoded ? Buffer.from(String(output.body ?? ""), "base64") : responseBody, integrationLatency: performance.now() - started };
+        return { statusCode: Number.isInteger(statusCode) ? statusCode : 500, body: output?.isBase64Encoded ? Buffer.from(String(output.body ?? ""), "base64") : responseBody, headers: output && typeof output === "object" ? headerValues(output.headers, output.multiValueHeaders) : {}, integrationLatency: latency() };
       }
-      if (integration.integrationType === "HTTP" || integration.integrationType === "HTTP_PROXY") {
-        if (process.env.STACKSIM_ALLOW_OUTBOUND_HTTP !== "true") throw new AwsError("InternalServerErrorException", "Outbound HTTP integrations require STACKSIM_ALLOW_OUTBOUND_HTTP=true", 502);
-        const target = new URL(integration.integrationUri!); if ((target.hostname === "localhost" || target.hostname === "127.0.0.1" || target.hostname === "::1") && process.env.STACKSIM_ALLOW_PRIVATE_HTTP !== "true") throw new AwsError("InternalServerErrorException", "Private HTTP integration endpoints are disabled", 502);
-        const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), integration.timeoutInMillis);
-        try { const response = await fetch(target, { method: integration.integrationMethod ?? "POST", body: body ? Uint8Array.from(body) : undefined, signal: controller.signal }); return { statusCode: response.status, body: Buffer.from(await response.arrayBuffer()), integrationLatency: performance.now() - started }; } finally { clearTimeout(timer); }
-      }
-      throw new AwsError("InternalServerErrorException", "Unsupported integration", 500);
-    } catch (error) { const aws = error instanceof AwsError ? error : new AwsError("InternalServerErrorException", error instanceof Error ? error.message : String(error), 500); return { statusCode: aws.status >= 400 ? aws.status : 500, body: Buffer.alloc(0), integrationLatency: performance.now() - started, error: aws }; }
+      const context = this.requestContext(connection, route.routeKey, eventType, disconnect);
+      if (integration.integrationType === "HTTP_PROXY") { const response = await this.fetchHttp(connection, integration, message, message, context); return { ...response, integrationLatency: latency() }; }
+      const request = this.integrationRequestBody(connection, integration, message, context); let backend: WebSocketBackendResult;
+      if (integration.integrationType === "MOCK") {
+        // A MOCK integration's status code comes from the rendered request template's statusCode, as in REST APIs.
+        let statusCode = 200; if (request.templated) { try { const parsed = JSON.parse(request.body.toString("utf8")); if (parsed?.statusCode !== undefined) statusCode = Number(parsed.statusCode); } catch {} }
+        if (!Number.isInteger(statusCode) || statusCode < 100 || statusCode > 599) statusCode = 500;
+        backend = { statusCode, body: Buffer.alloc(0), headers: {}, selection: String(statusCode) };
+      } else if (integration.integrationType === "AWS") {
+        const invocation = await this.invokeLambda(connection, route, integration, () => request.body.length ? request.body : Buffer.from("{}")); let errorMessage = "";
+        if (invocation.functionError) { try { errorMessage = String(JSON.parse(invocation.payload.toString("utf8"))?.errorMessage ?? ""); } catch { errorMessage = invocation.payload.toString("utf8"); } }
+        backend = { statusCode: 200, body: invocation.payload, headers: {}, selection: errorMessage, failed: Boolean(invocation.functionError) };
+      } else if (integration.integrationType === "HTTP") { const response = await this.fetchHttp(connection, integration, request.body, message, context); backend = { ...response, selection: String(response.statusCode) }; }
+      else throw new AwsError("InternalServerErrorException", "Unsupported integration", 500);
+      return { ...this.integrationResponse(connection, integration, backend, message, context), integrationLatency: latency() };
+    } catch (error) { const aws = error instanceof AwsError ? error : new AwsError("InternalServerErrorException", error instanceof Error ? error.message : String(error), 500); return { statusCode: aws.status >= 400 ? aws.status : 500, body: Buffer.alloc(0), integrationLatency: latency(), error: aws }; }
   }
 
   private selectRoute(connection: LiveConnection, body: Buffer): WebSocketRouteState | undefined {
@@ -739,9 +870,9 @@ export class ApiGatewayWebSocketService {
     if (!route) { const requestId = id(24); this.sendText(connection, JSON.stringify({ message: "Forbidden", connectionId: connection.connectionId, requestId })); await Promise.all([this.publishMetric(connection, "$default", "ClientError", 1), this.writeAccessLog(connection, "$default", "MESSAGE", 403)]); return; }
     await this.publishMetric(connection, route.routeKey, "MessageCount", 1); const result = await this.invokeIntegration(connection, route, "MESSAGE", body);
     await this.publishMetric(connection, route.routeKey, "IntegrationLatency", result.integrationLatency);
-    if (result.error || result.statusCode >= 500) { this.sendText(connection, JSON.stringify({ message: "Internal server error", connectionId: connection.connectionId, requestId: id(24) })); await Promise.all([this.publishMetric(connection, route.routeKey, "IntegrationError", 1), this.writeAccessLog(connection, route.routeKey, "MESSAGE", result.statusCode, result.error)]); return; }
+    if (result.error || result.statusCode >= 500 && !result.mapped) { this.sendText(connection, JSON.stringify({ message: result.error?.status === 415 ? "Unsupported Media Type" : "Internal server error", connectionId: connection.connectionId, requestId: id(24) })); await Promise.all([this.publishMetric(connection, route.routeKey, result.error?.status === 415 ? "ClientError" : "IntegrationError", 1), this.writeAccessLog(connection, route.routeKey, "MESSAGE", result.statusCode, result.error)]); return; }
     if (result.statusCode >= 400) await this.publishMetric(connection, route.routeKey, "ClientError", 1);
-    if (Object.values(route.routeResponses).some(response => response.routeResponseKey === "$default") && result.body.length) this.sendFrame(connection.socket, 0x1, result.body);
+    if (Object.values(route.routeResponses).some(response => response.routeResponseKey === "$default") && result.body.length) this.sendFrame(connection.socket, result.binary ? 0x2 : 0x1, result.body);
     await this.writeAccessLog(connection, route.routeKey, "MESSAGE", result.statusCode);
   }
 
@@ -779,12 +910,7 @@ export class ApiGatewayWebSocketService {
   }
 
   private async invokeDisconnect(connection: LiveConnection, route: WebSocketRouteState, statusCode: number, reason: string): Promise<void> {
-    const integrationId = route.target?.match(/^integrations\/(.+)$/)?.[1]; const integration = integrationId ? connection.snapshot.integrations[integrationId] : undefined; if (!integration || !new Set(["AWS", "AWS_PROXY"]).has(integration.integrationType)) return;
-    this.assertGatewayRole(integration.credentialsArn, "integration", true);
-    const functionArn = this.lambdaArn(integration.integrationUri);
-    if (integration.credentialsArn && evaluateRoleAuthorization(this.store.ensureAccount().iam, integration.credentialsArn, "lambda:InvokeFunction", functionArn).decision !== "allowed") throw new AwsError("InternalServerErrorException", "The integration role cannot invoke the Lambda function", 500);
-    const event = this.lambdaEvent(connection, route, "DISCONNECT", undefined, undefined, { statusCode, reason });
-    await this.lambda.invoke(functionArn, Buffer.from(JSON.stringify(event)), id(24), { principal: "apigateway.amazonaws.com", sourceArn: this.methodArn(connection, route.routeKey), sourceAccount: this.store.accountId, enforceResourcePolicy: !integration.credentialsArn, lineage: connection.principal?.lambdaLineage });
+    const result = await this.invokeIntegration(connection, route, "DISCONNECT", undefined, { statusCode, reason }); if (result.error) throw result.error;
   }
 
   async shutdown(): Promise<void> {
@@ -797,6 +923,11 @@ export class ApiGatewayWebSocketService {
 
   managementApiId(pathname: string): string | undefined { try { return decodeURIComponent(pathname.split("/")[1] ?? "") || undefined; } catch { return undefined; } }
 
+  /** Connection IDs are unique, so the short `/{stage}/@connections/{id}` and `/@connections/{id}` forms resolve the owning API and stage from the live connection. */
+  connectionRoute(connectionId: string): { apiId: string; stageName: string } | undefined {
+    const connection = this.connections.get(connectionId); return connection && !connection.finalized ? { apiId: connection.api.apiId, stageName: connection.stage.stageName } : undefined;
+  }
+
   managementAuthorizationResource(pathname: string, method: string): string {
     const match = pathname.match(/^\/([^/]+)\/([^/]+)\/@connections\/([^/]+)\/?$/); if (!match) throw new AwsError("NotFoundException", "Not Found", 404);
     return `arn:aws:execute-api:${this.region}:${this.store.accountId}:${decodeURIComponent(match[1])}/${decodeURIComponent(match[2])}/${method}/@connections/${decodeURIComponent(match[3])}`;
@@ -805,7 +936,9 @@ export class ApiGatewayWebSocketService {
   async handleManagement(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> {
     try {
       const match = pathname.match(/^\/([^/]+)\/([^/]+)\/@connections\/([^/]+)\/?$/); if (!match) throw new AwsError("NotFoundException", "Not Found", 404);
-      const apiId = decodeURIComponent(match[1]); const stageName = decodeURIComponent(match[2]); const connectionId = decodeURIComponent(match[3]); this.api(apiId); this.stage(this.api(apiId), stageName);
+      const apiId = decodeURIComponent(match[1]); const stageName = decodeURIComponent(match[2]); const connectionId = decodeURIComponent(match[3]);
+      // execute-api answers an unknown API or stage with 403 Forbidden; a connection that is not live on this API stage is 410 Gone.
+      const api = this.apis[apiId]; if (!api || !api.stages[stageName]) throw new AwsError("ForbiddenException", "Forbidden", 403);
       const connection = this.connections.get(connectionId); if (!connection || connection.finalized || connection.api.apiId !== apiId || connection.stage.stageName !== stageName) throw new AwsError("GoneException", "The connection with id was not found.", 410);
       if (req.method === "GET") return json(res, { connectedAt: new Date(connection.connectedAt).toISOString(), identity: { sourceIp: connection.sourceIp ?? "", userAgent: connection.userAgent }, lastActiveAt: new Date(connection.lastActiveAt).toISOString() });
       if (req.method === "POST") { const body = await readBody(req); if (body.length > 128 * 1024) throw new AwsError("PayloadTooLargeException", "Payload exceeds the maximum allowed size", 413); this.sendFrame(connection.socket, 0x1, body); res.statusCode = 200; res.end(); return; }

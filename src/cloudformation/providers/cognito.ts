@@ -2,6 +2,7 @@ import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import type { CognitoService } from "../../cognito.js";
 import { AwsError } from "../../errors.js";
+import { DEFAULT_EXPLICIT_AUTH_FLOWS } from "../../cognito/validation.js";
 import {
   cfn10ExactKeys,
   cfn10GeneratedName,
@@ -367,8 +368,8 @@ function clientIssues(properties: unknown): ProviderValidationIssue[] {
   }
   exactObject(properties.TokenValidityUnits, ["AccessToken", "IdToken", "RefreshToken"], "Properties.TokenValidityUnits", issues);
   exactObject(properties.RefreshTokenRotation, ["Feature", "RetryGracePeriodSeconds"], "Properties.RefreshTokenRotation", issues);
-  if (!Array.isArray(properties.ExplicitAuthFlows) || properties.ExplicitAuthFlows.length === 0) {
-    issues.push(issue("Properties.ExplicitAuthFlows", "ExplicitAuthFlows must select at least one supported authentication flow"));
+  if (properties.ExplicitAuthFlows !== undefined && (!Array.isArray(properties.ExplicitAuthFlows) || properties.ExplicitAuthFlows.length === 0)) {
+    issues.push(issue("Properties.ExplicitAuthFlows", "ExplicitAuthFlows must select at least one supported authentication flow when specified"));
   }
   return issues;
 }
@@ -485,7 +486,7 @@ function canonicalClient(properties: unknown, context: ProviderContext): Model {
     TokenValidityUnits: input.TokenValidityUnits ?? { AccessToken: "hours", IdToken: "hours", RefreshToken: "days" },
     ReadAttributes: [...(input.ReadAttributes ?? ["email"])].sort(),
     WriteAttributes: [...(input.WriteAttributes ?? ["email"])].sort(),
-    ExplicitAuthFlows: [...input.ExplicitAuthFlows].sort(),
+    ExplicitAuthFlows: [...(input.ExplicitAuthFlows ?? DEFAULT_EXPLICIT_AUTH_FLOWS)].sort(),
     PreventUserExistenceErrors: input.PreventUserExistenceErrors ?? "LEGACY",
     EnableTokenRevocation: input.EnableTokenRevocation ?? true,
     AuthSessionValidity: input.AuthSessionValidity ?? 3,

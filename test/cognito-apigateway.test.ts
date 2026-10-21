@@ -728,14 +728,12 @@ test("REST Cognito authorizers cover control validation, token semantics, claims
     assert.equal(tested.clientStatus, 0);
     assert.equal(tested.claims?.["custom:role"], "operator");
     assert.equal(tested.claims?.["cognito:groups"], "[\"admins\",\"operators\"]");
-    await assert.rejects(
-      gateway.send(new TestInvokeAuthorizerCommand({
-        restApiId: api.id!,
-        authorizerId: authorizer.id!,
-        headers: { Authorization: pool.accessToken },
-      })),
-      (error: any) => error.name === "UnauthorizedException",
-    );
+    const rejectedToken = await gateway.send(new TestInvokeAuthorizerCommand({
+      restApiId: api.id!,
+      authorizerId: authorizer.id!,
+      headers: { Authorization: pool.accessToken },
+    }));
+    assert.equal(rejectedToken.clientStatus, 401, "TestInvokeAuthorizer reports the client-visible rejection instead of failing");
 
     const gatewayTrust = JSON.stringify({
       Version: "2012-10-17",
@@ -851,15 +849,11 @@ test("REST Cognito authorizers cover control validation, token semantics, claims
     }));
     assert.equal((await invokeRest(simulator, api.id!, "/proxy", otherClient.idToken)).status, 200,
       "the old deployment keeps the prior authorizer snapshot");
-    await assert.rejects(
-      gateway.send(new TestInvokeAuthorizerCommand({
-        restApiId: api.id!,
-        authorizerId: authorizer.id!,
-        headers: { Authorization: otherClient.idToken },
-      })),
-      (error: any) => error.name === "UnauthorizedException",
-      "test-invoke uses the current mutable authorizer",
-    );
+    assert.equal((await gateway.send(new TestInvokeAuthorizerCommand({
+      restApiId: api.id!,
+      authorizerId: authorizer.id!,
+      headers: { Authorization: otherClient.idToken },
+    }))).clientStatus, 401, "test-invoke uses the current mutable authorizer");
     await gateway.send(new CreateDeploymentCommand({ restApiId: api.id!, stageName: "dev" }));
     assert.equal((await invokeRest(simulator, api.id!, "/proxy", otherClient.idToken)).status, 498);
     assert.equal((await invokeRest(simulator, api.id!, "/proxy", pool.idToken)).status, 200);

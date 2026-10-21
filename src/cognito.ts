@@ -649,6 +649,32 @@ type TokenGenerationCause =
   | "TokenGeneration_NewPasswordChallenge"
   | "TokenGeneration_AuthenticateDevice";
 
+/**
+ * Chooses the password-reset destination from the pool's AccountRecoverySetting: the highest-priority mechanism the
+ * user qualifies for, as Cognito does. Email is ineligible when it is the user's email-OTP MFA factor. A verified phone
+ * number is a real Cognito destination, but StackSim has no SMS channel, so selecting it fails explicitly rather than
+ * silently falling back to email. `admin_only` disables self-service recovery; administrator resets still deliver.
+ */
+function passwordRecoveryEmail(pool: CognitoUserPoolState, user: CognitoUserState, administrator: boolean): string {
+  const configured = [...(pool.configuration.accountRecoverySetting?.recoveryMechanisms ?? [{ name: "verified_email" as const, priority: 1 }])].sort((left, right) => left.priority - right.priority);
+  if (configured.some(mechanism => mechanism.name === "admin_only") && !administrator) {
+    throw new AwsError("InvalidParameterException", "Self-service account recovery is disabled for this user pool (admin_only); an administrator must reset the password.");
+  }
+  const candidates = configured.some(mechanism => mechanism.name === "admin_only") ? ["verified_email", "verified_phone_number"] : configured.map(mechanism => mechanism.name);
+  let emailMfaConflict = false;
+  for (const candidate of candidates) {
+    if (candidate === "verified_email" && user.attributes.email?.verified) {
+      if (user.preferredMfaSetting === "EMAIL_OTP") { emailMfaConflict = true; continue; }
+      return user.attributes.email.value;
+    }
+    if (candidate === "verified_phone_number" && user.attributes.phone_number?.verified) {
+      throw new AwsError("CodeDeliveryFailureException", "This user's account-recovery destination is a verified phone number, and StackSim cannot deliver SMS messages. Give verified_email priority 1 in AccountRecoverySetting to recover by email locally.");
+    }
+  }
+  if (emailMfaConflict) throw new AwsError("InvalidParameterException", "Password recovery cannot use the preferred email MFA destination.");
+  throw new AwsError("InvalidParameterException", "Cannot reset password for the user as there is no registered/verified email or phone_number");
+}
+
 function recoveryDeliveryDetails(email: string): Record<string, string> {
   return {
     Destination: maskEmail(email),
@@ -4891,9 +4917,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     if (!user.enabled) {
       throw new AwsError("NotAuthorizedException", "User is disabled.");
     }
-    if (!user.attributes.email?.verified) {
-      throw new AwsError("InvalidParameterException", "User has no verified email recovery destination.");
-    }
+    passwordRecoveryEmail(pool, user, true);
     let intentId: string | undefined;
     await this.exclusive(async () => {
       const currentPool = this.pool(pool.id);
@@ -6724,15 +6748,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     if (!user.enabled || !["CONFIRMED", "RESET_REQUIRED"].includes(user.status)) {
       throw new AwsError("InvalidParameterException", "User password cannot be reset in the current state.");
     }
-    if (user.preferredMfaSetting === "EMAIL_OTP") {
-      throw new AwsError(
-        "InvalidParameterException",
-        "Password recovery cannot use the preferred email MFA destination.",
-      );
-    }
-    if (!user.attributes.email?.verified) {
-      throw new AwsError("InvalidParameterException", "User has no verified email recovery destination.");
-    }
+    const recoveryEmail = passwordRecoveryEmail(pool, user, false);
     let intentId: string | undefined;
     await this.exclusive(async () => {
       const currentPool = this.pool(pool.id);
@@ -6757,7 +6773,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       throw new AwsError("CodeDeliveryFailureException", "Failed to deliver the password reset code.");
     }
     return {
-      CodeDeliveryDetails: recoveryDeliveryDetails(user.attributes.email.value),
+      CodeDeliveryDetails: recoveryDeliveryDetails(recoveryEmail),
     };
   }
 

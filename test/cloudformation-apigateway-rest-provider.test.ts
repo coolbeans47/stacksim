@@ -170,12 +170,16 @@ test("API Gateway REST providers create, update, deploy, invoke, read, and delet
 
     const firstDeployment: ApiGatewayDeploymentModel = deploymentProvider.canonicalize({ RestApiId: apiId, Description: "first snapshot" }, context("DeploymentOne"));
     const firstDeploymentContext = context("DeploymentOne", "DeploymentOneCreate"); const firstDeploymentResult = requireSuccess(await completeProviderCallbacks(callback => deploymentProvider.create(firstDeployment, callback), firstDeploymentContext)); const firstDeploymentId = String(firstDeploymentResult.model.attributes.DeploymentId);
-    const changedDeployment = deploymentProvider.canonicalize({ RestApiId: apiId, Description: "must replace" }, context("DeploymentOne"));
-    const immutableUpdate = await deploymentProvider.update(firstDeploymentResult.physicalId, firstDeployment, changedDeployment, context("DeploymentOne"));
+    const movedDeployment = deploymentProvider.canonicalize({ RestApiId: "another-api", Description: "first snapshot" }, context("DeploymentOne"));
+    const immutableUpdate = await deploymentProvider.update(firstDeploymentResult.physicalId, firstDeployment, movedDeployment, context("DeploymentOne"));
     assert.equal(immutableUpdate.status, "FAILED"); assert.equal(immutableUpdate.errorCode, "RequiresReplacement");
+    const renamedDeployment = deploymentProvider.canonicalize({ RestApiId: apiId, Description: "renamed snapshot" }, context("DeploymentOne"));
+    requireSuccess(await deploymentProvider.update(firstDeploymentResult.physicalId, firstDeployment, renamedDeployment, context("DeploymentOne")));
+    assert.equal((await apiClient.send(new GetDeploymentCommand({ restApiId: apiId, deploymentId: firstDeploymentId }))).description, "renamed snapshot", "Description updates in place, without a new snapshot");
+    requireSuccess(await deploymentProvider.update(firstDeploymentResult.physicalId, renamedDeployment, firstDeployment, context("DeploymentOne")));
     assert.equal((await apiClient.send(new GetDeploymentCommand({ restApiId: apiId, deploymentId: firstDeploymentId }))).description, "first snapshot");
     const stage: ApiGatewayStageModel = stageProvider.canonicalize({ RestApiId: apiId, DeploymentId: firstDeploymentId, StageName: "dev", Variables: { environment: "local" }, MethodSettings: [{ ResourcePath: "/*", HttpMethod: "*", MetricsEnabled: true }], Tags: [{ Key: "team", Value: "platform" }] }, context("Stage"));
-    const stageResult = requireSuccess(await stageProvider.create(stage, context("Stage")));
+    const stageResult = requireSuccess(await completeProviderCallbacks(callback => stageProvider.create(stage, callback), context("Stage")));
     assert.equal((await apiClient.send(new GetStageCommand({ restApiId: apiId, stageName: "dev" }))).methodSettings?.["*/*"]?.metricsEnabled, true);
     let response = await fetch(`http://127.0.0.1:${simulator.invokePort}/${apiId}/dev/graphql`, { method: "POST", body: JSON.stringify({ query: "{ health }" }), headers: { "content-type": "application/json" } });
     const firstPayload = await response.json(); assert.equal(response.status, 200, JSON.stringify(firstPayload)); assert.deepEqual(firstPayload, { version: "one", path: "/graphql" });
@@ -234,8 +238,8 @@ test("API Gateway Method validation rejects unsafe integrations before mutation 
     let issues = methodProvider.validate({ ...base, Integration: { Type: "AWS_PROXY", IntegrationHttpMethod: "POST", Uri: lambdaUri, Credentials: invalidRoleArn } }, context("ValidationMethod"));
     assert.match(issues.map((entry: any) => entry.message).join("\n"), /cannot assume the configured integration role/);
 
-    issues = methodProvider.validate({ ...base, Integration: { Type: "AWS", IntegrationHttpMethod: "POST", Uri: `arn:aws:apigateway:${region}:sns:action/Publish`, Credentials: invalidRoleArn } }, context("ValidationMethod"));
-    assert.match(issues.map((entry: any) => entry.message).join("\n"), /support only local Lambda, DynamoDB, and SQS targets/);
+    issues = methodProvider.validate({ ...base, Integration: { Type: "AWS", IntegrationHttpMethod: "POST", Uri: `arn:aws:apigateway:${region}:kinesis:action/PutRecord`, Credentials: invalidRoleArn } }, context("ValidationMethod"));
+    assert.match(issues.map((entry: any) => entry.message).join("\n"), /does not support the AWS integration kinesis:action\/PutRecord/);
 
     process.env.STACKSIM_ALLOW_OUTBOUND_HTTP = "true"; delete process.env.STACKSIM_ALLOW_PRIVATE_HTTP;
     issues = methodProvider.validate({ ...base, Integration: { Type: "HTTP_PROXY", IntegrationHttpMethod: "GET", Uri: "http://169.254.169.254/latest/meta-data" } }, context("ValidationMethod"));
@@ -248,10 +252,10 @@ test("API Gateway Method validation rejects unsafe integrations before mutation 
     const deployment = deploymentProvider.canonicalize({ RestApiId: apiId }, context("ValidationDeployment"));
     const deploymentResult = requireSuccess(await completeProviderCallbacks(callback => deploymentProvider.create(deployment, callback), context("ValidationDeployment", "ValidationDeploymentCreate")));
     const stage = stageProvider.canonicalize({ RestApiId: apiId, DeploymentId: String(deploymentResult.model.attributes.DeploymentId), StageName: "dev" }, context("ValidationStage"));
-    requireSuccess(await stageProvider.create(stage, context("ValidationStage")));
+    requireSuccess(await completeProviderCallbacks(callback => stageProvider.create(stage, callback), context("ValidationStage")));
     const invokeUrl = `http://127.0.0.1:${simulator.invokePort}/${apiId}/dev/check`;
     const denied = await fetch(invokeUrl);
-    assert.equal(denied.status, 403); assert.match(await denied.text(), /not authorized to invoke this Lambda function/);
+    assert.equal(denied.status, 500); assert.deepEqual(await denied.json(), { message: "Internal server error" });
     await lambda.send(new AddPermissionCommand({ FunctionName: "cfn-api-validation", StatementId: "gateway-validation", Action: "lambda:InvokeFunction", Principal: "apigateway.amazonaws.com", SourceArn: `arn:aws:execute-api:${region}:${accountId}:${apiId}/*/GET/check` }));
     const allowed = await fetch(invokeUrl); assert.equal(allowed.status, 200); assert.deepEqual(await allowed.json(), { version: "validation", path: "/check" });
   } finally {
@@ -613,7 +617,7 @@ test("API Gateway provider planning reports exact replacement properties and ord
     const stagePlan = stageProvider.plan(stage, { ...stage, StageName: "next" }, context("Stage")); assert.equal(stagePlan.action, "REPLACE"); assert.deepEqual(stagePlan.replacementProperties, ["StageName"]); assert.equal(stagePlan.replacementOrder, "CREATE_BEFORE_DELETE");
     const deploymentProvider = providers[API_GATEWAY_DEPLOYMENT_TYPE]; const deployment = deploymentProvider.canonicalize({ RestApiId: "api-one" }, context("Deployment"));
     const deploymentPlan = deploymentProvider.plan(deployment, { ...deployment, RestApiId: "api-two" }, context("Deployment")); assert.equal(deploymentPlan.action, "REPLACE"); assert.deepEqual(deploymentPlan.replacementProperties, ["RestApiId"]); assert.equal(deploymentPlan.replacementOrder, "CREATE_BEFORE_DELETE");
-    const deploymentDescriptionPlan = deploymentProvider.plan(deployment, { ...deployment, Description: "new immutable snapshot" }, context("Deployment")); assert.equal(deploymentDescriptionPlan.action, "REPLACE"); assert.deepEqual(deploymentDescriptionPlan.replacementProperties, ["Description"]);
+    const deploymentDescriptionPlan = deploymentProvider.plan(deployment, { ...deployment, Description: "renamed snapshot" }, context("Deployment")); assert.equal(deploymentDescriptionPlan.action, "UPDATE", "AWS documents Deployment Description updates as No interruption"); assert.deepEqual(deploymentDescriptionPlan.replacementProperties, []);
     const apiKeyProvider = providers[API_GATEWAY_API_KEY_TYPE]; const apiKey = apiKeyProvider.canonicalize({ Name: "planned-key", Value: "A".repeat(20) }, context("ApiKey"));
     const apiKeyValuePlan = apiKeyProvider.plan(apiKey, { ...apiKey, Value: "B".repeat(20) }, context("ApiKey")); assert.equal(apiKeyValuePlan.action, "REPLACE"); assert.deepEqual(apiKeyValuePlan.replacementProperties, ["Value"]); assert.equal(apiKeyValuePlan.replacementOrder, "CREATE_BEFORE_DELETE");
     const apiKeyNamePlan = apiKeyProvider.plan(apiKey, { ...apiKey, Name: "renamed-key" }, context("ApiKey")); assert.equal(apiKeyNamePlan.action, "REPLACE"); assert.deepEqual(apiKeyNamePlan.replacementProperties, ["Name"]);
@@ -626,7 +630,8 @@ test("API Gateway provider planning reports exact replacement properties and ord
     const modelProvider = providers[API_GATEWAY_MODEL_TYPE]; const model = modelProvider.canonicalize({ RestApiId: "api-one", Name: "Payload", ContentType: "application/json" }, context("Model")); const contentTypePlan = modelProvider.plan(model, { ...model, ContentType: "application/xml" }, context("Model")); assert.equal(contentTypePlan.action, "REPLACE"); assert.deepEqual(contentTypePlan.replacementProperties, ["ContentType"]);
     const validatorProvider = providers[API_GATEWAY_REQUEST_VALIDATOR_TYPE]; const validator = validatorProvider.canonicalize({ RestApiId: "api-one", Name: "validator" }, context("Validator")); const validatorNamePlan = validatorProvider.plan(validator, { ...validator, Name: "renamed" }, context("Validator")); assert.equal(validatorNamePlan.action, "REPLACE"); assert.deepEqual(validatorNamePlan.replacementProperties, ["Name"]);
     const accountProvider = providers[API_GATEWAY_ACCOUNT_TYPE]; assert.equal(accountProvider.plan(accountProvider.canonicalize({}, context("Account")), accountProvider.canonicalize({ CloudWatchRoleArn: `arn:aws:iam::${accountId}:role/logging` }, context("Account")), context("Account")).action, "UPDATE");
-    assert.ok(providers[API_GATEWAY_REST_API_TYPE].validate({ EndpointConfiguration: { Types: ["EDGE"] } }, context("Api")).some((value: any) => value.path === "Properties.EndpointConfiguration.Types"));
+    assert.deepEqual(providers[API_GATEWAY_REST_API_TYPE].validate({ EndpointConfiguration: { Types: ["EDGE"] } }, context("Api")), [], "EDGE is the AWS default endpoint type");
+    assert.ok(providers[API_GATEWAY_REST_API_TYPE].validate({ EndpointConfiguration: { Types: ["EDGE", "REGIONAL"] } }, context("Api")).some((value: any) => value.path === "Properties.EndpointConfiguration.Types"));
     const invalidNestedMethod = methodProvider.validate({
       RestApiId: "api-one", ResourceId: "resource", HttpMethod: "POST", AuthorizationType: "NONE",
       RequestModels: ["not-a-map"], RequestParameters: "not-a-map",
@@ -672,7 +677,7 @@ test("API Gateway common REST child providers use authoritative CRUD and depende
     const restProvider = providers[API_GATEWAY_REST_API_TYPE]; const deploymentProvider = providers[API_GATEWAY_DEPLOYMENT_TYPE]; const stageProvider = providers[API_GATEWAY_STAGE_TYPE];
     const rest = restProvider.canonicalize({ Name: "common-provider-api" }, context("CommonApi")); const restCreateContext = context("CommonApi", "CommonApiCreate"); const restResult = requireSuccess(await completeProviderCallbacks(callback => restProvider.create(rest, callback), restCreateContext)); const apiId = String(restResult.model.attributes.RestApiId);
     const deployment = deploymentProvider.canonicalize({ RestApiId: apiId }, context("CommonDeployment")); const deploymentCreateContext = context("CommonDeployment", "CommonDeploymentCreate"); const deploymentResult = requireSuccess(await completeProviderCallbacks(callback => deploymentProvider.create(deployment, callback), deploymentCreateContext)); const deploymentId = String(deploymentResult.model.attributes.DeploymentId);
-    const stage = stageProvider.canonicalize({ RestApiId: apiId, DeploymentId: deploymentId, StageName: "common" }, context("CommonStage")); const stageResult = requireSuccess(await stageProvider.create(stage, context("CommonStage")));
+    const stage = stageProvider.canonicalize({ RestApiId: apiId, DeploymentId: deploymentId, StageName: "common" }, context("CommonStage")); const stageResult = requireSuccess(await completeProviderCallbacks(callback => stageProvider.create(stage, callback), context("CommonStage")));
 
     const authorizerProvider = providers[API_GATEWAY_AUTHORIZER_TYPE]; const authorizer = authorizerProvider.canonicalize({ RestApiId: apiId, Name: "request-auth", Type: "REQUEST", AuthorizerUri: `arn:aws:apigateway:${region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${region}:${accountId}:function:authorizer/invocations`, AuthorizerResultTtlInSeconds: 0 }, context("Authorizer"));
     const authorizerResult = requireSuccess(await authorizerProvider.create(authorizer, context("Authorizer"))); const authorizerId = String(authorizerResult.model.attributes.AuthorizerId);

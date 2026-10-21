@@ -4,6 +4,7 @@ import { CURRENT_SCHEMA_VERSION, emptyRegion, emptyState, DEFAULT_ACCOUNT_ID } f
 import { migrateState } from "./migrations/index.js";
 import type { AccountState, RegionState, SimState } from "./types.js";
 import { normalizeTableItemKeys } from "./dynamodb/values.js";
+import { DRAFT4_PROFILE_VERSION } from "./apigateway-schema.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { normalizeIamState } from "./iam/model.js";
 import { emptySesRegionState } from "./migrations/v51-to-v52.js";
@@ -191,8 +192,9 @@ export class StateStore {
           if (!api.binaryMediaTypes) { api.binaryMediaTypes = []; normalized = true; }
           if (!api.gatewayResponses) { api.gatewayResponses = {}; normalized = true; }
           for (const stage of Object.values(api.stages ?? {})) { if (!stage.variables) { stage.variables = {}; normalized = true; } if (!stage.methodSettings) { stage.methodSettings = {}; normalized = true; } if (!stage.tags) { stage.tags = {}; normalized = true; } if (stage.tracingEnabled === undefined) { stage.tracingEnabled = false; normalized = true; } if (stage.cacheClusterEnabled === undefined) { stage.cacheClusterEnabled = false; normalized = true; } }
+          // APIGGAP-03: a deployment persisted without a snapshot is frozen once from the last persisted mutable API, including models and validators; an earlier historical version cannot be recovered.
           for (const deployment of Object.values(api.deployments ?? {})) if (!deployment.snapshot) {
-            deployment.snapshot = { rootResourceId: api.rootResourceId, resources: structuredClone(api.resources), authorizers: structuredClone(api.authorizers), policy: structuredClone(api.policy), binaryMediaTypes: structuredClone(api.binaryMediaTypes), minimumCompressionSize: api.minimumCompressionSize, gatewayResponses: structuredClone(api.gatewayResponses), apiKeySource: api.apiKeySource };
+            deployment.snapshot = { rootResourceId: api.rootResourceId, resources: structuredClone(api.resources), authorizers: structuredClone(api.authorizers), models: structuredClone(api.models), requestValidators: structuredClone(api.requestValidators), policy: structuredClone(api.policy), binaryMediaTypes: structuredClone(api.binaryMediaTypes), minimumCompressionSize: api.minimumCompressionSize, gatewayResponses: structuredClone(api.gatewayResponses), apiKeySource: api.apiKeySource, schemaProfileVersion: DRAFT4_PROFILE_VERSION };
             deployment.contentHash = createHash("sha256").update(JSON.stringify(deployment.snapshot)).digest("hex"); normalized = true;
           } else if (!deployment.snapshot.apiKeySource) { deployment.snapshot.apiKeySource = "HEADER"; normalized = true; }
         }

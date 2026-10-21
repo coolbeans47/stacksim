@@ -1328,6 +1328,8 @@ export interface RestApiState {
   minimumCompressionSize?: number;
   gatewayResponses?: Record<string, ApiGatewayResponseState>;
   apiKeySource?: "HEADER" | "AUTHORIZER";
+  /** Echoed endpoint type; EDGE (the AWS default) is accepted and served as REGIONAL locally. Absent only on APIs persisted before the field existed, which report REGIONAL. */
+  endpointConfiguration?: { types: Array<"EDGE" | "REGIONAL">; ipAddressType?: "ipv4" | "dualstack" };
 }
 
 export interface ApiDeploymentSnapshot {
@@ -2851,7 +2853,7 @@ export interface CognitoUserPoolConfigurationState {
   schemaAttributes: CognitoSchemaAttributeState[];
   accountRecoverySetting?: {
     recoveryMechanisms: Array<{
-      name: "verified_email" | "admin_only";
+      name: "verified_email" | "verified_phone_number" | "admin_only";
       priority: number;
     }>;
   };

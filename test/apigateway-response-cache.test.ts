@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -49,5 +51,38 @@ test("API Gateway response caching varies keys, expires, persists, invalidates, 
     const statistic = async (metricName: string) => (await cloudwatch.send(new GetMetricStatisticsCommand({ Namespace: "AWS/ApiGateway", MetricName: metricName, Dimensions: [{ Name: "ApiName", Value: "response-cache" }, { Name: "Stage", Value: "dev" }], StartTime: new Date(clock.now() - 3_600_000), EndTime: new Date(clock.now() + 1), Period: 60, Statistics: ["Sum"] }))).Datapoints?.reduce((sum, point) => sum + (point.Sum ?? 0), 0) ?? 0; assert.equal(await statistic("CacheHitCount"), 5); assert.equal(await statistic("CacheMissCount"), 9);
     const beforeConcurrent = backendCount; const concurrent = await Promise.all([invoke("parallel"), invoke("parallel")].map(async responsePromise => body(await responsePromise))); assert.ok(backendCount === beforeConcurrent + 1 || backendCount === beforeConcurrent + 2); const afterConcurrent = backendCount; const concurrentHit = await body(await invoke("parallel")); assert.ok(concurrent.some(value => value.value.count === concurrentHit.value.count)); assert.equal(backendCount, afterConcurrent, "concurrent fills must leave one authenticated usable entry");
     await apigateway.send(new UpdateStageCommand({ restApiId: api.id!, stageName: "dev", patchOperations: [{ op: "replace", path: "/cacheClusterEnabled", value: "false" }] })); assert.deepEqual(simulator.store.regionState("eu-west-1").apiGatewayResponseCaches, {}); const disabled = await body(await invoke("a")); assert.equal(disabled.value.count, afterConcurrent + 1, "disabled cache clusters must not serve durable entries");
+  } finally { clients.forEach(client => client.destroy()); await simulator.stop().catch(() => undefined); await new Promise<void>(resolve => backend.close(() => resolve())); await rm(root, { recursive: true, force: true }); if (previousOutbound === undefined) delete process.env.STACKSIM_ALLOW_OUTBOUND_HTTP; else process.env.STACKSIM_ALLOW_OUTBOUND_HTTP = previousOutbound; if (previousPrivate === undefined) delete process.env.STACKSIM_ALLOW_PRIVATE_HTTP; else process.env.STACKSIM_ALLOW_PRIVATE_HTTP = previousPrivate; }
+});
+
+function opensslExecutable(): string {
+  const candidates = process.platform === "win32" ? ["openssl", "C:/Program Files/Git/usr/bin/openssl.exe", "C:/Program Files/Git/mingw64/bin/openssl.exe"] : ["openssl"];
+  for (const candidate of candidates) { const probe = spawnSync(candidate, ["version"], { stdio: "ignore" }); if (!probe.error && probe.status === 0) return candidate; }
+  throw new Error("openssl is required for the HTTPS cache-control test");
+}
+
+test("APIGGAP-16 cache invalidation authorization sees the real listener transport in aws:SecureTransport", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-apig-cache-tls-")); const certificatePath = join(root, "certificate.pem"); const privateKeyPath = join(root, "private-key.pem");
+  execFileSync(opensslExecutable(), ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", privateKeyPath, "-out", certificatePath, "-subj", "/CN=127.0.0.1", "-days", "1"], { stdio: "ignore" });
+  let backendCount = 0; const backend = createServer((_req, res) => { backendCount++; res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ count: backendCount })); });
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region: "eu-west-1", authMode: "enforce", cdkBootstrap: true, apiGatewayTlsCertificatePath: certificatePath, apiGatewayTlsPrivateKeyPath: privateKeyPath }); const clients: Array<{ destroy(): void }> = [];
+  const previousOutbound = process.env.STACKSIM_ALLOW_OUTBOUND_HTTP; const previousPrivate = process.env.STACKSIM_ALLOW_PRIVATE_HTTP; process.env.STACKSIM_ALLOW_OUTBOUND_HTTP = "true"; process.env.STACKSIM_ALLOW_PRIVATE_HTTP = "true";
+  try {
+    await new Promise<void>(resolve => backend.listen(0, "127.0.0.1", resolve)); await simulator.start(); assert.equal(simulator.invokeProtocol, "https");
+    const apigateway = new APIGatewayClient(sdkOptions(simulator)); const iam = new IAMClient(sdkOptions(simulator)); const sts = new STSClient(sdkOptions(simulator)); clients.push(apigateway, iam, sts);
+    const api = await apigateway.send(new CreateRestApiCommand({ name: "tls-cache" })); const rootResource = (await apigateway.send(new GetResourcesCommand({ restApiId: api.id! }))).items!.find(resource => resource.path === "/")!; const items = await apigateway.send(new CreateResourceCommand({ restApiId: api.id!, parentId: rootResource.id!, pathPart: "items" }));
+    await apigateway.send(new PutMethodCommand({ restApiId: api.id!, resourceId: items.id!, httpMethod: "GET", authorizationType: "NONE" }));
+    await apigateway.send(new PutIntegrationCommand({ restApiId: api.id!, resourceId: items.id!, httpMethod: "GET", type: "HTTP_PROXY", integrationHttpMethod: "GET", uri: `http://127.0.0.1:${(backend.address() as any).port}/items` }));
+    await apigateway.send(new CreateDeploymentCommand({ restApiId: api.id!, stageName: "dev" }));
+    await apigateway.send(new UpdateStageCommand({ restApiId: api.id!, stageName: "dev", patchOperations: [{ op: "replace", path: "/cacheClusterEnabled", value: "true" }, { op: "replace", path: "/cacheClusterSize", value: "0.5" }, { op: "replace", path: "/*/*/caching/enabled", value: "true" }, { op: "replace", path: "/*/*/caching/requireAuthorizationForCacheControl", value: "true" }, { op: "replace", path: "/*/*/caching/unauthorizedCacheControlHeaderStrategy", value: "SUCCEED_WITH_RESPONSE_HEADER" }] }));
+    await iam.send(new CreateRoleCommand({ RoleName: "tls-invalidator", AssumeRolePolicyDocument: JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { AWS: "arn:aws:iam::000000000000:root" }, Action: "sts:AssumeRole" }] }) }));
+    const policy = await iam.send(new CreatePolicyCommand({ PolicyName: "InvalidateOverTls", PolicyDocument: JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "execute-api:InvalidateCache", Resource: `arn:aws:execute-api:eu-west-1:000000000000:${api.id}/dev/GET/items`, Condition: { Bool: { "aws:SecureTransport": "true" } } }] }) }));
+    await iam.send(new AttachRolePolicyCommand({ RoleName: "tls-invalidator", PolicyArn: policy.Policy!.Arn! }));
+    const assumed = await sts.send(new AssumeRoleCommand({ RoleArn: "arn:aws:iam::000000000000:role/tls-invalidator", RoleSessionName: "tls" }));
+    const sessionCredentials = { accessKeyId: assumed.Credentials!.AccessKeyId!, secretAccessKey: assumed.Credentials!.SecretAccessKey!, sessionToken: assumed.Credentials!.SessionToken! };
+    const url = `https://127.0.0.1:${simulator.invokePort}/${api.id}/dev/items`;
+    const get = (headers: Record<string, string> = {}) => new Promise<{ status?: number; warning?: string; count: number }>((resolve, reject) => { const request = httpsRequest(url, { method: "GET", rejectUnauthorized: false, headers }, res => { const chunks: Buffer[] = []; res.on("data", chunk => chunks.push(Buffer.from(chunk))); res.on("end", () => resolve({ status: res.statusCode, warning: res.headers.warning as string | undefined, count: JSON.parse(Buffer.concat(chunks).toString("utf8")).count })); }); request.on("error", reject); request.end(); });
+    assert.equal((await get()).count, 1); assert.equal((await get()).count, 1, "the second request is a cache hit");
+    const invalidated = await get({ ...signedHeaders(url, sessionCredentials, new Date()), "cache-control": "max-age=0" });
+    assert.equal(invalidated.status, 200); assert.equal(invalidated.warning, undefined); assert.equal(invalidated.count, 2, "a policy requiring aws:SecureTransport=true authorizes invalidation over HTTPS");
   } finally { clients.forEach(client => client.destroy()); await simulator.stop().catch(() => undefined); await new Promise<void>(resolve => backend.close(() => resolve())); await rm(root, { recursive: true, force: true }); if (previousOutbound === undefined) delete process.env.STACKSIM_ALLOW_OUTBOUND_HTTP; else process.env.STACKSIM_ALLOW_OUTBOUND_HTTP = previousOutbound; if (previousPrivate === undefined) delete process.env.STACKSIM_ALLOW_PRIVATE_HTTP; else process.env.STACKSIM_ALLOW_PRIVATE_HTTP = previousPrivate; }
 });

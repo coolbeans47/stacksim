@@ -21,6 +21,7 @@ import {
 } from "./contract.js";
 import { invokeJsonService } from "./service-invoker.js";
 import { createApiGatewayRestCommonCloudFormationProviders } from "./apigateway-rest-common.js";
+import { parseRestAwsIntegrationUri } from "../../apigateway/aws-integration-support.js";
 
 export * from "./apigateway-rest-common.js";
 
@@ -51,8 +52,15 @@ export interface ApiGatewayRestApiModel {
   readonly Mode: "merge" | "overwrite";
   readonly Parameters: Readonly<Record<string, string>>;
   readonly FailOnWarnings: boolean;
-  readonly EndpointConfiguration: { readonly Types: readonly ["REGIONAL"] };
+  /** Omitted when the template omits it, so the control plane applies its own default endpoint type. */
+  readonly EndpointConfiguration?: ApiGatewayEndpointConfigurationModel;
   readonly Tags: readonly { readonly Key: string; readonly Value: string }[];
+}
+
+export interface ApiGatewayEndpointConfigurationModel {
+  readonly Types: readonly ("EDGE" | "REGIONAL" | "PRIVATE")[];
+  readonly VpcEndpointIds?: readonly string[];
+  readonly IpAddressType?: "ipv4" | "dualstack";
 }
 
 export interface ApiGatewayResourceModel {
@@ -108,9 +116,33 @@ export interface ApiGatewayMethodModel {
   readonly MethodResponses: readonly ApiGatewayMethodResponseModel[];
 }
 
+export interface ApiGatewayDeploymentCanarySettingsModel {
+  readonly PercentTraffic: number;
+  readonly StageVariableOverrides: Readonly<Record<string, string>>;
+  readonly UseStageCache: boolean;
+}
+
+/** `StageDescription` with its stage-wide method options folded into the `/*` `*` MethodSettings entry. */
+export interface ApiGatewayDeploymentStageDescriptionModel {
+  readonly Description: string;
+  readonly Variables: Readonly<Record<string, string>>;
+  readonly MethodSettings: readonly ApiGatewayMethodSettingModel[];
+  readonly AccessLogSetting?: { readonly DestinationArn?: string; readonly Format?: string };
+  readonly CacheClusterEnabled: boolean;
+  readonly CacheClusterSize?: string;
+  readonly CanarySetting?: ApiGatewayDeploymentCanarySettingsModel;
+  readonly ClientCertificateId?: string;
+  readonly DocumentationVersion?: string;
+  readonly TracingEnabled: boolean;
+  readonly Tags: readonly { readonly Key: string; readonly Value: string }[];
+}
+
 export interface ApiGatewayDeploymentModel {
   readonly RestApiId: string;
   readonly Description: string;
+  readonly StageName?: string;
+  readonly StageDescription?: ApiGatewayDeploymentStageDescriptionModel;
+  readonly DeploymentCanarySettings?: ApiGatewayDeploymentCanarySettingsModel;
 }
 
 export interface ApiGatewayMethodSettingModel {
@@ -184,7 +216,7 @@ export const API_GATEWAY_REST_API_SCHEMA: ProviderSchema = Object.freeze({
     Mode: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
     Parameters: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
     FailOnWarnings: Object.freeze({ valueType: "boolean", updateBehavior: "MUTABLE" }),
-    EndpointConfiguration: Object.freeze({ valueType: "object", updateBehavior: "NOT_SUPPORTED", description: "Only the simulator's REGIONAL endpoint is accepted." }),
+    EndpointConfiguration: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE", description: "EDGE, REGIONAL, or PRIVATE. Every type is served by the local endpoint; the declared type is passed to the REST control plane." }),
     Tags: Object.freeze({ valueType: "array", updateBehavior: "MUTABLE" }),
   }),
   ref: Object.freeze({ supported: true, valueType: "string", description: "REST API identifier." }),
@@ -242,7 +274,10 @@ export const API_GATEWAY_DEPLOYMENT_SCHEMA: ProviderSchema = Object.freeze({
   unknownProperties: "REJECT",
   properties: Object.freeze({
     RestApiId: Object.freeze({ valueType: "string", required: true, updateBehavior: "REPLACEMENT" }),
-    Description: Object.freeze({ valueType: "string", updateBehavior: "REPLACEMENT" }),
+    Description: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
+    StageName: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE", description: "Creates the named stage, or points an existing stage at this deployment, as CreateDeployment does. Deleting the deployment deletes the stage while it still serves this deployment." }),
+    StageDescription: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE", description: "Settings for the StageName stage, including TracingEnabled through the XRY-01 X-Ray service." }),
+    DeploymentCanarySettings: Object.freeze({ valueType: "object", updateBehavior: "REPLACEMENT", description: "Deploys this deployment as the canary of the existing StageName stage." }),
   }),
   ref: Object.freeze({ supported: true, valueType: "string", description: "Deployment identifier." }),
   attributes: Object.freeze({ DeploymentId: Object.freeze({ valueType: "string" }) }),
@@ -444,10 +479,20 @@ function restApiIssues(properties: unknown): ProviderValidationIssue[] {
     } catch { issues.push(issue("Properties.Policy", "Policy must be an object or a JSON object string")); }
   }
   if (isObject(properties.EndpointConfiguration)) {
-    const keys = Object.keys(properties.EndpointConfiguration);
-    if (keys.some(key => key !== "Types")) for (const key of keys.filter(key => key !== "Types")) issues.push(issue(`Properties.EndpointConfiguration.${key}`, `EndpointConfiguration does not support ${key}`, "UnsupportedProperty"));
-    const types = properties.EndpointConfiguration.Types;
-    if (!Array.isArray(types) || types.length !== 1 || types[0] !== "REGIONAL") issues.push(issue("Properties.EndpointConfiguration.Types", "Only a single REGIONAL endpoint type is available locally"));
+    const config = properties.EndpointConfiguration; const path = "Properties.EndpointConfiguration";
+    for (const key of Object.keys(config)) if (!["Types", "VpcEndpointIds", "IpAddressType"].includes(key)) issues.push(issue(`${path}.${key}`, `EndpointConfiguration does not support ${key}`, "UnsupportedProperty"));
+    const types = config.Types;
+    if (types !== undefined && (!Array.isArray(types) || types.length !== 1 || !["EDGE", "REGIONAL", "PRIVATE"].includes(types[0]))) issues.push(issue(`${path}.Types`, "EndpointConfiguration.Types must contain exactly one of EDGE, REGIONAL, or PRIVATE"));
+    /* The REST control plane serves EDGE and REGIONAL locally and rejects PRIVATE; fail before any mutation with the same boundary. */
+    else if (Array.isArray(types) && types[0] === "PRIVATE") issues.push(issue(`${path}.Types`, "PRIVATE REST API endpoints are not supported by StackSim; use REGIONAL or EDGE"));
+    if (config.VpcEndpointIds !== undefined) {
+      if (!Array.isArray(config.VpcEndpointIds)) issues.push(issue(`${path}.VpcEndpointIds`, "VpcEndpointIds must be an array", "InvalidType"));
+      else {
+        config.VpcEndpointIds.forEach((value: unknown, index: number) => { if (typeof value !== "string" || !/^vpce-[0-9a-z]+$/.test(value)) issues.push(issue(`${path}.VpcEndpointIds[${index}]`, "VpcEndpointIds entries must be VPC endpoint IDs such as vpce-0123456789abcdef0")); });
+        if (config.VpcEndpointIds.length && !(Array.isArray(types) && types[0] === "PRIVATE")) issues.push(issue(`${path}.VpcEndpointIds`, "VpcEndpointIds can be associated only with a PRIVATE endpoint"));
+      }
+    }
+    if (config.IpAddressType !== undefined && !["ipv4", "dualstack"].includes(config.IpAddressType)) issues.push(issue(`${path}.IpAddressType`, "IpAddressType must be ipv4 or dualstack"));
   }
   validateTagProperty(properties.Tags, "Properties.Tags", "A REST API", issues);
   return issues;
@@ -471,15 +516,51 @@ function canonicalRestApi(properties: unknown, context: ProviderContext): ApiGat
     Mode: (input.Mode ?? "merge") as "merge" | "overwrite",
     Parameters: stringMap(input.Parameters),
     FailOnWarnings: Boolean(input.FailOnWarnings ?? false),
-    EndpointConfiguration: Object.freeze({ Types: Object.freeze(["REGIONAL"] as const) }),
+    ...(isObject(input.EndpointConfiguration) ? { EndpointConfiguration: canonicalEndpointConfiguration(input.EndpointConfiguration) } : {}),
     Tags: canonicalTags(input.Tags),
   });
+}
+
+/** AWS defaults an endpoint configuration without Types to EDGE. */
+function canonicalEndpointConfiguration(value: JsonObject): ApiGatewayEndpointConfigurationModel {
+  const ids = Array.isArray(value.VpcEndpointIds) ? [...new Set(value.VpcEndpointIds.map(String))].sort() : [];
+  return Object.freeze({
+    Types: Object.freeze([...(Array.isArray(value.Types) ? value.Types : ["EDGE"])].map(String)) as ApiGatewayEndpointConfigurationModel["Types"],
+    ...(ids.length ? { VpcEndpointIds: Object.freeze(ids) } : {}),
+    ...(value.IpAddressType === undefined ? {} : { IpAddressType: value.IpAddressType }),
+  });
+}
+
+function endpointConfigurationFromRaw(raw: unknown): ApiGatewayEndpointConfigurationModel | undefined {
+  if (!isObject(raw) || !Array.isArray(raw.types)) return undefined;
+  return canonicalEndpointConfiguration({ Types: raw.types, VpcEndpointIds: raw.vpcEndpointIds, IpAddressType: raw.ipAddressType });
+}
+
+function endpointConfigurationInput(value: ApiGatewayEndpointConfigurationModel | undefined): JsonObject | undefined {
+  return value === undefined ? undefined : withoutUndefined({ types: [...value.Types], vpcEndpointIds: value.VpcEndpointIds ? [...value.VpcEndpointIds] : undefined, ipAddressType: value.IpAddressType });
+}
+
+/** UpdateRestApi patch operations that move the observed endpoint configuration to the declared one. */
+function endpointConfigurationPatch(raw: JsonObject, desired: ApiGatewayEndpointConfigurationModel | undefined): JsonObject[] {
+  if (desired === undefined) return [];
+  const current = endpointConfigurationFromRaw(raw.endpointConfiguration);
+  if (same(current, desired)) return [];
+  const operations: JsonObject[] = [];
+  const currentType = current?.Types[0] ?? "EDGE";
+  if (currentType !== desired.Types[0]) operations.push({ op: "replace", path: `/endpointConfiguration/types/${currentType}`, value: desired.Types[0] });
+  const currentIds = new Set(current?.VpcEndpointIds ?? []); const desiredIds = new Set(desired.VpcEndpointIds ?? []);
+  for (const id of currentIds) if (!desiredIds.has(id)) operations.push({ op: "remove", path: "/endpointConfiguration/vpcEndpointIds", value: id });
+  for (const id of desiredIds) if (!currentIds.has(id)) operations.push({ op: "add", path: "/endpointConfiguration/vpcEndpointIds", value: id });
+  if (desired.IpAddressType !== undefined && current?.IpAddressType !== desired.IpAddressType) operations.push({ op: "replace", path: "/endpointConfiguration/ipAddressType", value: desired.IpAddressType });
+  return operations;
 }
 
 function importPath(base: string, desired: ApiGatewayRestApiModel, create: boolean): string {
   const query = new URLSearchParams(); query.set("mode", create ? "import" : desired.Mode);
   if (desired.FailOnWarnings) query.set("failonwarnings", "true");
   for (const [key, value] of Object.entries(desired.Parameters)) query.set(`parameters[${key}]`, value);
+  /* ImportRestApi takes the endpoint type as an import parameter; an explicit Parameters entry wins. */
+  if (create && desired.EndpointConfiguration && !Object.hasOwn(desired.Parameters, "endpointConfigurationTypes")) query.set("parameters[endpointConfigurationTypes]", desired.EndpointConfiguration.Types[0]);
   return `${base}?${query.toString()}`;
 }
 
@@ -516,7 +597,7 @@ function restApiModel(raw: JsonObject): ApiGatewayRestApiModel {
     ...(raw.minimumCompressionSize === undefined ? {} : { MinimumCompressionSize: Number(raw.minimumCompressionSize) }),
     ...(policy === undefined ? {} : { Policy: canonicalValue(policy) }),
     Mode: "merge", Parameters: Object.freeze({}), FailOnWarnings: false,
-    EndpointConfiguration: Object.freeze({ Types: Object.freeze(["REGIONAL"] as const) }),
+    ...(endpointConfigurationFromRaw(raw.endpointConfiguration) ? { EndpointConfiguration: endpointConfigurationFromRaw(raw.endpointConfiguration) } : {}),
     Tags: canonicalTags(Object.entries(raw.tags ?? {}).map(([Key, Value]) => ({ Key, Value: String(Value) }))),
   };
 }
@@ -659,6 +740,7 @@ async function createRestApiMutation(service: ApiGatewayService, desired: ApiGat
         binaryMediaTypes: desired.BinaryMediaTypes,
         minimumCompressionSize: desired.MinimumCompressionSize,
         policy: desired.Policy,
+        endpointConfiguration: endpointConfigurationInput(desired.EndpointConfiguration),
         tags: restApiTagMap(desired.Tags),
       });
   return String(raw.id);
@@ -705,7 +787,7 @@ async function reconcileRestApiCreate(service: ApiGatewayService, apiId: string,
   return restApiSuccessFromRaw(apiId, desired, current);
 }
 
-async function reconcileRestApiUpdate(service: ApiGatewayService, apiId: string, desired: ApiGatewayRestApiModel, context: ProviderContext, options: ApiGatewayRestProviderOptions, phase: "body" | "settings" | "tags", marker?: string): Promise<ProviderUpdateResult<ApiGatewayRestApiModel>> {
+async function reconcileRestApiUpdate(service: ApiGatewayService, apiId: string, desired: ApiGatewayRestApiModel, context: ProviderContext, options: ApiGatewayRestProviderOptions, phase: "body" | "settings" | "tags", marker?: string, endpointChanged = false): Promise<ProviderUpdateResult<ApiGatewayRestApiModel>> {
   const current = await observeRestApi(service, apiId);
   if (!current) throw new AwsError("NotFoundException", `REST API ${apiId} was not found`, 404);
   if (phase === "body") {
@@ -725,6 +807,9 @@ async function reconcileRestApiUpdate(service: ApiGatewayService, apiId: string,
     if (!restApiSettingsMatch(current, desired)) {
       await call(service, "PATCH", `/restapis/${segment(apiId)}`, { patchOperations: restApiPatch(desired) });
     }
+    /* Only a declared endpoint change patches the endpoint, so a control plane that serves every type locally cannot loop the settings phase. */
+    const endpointOperations = endpointChanged ? endpointConfigurationPatch(current, desired.EndpointConfiguration) : [];
+    if (endpointOperations.length) await call(service, "PATCH", `/restapis/${segment(apiId)}`, { patchOperations: endpointOperations });
     return restApiInProgress(apiId, "UPDATE", "tags", marker);
   }
   if (await mutateOneRestApiTagDelta(service, apiId, restApiModel(current).Tags, desired.Tags, context)) return restApiInProgress(apiId, "UPDATE", "tags", marker);
@@ -781,7 +866,7 @@ export function createApiGatewayRestApiProvider(service: ApiGatewayService, opti
         const bodyChanged = restApiBodyChanged(previous, desired) && (desired.Body !== undefined || desired.BodyS3Location !== undefined);
         const phase = checkpoint?.phase as "body" | "settings" | "tags" | undefined;
         if (phase === "body" && !bodyChanged) return restApiInProgress(physicalId, "UPDATE", "settings");
-        return await reconcileRestApiUpdate(service, physicalId, desired, context, options, phase ?? (bodyChanged ? "body" : "settings"), checkpoint?.marker);
+        return await reconcileRestApiUpdate(service, physicalId, desired, context, options, phase ?? (bodyChanged ? "body" : "settings"), checkpoint?.marker, !same(previous.EndpointConfiguration, desired.EndpointConfiguration));
       } catch (error) { return providerFailure(error); }
     },
     async delete(physicalId, _previous, context): Promise<ProviderDeleteResult> {
@@ -886,14 +971,10 @@ function methodIssues(properties: unknown, service?: ApiGatewayService): Provide
     const uri = typeof integration.Uri === "string" ? integration.Uri : "";
     const lambdaUri = /^arn:aws:apigateway:([a-z0-9-]+):lambda:path\/2015-03-31\/functions\/(arn:aws:lambda:([a-z0-9-]+):(\d{12}):function:[A-Za-z0-9-_]+(?::[A-Za-z0-9-_]+)?)\/invocations$/.exec(uri);
     if (integration.Type === "AWS_PROXY" && !lambdaUri) issues.push(issue(`${path}.Uri`, "AWS_PROXY integrations must use a Lambda invocation URI"));
+    /* The same target table the REST control plane uses. Credentials stay optional, as in PutIntegration: a missing execution role surfaces at invocation. */
     if (integration.Type === "AWS" && uri && !lambdaUri) {
-      const target = /^arn:aws:apigateway:([a-z0-9-]+):(dynamodb|sqs):(action|path)\/?(.+)$/.exec(uri);
-      const dynamoActions = new Set(["PutItem", "GetItem", "UpdateItem", "DeleteItem", "Query", "Scan", "BatchGetItem", "BatchWriteItem", "TransactGetItems", "TransactWriteItems"]);
-      if (!target) issues.push(issue(`${path}.Uri`, "AWS integrations support only local Lambda, DynamoDB, and SQS targets"));
-      else if (target[2] === "dynamodb" && (target[3] !== "action" || !dynamoActions.has(target[4]))) issues.push(issue(`${path}.Uri`, `DynamoDB integration action ${target[4]} is not supported`));
-      else if (target[2] === "sqs" && target[3] === "action" && !/^(?:SendMessage|SendMessageBatch)(?:&.*)?$/.test(target[4])) issues.push(issue(`${path}.Uri`, `SQS integration action ${target[4]} is not supported`));
-      else if (target[2] === "sqs" && target[3] === "path" && !/^\d{12}\/[^/]+$/.test(target[4])) issues.push(issue(`${path}.Uri`, "SQS path integrations require account-id/queue-name"));
-      if (!integration.Credentials) issues.push(issue(`${path}.Credentials`, "DynamoDB and SQS integrations require an API Gateway execution role"));
+      const target = parseRestAwsIntegrationUri(uri);
+      if ("error" in target) issues.push(issue(`${path}.Uri`, target.error));
     }
     if (["HTTP", "HTTP_PROXY"].includes(integration.Type) && uri) {
       try { const target = new URL(uri); if (!new Set(["http:", "https:"]).has(target.protocol) || target.username || target.password || target.hash) throw new Error(); }
@@ -905,6 +986,8 @@ function methodIssues(properties: unknown, service?: ApiGatewayService): Provide
     if (integration.ContentHandling !== undefined && !["CONVERT_TO_BINARY", "CONVERT_TO_TEXT"].includes(integration.ContentHandling)) issues.push(issue(`${path}.ContentHandling`, "Invalid ContentHandling"));
     if (typeof integration.TimeoutInMillis === "number" && (!Number.isInteger(integration.TimeoutInMillis) || integration.TimeoutInMillis < 50 || integration.TimeoutInMillis > 29_000)) issues.push(issue(`${path}.TimeoutInMillis`, "TimeoutInMillis must be an integer from 50 through 29000"));
     validateStringMap(integration.RequestParameters, `${path}.RequestParameters`, issues); validateStringMap(integration.RequestTemplates, `${path}.RequestTemplates`, issues);
+    /* Same target grammar PutIntegration enforces, so a bad mapping fails validation instead of mid-deployment. */
+    if (isObject(integration.RequestParameters)) for (const target of Object.keys(integration.RequestParameters)) if (!/^integration\.request\.(?:header|querystring|path)\.[A-Za-z0-9._-]+$/.test(target)) issues.push(issue(`${path}.RequestParameters.${target}`, `Integration request parameter ${target} must be integration.request.header, querystring, or path followed by a name`));
     if (Array.isArray(integration.CacheKeyParameters)) integration.CacheKeyParameters.forEach((value, index) => { if (typeof value !== "string") issues.push(issue(`${path}.CacheKeyParameters[${index}]`, "CacheKeyParameters values must be strings", "InvalidType")); });
     else if (integration.CacheKeyParameters !== undefined) issues.push(issue(`${path}.CacheKeyParameters`, "CacheKeyParameters must be an array", "InvalidType"));
     if (isObject(integration.TlsConfig)) {
@@ -1289,15 +1372,53 @@ export function createApiGatewayMethodProvider(service: ApiGatewayService): Prod
   };
 }
 
+/** StageDescription's stage-wide method options; CloudFormation applies them to every method (`/*` `*`). */
+const STAGE_DESCRIPTION_METHOD_OPTIONS = Object.freeze(["CacheDataEncrypted", "CacheTtlInSeconds", "CachingEnabled", "DataTraceEnabled", "LoggingLevel", "MetricsEnabled", "ThrottlingBurstLimit", "ThrottlingRateLimit"]);
+const STAGE_DESCRIPTION_KEYS = new Set(["AccessLogSetting", "CacheClusterEnabled", "CacheClusterSize", "CanarySetting", "ClientCertificateId", "Description", "DocumentationVersion", "MethodSettings", "Tags", "TracingEnabled", "Variables", ...STAGE_DESCRIPTION_METHOD_OPTIONS]);
+
 function deploymentIssues(properties: unknown): ProviderValidationIssue[] {
   const issues = validateDeclaredProperties(properties, API_GATEWAY_DEPLOYMENT_SCHEMA);
-  if (isObject(properties) && typeof properties.RestApiId === "string" && !properties.RestApiId) issues.push(issue("Properties.RestApiId", "RestApiId must not be empty"));
-  return issues;
+  if (!isObject(properties)) return issues;
+  if (typeof properties.RestApiId === "string" && !properties.RestApiId) issues.push(issue("Properties.RestApiId", "RestApiId must not be empty"));
+  if (typeof properties.StageName === "string" && !/^[A-Za-z0-9_-]{1,128}$/.test(properties.StageName)) issues.push(issue("Properties.StageName", "StageName must contain 1 to 128 letters, digits, underscores, or hyphens"));
+  for (const name of ["StageDescription", "DeploymentCanarySettings"]) if (properties[name] !== undefined && properties.StageName === undefined) issues.push(issue(`Properties.${name}`, `${name} requires StageName`));
+  if (isObject(properties.StageDescription)) {
+    const description = properties.StageDescription; const base = "Properties.StageDescription";
+    for (const key of Object.keys(description)) if (!STAGE_DESCRIPTION_KEYS.has(key)) issues.push(issue(`${base}.${key}`, `StageDescription does not support ${key}`, "UnsupportedProperty"));
+    methodSettingValueIssues(description, base, issues);
+    stageSettingIssues(description, base, false, issues);
+  }
+  canaryIssues(properties.DeploymentCanarySettings, "Properties.DeploymentCanarySettings", false, issues);
+  return dedupeIssues(issues);
+}
+
+function canonicalDeploymentCanary(value: JsonObject): ApiGatewayDeploymentCanarySettingsModel {
+  return Object.freeze({ PercentTraffic: Number(value.PercentTraffic ?? 0), StageVariableOverrides: stringMap(value.StageVariableOverrides), UseStageCache: Boolean(value.UseStageCache ?? false) });
+}
+
+function canonicalStageDescription(value: JsonObject): ApiGatewayDeploymentStageDescriptionModel {
+  const stageWide: JsonObject = { ResourcePath: "/*", HttpMethod: "*" };
+  for (const key of STAGE_DESCRIPTION_METHOD_OPTIONS) if (value[key] !== undefined) stageWide[key] = value[key];
+  const access = value.AccessLogSetting as JsonObject | undefined;
+  return Object.freeze({
+    Description: String(value.Description ?? ""), Variables: stringMap(value.Variables),
+    MethodSettings: canonicalMethodSettings([...(Object.keys(stageWide).length > 2 ? [stageWide] : []), ...(value.MethodSettings ?? [])]),
+    ...(access === undefined ? {} : { AccessLogSetting: Object.freeze({ ...(access.DestinationArn === undefined ? {} : { DestinationArn: String(access.DestinationArn) }), ...(access.Format === undefined ? {} : { Format: String(access.Format) }) }) }),
+    CacheClusterEnabled: Boolean(value.CacheClusterEnabled ?? false), ...(value.CacheClusterSize === undefined ? {} : { CacheClusterSize: String(value.CacheClusterSize) }),
+    ...(value.CanarySetting === undefined ? {} : { CanarySetting: canonicalDeploymentCanary(value.CanarySetting) }),
+    ...(value.ClientCertificateId === undefined ? {} : { ClientCertificateId: String(value.ClientCertificateId) }), ...(value.DocumentationVersion === undefined ? {} : { DocumentationVersion: String(value.DocumentationVersion) }),
+    TracingEnabled: Boolean(value.TracingEnabled ?? false), Tags: canonicalTags(value.Tags),
+  });
 }
 
 function canonicalDeployment(properties: unknown): ApiGatewayDeploymentModel {
   const issues = deploymentIssues(properties); throwIssues(issues); const input = properties as JsonObject;
-  return Object.freeze({ RestApiId: String(input.RestApiId), Description: String(input.Description ?? "") });
+  return Object.freeze({
+    RestApiId: String(input.RestApiId), Description: String(input.Description ?? ""),
+    ...(input.StageName === undefined ? {} : { StageName: String(input.StageName) }),
+    ...(input.StageDescription === undefined ? {} : { StageDescription: canonicalStageDescription(input.StageDescription) }),
+    ...(input.DeploymentCanarySettings === undefined ? {} : { DeploymentCanarySettings: canonicalDeploymentCanary(input.DeploymentCanarySettings) }),
+  });
 }
 
 async function deploymentReadModel(service: ApiGatewayService, apiId: string, deploymentId: string): Promise<ProviderReadModel<ApiGatewayDeploymentModel>> {
@@ -1305,13 +1426,18 @@ async function deploymentReadModel(service: ApiGatewayService, apiId: string, de
   return { physicalId: physical("deployment", [apiId, deploymentId]), properties: { RestApiId: apiId, Description: String(raw.description ?? "") }, attributes: { DeploymentId: deploymentId } };
 }
 
+/** The deployment snapshot itself only records RestApiId and Description; the stage properties are reconciled against the stage. */
+function deploymentSuccess(model: ProviderReadModel<ApiGatewayDeploymentModel>, desired: ApiGatewayDeploymentModel): ProviderSuccess<ApiGatewayDeploymentModel> {
+  return { status: "SUCCESS", physicalId: model.physicalId, model: { ...model, properties: desired } };
+}
+
 function deploymentOperationToken(context: ProviderContext): string {
   return createHash("sha256").update(`${API_GATEWAY_DEPLOYMENT_TYPE}\0${context.stackId}\0${context.logicalId}\0${context.idempotencyKey}`).digest("hex");
 }
 
-function deploymentInProgress(apiId: string, deploymentId: string, token: string): ProviderInProgress {
+function deploymentInProgress(apiId: string, deploymentId: string, token: string, stage: boolean): ProviderInProgress {
   const physicalId = physical("deployment", [apiId, deploymentId]);
-  return { status: "IN_PROGRESS", callbackAfterMs: 25, checkpoint: { schemaVersion: 1, physicalId, callbackContext: { stateMachine: "apigateway-deployment-v1", apiId, deploymentId, token } } };
+  return { status: "IN_PROGRESS", callbackAfterMs: 25, checkpoint: { schemaVersion: 1, physicalId, callbackContext: { stateMachine: "apigateway-deployment-v1", apiId, deploymentId, token, ...(stage ? { phase: "stage" } : {}) } } };
 }
 
 async function operationDeployment(service: ApiGatewayService, desired: ApiGatewayDeploymentModel, token: string): Promise<JsonObject | undefined> {
@@ -1324,30 +1450,85 @@ async function operationDeployment(service: ApiGatewayService, desired: ApiGatew
   return candidate;
 }
 
+function deploymentCanaryInput(value: ApiGatewayDeploymentCanarySettingsModel): JsonObject {
+  return { percentTraffic: value.PercentTraffic, stageVariableOverrides: value.StageVariableOverrides, useStageCache: value.UseStageCache };
+}
+
+/** The stage a Deployment's StageName and StageDescription declare. A canary deployment leaves the stage serving its main deployment. */
+function deploymentStageModel(desired: ApiGatewayDeploymentModel, deploymentId: string, current: ApiGatewayStageModel): ApiGatewayStageModel {
+  const description = desired.StageDescription; const canary = desired.DeploymentCanarySettings;
+  return canonicalStage(withoutUndefined({
+    RestApiId: desired.RestApiId, StageName: desired.StageName, DeploymentId: canary ? current.DeploymentId : deploymentId,
+    Description: description?.Description, Variables: description?.Variables, MethodSettings: description?.MethodSettings ?? [],
+    AccessLogSetting: description?.AccessLogSetting, CacheClusterEnabled: description?.CacheClusterEnabled, CacheClusterSize: description?.CacheClusterSize,
+    CanarySetting: canary ? { DeploymentId: deploymentId, ...canary } : description?.CanarySetting ? { DeploymentId: current.CanarySetting?.DeploymentId ?? deploymentId, ...description.CanarySetting } : undefined,
+    ClientCertificateId: description?.ClientCertificateId, DocumentationVersion: description?.DocumentationVersion, TracingEnabled: description?.TracingEnabled, Tags: description?.Tags ?? [],
+  }));
+}
+
+/**
+ * Bring the StageName stage to the declared state. Without a StageDescription (now or before), CloudFormation only points the
+ * stage at this deployment, which `repoint` requests on create and on a StageName change. Every step observes first, so a replay
+ * after a lost response repeats nothing.
+ */
+async function reconcileDeploymentStage(service: ApiGatewayService, desired: ApiGatewayDeploymentModel, deploymentId: string, context: ProviderContext, options: { readonly repoint: boolean; readonly reset: boolean }): Promise<void> {
+  if (desired.StageName === undefined) return;
+  let current: ApiGatewayStageModel | undefined;
+  try { current = (await stageReadModel(service, desired.RestApiId, desired.StageName)).properties; } catch (error) { if (!isMissing(error)) throw error; }
+  if (!current) {
+    await call(service, "POST", `/restapis/${segment(desired.RestApiId)}/stages`, { stageName: desired.StageName, deploymentId });
+    current = (await stageReadModel(service, desired.RestApiId, desired.StageName)).properties;
+  }
+  let target: ApiGatewayStageModel;
+  if (desired.StageDescription !== undefined || options.reset) target = deploymentStageModel(desired, deploymentId, current);
+  else if (!options.repoint) return;
+  else target = desired.DeploymentCanarySettings ? { ...current, CanarySetting: Object.freeze({ DeploymentId: deploymentId, ...desired.DeploymentCanarySettings }) } : { ...current, DeploymentId: deploymentId };
+  if (!same(current, target)) await updateStageState(service, current, target, context);
+}
+
+/** Undo what this deployment contributed to a stage it named: the stage itself while it serves this deployment, or only the canary. */
+async function releaseDeploymentStage(service: ApiGatewayService, apiId: string, stageName: string, deploymentId: string): Promise<void> {
+  let raw: JsonObject;
+  try { raw = await call<JsonObject>(service, "GET", `/restapis/${segment(apiId)}/stages/${segment(stageName)}`); } catch (error) { if (isMissing(error)) return; throw error; }
+  const path = `/restapis/${segment(apiId)}/stages/${segment(stageName)}`;
+  try {
+    if (raw.deploymentId === deploymentId) await call(service, "DELETE", path);
+    else if (raw.canarySettings?.deploymentId === deploymentId) await call(service, "PATCH", path, { patchOperations: [{ op: "remove", path: "/canarySettings" }] });
+  } catch (error) { if (!isMissing(error)) throw error; }
+}
+
 export function createApiGatewayDeploymentProvider(service: ApiGatewayService): ProductionResourceProvider<ApiGatewayDeploymentModel> {
   const names = Object.keys(API_GATEWAY_DEPLOYMENT_SCHEMA.properties).sort();
   return {
-    typeName: API_GATEWAY_DEPLOYMENT_TYPE, providerVersion: 2, visibility: "production", schema: API_GATEWAY_DEPLOYMENT_SCHEMA,
+    typeName: API_GATEWAY_DEPLOYMENT_TYPE, providerVersion: 3, visibility: "production", schema: API_GATEWAY_DEPLOYMENT_SCHEMA,
     validate(properties) { return deploymentIssues(properties); }, canonicalize(properties) { return canonicalDeployment(properties); },
-    plan(previous, desired) { return plan(previous, desired, names, ["Description", "RestApiId"]); },
+    plan(previous, desired) { return plan(previous, desired, names, ["DeploymentCanarySettings", "RestApiId"]); },
     async create(desired, context) {
       try {
-        const token = deploymentOperationToken(context); const rawCallback = context.callbackContext;
+        const token = deploymentOperationToken(context); const rawCallback = context.callbackContext; const stage = desired.StageName !== undefined;
         if (rawCallback !== undefined && !isObject(rawCallback)) throw new AwsError("InvalidCallbackContext", "Invalid AWS::ApiGateway::Deployment create callback context", 400);
         const callback = rawCallback && Object.keys(rawCallback).length ? rawCallback : undefined;
-        if (callback !== undefined && (callback.stateMachine !== "apigateway-deployment-v1" || callback.apiId !== desired.RestApiId || callback.token !== token || typeof callback.deploymentId !== "string" || !callback.deploymentId)) throw new AwsError("InvalidCallbackContext", "Invalid AWS::ApiGateway::Deployment create callback context", 400);
+        if (callback !== undefined && (callback.stateMachine !== "apigateway-deployment-v1" || callback.apiId !== desired.RestApiId || callback.token !== token || typeof callback.deploymentId !== "string" || !callback.deploymentId || callback.phase !== (stage ? "stage" : undefined))) throw new AwsError("InvalidCallbackContext", "Invalid AWS::ApiGateway::Deployment create callback context", 400);
         const owned = await operationDeployment(service, desired, token);
         if (owned) {
           const deploymentId = String(owned.id);
           if (callback && callback.deploymentId !== deploymentId) throw new AwsError("OwnershipConflict", `Deployment callback ${String(callback.deploymentId)} does not match operation-owned deployment ${deploymentId}`, 409);
-          if (!callback) return deploymentInProgress(desired.RestApiId, deploymentId, token);
+          if (!callback) return deploymentInProgress(desired.RestApiId, deploymentId, token, stage);
           const model = await deploymentReadModel(service, desired.RestApiId, deploymentId);
-          if (!same(model.properties, desired)) throw new AwsError("OwnershipConflict", `Operation-owned deployment ${deploymentId} no longer matches the desired resource`, 409);
-          return { status: "SUCCESS", physicalId: model.physicalId, model };
+          if (model.properties.RestApiId !== desired.RestApiId || model.properties.Description !== desired.Description) throw new AwsError("OwnershipConflict", `Operation-owned deployment ${deploymentId} no longer matches the desired resource`, 409);
+          await reconcileDeploymentStage(service, desired, deploymentId, context, { repoint: true, reset: false });
+          return deploymentSuccess(model, desired);
         }
         if (callback) throw new AwsError("NotFoundException", `Operation-owned deployment ${String(callback.deploymentId)} was not found`, 404);
-        const raw = await call<JsonObject>(service, "POST", `/restapis/${segment(desired.RestApiId)}/deployments`, { description: desired.Description, stackSimCloudFormationOperationToken: token });
-        return deploymentInProgress(desired.RestApiId, String(raw.id), token);
+        /* CreateDeployment creates or repoints the named stage atomically with the snapshot; the callback applies the rest of StageDescription. */
+        const description = desired.StageDescription;
+        const raw = await call<JsonObject>(service, "POST", `/restapis/${segment(desired.RestApiId)}/deployments`, withoutUndefined({
+          description: desired.Description, stackSimCloudFormationOperationToken: token, stageName: desired.StageName,
+          stageDescription: description?.Description || undefined, variables: description?.Variables, tracingEnabled: description?.TracingEnabled,
+          cacheClusterEnabled: description?.CacheClusterEnabled, cacheClusterSize: description?.CacheClusterSize,
+          canarySettings: desired.DeploymentCanarySettings ? deploymentCanaryInput(desired.DeploymentCanarySettings) : undefined,
+        }));
+        return deploymentInProgress(desired.RestApiId, String(raw.id), token, stage);
       }
       catch (error) { return providerFailure(error); }
     },
@@ -1355,15 +1536,28 @@ export function createApiGatewayDeploymentProvider(service: ApiGatewayService): 
       try { const [apiId, deploymentId] = parsePhysical(physicalId, "deployment", 2); return { status: "SUCCESS", physicalId, model: await deploymentReadModel(service, apiId, deploymentId) }; }
       catch (error) { return isMissing(error) ? { status: "NOT_FOUND", physicalId } : providerFailure(error); }
     },
-    async update(physicalId, previous, desired): Promise<ProviderUpdateResult<ApiGatewayDeploymentModel>> {
+    async update(physicalId, previous, desired, context): Promise<ProviderUpdateResult<ApiGatewayDeploymentModel>> {
       try {
         const [apiId, deploymentId] = parsePhysical(physicalId, "deployment", 2);
-        if (apiId !== desired.RestApiId || previous.RestApiId !== desired.RestApiId || previous.Description !== desired.Description) throw new AwsError("RequiresReplacement", "RestApiId and Description changes require replacement", 409);
-        const model = await deploymentReadModel(service, apiId, deploymentId); return { status: "SUCCESS", physicalId, model };
+        if (apiId !== desired.RestApiId || previous.RestApiId !== desired.RestApiId || !same(previous.DeploymentCanarySettings, desired.DeploymentCanarySettings)) throw new AwsError("RequiresReplacement", "RestApiId and DeploymentCanarySettings changes require replacement", 409);
+        /* Description, StageName, and StageDescription update without interruption; each step observes first, so a retried update is idempotent. */
+        let model = await deploymentReadModel(service, apiId, deploymentId);
+        if (model.properties.Description !== desired.Description) {
+          await call(service, "PATCH", `/restapis/${segment(apiId)}/deployments/${segment(deploymentId)}`, { patchOperations: [{ op: "replace", path: "/description", value: desired.Description }] });
+          model = await deploymentReadModel(service, apiId, deploymentId);
+        }
+        await reconcileDeploymentStage(service, desired, deploymentId, context, { repoint: previous.StageName !== desired.StageName, reset: previous.StageDescription !== undefined });
+        if (previous.StageName !== undefined && previous.StageName !== desired.StageName) await releaseDeploymentStage(service, apiId, previous.StageName, deploymentId);
+        return deploymentSuccess(model, desired);
       } catch (error) { return providerFailure(error); }
     },
-    async delete(physicalId): Promise<ProviderDeleteResult> {
-      try { const [apiId, deploymentId] = parsePhysical(physicalId, "deployment", 2); await call(service, "DELETE", `/restapis/${segment(apiId)}/deployments/${segment(deploymentId)}`); return { status: "SUCCESS", physicalId }; }
+    async delete(physicalId, previous): Promise<ProviderDeleteResult> {
+      try {
+        const [apiId, deploymentId] = parsePhysical(physicalId, "deployment", 2);
+        /* A stage that StageName created goes with its deployment, as in CloudFormation; a stage that another deployment now serves stays. */
+        if (previous?.StageName !== undefined) await releaseDeploymentStage(service, apiId, previous.StageName, deploymentId);
+        await call(service, "DELETE", `/restapis/${segment(apiId)}/deployments/${segment(deploymentId)}`); return { status: "SUCCESS", physicalId };
+      }
       catch (error) { return isMissing(error) ? { status: "NOT_FOUND", physicalId } : providerFailure(error); }
     },
     ref(model) { return String(model.attributes.DeploymentId); },
@@ -1387,53 +1581,87 @@ const METHOD_SETTING_RAW = Object.freeze({
   UnauthorizedCacheControlHeaderStrategy: "unauthorizedCacheControlHeaderStrategy",
 } as const);
 
-function stageIssues(properties: unknown): ProviderValidationIssue[] {
-  const issues = validateDeclaredProperties(properties, API_GATEWAY_STAGE_SCHEMA);
-  if (!isObject(properties)) return issues;
-  if (typeof properties.StageName === "string" && !/^[A-Za-z0-9_-]{1,128}$/.test(properties.StageName)) issues.push(issue("Properties.StageName", "StageName must contain 1 to 128 letters, digits, underscores, or hyphens"));
-  validateStringMap(properties.Variables, "Properties.Variables", issues);
-  if (isObject(properties.Variables)) for (const [key, value] of Object.entries(properties.Variables)) if (!/^[A-Za-z0-9_]+$/.test(key) || typeof value === "string" && !/^[A-Za-z0-9\-._~:/?#&=,]+$/.test(value)) issues.push(issue(`Properties.Variables.${key}`, "Stage variable name or value is invalid"));
-  if (properties.CacheClusterSize !== undefined && !["0.5", "1.6", "6.1", "13.5", "28.4", "58.2", "118", "237"].includes(properties.CacheClusterSize)) issues.push(issue("Properties.CacheClusterSize", "CacheClusterSize is invalid"));
+function methodSettingValueIssues(value: JsonObject, path: string, issues: ProviderValidationIssue[]): void {
+  for (const key of ["MetricsEnabled", "DataTraceEnabled", "CachingEnabled", "CacheDataEncrypted", "RequireAuthorizationForCacheControl"]) if (value[key] !== undefined && typeof value[key] !== "boolean") issues.push(issue(`${path}.${key}`, `${key} must be boolean`, "InvalidType"));
+  if (value.ThrottlingBurstLimit !== undefined && (typeof value.ThrottlingBurstLimit !== "number" || !Number.isInteger(value.ThrottlingBurstLimit) || value.ThrottlingBurstLimit < 0)) issues.push(issue(`${path}.ThrottlingBurstLimit`, "ThrottlingBurstLimit must be a non-negative integer"));
+  if (value.ThrottlingRateLimit !== undefined && (typeof value.ThrottlingRateLimit !== "number" || !Number.isFinite(value.ThrottlingRateLimit) || value.ThrottlingRateLimit < 0)) issues.push(issue(`${path}.ThrottlingRateLimit`, "ThrottlingRateLimit must be non-negative"));
+  if (value.CacheTtlInSeconds !== undefined && (typeof value.CacheTtlInSeconds !== "number" || !Number.isInteger(value.CacheTtlInSeconds) || value.CacheTtlInSeconds < 0 || value.CacheTtlInSeconds > 3600)) issues.push(issue(`${path}.CacheTtlInSeconds`, "CacheTtlInSeconds must be an integer from 0 through 3600"));
+  if (value.LoggingLevel !== undefined && !["OFF", "ERROR", "INFO"].includes(value.LoggingLevel)) issues.push(issue(`${path}.LoggingLevel`, "LoggingLevel must be OFF, ERROR, or INFO"));
+  if (value.UnauthorizedCacheControlHeaderStrategy !== undefined && !["FAIL_WITH_403", "SUCCEED_WITH_RESPONSE_HEADER", "SUCCEED_WITHOUT_RESPONSE_HEADER"].includes(value.UnauthorizedCacheControlHeaderStrategy)) issues.push(issue(`${path}.UnauthorizedCacheControlHeaderStrategy`, "Invalid cache-control strategy"));
+}
+
+function canaryIssues(value: unknown, path: string, allowDeploymentId: boolean, issues: ProviderValidationIssue[]): void {
+  if (value === undefined) return;
+  if (!isObject(value)) { issues.push(issue(path, `${path} must be an object`, "InvalidType")); return; }
+  const allowed = new Set([...(allowDeploymentId ? ["DeploymentId"] : []), "PercentTraffic", "StageVariableOverrides", "UseStageCache"]);
+  for (const key of Object.keys(value)) if (!allowed.has(key)) issues.push(issue(`${path}.${key}`, `${path.split(".").at(-1)} does not support ${key}`, "UnsupportedProperty"));
+  const percent = value.PercentTraffic;
+  if (percent !== undefined && (typeof percent !== "number" || !Number.isFinite(percent) || percent < 0 || percent > 100)) issues.push(issue(`${path}.PercentTraffic`, "PercentTraffic must be a number from 0 through 100"));
+  validateStringMap(value.StageVariableOverrides, `${path}.StageVariableOverrides`, issues);
+  if (isObject(value.StageVariableOverrides)) for (const [key, item] of Object.entries(value.StageVariableOverrides)) if (!/^[A-Za-z0-9_]+$/.test(key) || typeof item === "string" && !/^[A-Za-z0-9\-._~:/?#&=,]+$/.test(item)) issues.push(issue(`${path}.StageVariableOverrides.${key}`, "Canary stage variable name or value is invalid"));
+  if (value.UseStageCache !== undefined && typeof value.UseStageCache !== "boolean") issues.push(issue(`${path}.UseStageCache`, "UseStageCache must be boolean", "InvalidType"));
+  if (allowDeploymentId && typeof percent === "number" && percent > 0 && !value.DeploymentId) issues.push(issue(`${path}.DeploymentId`, "A canary DeploymentId is required when PercentTraffic is greater than zero"));
+}
+
+/** Stage settings shared by AWS::ApiGateway::Stage and AWS::ApiGateway::Deployment StageDescription; `base` is the property path they live under. */
+function stageSettingIssues(properties: JsonObject, base: string, canaryHasDeploymentId: boolean, issues: ProviderValidationIssue[]): void {
+  validateStringMap(properties.Variables, `${base}.Variables`, issues);
+  if (isObject(properties.Variables)) for (const [key, value] of Object.entries(properties.Variables)) if (!/^[A-Za-z0-9_]+$/.test(key) || typeof value === "string" && !/^[A-Za-z0-9\-._~:/?#&=,]+$/.test(value)) issues.push(issue(`${base}.Variables.${key}`, "Stage variable name or value is invalid"));
+  if (properties.CacheClusterSize !== undefined && !["0.5", "1.6", "6.1", "13.5", "28.4", "58.2", "118", "237"].includes(properties.CacheClusterSize)) issues.push(issue(`${base}.CacheClusterSize`, "CacheClusterSize is invalid"));
   if (isObject(properties.AccessLogSetting)) {
-    for (const key of Object.keys(properties.AccessLogSetting)) if (!["DestinationArn", "Format"].includes(key)) issues.push(issue(`Properties.AccessLogSetting.${key}`, `AccessLogSetting does not support ${key}`, "UnsupportedProperty"));
-    for (const key of ["DestinationArn", "Format"]) if (properties.AccessLogSetting[key] !== undefined && typeof properties.AccessLogSetting[key] !== "string") issues.push(issue(`Properties.AccessLogSetting.${key}`, `${key} must be a string`, "InvalidType"));
-  }
-  if (isObject(properties.CanarySetting)) {
-    const allowed = new Set(["DeploymentId", "PercentTraffic", "StageVariableOverrides", "UseStageCache"]);
-    for (const key of Object.keys(properties.CanarySetting)) if (!allowed.has(key)) issues.push(issue(`Properties.CanarySetting.${key}`, `CanarySetting does not support ${key}`, "UnsupportedProperty"));
-    const percent = properties.CanarySetting.PercentTraffic;
-    if (percent !== undefined && (typeof percent !== "number" || !Number.isFinite(percent) || percent < 0 || percent > 100)) issues.push(issue("Properties.CanarySetting.PercentTraffic", "PercentTraffic must be a number from 0 through 100"));
-    validateStringMap(properties.CanarySetting.StageVariableOverrides, "Properties.CanarySetting.StageVariableOverrides", issues);
-    if (isObject(properties.CanarySetting.StageVariableOverrides)) for (const [key, value] of Object.entries(properties.CanarySetting.StageVariableOverrides)) if (!/^[A-Za-z0-9_]+$/.test(key) || typeof value === "string" && !/^[A-Za-z0-9\-._~:/?#&=,]+$/.test(value)) issues.push(issue(`Properties.CanarySetting.StageVariableOverrides.${key}`, "Canary stage variable name or value is invalid"));
-    if (properties.CanarySetting.UseStageCache !== undefined && typeof properties.CanarySetting.UseStageCache !== "boolean") issues.push(issue("Properties.CanarySetting.UseStageCache", "UseStageCache must be boolean", "InvalidType"));
-    if (typeof percent === "number" && percent > 0 && !properties.CanarySetting.DeploymentId) issues.push(issue("Properties.CanarySetting.DeploymentId", "A canary DeploymentId is required when PercentTraffic is greater than zero"));
-  }
+    for (const key of Object.keys(properties.AccessLogSetting)) if (!["DestinationArn", "Format"].includes(key)) issues.push(issue(`${base}.AccessLogSetting.${key}`, `AccessLogSetting does not support ${key}`, "UnsupportedProperty"));
+    for (const key of ["DestinationArn", "Format"]) if (properties.AccessLogSetting[key] !== undefined && typeof properties.AccessLogSetting[key] !== "string") issues.push(issue(`${base}.AccessLogSetting.${key}`, `${key} must be a string`, "InvalidType"));
+  } else if (properties.AccessLogSetting !== undefined) issues.push(issue(`${base}.AccessLogSetting`, "AccessLogSetting must be an object", "InvalidType"));
+  canaryIssues(properties.CanarySetting, `${base}.CanarySetting`, canaryHasDeploymentId, issues);
   if (Array.isArray(properties.MethodSettings)) {
-    const identities = new Set<string>();
     properties.MethodSettings.forEach((value, index) => {
-      const path = `Properties.MethodSettings[${index}]`;
+      const path = `${base}.MethodSettings[${index}]`;
       if (!isObject(value)) { issues.push(issue(path, `${path} must be an object`, "InvalidType")); return; }
       const allowed = new Set(["ResourcePath", "HttpMethod", ...Object.keys(METHOD_SETTING_KEYS)]);
       for (const key of Object.keys(value)) if (!allowed.has(key)) issues.push(issue(`${path}.${key}`, `MethodSetting does not support ${key}`, "UnsupportedProperty"));
       if (typeof value.ResourcePath !== "string" || (!value.ResourcePath.startsWith("/") && value.ResourcePath !== "*")) issues.push(issue(`${path}.ResourcePath`, "ResourcePath must start with /"));
       if (typeof value.HttpMethod !== "string" || !value.HttpMethod) issues.push(issue(`${path}.HttpMethod`, "HttpMethod is required"));
-      const identity = `${value.ResourcePath}\0${String(value.HttpMethod).toUpperCase()}`; if (identities.has(identity)) issues.push(issue(path, "Duplicate ResourcePath and HttpMethod method setting")); else identities.add(identity);
-      for (const key of ["MetricsEnabled", "DataTraceEnabled", "CachingEnabled", "CacheDataEncrypted", "RequireAuthorizationForCacheControl"]) if (value[key] !== undefined && typeof value[key] !== "boolean") issues.push(issue(`${path}.${key}`, `${key} must be boolean`, "InvalidType"));
-      if (value.ThrottlingBurstLimit !== undefined && (typeof value.ThrottlingBurstLimit !== "number" || !Number.isInteger(value.ThrottlingBurstLimit) || value.ThrottlingBurstLimit < 0)) issues.push(issue(`${path}.ThrottlingBurstLimit`, "ThrottlingBurstLimit must be a non-negative integer"));
-      if (value.ThrottlingRateLimit !== undefined && (typeof value.ThrottlingRateLimit !== "number" || !Number.isFinite(value.ThrottlingRateLimit) || value.ThrottlingRateLimit < 0)) issues.push(issue(`${path}.ThrottlingRateLimit`, "ThrottlingRateLimit must be non-negative"));
-      if (value.CacheTtlInSeconds !== undefined && (typeof value.CacheTtlInSeconds !== "number" || !Number.isInteger(value.CacheTtlInSeconds) || value.CacheTtlInSeconds < 0 || value.CacheTtlInSeconds > 3600)) issues.push(issue(`${path}.CacheTtlInSeconds`, "CacheTtlInSeconds must be an integer from 0 through 3600"));
-      if (value.LoggingLevel !== undefined && !["OFF", "ERROR", "INFO"].includes(value.LoggingLevel)) issues.push(issue(`${path}.LoggingLevel`, "LoggingLevel must be OFF, ERROR, or INFO"));
-      if (value.UnauthorizedCacheControlHeaderStrategy !== undefined && !["FAIL_WITH_403", "SUCCEED_WITH_RESPONSE_HEADER", "SUCCEED_WITHOUT_RESPONSE_HEADER"].includes(value.UnauthorizedCacheControlHeaderStrategy)) issues.push(issue(`${path}.UnauthorizedCacheControlHeaderStrategy`, "Invalid cache-control strategy"));
+      methodSettingValueIssues(value, path, issues);
     });
-  }
-  validateTagProperty(properties.Tags, "Properties.Tags", "A stage", issues);
-  return issues;
+  } else if (properties.MethodSettings !== undefined) issues.push(issue(`${base}.MethodSettings`, "MethodSettings must be an array", "InvalidType"));
+  for (const key of ["CacheClusterEnabled", "TracingEnabled"]) if (properties[key] !== undefined && typeof properties[key] !== "boolean") issues.push(issue(`${base}.${key}`, `${key} must be boolean`, "InvalidType"));
+  for (const key of ["Description", "ClientCertificateId", "DocumentationVersion"]) if (properties[key] !== undefined && typeof properties[key] !== "string") issues.push(issue(`${base}.${key}`, `${key} must be a string`, "InvalidType"));
+  if (properties.Tags !== undefined && !Array.isArray(properties.Tags)) issues.push(issue(`${base}.Tags`, "Tags must be an array", "InvalidType"));
+  validateTagProperty(properties.Tags, `${base}.Tags`, "A stage", issues);
+}
+
+function stageIssues(properties: unknown): ProviderValidationIssue[] {
+  const issues = validateDeclaredProperties(properties, API_GATEWAY_STAGE_SCHEMA);
+  if (!isObject(properties)) return issues;
+  if (typeof properties.StageName === "string" && !/^[A-Za-z0-9_-]{1,128}$/.test(properties.StageName)) issues.push(issue("Properties.StageName", "StageName must contain 1 to 128 letters, digits, underscores, or hyphens"));
+  stageSettingIssues(properties, "Properties", true, issues);
+  return dedupeIssues(issues);
+}
+
+/** The declared-type pass and the shared settings pass can both flag one wrongly typed property; report it once. */
+function dedupeIssues(issues: ProviderValidationIssue[]): ProviderValidationIssue[] {
+  const seen = new Set<string>();
+  return issues.filter(value => { const key = `${value.path}\0${value.code}`; if (seen.has(key)) return false; seen.add(key); return true; });
 }
 
 function canonicalMethodSetting(value: JsonObject): ApiGatewayMethodSettingModel {
   const output: JsonObject = { ResourcePath: value.ResourcePath === "*" ? "/*" : String(value.ResourcePath), HttpMethod: String(value.HttpMethod).toUpperCase() };
   for (const key of Object.keys(METHOD_SETTING_KEYS)) if (value[key] !== undefined) output[key] = value[key];
   return Object.freeze(output) as ApiGatewayMethodSettingModel;
+}
+
+/**
+ * CloudFormation applies MethodSettings as UpdateStage patch operations in template order, so entries that name the same
+ * ResourcePath and HttpMethod merge field by field and later values win. CDK relies on this: stage-wide options render a
+ * `/*` `*` entry, and `methodOptions['/*\/*']` renders a second one.
+ */
+function canonicalMethodSettings(values: readonly unknown[]): readonly ApiGatewayMethodSettingModel[] {
+  const merged = new Map<string, JsonObject>();
+  for (const value of values) {
+    const setting = canonicalMethodSetting(value as JsonObject); const key = `${setting.ResourcePath}\0${setting.HttpMethod}`;
+    merged.set(key, { ...(merged.get(key) ?? {}), ...setting });
+  }
+  return Object.freeze([...merged.values()].map(value => Object.freeze(value) as ApiGatewayMethodSettingModel).sort((a, b) => `${a.ResourcePath}\0${a.HttpMethod}`.localeCompare(`${b.ResourcePath}\0${b.HttpMethod}`)));
 }
 
 function canonicalTags(value: unknown): readonly { readonly Key: string; readonly Value: string }[] {
@@ -1444,7 +1672,7 @@ function canonicalStage(properties: unknown): ApiGatewayStageModel {
   const issues = stageIssues(properties); throwIssues(issues); const input = properties as JsonObject; const access = input.AccessLogSetting as JsonObject | undefined; const canary = input.CanarySetting as JsonObject | undefined;
   return Object.freeze({
     RestApiId: String(input.RestApiId), DeploymentId: String(input.DeploymentId), StageName: String(input.StageName), Description: String(input.Description ?? ""), Variables: stringMap(input.Variables),
-    MethodSettings: Object.freeze([...(input.MethodSettings ?? [])].map(canonicalMethodSetting).sort((a, b) => `${a.ResourcePath}\0${a.HttpMethod}`.localeCompare(`${b.ResourcePath}\0${b.HttpMethod}`))),
+    MethodSettings: canonicalMethodSettings(input.MethodSettings ?? []),
     ...(access === undefined ? {} : { AccessLogSetting: Object.freeze({ ...(access.DestinationArn === undefined ? {} : { DestinationArn: String(access.DestinationArn) }), ...(access.Format === undefined ? {} : { Format: String(access.Format) }) }) }),
     CacheClusterEnabled: Boolean(input.CacheClusterEnabled ?? false), ...(input.CacheClusterSize === undefined ? {} : { CacheClusterSize: String(input.CacheClusterSize) }),
     ...(canary === undefined ? {} : { CanarySetting: Object.freeze({ ...(canary.DeploymentId === undefined ? {} : { DeploymentId: String(canary.DeploymentId) }), PercentTraffic: Number(canary.PercentTraffic ?? 0), StageVariableOverrides: stringMap(canary.StageVariableOverrides), UseStageCache: Boolean(canary.UseStageCache ?? false) }) }),
@@ -1512,20 +1740,29 @@ async function updateStageState(service: ApiGatewayService, current: ApiGatewayS
   if (Object.keys(desiredMap).length) await call(service, "PUT", `/tags/${segment(arn)}`, { tags: desiredMap });
 }
 
+const STAGE_LIFECYCLE_STATE_MACHINE = "apigateway-stage-v1";
+
 export function createApiGatewayStageProvider(service: ApiGatewayService): ProductionResourceProvider<ApiGatewayStageModel> {
   const names = Object.keys(API_GATEWAY_STAGE_SCHEMA.properties).sort();
   return {
-    typeName: API_GATEWAY_STAGE_TYPE, providerVersion: 1, visibility: "production", schema: API_GATEWAY_STAGE_SCHEMA,
+    typeName: API_GATEWAY_STAGE_TYPE, providerVersion: 2, visibility: "production", schema: API_GATEWAY_STAGE_SCHEMA,
     validate(properties) { return stageIssues(properties); }, canonicalize(properties) { return canonicalStage(properties); },
     plan(previous, desired) { return plan(previous, desired, names, ["RestApiId", "StageName"]); },
     async create(desired, context) {
       let created = false;
       try {
-        try {
-          const existing = await stageReadModel(service, desired.RestApiId, desired.StageName);
-          if (same(existing.properties, desired)) return { status: "SUCCESS", physicalId: existing.physicalId, model: existing };
-          return { status: "FAILED", errorCode: "ConflictException", message: `Stage ${desired.StageName} already exists on REST API ${desired.RestApiId}` };
-        } catch (error) { if (!isMissing(error)) throw error; }
+        const rawCallback = context.callbackContext; const callback = rawCallback && Object.keys(rawCallback).length ? rawCallback : undefined;
+        if (callback !== undefined && (callback.stateMachine !== STAGE_LIFECYCLE_STATE_MACHINE || callback.phase !== "create" || callback.apiId !== desired.RestApiId || callback.stageName !== desired.StageName)) throw new AwsError("InvalidCallbackContext", `Invalid ${API_GATEWAY_STAGE_TYPE} create callback context`, 400);
+        let existing: ProviderReadModel<ApiGatewayStageModel> | undefined;
+        try { existing = await stageReadModel(service, desired.RestApiId, desired.StageName); } catch (error) { if (!isMissing(error)) throw error; }
+        /* CreateStage refuses a taken name, including a stage that a Deployment's StageName created. The mutation waits for a durable checkpoint, so only a replay of this operation's own lost CreateStage response adopts an existing stage. */
+        if (!callback) return existing
+          ? { status: "FAILED", errorCode: "ConflictException", message: `Stage already exists: ${desired.StageName} on REST API ${desired.RestApiId}` }
+          : { status: "IN_PROGRESS", callbackAfterMs: 25, checkpoint: { schemaVersion: 1, physicalId: physical("stage", [desired.RestApiId, desired.StageName]), callbackContext: { stateMachine: STAGE_LIFECYCLE_STATE_MACHINE, phase: "create", apiId: desired.RestApiId, stageName: desired.StageName } } };
+        if (existing) {
+          if (!same(existing.properties, desired)) await updateStageState(service, existing.properties, desired, context);
+          const model = await stageReadModel(service, desired.RestApiId, desired.StageName); return { status: "SUCCESS", physicalId: model.physicalId, model };
+        }
         const access = desired.AccessLogSetting ? { destinationArn: desired.AccessLogSetting.DestinationArn, format: desired.AccessLogSetting.Format } : undefined;
         const canary = desired.CanarySetting ? { deploymentId: desired.CanarySetting.DeploymentId, percentTraffic: desired.CanarySetting.PercentTraffic, stageVariableOverrides: desired.CanarySetting.StageVariableOverrides, useStageCache: desired.CanarySetting.UseStageCache } : undefined;
         await call(service, "POST", `/restapis/${segment(desired.RestApiId)}/stages`, {

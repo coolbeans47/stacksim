@@ -101,6 +101,8 @@ import { XRayService } from "./xray.js";
 import { CloudFrontService } from "./cloudfront.js";
 import { CloudFrontError, sendCloudFrontError } from "./cloudfront/protocol.js";
 
+function safeDecode(value: string): string | undefined { try { return decodeURIComponent(value); } catch { return undefined; } }
+
 function booleanEnvironment(name: string): boolean | undefined {
   const value = process.env[name];
   if (value === undefined) return undefined;
@@ -605,6 +607,9 @@ export class StackSim {
       const currentRequestId = requestId();
       res.setHeader("x-amzn-requestid", currentRequestId);
       res.setHeader("x-amz-request-id", currentRequestId);
+      // An ApiGatewayManagementApiClient without an explicit endpoint inside a StackSim Lambda uses AWS_ENDPOINT_URL (this port) and posts `/@connections/{id}`.
+      const controlManagement = url.pathname.match(/^\/@connections\/([^/]+)\/?$/);
+      if (controlManagement) { const target = this.connectionManagementTarget(safeDecode(controlManagement[1])); return this.handleConnectionManagement(req, res, url, target?.region ?? this.requestRegion(req, url), target ? `/${encodeURIComponent(target.apiId)}/${encodeURIComponent(target.stageName)}/@connections/${controlManagement[1]}` : undefined, currentRequestId); }
       if (regionalCognitoSdkEndpointRegion(url.pathname)) {
         const preflight = req.method === "OPTIONS";
         if (preflight) {
@@ -862,25 +867,16 @@ export class StackSim {
       const currentRequestId = requestId();
       res.setHeader("x-amzn-requestid", currentRequestId);
       res.setHeader("x-amz-request-id", currentRequestId);
-      const managementApiId = url.pathname.split("/")[1];
+      // Host-based execute-api routing: `{apiId}.execute-api.localhost[:port]` (or an amazonaws.com-style Host) behaves like the `/{apiId}/...` path form.
+      const hostApiId = this.executeApiHostId(req.headers.host); const routedPath = hostApiId ? `/${hostApiId}${url.pathname}` : url.pathname;
+      const managementApiId = routedPath.split("/")[1];
       const managementRegion = this.store.listRegions().find(candidate => Boolean(this.store.regionState(candidate).webSocketApis[managementApiId]));
-      if (managementRegion) {
-        const webSocket = this.services(managementRegion).apigatewaywebsocket;
-        if (webSocket.isManagementPath(url.pathname)) {
-          try {
-            let principal: PrincipalContext | undefined;
-            if (this.authMode !== "off") principal = await authenticateSigV4(req, url, this.store, this.clock, managementRegion, "execute-api");
-            else principal = principalWithoutValidation(req, url, this.store, this.clock);
-            (req as any).awsPrincipal = principal;
-            if (this.authMode === "enforce") {
-              const resource = webSocket.managementAuthorizationResource(url.pathname, req.method ?? "GET");
-              const context: Record<string, unknown> = { "aws:PrincipalArn": principal.principalArn, "aws:PrincipalAccount": principal.accountId, "aws:RequestedRegion": managementRegion, "aws:CurrentTime": new Date(this.clock.now()).toISOString(), "aws:SourceIp": req.socket.remoteAddress?.replace(/^::ffff:/, ""), "aws:UserAgent": req.headers["user-agent"] ?? "", "aws:SecureTransport": Boolean((req.socket as any).encrypted) };
-              const result = await this.evaluateAndRecordAuthorization(principal, { action: "execute-api:ManageConnections", resource, operation: "ManageConnections", input: {}, context }, currentRequestId);
-              if (result.decision !== "allowed") throw new AwsError("AccessDeniedException", `User: ${principal.principalArn} is not authorized to perform: execute-api:ManageConnections on resource: ${resource}. ${result.reason}`, 403);
-            }
-          } catch (error) { return sendAwsError(res, error, "rest"); }
-          return webSocket.handleManagement(req, res, url.pathname);
-        }
+      if (managementRegion && this.services(managementRegion).apigatewaywebsocket.isManagementPath(routedPath)) return this.handleConnectionManagement(req, res, url, managementRegion, routedPath, currentRequestId);
+      const stageManagement = hostApiId ? null : url.pathname.match(/^\/([^/]+)\/@connections\/([^/]+)\/?$/);
+      if (stageManagement && !this.knownExecuteApiId(safeDecode(stageManagement[1])) && !this.store.listRegions().some(candidate => { const regional = this.services(candidate); return regional.apigateway.customDomainInvocation(req.headers.host, url.pathname).matched || regional.apigatewayv2.customDomainInvocation(req.headers.host, url.pathname).matched; })) {
+        // `http://${domainName}/${stage}` callback endpoints post `/{stage}/@connections/{id}`; connection IDs are unique, so the connection names its API.
+        const target = this.connectionManagementTarget(safeDecode(stageManagement[2]));
+        return this.handleConnectionManagement(req, res, url, target?.region ?? this.requestRegion(req, url), target ? `/${encodeURIComponent(target.apiId)}/${stageManagement[1]}/@connections/${stageManagement[2]}` : undefined, currentRequestId);
       }
       const functionUrlMatch = url.pathname.match(/^\/lambda-url\/([a-f0-9]{32})(\/.*)?$/);
       if (functionUrlMatch) {
@@ -895,8 +891,8 @@ export class StackSim {
         } catch (error) { const aws = error instanceof AwsError ? error : new AwsError("AccessDeniedException", error instanceof Error ? error.message : String(error), 403); return json(res, { message: aws.status === 403 ? "Forbidden" : aws.message }, aws.status); }
         (req as any).awsPrincipal = principal; return found.lambda.invokeFunctionUrl(req, res, url, found.target, functionUrlMatch[2] || "/", currentRequestId, principal);
       }
-      let invocationPath = url.pathname; let customDomainRegion: string | undefined; let gatewayVersion: "v1" | "v2" | undefined;
-      for (const candidate of this.store.listRegions()) {
+      let invocationPath = routedPath; let customDomainRegion: string | undefined; let gatewayVersion: "v1" | "v2" | undefined;
+      if (!hostApiId) for (const candidate of this.store.listRegions()) {
         const candidateServices = this.services(candidate); const v1 = candidateServices.apigateway.customDomainInvocation(req.headers.host, url.pathname);
         if (v1.matched) { customDomainRegion = candidate; gatewayVersion = "v1"; invocationPath = v1.pathname ?? `/__stacksim_unmapped__/__stacksim_unmapped__${url.pathname}`; break; }
         const v2 = candidateServices.apigatewayv2.customDomainInvocation(req.headers.host, url.pathname);
@@ -1100,6 +1096,8 @@ export class StackSim {
       );
       const stepfunctions = new StepFunctionsService(this.store, region, this.clock, this.scheduler, lambda, telemetry, this.authMode, this.random, this.stepFunctionsLimits, input => eventbridge.publishServiceEvent(input), { caCertificatePath: this.customResourceCallbacks.caCertificatePath, port: () => this.customResourceCallbacks.port() }, { dynamodb, sqs, sns, eventbridge });
       eventbridge.setStepFunctionsService(stepfunctions);
+      apigateway.setIntegrationServices({ sns, eventbridge, stepfunctions, s3 });
+      apigatewayv2.setServiceIntegrations({ eventbridge, stepfunctions });
       eventscheduler.setStepFunctionsService(stepfunctions);
       const availableCloudFormationProviders = [
         ...createIamCloudFormationProviders(this.iam, this.clock),
@@ -1128,7 +1126,7 @@ export class StackSim {
           resolveBodyS3Location: async location => (await s3.readObjectBytes(location.Bucket, location.Key, location.Version)).body,
         }),
         ...createApiGatewayRestCfn15CloudFormationProviders(apigateway),
-        ...createApiGatewayV2CloudFormationProviders(apigatewayv2),
+        ...createApiGatewayV2CloudFormationProviders(apigatewayv2, { resolveBodyS3Location: async location => (await s3.readObjectBytes(location.Bucket, location.Key, location.Version)).body }),
         createDynamoDbTableProvider(dynamodb),
         createDynamoDbGlobalTableProvider(dynamodb),
         ...createRdsCloudFormationProviders(this.rdsManager, region),
@@ -1245,8 +1243,8 @@ export class StackSim {
   private async handleWebSocketUpgrade(req: import("node:http").IncomingMessage, socket: import("node:net").Socket, head: Buffer): Promise<void> {
     let service: ApiGatewayWebSocketService | undefined;
     try {
-      const url = new URL(req.url ?? "/", `${this.invokeProtocol}://${req.headers.host ?? "localhost"}`); let invocationPath = url.pathname; let customDomain = false; let region: string | undefined;
-      for (const candidate of this.store.listRegions()) {
+      const url = new URL(req.url ?? "/", `${this.invokeProtocol}://${req.headers.host ?? "localhost"}`); const hostApiId = this.executeApiHostId(req.headers.host); let invocationPath = hostApiId ? `/${hostApiId}${url.pathname}` : url.pathname; let customDomain = false; let region: string | undefined;
+      if (!hostApiId) for (const candidate of this.store.listRegions()) {
         const v2 = this.services(candidate).apigatewayv2.customDomainInvocation(req.headers.host, url.pathname);
         if (v2.matched) { customDomain = true; region = candidate; invocationPath = v2.pathname ?? "/__stacksim_unmapped__/__stacksim_unmapped__"; break; }
       }
@@ -1263,8 +1261,41 @@ export class StackSim {
         const result = await this.evaluateAndRecordAuthorization(principal, { action: "execute-api:Invoke", resource, operation: "Invoke", input: {}, context }, requestId()); (req as any).awsIdentityAuthorization = result;
         if (result.decision !== "allowed") throw new AwsError("AccessDeniedException", `User: ${principal.principalArn} is not authorized to invoke ${resource}. ${result.reason}`, 403);
       }
-      await service.upgrade(req, socket, head, invocationPath, url, customDomain);
+      await service.upgrade(req, socket, head, invocationPath, url, customDomain, hostApiId ? `${hostApiId}.execute-api.localhost:${this.invokePort}` : undefined);
     } catch (error) { (service ?? this.apigatewaywebsocket).rejectUpgrade(socket, error); }
+  }
+
+  /** Returns the API ID named by a `{apiId}.execute-api.localhost[:port]` or `{apiId}.execute-api.{region}.amazonaws.com` Host when that API exists. */
+  private executeApiHostId(host: string | string[] | undefined): string | undefined {
+    const label = String(Array.isArray(host) ? host[0] : host ?? "").trim().replace(/:\d+$/, "").match(/^([A-Za-z0-9]+)\.execute-api\.(?:localhost|[a-z0-9-]+\.amazonaws\.com(?:\.cn)?)\.?$/i)?.[1];
+    return label ? [label, label.toLowerCase()].find(candidate => this.knownExecuteApiId(candidate)) : undefined;
+  }
+
+  private knownExecuteApiId(apiId: string | undefined): boolean {
+    return Boolean(apiId) && this.store.listRegions().some(candidate => { const state = this.store.regionState(candidate); return Boolean(state.apis[apiId!] || state.httpApis[apiId!] || state.webSocketApis[apiId!]); });
+  }
+
+  private connectionManagementTarget(connectionId: string | undefined): { region: string; apiId: string; stageName: string } | undefined {
+    if (!connectionId) return undefined;
+    for (const candidate of this.store.listRegions()) { const route = this.services(candidate).apigatewaywebsocket.connectionRoute(connectionId); if (route) return { region: candidate, ...route }; }
+    return undefined;
+  }
+
+  /** @connections management (execute-api:ManageConnections) for the `/{apiId}/{stage}`, `/{stage}`, host-based, and control-port `/@connections/{id}` forms. */
+  private async handleConnectionManagement(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse, url: URL, region: string, canonicalPath: string | undefined, currentRequestId: string): Promise<void> {
+    const webSocket = this.services(region).apigatewaywebsocket;
+    try {
+      const principal = this.authMode !== "off" ? await authenticateSigV4(req, url, this.store, this.clock, region, "execute-api") : principalWithoutValidation(req, url, this.store, this.clock);
+      (req as any).awsPrincipal = principal;
+      if (!canonicalPath) throw new AwsError("GoneException", "The connection with id was not found.", 410);
+      if (this.authMode === "enforce") {
+        const resource = webSocket.managementAuthorizationResource(canonicalPath, req.method ?? "GET");
+        const context: Record<string, unknown> = { "aws:PrincipalArn": principal.principalArn, "aws:PrincipalAccount": principal.accountId, "aws:RequestedRegion": region, "aws:CurrentTime": new Date(this.clock.now()).toISOString(), "aws:SourceIp": req.socket.remoteAddress?.replace(/^::ffff:/, ""), "aws:UserAgent": req.headers["user-agent"] ?? "", "aws:SecureTransport": Boolean((req.socket as any).encrypted) };
+        const result = await this.evaluateAndRecordAuthorization(principal, { action: "execute-api:ManageConnections", resource, operation: "ManageConnections", input: {}, context }, currentRequestId);
+        if (result.decision !== "allowed") throw new AwsError("AccessDeniedException", `User: ${principal.principalArn} is not authorized to perform: execute-api:ManageConnections on resource: ${resource}. ${result.reason}`, 403);
+      }
+    } catch (error) { return sendAwsError(res, error, "rest"); }
+    return webSocket.handleManagement(req, res, canonicalPath);
   }
 
   private async handleAppSyncRealtimeUpgrade(req: import("node:http").IncomingMessage, socket: import("node:net").Socket, head: Buffer): Promise<void> {

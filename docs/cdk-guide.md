@@ -636,8 +636,43 @@ configuration. Do not use the automatically generated
 
 Apply the same principle to HTTP APIs, WebSocket APIs, Lambda function URLs,
 CloudFront viewers, and other resources whose canonical AWS hostname is useful
-as descriptive control-plane data but cannot route on the local machine. Check
-the current StackSim endpoint table for the correct data-plane form.
+as descriptive control-plane data but cannot route on the local machine.
+
+The local API Gateway data-plane forms are (default invoke port `4567`):
+
+| CDK construct and AWS output | Local path-based URL | Local host-based URL |
+|---|---|---|
+| `RestApi` / `LambdaRestApi` `url` | `http://127.0.0.1:4567/{restApiId}/{stage}/` | `http://{restApiId}.execute-api.localhost:4567/{stage}/` |
+| `HttpApi` `url` (`$default` stage) | `http://127.0.0.1:4567/{apiId}/` (no stage segment) | `http://{apiId}.execute-api.localhost:4567/` |
+| `HttpStage` `url` (named stage) | `http://127.0.0.1:4567/{apiId}/{stage}/` | `http://{apiId}.execute-api.localhost:4567/{stage}/` |
+| `WebSocketStage` `url` | `ws://127.0.0.1:4567/{apiId}/{stage}` | `ws://{apiId}.execute-api.localhost:4567/{stage}` |
+| `WebSocketStage` `callbackUrl` | `http://127.0.0.1:4567/{apiId}/{stage}` | `http://{apiId}.execute-api.localhost:4567/{stage}` |
+
+For example:
+
+```ts
+const httpApiUrl = props.target.stackSim
+  ? `${props.target.apiGatewayInvokeUrl}/${httpApi.apiId}/`
+  : httpApi.url!;
+const socketUrl = props.target.stackSim
+  ? `ws://127.0.0.1:4567/${socketApi.apiId}/${socketStage.stageName}`
+  : socketStage.url;
+
+new CfnOutput(this, "HttpApiUrl", { value: httpApiUrl });
+new CfnOutput(this, "SocketUrl", { value: socketUrl });
+```
+
+Inside a WebSocket Lambda, build the management endpoint from the event as
+`http://${event.requestContext.domainName}/${event.requestContext.stage}`. An
+SDK client created without an explicit endpoint also works, because StackSim
+Lambdas receive `AWS_ENDPOINT_URL` and the control plane routes
+`/@connections/{connectionId}`. The `https://` and `wss://` forms in AWS
+tutorials need TLS, which the local invoke listener does not serve by default.
+
+`HttpUrlIntegration` and other HTTP integrations call real network targets and
+are disabled until you set `STACKSIM_ALLOW_OUTBOUND_HTTP=true`. Set
+`STACKSIM_ALLOW_PRIVATE_HTTP=true` as well for localhost or private-network
+targets.
 
 ## 10. Generate target-specific browser runtime configuration
 

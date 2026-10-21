@@ -336,7 +336,120 @@ aws apigatewayv2 get-routes --api-id API_ID --query 'Items[].{Route:RouteKey,Tar
 aws apigatewayv2 get-stages --api-id API_ID --query 'Items[].{Stage:StageName,AutoDeploy:AutoDeploy,Deployment:DeploymentId}' --output table
 ```
 
-The AWS-shaped `ApiEndpoint` returned by the control plane is descriptive. Use the local invocation URL printed by the deployment or shown in the StackSim console when calling an API.
+### Where to send API requests
+
+Control-plane commands such as `aws apigateway ...` and `aws apigatewayv2 ...` use the profile endpoint on port `4566`. In Git Bash on Windows, run `export MSYS_NO_PATHCONV=1` first. Otherwise Git Bash rewrites every argument that starts with `/`, including patch paths such as `path=/apiKeyRequired`, into Windows paths (`C:/Program Files/Git/...`). Deployed APIs are invoked on the data plane on port `4567`:
+
+| API type | Path-based URL | Host-based URL |
+|---|---|---|
+| REST API stage | `http://127.0.0.1:4567/REST_API_ID/STAGE/path` | `http://REST_API_ID.execute-api.localhost:4567/STAGE/path` |
+| HTTP API `$default` stage | `http://127.0.0.1:4567/API_ID/path` | `http://API_ID.execute-api.localhost:4567/path` |
+| HTTP API named stage | `http://127.0.0.1:4567/API_ID/STAGE/path` | `http://API_ID.execute-api.localhost:4567/STAGE/path` |
+| WebSocket API | `ws://127.0.0.1:4567/API_ID/STAGE` | `ws://API_ID.execute-api.localhost:4567/STAGE` |
+
+The HTTP API `ApiEndpoint` returned by `get-apis` is the working path-based URL.
+
+### How to build a REST API backed by Lambda
+
+This recipe follows the AWS "REST API with Lambda proxy integration" tutorial. It assumes a function named `FUNCTION_NAME` already exists.
+
+```console
+API_ID=$(aws apigateway create-rest-api --name cookbook-api --query id --output text)
+ROOT_ID=$(aws apigateway get-resources --rest-api-id $API_ID --query 'items[?path==`/`].id' --output text)
+RESOURCE_ID=$(aws apigateway create-resource --rest-api-id $API_ID --parent-id $ROOT_ID --path-part items --query id --output text)
+aws apigateway put-method --rest-api-id $API_ID --resource-id $RESOURCE_ID --http-method GET --authorization-type NONE
+aws apigateway put-integration --rest-api-id $API_ID --resource-id $RESOURCE_ID --http-method GET --type AWS_PROXY --integration-http-method POST --uri arn:aws:apigateway:eu-west-1:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-west-1:000000000000:function:FUNCTION_NAME/invocations
+aws lambda add-permission --function-name FUNCTION_NAME --statement-id apigateway-get-items --action lambda:InvokeFunction --principal apigateway.amazonaws.com --source-arn "arn:aws:execute-api:eu-west-1:000000000000:$API_ID/*/GET/items"
+aws apigateway create-deployment --rest-api-id $API_ID --stage-name dev --variables environment=dev
+curl http://127.0.0.1:4567/$API_ID/dev/items
+```
+
+Lambda integrations always use `--integration-http-method POST`, whatever the client method is. Without the `add-permission` step the API returns `500 {"message":"Internal server error"}`, as it does in AWS.
+
+### How to test a method without deploying
+
+`test-invoke-method` runs the current, undeployed configuration:
+
+```console
+aws apigateway test-invoke-method --rest-api-id REST_API_ID --resource-id RESOURCE_ID --http-method GET --path-with-query-string '/items?limit=5'
+```
+
+The response includes `status`, `body`, `headers`, `latency`, and the execution `log`.
+
+### How to update stage settings
+
+Stage changes use JSON Patch operations:
+
+```console
+aws apigateway update-stage --rest-api-id REST_API_ID --stage-name dev --patch-operations op=replace,path=/variables/environment,value=test op=replace,path=/*/*/logging/loglevel,value=INFO
+```
+
+In Git Bash on Windows, this needs `MSYS_NO_PATHCONV=1` (see [Where to send API requests](#where-to-send-api-requests)).
+
+### How to export and import an OpenAPI definition
+
+```console
+aws apigateway get-export --rest-api-id REST_API_ID --stage-name dev --export-type oas30 --parameters extensions=integrations --accepts application/yaml openapi.yaml
+aws apigateway import-rest-api --body fileb://openapi.yaml
+aws apigateway put-rest-api --rest-api-id REST_API_ID --mode merge --body fileb://openapi.yaml
+```
+
+The output file is a positional argument. Use `fileb://` for `--body`. `file://` sends the text through the CLI's base64 blob handling and fails with "Invalid base64".
+
+### How to require an API key
+
+```console
+aws apigateway update-method --rest-api-id REST_API_ID --resource-id RESOURCE_ID --http-method GET --patch-operations op=replace,path=/apiKeyRequired,value=true
+aws apigateway create-deployment --rest-api-id REST_API_ID --stage-name dev
+KEY_ID=$(aws apigateway create-api-key --name cookbook-key --enabled --query id --output text)
+PLAN_ID=$(aws apigateway create-usage-plan --name cookbook-plan --api-stages apiId=REST_API_ID,stage=dev --throttle rateLimit=10,burstLimit=5 --quota limit=1000,period=DAY --query id --output text)
+aws apigateway create-usage-plan-key --usage-plan-id $PLAN_ID --key-id $KEY_ID --key-type API_KEY
+aws apigateway get-api-key --api-key $KEY_ID --include-value --query value --output text
+```
+
+Send the value in the `x-api-key` header. A request without it gets `403 {"message":"Forbidden"}`.
+
+### How to create an HTTP API with quick create
+
+```console
+aws apigatewayv2 create-api --name cookbook-http --protocol-type HTTP --target arn:aws:lambda:eu-west-1:000000000000:function:FUNCTION_NAME
+aws lambda add-permission --function-name FUNCTION_NAME --statement-id apigatewayv2-quick-create --action lambda:InvokeFunction --principal apigateway.amazonaws.com --source-arn "arn:aws:execute-api:eu-west-1:000000000000:API_ID/*"
+curl http://127.0.0.1:4567/API_ID/anything
+```
+
+Quick create makes a `$default` route and an auto-deploying `$default` stage. A `--target` of `https://...` creates an HTTP proxy integration instead, which needs `STACKSIM_ALLOW_OUTBOUND_HTTP=true`.
+
+### How to export or reimport an HTTP API
+
+```console
+aws apigatewayv2 export-api --api-id API_ID --specification OAS30 --output-type YAML --include-extensions http-api.yaml
+aws apigatewayv2 reimport-api --api-id API_ID --body file://http-api.yaml
+aws apigatewayv2 import-api --body file://http-api.yaml
+```
+
+### How to create a WebSocket API backed by Lambda
+
+```console
+API_ID=$(aws apigatewayv2 create-api --name cookbook-chat --protocol-type WEBSOCKET --route-selection-expression '$request.body.action' --query ApiId --output text)
+INTEGRATION_ID=$(aws apigatewayv2 create-integration --api-id $API_ID --integration-type AWS_PROXY --integration-uri arn:aws:apigateway:eu-west-1:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-west-1:000000000000:function:FUNCTION_NAME/invocations --query IntegrationId --output text)
+for ROUTE in '$connect' '$disconnect' '$default'; do aws apigatewayv2 create-route --api-id $API_ID --route-key "$ROUTE" --target integrations/$INTEGRATION_ID; done
+aws apigatewayv2 create-stage --api-id $API_ID --stage-name dev --auto-deploy
+aws lambda add-permission --function-name FUNCTION_NAME --statement-id apigateway-websocket --action lambda:InvokeFunction --principal apigateway.amazonaws.com --source-arn "arn:aws:execute-api:eu-west-1:000000000000:$API_ID/*"
+```
+
+Clients connect to `ws://127.0.0.1:4567/$API_ID/dev`. Inside the function, `event.requestContext.connectionId` identifies the caller.
+
+### How to send a message to a WebSocket connection
+
+`aws apigatewaymanagementapi` talks to the data plane, so give it the stage URL as the endpoint:
+
+```console
+aws apigatewaymanagementapi post-to-connection --endpoint-url http://127.0.0.1:4567/API_ID/STAGE --connection-id CONNECTION_ID --cli-binary-format raw-in-base64-out --data '{"message":"hello"}'
+aws apigatewaymanagementapi get-connection --endpoint-url http://127.0.0.1:4567/API_ID/STAGE --connection-id CONNECTION_ID
+aws apigatewaymanagementapi delete-connection --endpoint-url http://127.0.0.1:4567/API_ID/STAGE --connection-id CONNECTION_ID
+```
+
+AWS CLI v2 treats `--data` as base64 unless you pass `--cli-binary-format raw-in-base64-out`. Without the flag the CLI does not report an error: it decodes your JSON as base64 and sends the resulting bytes. A connection that has closed returns `GoneException` (HTTP 410).
 
 ## AppSync
 
