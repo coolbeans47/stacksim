@@ -498,7 +498,7 @@ The same global environment configures an unmodified standard AWS CDK v2 CLI bec
 
 Within the table, an abbreviated type name inherits the namespace of the nearest fully qualified name to its left. For example, `AWS::S3::Bucket`, `BucketPolicy` denotes `AWS::S3::Bucket` and `AWS::S3::BucketPolicy`.
 
-Deployability is determined by the synthesized JSON template and each provider's closed property schema, not by the AWS namespace or CDK construct name. Unsupported properties fail rather than being stored as inert configuration. KMS-backed queues remain unsupported; EventBridge rules accept Lambda targets in the CloudFormation provider; API Gateway v2 response and model types are WebSocket-only; and ordinary RDS L2 constructs still require unavailable networking and secrets resources. General custom-resource protocol support does not make every generated CDK helper compatible: synchronous CDK `Provider` resources and the pinned Lambda `getFunction` `AwsCustomResource` path are covered, while `Custom::CDKBucketDeployment` uses its own closed native schema. Log-retention, S3 auto-delete, trigger, API helper, and other unverified generated helper graphs are not claimed.
+Deployability is determined by the synthesized JSON template and each provider's closed property schema, not by the AWS namespace or CDK construct name. Unsupported properties fail rather than being stored as inert configuration. KMS-backed queues remain unsupported; EventBridge rules accept Lambda targets with event patterns or schedule expressions in the CloudFormation provider; API Gateway v2 response and model types are WebSocket-only; and ordinary RDS L2 constructs still require unavailable networking and secrets resources. General custom-resource protocol support does not make every generated CDK helper compatible: synchronous CDK `Provider` resources and the pinned Lambda `getFunction` `AwsCustomResource` path are covered, while `Custom::CDKBucketDeployment` uses its own closed native schema. Log-retention, S3 auto-delete, trigger, API helper, and other unverified generated helper graphs are not claimed.
 
 ## Aurora Atlas Signal Journey example
 
@@ -1637,8 +1637,38 @@ npm run test:browser     # run the isolated console browser suite
 | `STACKSIM_LAMBDA_UNRESERVED_CONCURRENCY_RESERVE` | `100` | Capacity that reserved/provisioned configuration must leave unclaimed |
 | `STACKSIM_LAMBDA_WORKER_IDLE_MS` | `300000` | Idle lifetime of an unprovisioned warm Node ZIP execution environment before retirement |
 | `STACKSIM_LAMBDA_ZIP_LIMIT` | `52428800` | Maximum compressed ZIP size accepted for Lambda functions and layers |
-| `STACKSIM_LAMBDA_OCI_ROOT` | unset | Absolute path to a local OCI image-layout root used to resolve digest-pinned image functions |
-| `STACKSIM_LAMBDA_DOCKER_SOCKET` | unset | Absolute local Docker socket or named-pipe path used to resolve and invoke image functions |
+| `STACKSIM_LAMBDA_OCI_ROOT` | unset | Absolute path to a local OCI image-layout root. Image functions can be created and digest-pinned from it, but never invoked (no executor). Mutually exclusive with the Docker socket; see [Container image functions](#container-image-functions) |
+| `STACKSIM_LAMBDA_DOCKER_SOCKET` | unset | Absolute local Docker socket or named-pipe path (`unix://` prefix accepted) used to resolve and invoke image functions through the Docker Engine API. Images must already be present on the daemon |
+| `STACKSIM_LAMBDA_RUNTIME_API_HOST` | bridge gateway on Linux, all interfaces elsewhere | Address the per-invocation Lambda Runtime API listener binds to for container-image invocations |
+
+## Container image functions
+
+Container-image functions are an opt-in path for learners who want to see `PackageType: Image` end to end. Node.js ZIP functions need nothing extra; everything below applies only when one of the two image sources is configured before the simulator starts.
+
+| Source | Creates and pins | Invokes | Notes |
+|---|---|---|---|
+| `STACKSIM_LAMBDA_DOCKER_SOCKET` | Yes, from `docker image inspect` on the daemon (`RepoDigests` when the tag was pulled or pushed, otherwise the local image ID; `GetFunction.Code.LocalImageDigestSource` says which) | Yes: each invocation runs one container with the AWS Runtime API served from the host | Images are never pulled; `docker pull`/`docker build` and `docker tag` them first |
+| `STACKSIM_LAMBDA_OCI_ROOT` | Yes, from the OCI layout's index and manifests | No: `Invoke` fails with `InvalidRuntimeException` | Create and pin only; useful for CloudFormation/console flows that never run the image |
+
+Setting both is rejected at startup. A `unix://` prefix on the socket is accepted; on Windows use the named pipe `\\\\.\\pipe\\docker_engine`.
+
+**Image names.** Lambda only accepts ECR-shaped references, so a public image needs a local tag in the simulator's account and Region:
+
+```console
+docker pull public.ecr.aws/lambda/nodejs:22
+docker tag public.ecr.aws/lambda/nodejs:22 000000000000.dkr.ecr.eu-west-1.amazonaws.com/hello:22
+aws lambda create-function --function-name hello-image --package-type Image --code ImageUri=000000000000.dkr.ecr.eu-west-1.amazonaws.com/hello:22 --role arn:aws:iam::000000000000:role/lambda-role --image-config Command=index.handler
+```
+
+A locally built image that was never pushed has no repository digest; the function still pins the daemon's image ID and the console labels it **Local image ID**.
+
+**Windows named pipe.** PowerShell: `$env:STACKSIM_LAMBDA_DOCKER_SOCKET = "\\\\.\\pipe\\docker_engine"`; Git Bash: `export STACKSIM_LAMBDA_DOCKER_SOCKET='//./pipe/docker_engine'` (an absolute path is required, so `npipe://` is not accepted).
+
+**What the container sees.** The handler receives the event and context through the Runtime API at `AWS_LAMBDA_RUNTIME_API=host.docker.internal:<port>`, a per-invocation listener that only the invocation's own internal bridge network can reach on Linux (it binds to the bridge gateway and rejects any source address other than the container's). `AWS_ENDPOINT_URL`, `AWS_ENDPOINT_URL_LAMBDA`, and `STACKSIM_ENDPOINT` point at the same listener, which proxies every non-runtime request (SDK calls to DynamoDB, S3, SQS, Lambda, and the rest) to the simulator's control port, so a handler that reads a table or writes an object works from inside the container without opening the internal network. X-Ray trace headers arrive as `Lambda-Runtime-Trace-Id` and `_X_AMZN_TRACE_ID`. An empty invocation payload is delivered as `null`, as for ZIP functions.
+
+**Limits of the local executor.** Each invocation is a fresh container (no warm reuse, no provisioned concurrency), `InvokeWithResponseStream` is rejected, and the container runs read-only as user 1000:1000 with all capabilities dropped. `/tmp` is a tmpfs sized by `EphemeralStorage` that counts against the container's memory limit (`MemorySize`), and it allows executables as on AWS. Docker API calls carry a 10-second deadline and the whole invocation a budget of the function timeout plus 10 seconds; a stalled daemon fails the invocation with `Runtime.DockerTimeout` and releases the concurrency lease. Leftover containers and networks from a crashed simulator carry the label `stacksim.lambda=invocation` and are swept on the first invocation after a restart when older than 16 minutes (`docker ps -a --filter label=stacksim.lambda=invocation` lists them). On Docker Desktop (Windows and macOS) container traffic reaches the host through the Desktop VM, so the source-address check cannot apply and the Runtime API listens on all interfaces; keep such hosts on a trusted network or set `STACKSIM_LAMBDA_RUNTIME_API_HOST`.
+
+**Durable execution** is not available for image functions: the console rejects the combination and the service cannot checkpoint from inside the container.
 
 ## Scope
 

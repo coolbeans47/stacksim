@@ -18,6 +18,7 @@ import { TelemetryBus } from "./core/telemetry.js";
 import { DynamoDbService, type DynamoTtlSchedule } from "./dynamodb.js";
 import { classifyPartiqlAccess, parsePartiql } from "./dynamodb/partiql.js";
 import { LambdaService } from "./lambda.js";
+import { assertSingleImageSource } from "./lambda-images.js";
 import { IamService } from "./iam.js";
 import { StsService } from "./sts.js";
 import { S3Service } from "./s3.js";
@@ -425,6 +426,7 @@ export class StackSim {
   readonly invokeProtocol: "http" | "https";
 
   constructor(options: SimulatorOptions = {}) {
+    assertSingleImageSource();
     this.host = options.host ?? process.env.STACKSIM_HOST ?? "127.0.0.1";
     this.port = options.port ?? Number(process.env.STACKSIM_PORT ?? 4566);
     this.invokePort = options.invokePort ?? Number(process.env.STACKSIM_INVOKE_PORT ?? 4567);

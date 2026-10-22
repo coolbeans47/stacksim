@@ -22,8 +22,26 @@ export interface ResolvedLambdaImage {
   resolvedImageUri: string;
   executionImageUri?: string;
   imageSource: "oci" | "docker";
+  /** Whether the pinned digest is a registry (repository) digest or only the daemon's local image ID (LDG-62c). */
+  digestSource: "repository-digest" | "image-id";
   codeSha256: string;
   codeSize: number;
+}
+
+/**
+ * One rule for STACKSIM_LAMBDA_DOCKER_SOCKET everywhere: an optional `unix://` prefix is stripped and the
+ * result must be an absolute socket or named-pipe path (LDG-60).
+ */
+export function normalizeDockerSocket(value: string, fail: (message: string) => Error = message => new AwsError("InvalidParameterValueException", message)): string {
+  const socket = value.startsWith("unix://") ? value.slice("unix://".length) : value;
+  if (!isAbsolute(socket)) throw fail("STACKSIM_LAMBDA_DOCKER_SOCKET must be an absolute local socket or named-pipe path (an optional unix:// prefix is accepted)");
+  return socket;
+}
+
+/** Rejects a configuration that names both image sources: OCI would silently win and block every invocation. */
+export function assertSingleImageSource(env: NodeJS.ProcessEnv = process.env): void {
+  if (env.STACKSIM_LAMBDA_OCI_ROOT && env.STACKSIM_LAMBDA_DOCKER_SOCKET) throw new Error("STACKSIM_LAMBDA_OCI_ROOT and STACKSIM_LAMBDA_DOCKER_SOCKET are both set; choose one image source (an OCI layout is create and pin only, a Docker socket also invokes)");
+  if (env.STACKSIM_LAMBDA_DOCKER_SOCKET) normalizeDockerSocket(env.STACKSIM_LAMBDA_DOCKER_SOCKET, message => new Error(message));
 }
 
 function invalid(message: string): never {
@@ -135,12 +153,11 @@ export class LambdaImages {
     let size = manifestBytes.length + configBytes.length;
     for (const layer of manifest.layers as Descriptor[]) { digestHex(layer.digest, "image layer"); if (!Number.isInteger(layer.size) || layer.size! < 0) invalid("Image layer size is invalid"); size += layer.size!; if (size > MAX_IMAGE_BYTES) invalid("Container image exceeds the 10 GB Lambda image limit"); }
     const digest = descriptor.digest!;
-    return { imageUri: reference.uri, resolvedImageUri: resolvedUri(reference.repository, digest), imageSource: "oci", codeSha256: createHash("sha256").update(manifestBytes).digest("base64"), codeSize: size };
+    return { imageUri: reference.uri, resolvedImageUri: resolvedUri(reference.repository, digest), imageSource: "oci", digestSource: "repository-digest", codeSha256: createHash("sha256").update(manifestBytes).digest("base64"), codeSize: size };
   }
 
   private async resolveDocker(reference: ReturnType<typeof imageReference>, architecture: LambdaArchitecture, configuredSocket: string): Promise<ResolvedLambdaImage> {
-    const socket = configuredSocket.startsWith("unix://") ? configuredSocket.slice("unix://".length) : configuredSocket;
-    if (!isAbsolute(socket)) invalid("STACKSIM_LAMBDA_DOCKER_SOCKET must be an absolute local socket or named-pipe path");
+    const socket = normalizeDockerSocket(configuredSocket);
     const response = await new Promise<{ status: number; body: Buffer }>((resolveResponse, reject) => {
       const req = request({ socketPath: socket, path: `/v1.41/images/${encodeURIComponent(reference.uri)}/json`, method: "GET", headers: { accept: "application/json" } }, res => {
         const chunks: Buffer[] = []; let length = 0;
@@ -159,6 +176,6 @@ export class LambdaImages {
     const digestValue = typeof digest === "string" ? digest : invalid("Docker image ID must use a sha256 digest");
     digestHex(digestValue, "Docker image ID");
     const size = Number(details.Size ?? 0); if (!Number.isSafeInteger(size) || size < 0 || size > MAX_IMAGE_BYTES) invalid("Docker image size exceeds the 10 GB Lambda image limit");
-    return { imageUri: reference.uri, resolvedImageUri: resolvedUri(reference.repository, digestValue), executionImageUri: reference.digest ? reference.uri : repositoryDigest ? resolvedUri(reference.repository, repositoryDigest) : digestValue, imageSource: "docker", codeSha256: Buffer.from(digestValue.slice("sha256:".length), "hex").toString("base64"), codeSize: size };
+    return { imageUri: reference.uri, resolvedImageUri: resolvedUri(reference.repository, digestValue), executionImageUri: reference.digest ? reference.uri : repositoryDigest ? resolvedUri(reference.repository, repositoryDigest) : digestValue, imageSource: "docker", digestSource: reference.digest || repositoryDigest ? "repository-digest" : "image-id", codeSha256: Buffer.from(digestValue.slice("sha256:".length), "hex").toString("base64"), codeSize: size };
   }
 }

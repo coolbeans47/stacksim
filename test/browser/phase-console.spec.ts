@@ -60,6 +60,8 @@ import {
   GetFunctionConcurrencyCommand,
   GetFunctionCommand,
   GetFunctionConfigurationCommand,
+  GetPolicyCommand,
+  ListTagsCommand,
   GetFunctionEventInvokeConfigCommand,
   GetFunctionRecursionConfigCommand,
   GetFunctionScalingConfigCommand,
@@ -80,6 +82,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { fillArnCombobox } from "./arn-combobox.js";
 import { StackSim } from "../../src/server.js";
+import { createZip } from "../../src/core/zip-create.js";
+import { CreateBucketCommand, GetBucketNotificationConfigurationCommand, S3Client } from "@aws-sdk/client-s3";
 import { waitForTableActive } from "../support/dynamodb.js";
 
 let simulator: StackSim;
@@ -495,10 +499,10 @@ test.describe("target phase console workflows", () => {
       await expect(card.getByRole("heading", { name: "Asynchronous invocation" })).toBeVisible();
       await expect(card.getByText("Durable, at-least-once delivery", { exact: true })).toBeVisible();
       await expect(card.getByText(/Lambda, same-Region SQS, and EventBridge destinations are active/)).toBeVisible();
-      await expect(card.getByText(/SNS and S3 destinations remain dependency-blocked/)).toBeVisible();
+      await expect(card.getByText(/SNS topics and S3 buckets \(OnFailure only\)/)).toBeVisible();
       await card.getByRole("button", { name: "Edit" }).click();
       let dialog = page.getByRole("dialog");
-      await expect(dialog.getByText("Dependency-aware targets", { exact: true })).toBeVisible();
+      await expect(dialog.getByText("Destination targets", { exact: true })).toBeVisible();
       await dialog.getByLabel("Maximum retry attempts").selectOption("1");
       await dialog.getByLabel("Maximum event age (seconds)").fill("600");
       await fillArnCombobox(dialog.getByLabel("Success destination"), destination.FunctionArn!);
@@ -521,8 +525,8 @@ test.describe("target phase console workflows", () => {
       await expect(queueCard.getByRole("heading", { name: "Asynchronous invocation queue" })).toBeVisible();
       await expect(queueCard.getByText("Waiting after retry", { exact: true })).toBeVisible();
       await expect(queueCard.getByRole("cell", { name: "QUEUED" })).toBeVisible();
-      await expect(page.getByText("Async retried", { exact: true })).toBeVisible();
-      await expect(page.getByText("Async failed / dropped", { exact: true })).toBeVisible();
+      await expect(page.getByText("Retried", { exact: true })).toBeVisible();
+      await expect(page.getByText("Dropped", { exact: true })).toBeVisible();
       await page.setViewportSize({ width: 390, height: 844 });
       await expect(queueCard.getByRole("button", { name: "Refresh" })).toBeVisible();
 
@@ -1510,5 +1514,58 @@ test.describe("target phase console workflows", () => {
       await expect(page.getByRole("heading", { name: "SDK generation" })).toBeVisible();
       expect(errors).toEqual([]);
     } finally { gateway.destroy(); }
+  });
+  test("LDP-06 creates an arm64 nodejs24.x function with a URL, edits a CLI-created package, tests with a template, adds an S3 trigger, and reads per-metric graphs", async ({ page }) => {
+    const lambda = new LambdaClient(sdkOptions(simulator)); const s3 = new S3Client({ ...sdkOptions(simulator), forcePathStyle: true });
+    try {
+      const errors = browserErrors(page);
+      // A CLI-style package: CommonJS index.js plus a helper file that Deploy must keep.
+      await lambda.send(new CreateFunctionCommand({ FunctionName: "ldp-cli-function", Runtime: "nodejs22.x", Role: "arn:aws:iam::000000000000:role/phase-browser-role", Handler: "index.handler", Code: { ZipFile: createZip([{ name: "index.js", content: 'const util = require("./lib/util.js");\nexports.handler = async event => ({ source: "cli", helper: util.name, event });\n' }, { name: "lib/util.js", content: 'exports.name = "kept";\n' }]) } }));
+      await s3.send(new CreateBucketCommand({ Bucket: "ldp-trigger-bucket" }));
+
+      // LDG-45: create from the console with architecture, tags, and a public function URL from Advanced settings; the role comes from the IAM Query API.
+      await page.goto(`${consoleUrl}#/lambda/functions`); await page.getByRole("button", { name: "Create function" }).first().click(); let dialog = page.getByRole("dialog");
+      await expect(dialog.getByLabel("Execution role choice")).toHaveValue("basic"); await expect(dialog.getByRole("option", { name: "Use local pre-created role" })).toHaveCount(0);
+      await dialog.getByLabel("Function name").fill("ldp-console-function"); await dialog.getByLabel("Runtime").selectOption("nodejs24.x"); await dialog.getByLabel("Architecture").selectOption("arm64");
+      await dialog.getByLabel("JavaScript code").fill('export const handler = async event => ({ source: "console", runtime: process.version, event });');
+      await dialog.getByText("Advanced settings").click(); await dialog.getByLabel("Enable function URL").check(); await dialog.getByLabel("Auth type").selectOption("NONE"); await dialog.getByLabel("Tags (JSON object)").fill('{"team":"learners"}');
+      await dialog.getByRole("button", { name: "Create function", exact: true }).click(); await expect(page).toHaveURL(/#\/lambda\/functions\/ldp-console-function$/);
+      await expect.poll(async () => (await lambda.send(new GetFunctionConfigurationCommand({ FunctionName: "ldp-console-function" }))).State).toBe("Active");
+      const consoleFunction = await lambda.send(new GetFunctionConfigurationCommand({ FunctionName: "ldp-console-function" })); expect(consoleFunction.Runtime).toBe("nodejs24.x"); expect(consoleFunction.Architectures).toEqual(["arm64"]); expect(consoleFunction.Role).toMatch(/:role\/ldp-console-function-role-[a-z0-9]+$/);
+      expect((await lambda.send(new ListTagsCommand({ Resource: consoleFunction.FunctionArn! }))).Tags).toEqual({ team: "learners" });
+      const urls = (await lambda.send(new ListFunctionUrlConfigsCommand({ FunctionName: "ldp-console-function" }))).FunctionUrlConfigs ?? []; expect(urls).toHaveLength(1); expect(urls[0].AuthType).toBe("NONE");
+      const urlResponse = await fetch(urls[0].FunctionUrl!); expect(urlResponse.status).toBe(200); expect(JSON.parse(await urlResponse.text()).source).toBe("console");
+      const roleList = await (await fetch(`http://127.0.0.1:${simulator.port}/`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", "x-stacksim-service": "iam" }, body: new URLSearchParams({ Action: "ListRoles", Version: "2010-05-08" }) })).text(); expect(roleList).toContain("ldp-console-function-role-");
+
+      // LDG-46: the Code tab opens the handler file of a CLI-created package, labels the action Deploy, and keeps the other files.
+      await page.goto(`${consoleUrl}#/lambda/functions/ldp-cli-function`); const editor = page.locator(".lambda-source-editor-card").getByLabel("JavaScript code");
+      await expect(editor).toHaveValue(/source: "cli"/); await expect(page.locator(".lambda-source-editor-card").getByText("index.js", { exact: true })).toBeVisible(); await expect(page.getByRole("button", { name: "Deploy", exact: true })).toBeDisabled(); await expect(page.getByRole("button", { name: "Upload from .zip file" })).toBeVisible(); await expect(page.getByRole("button", { name: "Upload from Amazon S3" })).toBeVisible();
+      await editor.fill('const util = require("./lib/util.js");\nexports.handler = async event => ({ source: "console-deployed", helper: util.name, event });\n'); await expect(page.getByText("Changes not deployed", { exact: true })).toBeVisible(); await page.getByRole("button", { name: "Deploy", exact: true }).click(); await expect(page.locator("#toast-region").getByRole("status").filter({ hasText: "Function code deployed" })).toBeVisible();
+      await expect.poll(async () => (await lambda.send(new GetFunctionConfigurationCommand({ FunctionName: "ldp-cli-function" }))).LastUpdateStatus).toBe("Successful");
+      const redeployed = JSON.parse(Buffer.from((await lambda.send(new InvokeCommand({ FunctionName: "ldp-cli-function", Payload: Buffer.from('{"n":1}') }))).Payload!).toString("utf8")); expect(redeployed).toMatchObject({ source: "console-deployed", helper: "kept" });
+
+      // LDG-47: the S3 Put template, a named saved event, and the REPORT-derived summary.
+      await page.getByRole("link", { name: "Test", exact: true }).click(); await page.getByLabel("Event template").selectOption("s3Put"); await expect(page.getByLabel("Event JSON")).toHaveValue(/ObjectCreated:Put/); await page.getByLabel("Event name").fill("s3-put"); await page.locator("#save-test").click(); await expect(page.locator("#lambda-saved-events")).toHaveValue("s3-put");
+      await page.locator("#run-test").click(); const result = page.locator("#lambda-result"); await expect(result.getByText("Succeeded", { exact: true })).toBeVisible({ timeout: 15_000 }); await expect(result.getByText("Billed duration", { exact: true })).toBeVisible(); await expect(result.getByText("Memory size", { exact: true })).toBeVisible(); await expect(result.getByText("128 MB", { exact: true })).toBeVisible(); await expect(result).toContainText("REPORT RequestId:");
+      await page.reload(); await expect(page.locator("#lambda-saved-events")).toHaveValue("s3-put"); await expect(page.getByLabel("Event JSON")).toHaveValue(/ObjectCreated:Put/);
+
+      // LDG-48: the S3 trigger adds the s3.amazonaws.com permission and the bucket notification entry, and is listed with EventBridge/SNS-style rows.
+      await page.getByRole("link", { name: "Code", exact: true }).click(); await page.getByRole("button", { name: "Add trigger" }).first().click(); dialog = page.getByRole("dialog"); await dialog.getByLabel("Trigger type").selectOption("s3"); await dialog.getByLabel("Bucket").selectOption("ldp-trigger-bucket"); await dialog.getByLabel("Prefix (optional)").fill("uploads/"); await dialog.getByRole("button", { name: "Add", exact: true }).click();
+      const triggerCard = page.locator(".trigger-card"); await expect(triggerCard.getByRole("link", { name: "ldp-trigger-bucket" })).toBeVisible(); await expect(triggerCard).toContainText("S3 · bucket notification"); await expect(triggerCard).toContainText("s3:ObjectCreated:*");
+      const notifications = await s3.send(new GetBucketNotificationConfigurationCommand({ Bucket: "ldp-trigger-bucket" })); expect(notifications.LambdaFunctionConfigurations).toHaveLength(1); expect(notifications.LambdaFunctionConfigurations?.[0].LambdaFunctionArn).toMatch(/:function:ldp-cli-function$/); expect(notifications.LambdaFunctionConfigurations?.[0].Filter?.Key?.FilterRules?.[0]).toEqual({ Name: "prefix", Value: "uploads/" });
+      const policy = JSON.parse((await lambda.send(new GetPolicyCommand({ FunctionName: "ldp-cli-function" }))).Policy!); expect(policy.Statement.some((statement: any) => statement.Principal?.Service === "s3.amazonaws.com" && statement.Condition?.ArnLike?.["AWS:SourceArn"] === "arn:aws:s3:::ldp-trigger-bucket" && statement.Condition?.StringEquals?.["AWS:SourceAccount"] === "000000000000")).toBe(true);
+
+      // LDG-48 permissions card: statements show conditions and can be viewed and deleted; LDG-49: cards render independently.
+      await page.getByRole("link", { name: "Configuration", exact: true }).click(); const permissions = page.locator(".permissions-card"); await expect(permissions).toContainText("s3.amazonaws.com"); await expect(permissions).toContainText("AWS:SourceAccount = 000000000000"); await permissions.getByRole("button", { name: "View" }).first().click(); dialog = page.getByRole("dialog"); await expect(dialog.getByText(/"Sid"/)).toBeVisible(); await dialog.locator("#modal-submit").click();
+      await expect(page.getByRole("heading", { name: "Concurrency", exact: true })).toBeVisible(); await expect(page.getByRole("heading", { name: "Function URL (0)", exact: true })).toBeVisible();
+
+      // LDG-50: the AWS graph set with a range picker.
+      await page.getByRole("link", { name: "Monitor", exact: true }).click(); for (const heading of ["Invocations", "Duration (ms)", "Error count and success rate", "Throttles", "Async delivery failures", "Concurrent executions"]) await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
+      await page.getByLabel("Time range").selectOption("3h"); await expect(page.getByText(/for the last 3h/)).toBeVisible(); await expect(page.getByRole("heading", { name: "Throttles", exact: true })).toBeVisible();
+
+      // LDG-52: console-only runtime, architecture, and package-type filters.
+      await page.goto(`${consoleUrl}#/lambda/functions`); await expect(page.getByRole("link", { name: "ldp-cli-function" })).toBeVisible(); await page.getByLabel("Runtime filter").selectOption("nodejs24.x"); await expect(page.getByRole("link", { name: "ldp-cli-function" })).toBeHidden(); await expect(page.getByRole("link", { name: "ldp-console-function" })).toBeVisible(); await page.getByLabel("Architecture filter").selectOption("x86_64"); await expect(page.getByRole("link", { name: "ldp-console-function" })).toBeHidden();
+      await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${consoleUrl}#/lambda/functions/ldp-cli-function`); await expect(page.getByRole("button", { name: "Deploy", exact: true })).toBeVisible(); expect(errors).toEqual([]);
+    } finally { lambda.destroy(); s3.destroy(); }
   });
 });

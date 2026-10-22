@@ -37,7 +37,7 @@ export interface LambdaFunctionModel {
   readonly Handler: string;
   readonly Role: string;
   readonly Runtime: string;
-  readonly PackageType?: "Zip";
+  readonly PackageType?: "Zip" | "Image";
   readonly Architectures?: readonly string[];
   readonly Description?: string;
   readonly Environment?: { readonly Variables: Readonly<Record<string, string>> };
@@ -64,9 +64,10 @@ export const LAMBDA_FUNCTION_SCHEMA: ProviderSchema = Object.freeze({
   properties: Object.freeze({
     FunctionName: Object.freeze({ valueType: "string", updateBehavior: "REPLACEMENT" }),
     Code: Object.freeze({ valueType: "object", required: true, updateBehavior: "MUTABLE" }),
-    Handler: Object.freeze({ valueType: "string", required: true, updateBehavior: "MUTABLE" }),
+    // Handler and Runtime are required for Zip functions only; validateNested enforces that per PackageType.
+    Handler: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
     Role: Object.freeze({ valueType: "string", required: true, updateBehavior: "MUTABLE" }),
-    Runtime: Object.freeze({ valueType: "string", required: true, updateBehavior: "MUTABLE" }),
+    Runtime: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
     PackageType: Object.freeze({ valueType: "string", updateBehavior: "REPLACEMENT" }),
     Architectures: Object.freeze({ valueType: "array", updateBehavior: "MUTABLE" }),
     Description: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
@@ -107,8 +108,17 @@ function stackName(context: ProviderContext): string {
   return context.stackId.match(/:stack\/([^/]+)\//)?.[1] ?? "stack";
 }
 
-function generatedName(context: ProviderContext): string {
-  const suffix = createHash("sha256").update(`${context.stackId}\0${context.logicalId}`).digest("hex").slice(0, 10);
+// AWS generates 12 random alphanumerics; the local suffix is derived deterministically so retries and
+// restarts keep the same name. Stacks created before LDP-05 keep their 10-hex names through plan().
+const GENERATED_SUFFIX_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+function generatedSuffix(context: ProviderContext, legacy = false): string {
+  const digest = createHash("sha256").update(`${context.stackId}\0${context.logicalId}`).digest();
+  if (legacy) return digest.toString("hex").slice(0, 10);
+  return Array.from(digest.subarray(0, 12), byte => GENERATED_SUFFIX_ALPHABET[byte % GENERATED_SUFFIX_ALPHABET.length]).join("");
+}
+
+function generatedName(context: ProviderContext, legacy = false): string {
+  const suffix = generatedSuffix(context, legacy);
   const stack = stackName(context).replace(/[^A-Za-z0-9-_]/g, "-") || "stack";
   const logical = context.logicalId.replace(/[^A-Za-z0-9-_]/g, "-") || "Function";
   const bodyBudget = 64 - suffix.length - 1;
@@ -151,19 +161,29 @@ function validateNested(properties: Record<string, unknown>, context: ProviderCo
     for (const key of Object.keys(value)) if (!accepted.has(key)) unsupported(`${path}.${key}`, `${key} is not supported in ${path}`);
   };
   if (properties.FunctionName !== undefined && (typeof properties.FunctionName !== "string" || !/^[A-Za-z0-9-_]{1,64}$/.test(properties.FunctionName))) invalid("Properties.FunctionName", "FunctionName must match [A-Za-z0-9-_] and contain at most 64 characters");
-  if (properties.PackageType !== undefined && properties.PackageType !== "Zip") invalid("Properties.PackageType", "CFN-06 supports only Zip functions; ECR image assets are unavailable");
+  const image = properties.PackageType === "Image";
+  if (properties.PackageType !== undefined && properties.PackageType !== "Zip" && !image) invalid("Properties.PackageType", "PackageType must be Zip or Image");
+  if (image) {
+    invalid("Properties.PackageType", "PackageType Image is not supported in CloudFormation: StackSim deploys only Zip functions from templates. Container image functions can be created through the Lambda API (Code.ImageUri) when a local image source is configured");
+    if (properties.Handler !== undefined) invalid("Properties.Handler", "Handler is not allowed for Image functions");
+    if (properties.Runtime !== undefined) invalid("Properties.Runtime", "Runtime is not allowed for Image functions");
+  } else {
+    for (const name of ["Handler", "Runtime"] as const) if (properties[name] === undefined) issues.push({ code: "MissingRequiredProperty", path: `Properties.${name}`, pathSegments: providerValidationPathSegments(`Properties.${name}`), message: `${LAMBDA_FUNCTION_TYPE} requires property ${name}` });
+  }
   if (typeof properties.Role === "string" && !/^arn:(?:aws|aws-us-gov|aws-cn):iam::\d{12}:role\/.+/.test(properties.Role)) invalid("Properties.Role", "Role must be an IAM role ARN");
   if (typeof properties.Runtime === "string" && !/^(?:nodejs(?:18|20|22|24)\.x|python3\.13)$/.test(properties.Runtime)) invalid("Properties.Runtime", "The bounded provider accepts Node.js 18, 20, 22, and 24 and the pinned CDK deployment helper's python3.13 runtime");
   if (typeof properties.Handler === "string" && (!properties.Handler || properties.Handler.length > 128)) invalid("Properties.Handler", "Handler must contain between 1 and 128 characters");
 
   const code = properties.Code;
-  if (record(code)) {
+  if (record(code) && !image) {
     const allowed = new Set(["S3Bucket", "S3Key", "S3ObjectVersion", "ZipFile"]);
     for (const key of Object.keys(code)) if (!allowed.has(key)) invalid(`Properties.Code.${key}`, `${key} is not supported; KMS and image code dependencies are unavailable`);
     const inline = code.ZipFile !== undefined;
     const s3 = code.S3Bucket !== undefined || code.S3Key !== undefined || code.S3ObjectVersion !== undefined;
     if (inline === s3) invalid("Properties.Code", "Code must specify exactly one of ZipFile or S3Bucket/S3Key");
-    if (inline && (typeof code.ZipFile !== "string" || Buffer.byteLength(code.ZipFile) > 4 * 1024 * 1024)) invalid("Properties.Code.ZipFile", "ZipFile must be source text no larger than 4 MiB");
+    // The CloudFormation limit is the zipped inline package (4 MB), not the CDK's 4096-character fromInline guard:
+    // aws-cdk-lib's own S3 notifications helper is ~5,000 characters of inline Python and deploys on AWS.
+    if (inline && (typeof code.ZipFile !== "string" || Buffer.byteLength(code.ZipFile) > 4 * 1024 * 1024)) invalid("Properties.Code.ZipFile", "ZipFile must be source text; the zipped inline package cannot exceed 4 MB (upload larger code through S3Bucket/S3Key)");
     if (s3 && (typeof code.S3Bucket !== "string" || !code.S3Bucket || typeof code.S3Key !== "string" || !code.S3Key || (code.S3ObjectVersion !== undefined && typeof code.S3ObjectVersion !== "string"))) invalid("Properties.Code", "S3 code requires string S3Bucket and S3Key and an optional string S3ObjectVersion");
     if (inline && (typeof properties.Handler !== "string" || !properties.Handler.startsWith("index."))) invalid("Properties.Handler", "Inline ZipFile source requires a handler in index.js");
   }
@@ -466,7 +486,7 @@ export function createLambdaFunctionProvider(lambda: LambdaService, s3: S3Servic
         Handler: String(properties.Handler),
         Role: String(properties.Role),
         Runtime: String(properties.Runtime),
-        ...(properties.PackageType !== undefined ? { PackageType: "Zip" as const } : {}),
+        ...(properties.PackageType !== undefined ? { PackageType: String(properties.PackageType) as LambdaFunctionModel["PackageType"] } : {}),
         ...(properties.Architectures !== undefined ? { Architectures: [...properties.Architectures as string[]] } : {}),
         ...(properties.Description !== undefined ? { Description: String(properties.Description) } : {}),
         ...(environment ? { Environment: environment } : {}),
@@ -483,8 +503,10 @@ export function createLambdaFunctionProvider(lambda: LambdaService, s3: S3Servic
       });
     },
 
-    plan(previous: LambdaFunctionModel | undefined, desired: LambdaFunctionModel): ProviderPlan<LambdaFunctionModel> {
-      if (!previous) return { action: "CREATE", desired, changedProperties: Object.keys(desired).sort(), replacementProperties: [] };
+    plan(previous: LambdaFunctionModel | undefined, requested: LambdaFunctionModel, context: ProviderContext): ProviderPlan<LambdaFunctionModel> {
+      if (!previous) return { action: "CREATE", desired: requested, changedProperties: Object.keys(requested).sort(), replacementProperties: [] };
+      // A pre-LDP-05 stack keeps its 10-hex generated name instead of being replaced for a cosmetic suffix change.
+      const desired = previous.FunctionName === generatedName(context, true) && requested.FunctionName === generatedName(context) ? { ...requested, FunctionName: previous.FunctionName } : requested;
       const keys = [...new Set([...Object.keys(previous), ...Object.keys(desired)])].filter(key => !same((previous as any)[key], (desired as any)[key])).sort();
       if (!keys.length) return { action: "NO_OP", desired, changedProperties: [], replacementProperties: [] };
       const replacements = keys.filter(key => key === "FunctionName" || key === "PackageType");

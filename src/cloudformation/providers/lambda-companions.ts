@@ -29,6 +29,8 @@ interface PermissionModel {
   readonly Principal: string;
   readonly SourceArn?: string;
   readonly SourceAccount?: string;
+  readonly PrincipalOrgID?: string;
+  readonly EventSourceToken?: string;
   readonly FunctionUrlAuthType?: "AWS_IAM" | "NONE";
   readonly InvokedViaFunctionUrl?: boolean;
 }
@@ -50,12 +52,16 @@ interface AliasModel {
 }
 
 const retention = Object.freeze({ deletionPolicies: Object.freeze(["Delete", "Retain", "RetainExceptOnCreate"] as const), updateReplacePolicies: Object.freeze(["Delete", "Retain", "RetainExceptOnCreate"] as const), snapshotSupported: false });
-const SUPPORTED_LOCAL_INVOCATION_PRINCIPALS: ReadonlySet<string> = new Set([
+// Service principals whose invoking service runs locally and enforces the statement. Any other
+// AWS service principal is accepted as an inert statement (visible through GetPolicy, never
+// exercised), as AWS would accept it; CloudFormation has no warning channel to flag it.
+export const LOCAL_INVOCATION_PRINCIPALS: ReadonlySet<string> = new Set([
   "apigateway.amazonaws.com",
   "cognito-idp.amazonaws.com",
   "events.amazonaws.com",
   "logs.amazonaws.com",
   "s3.amazonaws.com",
+  "scheduler.amazonaws.com",
   "secretsmanager.amazonaws.com",
   "sns.amazonaws.com",
 ]);
@@ -67,6 +73,8 @@ export const LAMBDA_PERMISSION_SCHEMA: ProviderSchema = Object.freeze({
     Principal: Object.freeze({ valueType: "string", required: true, updateBehavior: "REPLACEMENT" }),
     SourceArn: Object.freeze({ valueType: "string", updateBehavior: "REPLACEMENT" }),
     SourceAccount: Object.freeze({ valueType: "string", updateBehavior: "REPLACEMENT" }),
+    PrincipalOrgID: Object.freeze({ valueType: "string", updateBehavior: "REPLACEMENT" }),
+    EventSourceToken: Object.freeze({ valueType: "string", updateBehavior: "REPLACEMENT" }),
     FunctionUrlAuthType: Object.freeze({ valueType: "string", updateBehavior: "REPLACEMENT" }),
     InvokedViaFunctionUrl: Object.freeze({ valueType: "boolean", updateBehavior: "REPLACEMENT" }),
   }),
@@ -225,8 +233,10 @@ export function createLambdaPermissionProvider(lambda: LambdaService): Productio
     : value);
   const expectedCondition = (desired: PermissionModel): Record<string, Record<string, string>> => ({
     ...(desired.SourceArn ? { ArnLike: { "AWS:SourceArn": desired.SourceArn } } : {}),
-    ...(desired.SourceAccount || desired.FunctionUrlAuthType ? { StringEquals: {
+    ...(desired.SourceAccount || desired.PrincipalOrgID || desired.EventSourceToken || desired.FunctionUrlAuthType ? { StringEquals: {
       ...(desired.SourceAccount ? { "AWS:SourceAccount": desired.SourceAccount } : {}),
+      ...(desired.PrincipalOrgID ? { "aws:PrincipalOrgID": desired.PrincipalOrgID } : {}),
+      ...(desired.EventSourceToken ? { "lambda:EventSourceToken": desired.EventSourceToken } : {}),
       ...(desired.FunctionUrlAuthType ? { "lambda:FunctionUrlAuthType": desired.FunctionUrlAuthType } : {}),
     } } : {}),
     ...(desired.InvokedViaFunctionUrl !== undefined ? { Bool: { "lambda:InvokedViaFunctionUrl": String(desired.InvokedViaFunctionUrl) } } : {}),
@@ -237,6 +247,8 @@ export function createLambdaPermissionProvider(lambda: LambdaService): Productio
     Principal: typeof statement.Principal === "string" ? statement.Principal : String(statement.Principal?.Service ?? statement.Principal?.AWS ?? ""),
     ...(statement.Condition?.ArnLike?.["AWS:SourceArn"] ? { SourceArn: String(statement.Condition.ArnLike["AWS:SourceArn"]) } : {}),
     ...(statement.Condition?.StringEquals?.["AWS:SourceAccount"] ? { SourceAccount: String(statement.Condition.StringEquals["AWS:SourceAccount"]) } : {}),
+    ...(statement.Condition?.StringEquals?.["aws:PrincipalOrgID"] ? { PrincipalOrgID: String(statement.Condition.StringEquals["aws:PrincipalOrgID"]) } : {}),
+    ...(statement.Condition?.StringEquals?.["lambda:EventSourceToken"] ? { EventSourceToken: String(statement.Condition.StringEquals["lambda:EventSourceToken"]) } : {}),
     ...(statement.Condition?.StringEquals?.["lambda:FunctionUrlAuthType"] ? { FunctionUrlAuthType: String(statement.Condition.StringEquals["lambda:FunctionUrlAuthType"]) as PermissionModel["FunctionUrlAuthType"] } : {}),
     ...(statement.Condition?.Bool?.["lambda:InvokedViaFunctionUrl"] !== undefined ? { InvokedViaFunctionUrl: String(statement.Condition.Bool["lambda:InvokedViaFunctionUrl"]) === "true" } : {}),
   });
@@ -254,7 +266,9 @@ export function createLambdaPermissionProvider(lambda: LambdaService): Productio
       if (typeof properties.FunctionUrlAuthType === "string" && !["AWS_IAM", "NONE"].includes(properties.FunctionUrlAuthType)) issues.push({ code: "InvalidProperty", path: "Properties.FunctionUrlAuthType", pathSegments: providerValidationPathSegments("Properties.FunctionUrlAuthType"), message: "FunctionUrlAuthType must be AWS_IAM or NONE" });
       if (properties.FunctionUrlAuthType !== undefined && properties.Action !== "lambda:InvokeFunctionUrl") issues.push({ code: "InvalidProperty", path: "Properties.FunctionUrlAuthType", pathSegments: providerValidationPathSegments("Properties.FunctionUrlAuthType"), message: "FunctionUrlAuthType requires Action lambda:InvokeFunctionUrl" });
       if (properties.InvokedViaFunctionUrl !== undefined && properties.Action !== "lambda:InvokeFunction") issues.push({ code: "InvalidProperty", path: "Properties.InvokedViaFunctionUrl", pathSegments: providerValidationPathSegments("Properties.InvokedViaFunctionUrl"), message: "InvokedViaFunctionUrl requires Action lambda:InvokeFunction" });
-      if (typeof properties.Principal === "string" && properties.Principal.endsWith(".amazonaws.com") && !SUPPORTED_LOCAL_INVOCATION_PRINCIPALS.has(properties.Principal)) issues.push({ code: "InvalidProperty", path: "Properties.Principal", pathSegments: providerValidationPathSegments("Properties.Principal"), message: `Service principal ${properties.Principal} is not backed by a supported local invocation source` });
+      if (typeof properties.Principal === "string" && !/^(?:\*|\d{12}|[a-z0-9.-]+\.amazon(?:aws)?\.com(?:\.cn)?|arn:(?:aws|aws-us-gov|aws-cn):iam::\d{12}:(?:root|user\/.+|role\/.+))$/.test(properties.Principal)) issues.push({ code: "InvalidProperty", path: "Properties.Principal", pathSegments: providerValidationPathSegments("Properties.Principal"), message: "Principal must be an AWS service principal, a 12-digit account ID, an IAM principal ARN, or *" });
+      if (typeof properties.PrincipalOrgID === "string" && !/^o-[a-z0-9]{10,32}$/.test(properties.PrincipalOrgID)) issues.push({ code: "InvalidProperty", path: "Properties.PrincipalOrgID", pathSegments: providerValidationPathSegments("Properties.PrincipalOrgID"), message: "PrincipalOrgID must match o-[a-z0-9]{10,32}" });
+      if (typeof properties.EventSourceToken === "string" && !/^[a-zA-Z0-9._-]{1,256}$/.test(properties.EventSourceToken)) issues.push({ code: "InvalidProperty", path: "Properties.EventSourceToken", pathSegments: providerValidationPathSegments("Properties.EventSourceToken"), message: "EventSourceToken must match [a-zA-Z0-9._-]{1,256}" });
       return issues;
     },
     canonicalize(properties: unknown, context: ProviderContext): PermissionModel {
@@ -267,6 +281,8 @@ export function createLambdaPermissionProvider(lambda: LambdaService): Productio
         Principal: String(properties.Principal),
         ...(properties.SourceArn !== undefined ? { SourceArn: String(properties.SourceArn) } : {}),
         ...(properties.SourceAccount !== undefined ? { SourceAccount: String(properties.SourceAccount) } : {}),
+        ...(properties.PrincipalOrgID !== undefined ? { PrincipalOrgID: String(properties.PrincipalOrgID) } : {}),
+        ...(properties.EventSourceToken !== undefined ? { EventSourceToken: String(properties.EventSourceToken) } : {}),
         ...(properties.FunctionUrlAuthType !== undefined ? { FunctionUrlAuthType: String(properties.FunctionUrlAuthType) as PermissionModel["FunctionUrlAuthType"] } : {}),
         ...(properties.InvokedViaFunctionUrl !== undefined ? { InvokedViaFunctionUrl: Boolean(properties.InvokedViaFunctionUrl) } : {}),
       };
@@ -288,6 +304,8 @@ export function createLambdaPermissionProvider(lambda: LambdaService): Productio
           Principal: desired.Principal,
           ...(desired.SourceArn ? { SourceArn: desired.SourceArn } : {}),
           ...(desired.SourceAccount ? { SourceAccount: desired.SourceAccount } : {}),
+          ...(desired.PrincipalOrgID ? { PrincipalOrgID: desired.PrincipalOrgID } : {}),
+          ...(desired.EventSourceToken ? { EventSourceToken: desired.EventSourceToken } : {}),
           ...(desired.FunctionUrlAuthType ? { FunctionUrlAuthType: desired.FunctionUrlAuthType } : {}),
           ...(desired.InvokedViaFunctionUrl !== undefined ? { InvokedViaFunctionUrl: desired.InvokedViaFunctionUrl } : {}),
         });

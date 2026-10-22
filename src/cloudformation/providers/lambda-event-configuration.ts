@@ -126,16 +126,16 @@ function localFunctionTarget(value: unknown, context: ProviderContext, allowQual
 
 function sourceType(value: unknown, context: ProviderContext): SourceType | undefined {
   if (typeof value !== "string") return undefined;
-  const sqs = /^arn:([^:]+):sqs:([^:]+):(\d{12}):([A-Za-z0-9_-]{1,80})$/.exec(value);
+  const sqs = /^arn:([^:]+):sqs:([^:]+):(\d{12}):((?:[A-Za-z0-9_-]{1,80}|[A-Za-z0-9_-]{1,75}\.fifo))$/.exec(value);
   if (sqs && sqs[1] === context.partition && sqs[2] === context.region && sqs[3] === context.accountId) return "sqs";
   const dynamodb = /^arn:([^:]+):dynamodb:([^:]+):(\d{12}):table\/[^/]+\/stream\/.+$/.exec(value);
   if (dynamodb && dynamodb[1] === context.partition && dynamodb[2] === context.region && dynamodb[3] === context.accountId) return "dynamodb";
   return undefined;
 }
 
-function standardSqsDestination(value: unknown, context: ProviderContext): value is string {
+function sqsDestination(value: unknown, context: ProviderContext): value is string {
   if (typeof value !== "string") return false;
-  const match = /^arn:([^:]+):sqs:([^:]+):(\d{12}):([A-Za-z0-9_-]{1,80})$/.exec(value);
+  const match = /^arn:([^:]+):sqs:([^:]+):(\d{12}):((?:[A-Za-z0-9_-]{1,80}|[A-Za-z0-9_-]{1,75}\.fifo))$/.exec(value);
   return Boolean(match && match[1] === context.partition && match[2] === context.region && match[3] === context.accountId);
 }
 
@@ -158,7 +158,7 @@ function eventBusDestination(value: unknown, context: ProviderContext): value is
 }
 
 function asyncInvokeDestination(value: unknown, context: ProviderContext): value is string {
-  return lambdaDestination(value, context) || standardSqsDestination(value, context) || snsDestination(value, context) || eventBusDestination(value, context);
+  return lambdaDestination(value, context) || sqsDestination(value, context) || snsDestination(value, context) || eventBusDestination(value, context);
 }
 
 function integer(value: unknown, path: string, minimum: number, maximum: number, issues: ProviderValidationIssue[], allowMinusOne = false): void {
@@ -193,7 +193,7 @@ function validateDiscardDestination(value: unknown, context: ProviderContext, is
   exactKeys(value, ["OnFailure"], path, issues);
   if (!isRecord(value.OnFailure)) { issue(issues, `${path}.OnFailure`, "DestinationConfig must contain an OnFailure object"); return; }
   exactKeys(value.OnFailure, ["Destination"], `${path}.OnFailure`, issues);
-  if (!standardSqsDestination(value.OnFailure.Destination, context)) issue(issues, `${path}.OnFailure.Destination`, "CFN-09 DynamoDB discarded-record destinations must identify a Standard SQS queue in this simulator account and Region");
+  if (!sqsDestination(value.OnFailure.Destination, context)) issue(issues, `${path}.OnFailure.Destination`, "CFN-09 DynamoDB discarded-record destinations must identify an SQS queue (standard or FIFO) in this simulator account and Region");
 }
 
 function validateScaling(value: unknown, issues: ProviderValidationIssue[]): void {
@@ -211,7 +211,7 @@ function validateEventSourceMapping(properties: unknown, context: ProviderContex
   const type = sourceType(properties.EventSourceArn, context);
   if (!type) {
     const service = typeof properties.EventSourceArn === "string" && properties.EventSourceArn.startsWith("arn:") ? properties.EventSourceArn.split(":")[2] : "unknown";
-    issue(issues, "Properties.EventSourceArn", `CFN-09 supports only same-account, same-Region DynamoDB Streams and Standard SQS event sources; ${service} belongs to another source family or phase`);
+    issue(issues, "Properties.EventSourceArn", `CFN-09 supports only same-account, same-Region DynamoDB Streams and SQS (standard or FIFO) event sources; ${service} belongs to another source family or phase`);
   }
   if (!localFunctionTarget(properties.FunctionName, context, true)) issue(issues, "Properties.FunctionName", "FunctionName must identify a Lambda function or qualifier in this simulator account and Region");
   if (properties.Enabled !== undefined && typeof properties.Enabled !== "boolean") issue(issues, "Properties.Enabled", "Enabled must be a boolean");
@@ -221,7 +221,7 @@ function validateEventSourceMapping(properties: unknown, context: ProviderContex
   if (type === "sqs") {
     if (properties.BatchSize !== undefined) integer(properties.BatchSize, "Properties.BatchSize", 1, 10_000, issues);
     if (Number(properties.BatchSize ?? 10) > 10 && Number(properties.MaximumBatchingWindowInSeconds ?? 0) < 1) issue(issues, "Properties.MaximumBatchingWindowInSeconds", "MaximumBatchingWindowInSeconds must be at least 1 when SQS BatchSize is greater than 10");
-    for (const field of DYNAMODB_ONLY) if (properties[field] !== undefined) issue(issues, `Properties.${field}`, `${field} is not supported for Standard SQS event source mappings in CFN-09`);
+    for (const field of DYNAMODB_ONLY) if (properties[field] !== undefined) issue(issues, `Properties.${field}`, `${field} is not supported for SQS event source mappings in CFN-09`);
     if (properties.ScalingConfig !== undefined) validateScaling(properties.ScalingConfig, issues);
   }
   if (type === "dynamodb") {
@@ -234,7 +234,7 @@ function validateEventSourceMapping(properties: unknown, context: ProviderContex
     if (properties.ParallelizationFactor !== undefined) integer(properties.ParallelizationFactor, "Properties.ParallelizationFactor", 1, 10, issues);
     if (properties.TumblingWindowInSeconds !== undefined) integer(properties.TumblingWindowInSeconds, "Properties.TumblingWindowInSeconds", 0, 900, issues);
     if (properties.DestinationConfig !== undefined) validateDiscardDestination(properties.DestinationConfig, context, issues);
-    if (properties.ScalingConfig !== undefined) issue(issues, "Properties.ScalingConfig", "ScalingConfig is supported only for Standard SQS event source mappings");
+    if (properties.ScalingConfig !== undefined) issue(issues, "Properties.ScalingConfig", "ScalingConfig is supported only for SQS event source mappings");
   }
   return issues;
 }
@@ -320,7 +320,7 @@ function mappingModelFromView(view: any, context: ProviderContext): LambdaEventS
   };
   if (type === "sqs") return { ...common, ...(view.ScalingConfig?.MaximumConcurrency !== undefined ? { ScalingConfig: { MaximumConcurrency: Number(view.ScalingConfig.MaximumConcurrency) } } : {}) };
   const destination = view.DestinationConfig?.OnFailure?.Destination;
-  if (destination && !standardSqsDestination(destination, context)) throw new AwsError("UnsupportedResourceState", `Event source mapping ${view.UUID} uses a discarded-record destination outside CFN-09`, 409);
+  if (destination && !sqsDestination(destination, context)) throw new AwsError("UnsupportedResourceState", `Event source mapping ${view.UUID} uses a discarded-record destination outside CFN-09`, 409);
   return {
     ...common,
     BisectBatchOnFunctionError: Boolean(view.BisectBatchOnFunctionError),
@@ -438,7 +438,7 @@ export function createLambdaEventSourceMappingProvider(lambda: LambdaService): P
 function validateInvokeDestination(value: unknown, path: string, context: ProviderContext, issues: ProviderValidationIssue[]): void {
   if (!isRecord(value)) { issue(issues, path, `${path.split(".").at(-1)} must be an object`); return; }
   exactKeys(value, ["Destination"], path, issues);
-  if (!asyncInvokeDestination(value.Destination, context)) issue(issues, `${path}.Destination`, "CFN-09 async destinations must identify a local Lambda function, Standard SQS queue, Standard SNS topic, or EventBridge event bus");
+  if (!asyncInvokeDestination(value.Destination, context)) issue(issues, `${path}.Destination`, "CFN-09 async destinations must identify a local Lambda function, SQS queue, Standard SNS topic, or EventBridge event bus");
 }
 
 function validateEventInvokeConfig(properties: unknown, context: ProviderContext): ProviderValidationIssue[] {

@@ -406,6 +406,158 @@ Open `lambda-response.json` to inspect the function result. The command output i
 aws lambda list-event-source-mappings --query 'EventSourceMappings[].{UUID:UUID,Function:FunctionArn,Source:EventSourceArn,State:State}' --output table
 ```
 
+### How to create and run your first function from the CLI
+
+This recipe mirrors the AWS "Create a Lambda function with the AWS CLI" getting-started page. Every command below was run against a local simulator with AWS CLI 2.36.14.
+
+1. Write the handler and zip it. Save this as `index.mjs` (ES module; `exports.handler = …` in an `index.js` works too):
+
+```javascript
+export const handler = async (event) => {
+  console.log("Received", JSON.stringify(event));
+  return { greeting: `${process.env.GREETING ?? "Hello"}, ${event.name ?? "world"}!` };
+};
+```
+
+```console
+zip function.zip index.mjs
+```
+
+On Windows PowerShell: `Compress-Archive -Path index.mjs -DestinationPath function.zip`.
+
+2. Create the execution role. Lambda needs a role that trusts `lambda.amazonaws.com`; the basic policy lets the function write logs. Save the trust policy as `trust.json`:
+
+```json
+{ "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": { "Service": "lambda.amazonaws.com" }, "Action": "sts:AssumeRole" }] }
+```
+
+```console
+aws iam create-role --role-name lambda-ex --assume-role-policy-document file://trust.json --query Role.Arn --output text
+aws iam attach-role-policy --role-name lambda-ex --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+```
+
+3. Create the function and wait for it to become `Active`:
+
+```console
+aws lambda create-function --function-name my-function --runtime nodejs22.x --role arn:aws:iam::000000000000:role/lambda-ex --handler index.handler --zip-file fileb://function.zip
+aws lambda wait function-active-v2 --function-name my-function
+```
+
+The create response reports `"State": "Pending"`; the waiter returns once the package is installed. `nodejs18.x`, `nodejs20.x`, `nodejs22.x`, and `nodejs24.x` run locally; Python, Java, .NET, Go, Ruby, and custom runtimes are intentionally unsupported and `create-function` rejects them with a message that says so.
+
+4. Invoke it and read the log tail. `--log-type Tail` returns the last 4 KB of the invocation log base64-encoded in `LogResult`:
+
+```console
+aws lambda invoke --function-name my-function --cli-binary-format raw-in-base64-out --payload '{"name":"StackSim"}' --log-type Tail response.json
+cat response.json
+```
+
+```console
+aws lambda invoke --function-name my-function --cli-binary-format raw-in-base64-out --payload '{"name":"StackSim"}' --log-type Tail --query LogResult --output text response.json | tr -d '\r' | base64 --decode
+```
+
+The decoded log has the same four lines as AWS:
+
+```text
+START RequestId: c16d964a-b159-4e77-8a41-3d9db1f63c3c Version: $LATEST
+2026-10-22T12:08:16.451Z	c16d964a-b159-4e77-8a41-3d9db1f63c3c	INFO	Received {"name":"StackSim"}
+END RequestId: c16d964a-b159-4e77-8a41-3d9db1f63c3c
+REPORT RequestId: c16d964a-b159-4e77-8a41-3d9db1f63c3c	Duration: 0.66 ms	Billed Duration: 1 ms	Memory Size: 128 MB	Max Memory Used: 63 MB	Init Duration: 59.19 ms
+```
+
+`Init Duration` appears on a cold start; `Max Memory Used` is the measured worker peak. The `tr -d '\r'` keeps `base64` happy on Windows, where the CLI prints CRLF line endings. A payload file works instead of inline JSON: `--payload fileb://payload.json` needs no `--cli-binary-format`.
+
+### How to update code and configuration
+
+```console
+aws lambda update-function-configuration --function-name my-function --timeout 10 --environment 'Variables={GREETING=Hi}'
+aws lambda wait function-updated-v2 --function-name my-function
+aws lambda update-function-code --function-name my-function --zip-file fileb://function.zip --publish
+```
+
+Both updates return `"LastUpdateStatus": "InProgress"`; `wait function-updated-v2` blocks until `Successful`. `--publish` creates version `1` from the new code in the same call. A second `publish-version` with nothing changed returns the same version number instead of creating a new one.
+
+### How to publish versions and aliases
+
+```console
+aws lambda publish-version --function-name my-function --description "second release" --query Version --output text
+aws lambda create-alias --function-name my-function --name live --function-version 1
+aws lambda invoke --function-name my-function:live --cli-binary-format raw-in-base64-out --payload '{}' response.json
+```
+
+The invoke response's `ExecutedVersion` is `1` when called through the alias and `$LATEST` otherwise. `update-alias --routing-config AdditionalVersionWeights={2=0.1}` shifts a tenth of the traffic to version 2.
+
+### How to let another service invoke the function
+
+Resource-based policy statements are added with `add-permission`. The S3 shape pairs the bucket ARN with your account, because bucket ARNs carry no account:
+
+```console
+aws lambda add-permission --function-name my-function --statement-id s3-uploads --action lambda:InvokeFunction --principal s3.amazonaws.com --source-arn arn:aws:s3:::my-uploads --source-account 000000000000
+aws lambda get-policy --function-name my-function --query Policy --output text
+aws lambda remove-permission --function-name my-function --statement-id s3-uploads
+```
+
+`get-policy` returns `ResourceNotFoundException` while the policy is empty, as on AWS.
+
+### How to connect an SQS queue as an event source
+
+The execution role needs the SQS polling permissions before the mapping is created:
+
+```console
+aws iam attach-role-policy --role-name lambda-ex --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole
+aws sqs create-queue --queue-name my-jobs
+aws lambda create-event-source-mapping --function-name my-function --event-source-arn arn:aws:sqs:eu-west-1:000000000000:my-jobs --batch-size 5
+aws sqs send-message --queue-url http://127.0.0.1:4566/000000000000/my-jobs --message-body '{"job":1}'
+```
+
+The mapping is created in state `Creating` and polls once it is `Enabled`; `aws lambda list-event-source-mappings` shows its `LastProcessingResult`. FIFO queues (`my-jobs.fifo`) work the same way with batch sizes up to 10. DynamoDB streams use `--starting-position LATEST` instead of a queue.
+
+### How to configure asynchronous invocation
+
+```console
+aws lambda put-function-event-invoke-config --function-name my-function --maximum-retry-attempts 0 --destination-config '{"OnFailure":{"Destination":"arn:aws:sqs:eu-west-1:000000000000:my-jobs"}}'
+aws lambda invoke --function-name my-function --invocation-type Event --cli-binary-format raw-in-base64-out --payload '{"name":"async"}' /dev/null
+```
+
+An `Event` invoke returns `StatusCode` 202 and the outcome appears in the function's log group; failures go to the `OnFailure` destination (Lambda, SQS, SNS, EventBridge, or S3).
+
+### How to create a function URL and call it
+
+```console
+aws lambda create-function-url-config --function-name my-function --auth-type NONE --query FunctionUrl --output text
+aws lambda add-permission --function-name my-function --statement-id FunctionURLAllowPublicAccess --action lambda:InvokeFunctionUrl --principal '*' --function-url-auth-type NONE
+aws lambda add-permission --function-name my-function --statement-id FunctionURLAllowPublicInvoke --action lambda:InvokeFunction --principal '*' --invoked-via-function-url
+curl -s -X POST -H 'content-type: application/json' -d '{"name":"URL"}' http://127.0.0.1:4567/lambda-url/83c88a746b8b076b1761002a35da2d2a/
+```
+
+The URL is served from the invoke port (`4567` by default) and the handler receives the HTTP API 2.0 event shape. StackSim checks both URL invocation actions (`lambda:InvokeFunctionUrl` with `FunctionUrlAuthType NONE` and `lambda:InvokeFunction` with `InvokedViaFunctionUrl`), the two statements the Lambda console adds for a public URL; with only the first the URL answers `{"message":"Forbidden"}`. `--auth-type AWS_IAM` requires SigV4-signed requests instead.
+
+### How to publish and attach a layer
+
+Layer archives put Node.js packages under `nodejs/node_modules`:
+
+```console
+aws lambda publish-layer-version --layer-name my-utils --zip-file fileb://layer.zip --compatible-runtimes nodejs22.x --query LayerVersionArn --output text
+aws lambda update-function-configuration --function-name my-function --layers arn:aws:lambda:eu-west-1:000000000000:layer:my-utils:1
+```
+
+The layer is merged under `/opt` on the next invocation, so `import { shout } from "my-utils"` resolves.
+
+### How to tag and delete a function
+
+```console
+aws lambda tag-resource --resource arn:aws:lambda:eu-west-1:000000000000:function:my-function --tags team=learners,env=local
+aws lambda list-tags --resource arn:aws:lambda:eu-west-1:000000000000:function:my-function
+aws lambda delete-function --function-name my-function
+```
+
+### Lambda on Windows and Git Bash
+
+- `fileb://` and `file://` take Windows paths: `fileb://function.zip` (relative) and `fileb://C:/Users/me/function.zip` both work; the MSYS form `fileb:///c/Users/me/function.zip` fails with `Unable to load paramfile` because the CLI is a Windows program.
+- Git Bash rewrites arguments that look like POSIX paths. `--path /service-role/` on `aws iam create-role` becomes a Windows path and fails with `Invalid role name or path`, and `--log-group-name /aws/lambda/my-function` turns into `C:/Program Files/Git/aws/lambda/my-function`; prefix such commands with `MSYS_NO_PATHCONV=1` (see [Where to send API requests](#where-to-send-api-requests)).
+- Inline JSON payloads need `--cli-binary-format raw-in-base64-out`; a file payload (`--payload fileb://payload.json`) does not.
+- The CLI prints CRLF on Windows: pipe `--output text` values through `tr -d '\r'` before `base64 --decode` or `curl`.
+
 ## Step Functions
 
 ### How to list state machines

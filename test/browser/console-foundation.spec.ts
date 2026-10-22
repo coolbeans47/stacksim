@@ -537,11 +537,12 @@ test.describe("FND-02 console foundation", () => {
     await expect(page.getByText("Changes apply to $LATEST immediately", { exact: true })).toBeVisible();
     await expect(page.getByText(/without a version or alias use saved changes immediately/)).toBeVisible();
     await expect(sourceEditor).toHaveValue(/source: "inline"/);
-    await expect(page.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Deploy", exact: true })).toBeDisabled();
     await sourceEditor.fill('export const handler = async event => ({ echoed: event, source: "edited-inline" });');
     await expect(page.getByRole("button", { name: "Discard changes" })).toBeEnabled();
-    await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect(page.locator("#toast-region").getByRole("status").filter({ hasText: "Function code saved" })).toBeVisible();
+    await expect(page.getByText("Changes not deployed", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Deploy", exact: true }).click();
+    await expect(page.locator("#toast-region").getByRole("status").filter({ hasText: "Function code deployed" })).toBeVisible();
     await expect(page.locator(".lambda-source-editor-card").getByLabel("JavaScript code")).toHaveValue(/source: "edited-inline"/);
     const lambda = new LambdaClient(sdkOptions(simulator));
     try { await lambda.send(new UpdateFunctionConfigurationCommand({ FunctionName: "browser-echo", Timeout: 10 })); }

@@ -1,5 +1,15 @@
 {
   "version": 6,
+  "ldp06": {
+    "checked": "2026-10-22",
+    "browserSuite": "test/browser/phase-console.spec.ts",
+    "captureScript": "scripts/capture-ldp06.mjs",
+    "artifactRoot": "stacksim-designs/ui-reference/2026-10-22/lambda/ldp06",
+    "viewports": { "desktop": [1440, 900], "laptop": [1280, 800], "narrow": [390, 844] },
+    "routes": ["#/lambda/functions", "#/lambda/functions/{function}", "#/lambda/functions/{function}/test", "#/lambda/functions/{function}/monitor", "#/lambda/functions/{function}/configuration"],
+    "states": ["list-filters", "create-advanced", "code-editor", "add-trigger-s3", "add-trigger-eventbridge", "test-template", "monitor-graphs", "permissions"],
+    "diagnostics": ["page error", "request failure", "HTTP >= 400", "document overflow"]
+  },
   "sns01": {
     "checked": "2026-07-27",
     "browserSuite": "test/browser/sns-console.spec.ts",

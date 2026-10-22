@@ -61,7 +61,7 @@ test("Lambda function provider consumes inline and versioned S3 ZIP code through
     };
     const generated = provider.canonicalize({ Runtime: "nodejs22.x", Handler: "index.handler", Role: role, Code: { ZipFile: "exports.handler = async () => undefined;" } }, longContext);
     assert.equal(generated.FunctionName.length, 64);
-    assert.match(generated.FunctionName, /^amplify-sandbox-ampl-TableManagerCustomProviderframew-[a-f0-9]{10}$/);
+    assert.match(generated.FunctionName, /^amplify-sandbox-ampl-TableManagerCustomProviderfram-[A-Za-z0-9]{12}$/);
     assert.equal(provider.canonicalize({ Runtime: "nodejs22.x", Handler: "index.handler", Role: role, Code: { ZipFile: "exports.handler = async () => undefined;" } }, longContext).FunctionName, generated.FunctionName);
 
     const inline = provider.canonicalize({

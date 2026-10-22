@@ -431,6 +431,8 @@ export interface LambdaExecutableConfigurationState {
   resolvedImageUri?: string;
   imageExecutionUri?: string;
   imageSource?: "oci" | "docker";
+  /** "image-id" when the Docker daemon had no repository digest for the tag, so CodeSha256 derives from a local ID. */
+  imageDigestSource?: "repository-digest" | "image-id";
   architectures: LambdaArchitecture[];
   ephemeralStorageSize: number;
   loggingConfig: LambdaLoggingConfigState;
