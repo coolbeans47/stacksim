@@ -282,10 +282,11 @@ test.describe("DynamoDB query and search console", () => {
       await page.getByRole("link", { name: "Create table" }).first().click();
       const form = page.locator("#create-table-form");
       await form.getByLabel("Table name").fill("BrowserAdminIndexes"); await form.getByLabel("Partition key", { exact: true }).fill("tenant"); await form.getByLabel("Sort key", { exact: true }).fill("itemId");
-      await form.getByRole("button", { name: "Add index" }).click(); let rows = form.locator(".secondary-index-row"); let row = rows.nth(0);
-      await row.getByLabel("Index name").fill("ByStatus"); await row.getByLabel("Partition key name").fill("status"); await row.getByLabel(/Sort key name/).fill("createdAt"); await row.getByLabel("Sort key type").selectOption("N"); await row.getByLabel("Projection").selectOption("INCLUDE"); await row.getByLabel("Non-key attributes").fill("title, owner");
-      await form.getByRole("button", { name: "Add index" }).click(); rows = form.locator(".secondary-index-row"); row = rows.nth(1);
-      await row.getByLabel("Index name").fill("ByUpdated"); await row.getByLabel("Index type").selectOption("LSI"); await row.getByLabel(/Sort key name/).fill("updatedAt"); await row.getByLabel("Sort key type").selectOption("N"); await row.getByLabel("Projection").selectOption("KEYS_ONLY");
+      await form.getByRole("radio", { name: /Customize settings/ }).check();
+      await form.getByRole("button", { name: "Create global index" }).click(); let rows = form.locator(".secondary-index-row"); let row = rows.nth(0);
+      await row.getByLabel("Index name").fill("ByStatus"); await row.getByLabel("Partition key", { exact: true }).fill("status"); await row.getByLabel(/Sort key/).fill("createdAt"); await row.getByLabel("Data type").nth(1).selectOption("N"); await row.getByLabel("Attribute projections").selectOption("INCLUDE"); await row.getByLabel("Non-key attributes").fill("title, owner");
+      await form.getByRole("button", { name: "Create local index" }).click(); rows = form.locator(".secondary-index-row"); row = rows.nth(1);
+      await row.getByLabel("Index name").fill("ByUpdated"); await expect(row.getByLabel("Index type")).toHaveValue("LSI"); await row.getByLabel(/Sort key/).fill("updatedAt"); await row.getByLabel("Data type").nth(1).selectOption("N"); await row.getByLabel("Attribute projections").selectOption("KEYS_ONLY");
       await form.getByRole("button", { name: "Create table", exact: true }).click();
       await expect(page).toHaveURL(/#\/dynamodb\/tables\/BrowserAdminIndexes\/overview$/);
       let described = await client.send(new DescribeTableCommand({ TableName: "BrowserAdminIndexes" }));
@@ -329,7 +330,9 @@ test.describe("DynamoDB query and search console", () => {
     };
     try {
       await expectHelp("/dynamodb/tables", ["Tables"]);
-      await expectHelp("/dynamodb/tables/create", ["Table details", "Table settings", "Secondary indexes"]);
+      await expectHelp("/dynamodb/tables/create", ["Table details", "Table settings"]);
+      // Reveal the Customize sections without dirtying the form so the next navigation is not blocked by the unsaved-changes guard.
+      await page.evaluate(() => { (document.querySelector("#create-customize-sections") as HTMLElement).hidden = false; }); await expect(page.getByRole("button", { name: "About Secondary indexes", exact: true })).toBeVisible();
       await expectHelp("/dynamodb/transactions", ["Ordered actions"]);
       await expectHelp("/dynamodb/partiql", ["Operation", "Operations"]);
       await expectHelp("/dynamodb/exports", ["Exports"]);

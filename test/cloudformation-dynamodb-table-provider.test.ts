@@ -95,7 +95,7 @@ function initialProperties(): Record<string, any> {
     ],
     BillingMode: "PROVISIONED",
     ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 6 },
-    WarmThroughput: { ReadUnitsPerSecond: 12, WriteUnitsPerSecond: 8 },
+    WarmThroughput: { ReadUnitsPerSecond: 12012, WriteUnitsPerSecond: 4008 },
     LocalSecondaryIndexes: [{
       IndexName: "by-local",
       KeySchema: [
@@ -109,7 +109,7 @@ function initialProperties(): Record<string, any> {
       KeySchema: [{ AttributeName: "group", KeyType: "HASH" }],
       Projection: { ProjectionType: "ALL" },
       ProvisionedThroughput: { ReadCapacityUnits: 3, WriteCapacityUnits: 4 },
-      WarmThroughput: { ReadUnitsPerSecond: 7, WriteUnitsPerSecond: 5 },
+      WarmThroughput: { ReadUnitsPerSecond: 12007, WriteUnitsPerSecond: 4005 },
       ContributorInsightsSpecification: { Enabled: true, Mode: "ACCESSED_AND_THROTTLED_KEYS" },
     }],
     StreamSpecification: {
@@ -138,7 +138,7 @@ function updatedProperties(): Record<string, any> {
   properties.BillingMode = "PAY_PER_REQUEST";
   delete properties.ProvisionedThroughput;
   properties.OnDemandThroughput = { MaxReadRequestUnits: 40, MaxWriteRequestUnits: 30 };
-  properties.WarmThroughput = { ReadUnitsPerSecond: 16, WriteUnitsPerSecond: 10 };
+  properties.WarmThroughput = { ReadUnitsPerSecond: 12016, WriteUnitsPerSecond: 4010 };
   properties.AttributeDefinitions.push({ AttributeName: "status", AttributeType: "S" });
   properties.GlobalSecondaryIndexes = [
     {
@@ -146,7 +146,7 @@ function updatedProperties(): Record<string, any> {
       KeySchema: [{ AttributeName: "group", KeyType: "HASH" }],
       Projection: { ProjectionType: "ALL" },
       OnDemandThroughput: { MaxReadRequestUnits: 18, MaxWriteRequestUnits: 14 },
-      WarmThroughput: { ReadUnitsPerSecond: 9, WriteUnitsPerSecond: 6 },
+      WarmThroughput: { ReadUnitsPerSecond: 12009, WriteUnitsPerSecond: 4006 },
       ContributorInsightsSpecification: { Enabled: true, Mode: "THROTTLED_KEYS" },
     },
     {
@@ -316,7 +316,7 @@ test("DynamoDB provider distinguishes computed default warm throughput from an e
     const unchanged = await settle(current => provider.update(omitted.TableName, omitted, omitted, current), "DefaultWarmTable");
     assert.equal(unchanged.status, "SUCCESS", "an omitted property must remain stable when DescribeTable reports its computed default");
 
-    const configured = provider.canonicalize({ ...properties, WarmThroughput: { ReadUnitsPerSecond: 20, WriteUnitsPerSecond: 10 } }, context("DefaultWarmTable"));
+    const configured = provider.canonicalize({ ...properties, WarmThroughput: { ReadUnitsPerSecond: 12020, WriteUnitsPerSecond: 4010 } }, context("DefaultWarmTable"));
     const configuredUpdate = await settle(current => provider.update(omitted.TableName, omitted, configured, current), "DefaultWarmTable");
     assert.equal(configuredUpdate.status, "SUCCESS");
     const removal = await provider.update(omitted.TableName, configured, omitted, context("DefaultWarmTable"));

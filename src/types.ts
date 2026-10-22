@@ -20,6 +20,8 @@ export interface DynamoProvisionedThroughputState {
   lastDecreaseAt?: number;
   decreasesToday?: number;
   decreaseDay?: string;
+  decreaseTokens?: number;
+  decreaseTokensAt?: number;
 }
 
 export interface DynamoOnDemandThroughputState {
@@ -69,8 +71,10 @@ export interface DynamoPointInTimeRecoveryState {
 export interface DynamoBackupState {
   backupArn: string;
   backupName: string;
-  backupType: "USER";
+  backupType: "USER" | "SYSTEM";
   backupStatus: "CREATING" | "AVAILABLE";
+  /** SYSTEM backups created by DeleteTable with PITR expire 35 days after creation. */
+  expiresAt?: number;
   createdAt: number;
   sizeBytes: number;
   sourceTableArn: string;
@@ -205,6 +209,7 @@ export interface DynamoStreamDescriptorState {
   endingSequenceNumber?: string;
   trimmedThroughSequence?: string;
   legacyRecords?: DynamoStreamRecordState[];
+  tags?: Record<string, string>;
 }
 
 export interface DynamoResourcePolicyState {
@@ -266,6 +271,8 @@ export interface TableState {
   onDemandThroughput?: DynamoOnDemandThroughputState;
   warmThroughput?: DynamoWarmThroughputState;
   billingModeLastUpdatedAt?: number;
+  /** Provisioned-to-on-demand switch times within the rolling 24-hour quota window. */
+  onDemandSwitchTimes?: number[];
   tableClass: "STANDARD" | "STANDARD_INFREQUENT_ACCESS";
   tableClassLastUpdatedAt?: number;
   deletionProtectionEnabled: boolean;

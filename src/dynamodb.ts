@@ -14,7 +14,9 @@ import type { DynamoAutoScalingSettingState, DynamoBackupState, DynamoContributo
 import { acceptedIntegrationAttempt, assertMatchingIntegrationAttempt, integrationOutputDigest, type ServiceIntegrationAttempt } from "./step-functions/integration-attempt.js";
 import { DynamoIntegrationAttemptStore } from "./dynamodb/integration-attempt-store.js";
 import { id, json, readJson } from "./util.js";
-import { applyUpdateExpression, conditionPaths, evaluateCondition, parseConditionExpression, parseProjectionExpression, projectItem, validateExpressionSubstitutions, validateKeyCondition } from "./dynamodb/expressions.js";
+import { applyUpdateExpression, conditionPaths, evaluateCondition, parseConditionExpression, parseProjectionExpression, projectItem, validateExpressionSubstitutions, validateExpressionUsage, validateKeyCondition } from "./dynamodb/expressions.js";
+import { DYNAMODB_ACTION_INVENTORY, DYNAMODB_STREAMS_ACTION_INVENTORY } from "./dynamodb/action-inventory.js";
+import { translateLegacyParameters } from "./dynamodb/legacy.js";
 import { attributeType, clone, compareAttributeValues, equalAttributeValues, keyFromItem, stableItemKey, validateItem, validateKey } from "./dynamodb/values.js";
 import { classifyPartiqlAccess, parsePartiql, projectPartiqlItem, type PartiqlPlan } from "./dynamodb/partiql.js";
 import { DynamoBackupPersistence, type DynamoPitrChange } from "./dynamodb/backups.js";
@@ -46,6 +48,9 @@ import type { DynamoGlobalTableChangeState, DynamoGlobalTableItemVersionState, D
 const DYNAMODB_READ_PAGE_BYTES = 1024 * 1024;
 const PARTIQL_TOKEN_TTL_MS = 15 * 60_000;
 export const DYNAMODB_DEFAULT_WARM_THROUGHPUT = Object.freeze({ ReadUnitsPerSecond: 12_000, WriteUnitsPerSecond: 4_000 });
+/** Wire-dispatchable operations per X-Amz-Target prefix; anything else is UnknownOperationException. */
+const DYNAMODB_OPERATIONS: ReadonlySet<string> = new Set(DYNAMODB_ACTION_INVENTORY.map(entry => entry.action));
+const DYNAMODB_STREAMS_OPERATIONS: ReadonlySet<string> = new Set(DYNAMODB_STREAMS_ACTION_INVENTORY);
 
 function indexItems(table: TableState, index: DynamoIndexState): Item[] {
   return Object.values(table.items).filter(item => index.keySchema.every(key => item[key.AttributeName]));
@@ -69,10 +74,18 @@ function validateThroughput(value: any, required: boolean): DynamoProvisionedThr
   return { ReadCapacityUnits: value.ReadCapacityUnits, WriteCapacityUnits: value.WriteCapacityUnits };
 }
 
-function updateThroughput(previous: DynamoProvisionedThroughputState | undefined, value: any, now: number): DynamoProvisionedThroughputState {
+function updateThroughput(previous: DynamoProvisionedThroughputState | undefined, value: any, now: number, unchangedTarget?: string): DynamoProvisionedThroughputState {
   const next = validateThroughput(value, true)!; if (!previous) return next;
+  // AWS rejects an UpdateTable whose provisioned units equal the current values.
+  if (unchangedTarget && previous.ReadCapacityUnits === next.ReadCapacityUnits && previous.WriteCapacityUnits === next.WriteCapacityUnits) throw new AwsError("ValidationException", `The provisioned throughput for ${unchangedTarget} will not change. The requested value equals the current value. Current ReadCapacityUnits provisioned for ${unchangedTarget}: ${previous.ReadCapacityUnits}. Requested ReadCapacityUnits: ${next.ReadCapacityUnits}. Current WriteCapacityUnits provisioned for ${unchangedTarget}: ${previous.WriteCapacityUnits}. Requested WriteCapacityUnits: ${next.WriteCapacityUnits}. Refer to the Amazon DynamoDB Developer Guide for current limits and how to request higher limits.`);
   const day = new Date(now).toISOString().slice(0, 10); const decreased = next.ReadCapacityUnits < previous.ReadCapacityUnits || next.WriteCapacityUnits < previous.WriteCapacityUnits; const increased = next.ReadCapacityUnits > previous.ReadCapacityUnits || next.WriteCapacityUnits > previous.WriteCapacityUnits;
-  return { ...next, ...(increased ? { lastIncreaseAt: now } : previous.lastIncreaseAt ? { lastIncreaseAt: previous.lastIncreaseAt } : {}), ...(decreased ? { lastDecreaseAt: now } : previous.lastDecreaseAt ? { lastDecreaseAt: previous.lastDecreaseAt } : {}), decreasesToday: decreased ? (previous.decreaseDay === day ? previous.decreasesToday ?? 0 : 0) + 1 : previous.decreaseDay === day ? previous.decreasesToday ?? 0 : 0, decreaseDay: day };
+  // AWS decrease quota: 4 decreases available at the start of each UTC day, one more per hour, never more than 4 banked.
+  const hour = 3_600_000; const dayStart = Date.parse(`${day}T00:00:00Z`); const sameDay = previous.decreaseDay === day;
+  let tokens = sameDay ? previous.decreaseTokens ?? 4 : 4; let tokensAt = sameDay ? previous.decreaseTokensAt ?? dayStart : dayStart;
+  const refills = Math.floor((now - tokensAt) / hour); if (refills > 0) { tokens = Math.min(4, tokens + refills); tokensAt += refills * hour; }
+  const decreasesToday = sameDay ? previous.decreasesToday ?? 0 : 0;
+  if (decreased) { if (tokens <= 0) throw new AwsError("LimitExceededException", `Subscriber limit exceeded: Provisioned throughput decreases are limited within a given UTC day. After the first 4 decreases, each subsequent decrease in the same UTC day can be performed at most once every 3600 seconds. Number of decreases today: ${decreasesToday}. Requested decreases: 1.`); tokens--; }
+  return { ...next, ...(increased ? { lastIncreaseAt: now } : previous.lastIncreaseAt ? { lastIncreaseAt: previous.lastIncreaseAt } : {}), ...(decreased ? { lastDecreaseAt: now } : previous.lastDecreaseAt ? { lastDecreaseAt: previous.lastDecreaseAt } : {}), decreasesToday: decreased ? decreasesToday + 1 : decreasesToday, decreaseDay: day, decreaseTokens: tokens, decreaseTokensAt: tokensAt };
 }
 
 function throughputDescription(value: DynamoProvisionedThroughputState | undefined): any {
@@ -91,9 +104,15 @@ function validateOnDemandThroughput(value: any, updating = false): DynamoOnDeman
   return result;
 }
 
-function validateWarmThroughput(value: any, now: number, status: "CREATING" | "UPDATING" = "UPDATING"): DynamoWarmThroughputState | undefined {
+const WARM_THROUGHPUT_QUOTA = 40_000;
+
+function validateWarmThroughput(value: any, now: number, status: "CREATING" | "UPDATING" = "UPDATING", previous?: DynamoWarmThroughputState): DynamoWarmThroughputState | undefined {
   if (value === undefined) return undefined;
   if (!value || !Number.isInteger(value.ReadUnitsPerSecond) || value.ReadUnitsPerSecond < 1 || !Number.isInteger(value.WriteUnitsPerSecond) || value.WriteUnitsPerSecond < 1) throw new AwsError("ValidationException", "WarmThroughput requires positive integer ReadUnitsPerSecond and WriteUnitsPerSecond");
+  // AWS: warm throughput can be raised up to the table/index quota but never decreased below the current value.
+  if (value.ReadUnitsPerSecond > WARM_THROUGHPUT_QUOTA || value.WriteUnitsPerSecond > WARM_THROUGHPUT_QUOTA) throw new AwsError("ValidationException", `WarmThroughput cannot exceed the quota of ${WARM_THROUGHPUT_QUOTA} units per second`);
+  const current = previous ?? DYNAMODB_DEFAULT_WARM_THROUGHPUT;
+  if (value.ReadUnitsPerSecond < current.ReadUnitsPerSecond || value.WriteUnitsPerSecond < current.WriteUnitsPerSecond) throw new AwsError("ValidationException", `WarmThroughput cannot be decreased below the current values (${current.ReadUnitsPerSecond} read / ${current.WriteUnitsPerSecond} write units per second)`);
   return { ReadUnitsPerSecond: value.ReadUnitsPerSecond, WriteUnitsPerSecond: value.WriteUnitsPerSecond, status, lastUpdatedAt: now };
 }
 
@@ -110,6 +129,7 @@ function validateTags(value: any, existing: Record<string, string> = {}): Record
     keys.add(tag.Key); result[tag.Key] = tag.Value;
   }
   if (Object.keys(result).length > 50) throw new AwsError("LimitExceededException", "A maximum of 50 tags can be associated with a resource");
+  if (Object.entries(result).reduce((sum, [key, tagValue]) => sum + Buffer.byteLength(key) + Buffer.byteLength(tagValue), 0) > 10 * 1024) throw new AwsError("ValidationException", "The maximum size supported for all the tags in a table is 10 KB");
   return result;
 }
 
@@ -129,7 +149,7 @@ function validateAutoScalingSetting(value: any): DynamoAutoScalingSettingState {
   if (value.AutoScalingDisabled !== undefined && typeof value.AutoScalingDisabled !== "boolean") throw new AwsError("ValidationException", "AutoScalingDisabled must be a boolean");
   if (value.AutoScalingRoleArn !== undefined && (typeof value.AutoScalingRoleArn !== "string" || !/^arn:[^:]+:iam::\d{12}:role\/.+/.test(value.AutoScalingRoleArn))) throw new AwsError("ValidationException", "Invalid AutoScalingRoleArn");
   const policy = value.ScalingPolicyUpdate; let scalingPolicy: DynamoAutoScalingSettingState["scalingPolicy"];
-  if (policy !== undefined) { const target = policy.TargetTrackingScalingPolicyConfiguration; if (!target || typeof target.TargetValue !== "number" || !Number.isFinite(target.TargetValue) || target.TargetValue <= 0) throw new AwsError("ValidationException", "TargetValue must be a positive number"); for (const field of ["ScaleInCooldown", "ScaleOutCooldown"]) if (target[field] !== undefined && (!Number.isInteger(target[field]) || target[field] < 0)) throw new AwsError("ValidationException", `${field} must be a non-negative integer`); scalingPolicy = { ...(policy.PolicyName ? { policyName: String(policy.PolicyName) } : {}), disableScaleIn: target.DisableScaleIn ?? false, scaleInCooldown: target.ScaleInCooldown ?? 0, scaleOutCooldown: target.ScaleOutCooldown ?? 0, targetValue: target.TargetValue }; }
+  if (policy !== undefined) { const target = policy.TargetTrackingScalingPolicyConfiguration; if (!target || typeof target.TargetValue !== "number" || !Number.isFinite(target.TargetValue) || target.TargetValue < 20 || target.TargetValue > 90) throw new AwsError("ValidationException", "TargetValue must be between 20 and 90 percent"); for (const field of ["ScaleInCooldown", "ScaleOutCooldown"]) if (target[field] !== undefined && (!Number.isInteger(target[field]) || target[field] < 0)) throw new AwsError("ValidationException", `${field} must be a non-negative integer`); scalingPolicy = { ...(policy.PolicyName ? { policyName: String(policy.PolicyName) } : {}), disableScaleIn: target.DisableScaleIn ?? false, scaleInCooldown: target.ScaleInCooldown ?? 0, scaleOutCooldown: target.ScaleOutCooldown ?? 0, targetValue: target.TargetValue }; }
   return { autoScalingDisabled: value.AutoScalingDisabled ?? false, ...(value.AutoScalingRoleArn ? { autoScalingRoleArn: value.AutoScalingRoleArn } : {}), minimumUnits: value.MinimumUnits, maximumUnits: value.MaximumUnits, ...(scalingPolicy ? { scalingPolicy } : {}) };
 }
 
@@ -148,6 +168,7 @@ function validateIndexDefinitions(input: any, now = Date.now()): { local: Dynamo
     if (!index?.IndexName || !/^[A-Za-z0-9_.-]{3,255}$/.test(index.IndexName)) throw new AwsError("ValidationException", "Invalid index name");
     const hashes = index.KeySchema?.filter((key: any) => key.KeyType === "HASH") ?? []; const ranges = index.KeySchema?.filter((key: any) => key.KeyType === "RANGE") ?? [];
     if (hashes.length !== 1 || ranges.length > 1 || (isLocal && ranges.length !== 1) || index.KeySchema.length !== hashes.length + ranges.length || new Set(index.KeySchema.map((key: any) => key.AttributeName)).size !== index.KeySchema.length) throw new AwsError("ValidationException", "Invalid secondary index key schema");
+    if (isLocal && !input.KeySchema.some((key: any) => key.KeyType === "RANGE")) throw new AwsError("ValidationException", "Table KeySchema does not have a range key, which is required when specifying a LocalSecondaryIndex");
     if (isLocal && hashes[0].AttributeName !== input.KeySchema.find((key: any) => key.KeyType === "HASH")?.AttributeName) throw new AwsError("ValidationException", "Local secondary index must use the table partition key");
     if (isLocal && ranges[0].AttributeName === input.KeySchema.find((key: any) => key.KeyType === "RANGE")?.AttributeName) throw new AwsError("ValidationException", "Local secondary index must use an alternate sort key");
     for (const key of index.KeySchema) if (!input.AttributeDefinitions.find((definition: any) => definition.AttributeName === key.AttributeName && ["S", "N", "B"].includes(definition.AttributeType))) throw new AwsError("ValidationException", `Invalid or missing AttributeDefinition for ${key.AttributeName}`);
@@ -155,7 +176,7 @@ function validateIndexDefinitions(input: any, now = Date.now()): { local: Dynamo
     if (!["KEYS_ONLY", "INCLUDE", "ALL"].includes(type)) throw new AwsError("ValidationException", "Invalid ProjectionType");
     const nonKeys = index.Projection.NonKeyAttributes ?? [];
     if (type !== "INCLUDE" && nonKeys.length) throw new AwsError("ValidationException", "NonKeyAttributes are only valid for INCLUDE projections");
-    if (type === "INCLUDE" && (!nonKeys.length || nonKeys.length > 20 || new Set(nonKeys).size !== nonKeys.length)) throw new AwsError("ValidationException", "Invalid NonKeyAttributes projection");
+    if (type === "INCLUDE" && (!nonKeys.length || new Set(nonKeys).size !== nonKeys.length)) throw new AwsError("ValidationException", "Invalid NonKeyAttributes projection");
     projected += nonKeys.length;
     const throughput = validateThroughput(index.ProvisionedThroughput, !isLocal && (input.BillingMode ?? "PROVISIONED") === "PROVISIONED");
     const onDemand = isLocal ? undefined : validateOnDemandThroughput(index.OnDemandThroughput); const warm = isLocal ? undefined : validateWarmThroughput(index.WarmThroughput, now, "CREATING");
@@ -223,13 +244,13 @@ function tableDescription(table: TableState, store?: StateStore): any {
     ...(table.streamSpecification ? { StreamSpecification: clone(table.streamSpecification) } : {}),
     ...(table.latestStreamArn ? { LatestStreamArn: table.latestStreamArn, LatestStreamLabel: table.latestStreamArn.split("/stream/")[1] } : {}),
     ...(table.globalTable ? {
-      GlobalTableVersion: table.globalTable.version,
+      ...(table.globalTable.version === "2019.11.21" ? { GlobalTableVersion: table.globalTable.version } : {}),
       Replicas: table.globalTable.replicaRegions.map(RegionName => {
         const replica = store?.regionState(RegionName).tables[table.name];
         const state = replica?.globalTable;
         return {
           RegionName,
-          ReplicaStatus: state?.lastReplicationError ? "REGION_DISABLED" : state?.status ?? "REGION_DISABLED",
+          ReplicaStatus: state?.lastReplicationError ? "REPLICATION_NOT_AUTHORIZED" : state?.status ?? "REGION_DISABLED",
           ReplicaStatusPercentProgress: state?.status === "ACTIVE" ? "100" : "50",
           ...(state?.lastReplicationError ? { ReplicaStatusDescription: state.lastReplicationError } : {}),
         };
@@ -241,6 +262,7 @@ function tableDescription(table: TableState, store?: StateStore): any {
 }
 
 function requireTable(store: StateStore, region: string, name: string): TableState {
+  if (typeof name !== "string" || !name.length) throw new AwsError("ValidationException", "1 validation error detected: Value null at 'tableName' failed to satisfy constraint: Member must not be null");
   const table = store.regionState(region).tables[name];
   if (!table) throw new AwsError("ResourceNotFoundException", `Requested resource not found: Table: ${name} not found`);
   return table;
@@ -305,8 +327,37 @@ function consumed(tableName: string, read = 0, write = 0): any {
 
 function expressionContext(input: any): any { return { names: input.ExpressionAttributeNames, values: input.ExpressionAttributeValues }; }
 
+const EXPRESSION_FIELDS = ["ConditionExpression", "KeyConditionExpression", "FilterExpression", "ProjectionExpression", "UpdateExpression"] as const;
+const RETURN_CONSUMED_CAPACITY_VALUES = ["INDEXES", "TOTAL", "NONE"] as const;
+
+function validateEnum(value: unknown, field: string, allowed: readonly string[], message?: string): void {
+  if (value === undefined || value === null) return;
+  if (typeof value !== "string" || !allowed.includes(value)) throw new AwsError("ValidationException", message ?? `1 validation error detected: Value '${String(value)}' at '${field}' failed to satisfy constraint: Member must satisfy enum value set: [${allowed.join(", ")}]`);
+}
+
+function validateReturnConsumedCapacity(value: unknown): void { validateEnum(value, "returnConsumedCapacity", RETURN_CONSUMED_CAPACITY_VALUES); }
+
+function validateReturnValues(value: unknown, allowed: readonly string[]): void {
+  if (value === undefined || value === null) return;
+  if (typeof value !== "string" || !allowed.includes(value)) throw new AwsError("ValidationException", "Return values set to invalid value");
+}
+
+function validateReturnValuesOnConditionCheckFailure(value: unknown): void {
+  if (value !== undefined && !["ALL_OLD", "NONE"].includes(String(value))) throw new AwsError("ValidationException", "ReturnValuesOnConditionCheckFailure must be ALL_OLD or NONE");
+}
+
+/** Shared request-level expression validation: substitution limits, legacy-parameter rejection, and unused placeholders. */
 function validateExpressionRequest(input: any): void {
+  if (!input || typeof input !== "object") throw new AwsError("ValidationException", "Request body must be a JSON object");
   validateExpressionSubstitutions(input.ExpressionAttributeNames, input.ExpressionAttributeValues);
+  validateReturnConsumedCapacity(input.ReturnConsumedCapacity);
+  // Legacy Expected/KeyConditions/... parameters are rewritten into expressions (or rejected when mixed), as AWS still honors them.
+  translateLegacyParameters(input);
+  validateExpressionUsage(input.ExpressionAttributeNames, input.ExpressionAttributeValues, EXPRESSION_FIELDS.map(field => input[field]));
+}
+
+function conditionFailure(input: any, current: Item | undefined): AwsError {
+  return new AwsError("ConditionalCheckFailedException", "The conditional request failed", 400, input.ReturnValuesOnConditionCheckFailure === "ALL_OLD" && current ? { Item: clone(current) } : undefined);
 }
 
 function capacity(input: any, tableName: string, read = 0, write = 0, index?: { name: string; local: boolean }): any {
@@ -462,6 +513,8 @@ function streamSequenceValue(value: string): bigint { try { return BigInt(value)
 export class DynamoDbService {
   private readonly requestCapacity = new AsyncLocalStorage<CapacityCharge[]>();
   private readonly transactionLocks = new Map<string, Promise<void>>();
+  /** Client request tokens whose transaction is still executing; a concurrent reuse is TransactionInProgressException, as in AWS. */
+  private readonly transactionsInFlight = new Set<string>();
   private readonly capacityBuckets = new Map<string, { tokens: number; at: number; rate: number }>();
   private readonly ttlSchedule: DynamoTtlSchedule;
   private partiqlTokens: PaginationTokens;
@@ -691,10 +744,13 @@ export class DynamoDbService {
 
   private configureStream(table: TableState, value: any, status: "ENABLING" | "ENABLED" = "ENABLING"): { enabled?: DynamoStreamDescriptorState; retired?: DynamoStreamDescriptorState } {
     const specification = this.validateStreamSpecification(value); const currentEnabled = table.streamSpecification?.StreamEnabled === true;
-    if (specification.StreamEnabled && currentEnabled && specification.StreamViewType === table.streamSpecification?.StreamViewType) throw new AwsError("ValidationException", "The requested stream configuration is already active");
+    // AWS rejects enabling a stream (with any view type) while one is enabled; the view type can only change after a disable.
+    if (specification.StreamEnabled && currentEnabled) throw new AwsError("ValidationException", `Table already has an enabled stream: ${table.latestStreamArn ?? table.name}`);
+    if (!specification.StreamEnabled && !currentEnabled) throw new AwsError("ValidationException", `Table does not have an enabled stream: ${table.name}`);
     if (!specification.StreamEnabled && !currentEnabled) throw new AwsError("ValidationException", "DynamoDB Streams is already disabled");
     const retired = currentEnabled ? this.retireStream(table, status === "ENABLED" ? "DISABLED" : "DISABLING") : undefined;
-    if (!specification.StreamEnabled) { table.streamSpecification = { StreamEnabled: false }; delete table.latestStreamArn; return { retired }; }
+    // DescribeTable keeps reporting the latest stream ARN/label after the stream is disabled, as AWS does.
+    if (!specification.StreamEnabled) { table.streamSpecification = { StreamEnabled: false }; return { retired }; }
     return { retired, enabled: this.createStreamDescriptor(table, specification.StreamViewType!, status) };
   }
 
@@ -745,27 +801,35 @@ export class DynamoDbService {
   private encodeShardIterator(stream: DynamoStreamDescriptorState, nextSequenceNumber: string): string { return this.partiqlTokens.encode("DynamoDBStreams.GetRecords", { streamArn: stream.streamArn, shardId: stream.shardId, nextSequenceNumber, expiresAt: this.clock.now() + STREAM_ITERATOR_TTL_MS }); }
 
   async GetShardIterator(input: any): Promise<any> {
-    const changed = await this.pruneStreams(); if (typeof input.StreamArn !== "string" || !input.StreamArn || typeof input.ShardId !== "string" || !input.ShardId || typeof input.ShardIteratorType !== "string") throw new AwsError("ValidationException", "StreamArn, ShardId, and ShardIteratorType are required"); const stream = this.requireStream(input.StreamArn); if (input.ShardId !== stream.shardId) throw new AwsError("ResourceNotFoundException", "The shard does not exist"); const type = input.ShardIteratorType; if (!new Set(["TRIM_HORIZON", "LATEST", "AT_SEQUENCE_NUMBER", "AFTER_SEQUENCE_NUMBER"]).has(type)) throw new AwsError("ValidationException", "Invalid ShardIteratorType");
+    const changed = await this.pruneStreams(); if (typeof input.StreamArn !== "string" || !input.StreamArn || typeof input.ShardId !== "string" || !input.ShardId || typeof input.ShardIteratorType !== "string") throw new AwsError("ValidationException", "StreamArn, ShardId, and ShardIteratorType are required"); const stream = this.requireStream(input.StreamArn); if (input.ShardId !== stream.shardId) throw new AwsError("ResourceNotFoundException", "The shard does not exist"); const type = input.ShardIteratorType; if (!new Set(["TRIM_HORIZON", "LATEST", "AT_SEQUENCE_NUMBER", "AFTER_SEQUENCE_NUMBER", "AT_TIMESTAMP"]).has(type)) throw new AwsError("ValidationException", `1 validation error detected: Value '${type}' at 'shardIteratorType' failed to satisfy constraint: Member must satisfy enum value set: [TRIM_HORIZON, LATEST, AT_SEQUENCE_NUMBER, AFTER_SEQUENCE_NUMBER, AT_TIMESTAMP]`);
     const usesSequence = type === "AT_SEQUENCE_NUMBER" || type === "AFTER_SEQUENCE_NUMBER"; if (usesSequence !== (input.SequenceNumber !== undefined)) throw new AwsError("ValidationException", usesSequence ? "SequenceNumber is required for this iterator type" : "SequenceNumber is only valid for AT_SEQUENCE_NUMBER or AFTER_SEQUENCE_NUMBER");
-    let next: bigint; if (type === "TRIM_HORIZON") { const records = await this.streamPersistence.read(stream); next = records.length ? streamSequenceValue(records[0].dynamodb.SequenceNumber) : stream.trimmedThroughSequence ? streamSequenceValue(stream.trimmedThroughSequence) + 1n : streamSequenceValue(stream.startingSequenceNumber); } else if (type === "LATEST") next = stream.lastSequenceNumber ? streamSequenceValue(stream.lastSequenceNumber) + 1n : streamSequenceValue(stream.startingSequenceNumber); else { next = streamSequenceValue(String(input.SequenceNumber)); if (stream.trimmedThroughSequence && next <= streamSequenceValue(stream.trimmedThroughSequence)) throw new AwsError("TrimmedDataAccessException", "The data you are trying to access has been trimmed"); if (type === "AFTER_SEQUENCE_NUMBER") next++; }
+    // AT_TIMESTAMP (epoch seconds, millisecond precision): first record at or after the timestamp, the oldest untrimmed record when older than the trim horizon, and a ValidationException for a future timestamp.
+    if ((type === "AT_TIMESTAMP") !== (input.Timestamp !== undefined)) throw new AwsError("ValidationException", type === "AT_TIMESTAMP" ? "Timestamp is required for the AT_TIMESTAMP iterator type" : "Timestamp is only valid for the AT_TIMESTAMP iterator type");
+    if (type === "AT_TIMESTAMP" && (typeof input.Timestamp !== "number" || !Number.isFinite(input.Timestamp) || input.Timestamp < 0)) throw new AwsError("ValidationException", "Timestamp must be a Unix epoch time in seconds");
+    if (type === "AT_TIMESTAMP" && input.Timestamp * 1000 > this.clock.now()) throw new AwsError("ValidationException", "Timestamp cannot be in the future");
+    let next: bigint; if (type === "AT_TIMESTAMP") { const records = await this.streamPersistence.read(stream); const first = records.find(record => record.dynamodb.ApproximateCreationDateTime >= Math.floor(input.Timestamp)); next = first ? streamSequenceValue(first.dynamodb.SequenceNumber) : stream.lastSequenceNumber ? streamSequenceValue(stream.lastSequenceNumber) + 1n : streamSequenceValue(stream.startingSequenceNumber); } else if (type === "TRIM_HORIZON") { const records = await this.streamPersistence.read(stream); next = records.length ? streamSequenceValue(records[0].dynamodb.SequenceNumber) : stream.trimmedThroughSequence ? streamSequenceValue(stream.trimmedThroughSequence) + 1n : streamSequenceValue(stream.startingSequenceNumber); } else if (type === "LATEST") next = stream.lastSequenceNumber ? streamSequenceValue(stream.lastSequenceNumber) + 1n : streamSequenceValue(stream.startingSequenceNumber); else { next = streamSequenceValue(String(input.SequenceNumber)); if (stream.trimmedThroughSequence && next <= streamSequenceValue(stream.trimmedThroughSequence)) throw new AwsError("TrimmedDataAccessException", "The data you are trying to access has been trimmed"); if (type === "AFTER_SEQUENCE_NUMBER") next++; }
     if (changed) await this.store.save(); return { ShardIterator: this.encodeShardIterator(stream, streamSequence(next)) };
   }
 
   async GetRecords(input: any): Promise<any> {
-    if (input.Limit !== undefined && (!Number.isInteger(input.Limit) || input.Limit < 1 || input.Limit > 1000)) throw new AwsError("LimitExceededException", "GetRecords Limit must be between 1 and 1000"); let cursor: { streamArn: string; shardId: string; nextSequenceNumber: string; expiresAt: number };
+    if (input.Limit !== undefined && (!Number.isInteger(input.Limit) || input.Limit < 1)) throw new AwsError("ValidationException", `1 validation error detected: Value '${String(input.Limit)}' at 'limit' failed to satisfy constraint: Member must have value greater than or equal to 1`);
+    if (input.Limit !== undefined && input.Limit > 1000) throw new AwsError("LimitExceededException", "GetRecords was called with a value of more than 1000 for the limit request parameter."); let cursor: { streamArn: string; shardId: string; nextSequenceNumber: string; expiresAt: number };
     try { cursor = this.partiqlTokens.decode("DynamoDBStreams.GetRecords", String(input.ShardIterator ?? "")); } catch { throw new AwsError("ValidationException", "Invalid ShardIterator"); }
     if (!cursor || typeof cursor.streamArn !== "string" || typeof cursor.shardId !== "string" || typeof cursor.nextSequenceNumber !== "string" || !Number.isFinite(cursor.expiresAt)) throw new AwsError("ValidationException", "Invalid ShardIterator"); if (cursor.expiresAt <= this.clock.now()) throw new AwsError("ExpiredIteratorException", "The provided iterator exceeds the maximum age allowed");
     const changed = await this.pruneStreams(); const stream = this.requireStream(cursor.streamArn); if (cursor.shardId !== stream.shardId) throw new AwsError("ResourceNotFoundException", "The shard does not exist"); const next = streamSequenceValue(cursor.nextSequenceNumber); if (stream.trimmedThroughSequence && next <= streamSequenceValue(stream.trimmedThroughSequence)) throw new AwsError("TrimmedDataAccessException", "The data you are trying to access has been trimmed");
-    const limit = input.Limit ?? 1000; const records: DynamoStreamRecordState[] = []; let bytes = 0; for (const record of await this.streamPersistence.read(stream)) { if (streamSequenceValue(record.dynamodb.SequenceNumber) < next) continue; const size = Buffer.byteLength(JSON.stringify(record)); if (records.length >= limit || (records.length > 0 && bytes + size > 1024 * 1024)) break; records.push(clone(record)); bytes += size; }
+    const limit = input.Limit ?? 1000; const records: DynamoStreamRecordState[] = []; let bytes = 0; for (const record of await this.streamPersistence.read(stream)) { if (streamSequenceValue(record.dynamodb.SequenceNumber) < next) continue; const size = Buffer.byteLength(JSON.stringify(record)); if (records.length >= limit || (records.length > 0 && bytes + size > 1024 * 1024)) break; const { eventSourceARN: _lambdaOnly, ...wire } = clone(record); records.push(wire as DynamoStreamRecordState); bytes += size; }
     const following = records.length ? streamSequenceValue(records.at(-1)!.dynamodb.SequenceNumber) + 1n : next; const ending = stream.endingSequenceNumber ? streamSequenceValue(stream.endingSequenceNumber) : undefined; const closed = stream.streamStatus === "DISABLED" && ending !== undefined && (following > ending || (records.length === 0 && next >= ending)); if (changed) await this.store.save(); return { Records: records, ...(!closed ? { NextShardIterator: this.encodeShardIterator(stream, streamSequence(following)) } : {}) };
   }
 
   async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     let operation = ""; let input: any = {};
     try {
-      operation = String(req.headers["x-amz-target"] ?? "").split(".").pop() ?? "";
-      input = await readJson(req);
-      if (!operation || typeof (this as any)[operation] !== "function") throw new AwsError("UnknownOperationException", `Unknown operation: ${operation}`);
+      // Dispatch only official actions for the named target so lifecycle and helper methods are never reachable from the wire.
+      const target = String(req.headers["x-amz-target"] ?? ""); const [prefix, ...rest] = target.split("."); operation = rest.join(".");
+      const allowed = prefix === "DynamoDB_20120810" ? DYNAMODB_OPERATIONS : prefix === "DynamoDBStreams_20120810" ? DYNAMODB_STREAMS_OPERATIONS : undefined;
+      if (!allowed || !allowed.has(operation)) throw new AwsError("UnknownOperationException", `Unknown operation: ${operation || target}`);
+      try { input = await readJson(req); } catch (error) { throw new AwsError("SerializationException", error instanceof Error ? error.message : "Malformed request body", 400); }
+      if (input === null || typeof input !== "object" || Array.isArray(input)) throw new AwsError("SerializationException", "Request body must be a JSON object", 400);
       const output = await (this as any)[operation](input, (req as any).awsPrincipal);
       json(res, output, 200, "application/x-amz-json-1.0");
     } catch (error) { if (this.telemetry && operation) { const metricName = error instanceof AwsError && error.status < 500 ? error.code === "ConditionalCheckFailedException" ? "ConditionalCheckFailedRequests" : "UserErrors" : "SystemErrors"; await this.telemetry.publish({ namespace: "AWS/DynamoDB", metricName, dimensions: {}, value: 1, unit: "Count", timestamp: this.clock.now() }).catch(() => undefined); } sendAwsError(res, error); }
@@ -860,20 +924,27 @@ export class DynamoDbService {
   async DescribeLimits(): Promise<any> { return { AccountMaxReadCapacityUnits: 80_000, AccountMaxWriteCapacityUnits: 80_000, TableMaxReadCapacityUnits: 40_000, TableMaxWriteCapacityUnits: 40_000 }; }
   async DescribeEndpoints(): Promise<any> { return { Endpoints: [{ Address: `127.0.0.1`, CachePeriodInMinutes: 60 }] }; }
 
+  /** Tags attach to tables and to streams (by stream ARN); indexes inherit the table tags. */
+  private taggable(value: unknown): { tags: Record<string, string> } {
+    const arn = String(value ?? "");
+    if (/^arn:[^:]+:dynamodb:[^:]+:\d{12}:table\/[^/]+\/stream\/.+$/.test(arn)) { const stream = this.streams[arn]; if (!stream) throw new AwsError("ResourceNotFoundException", `Requested resource not found: ${arn}`); return { get tags() { return stream.tags ?? {}; }, set tags(next: Record<string, string>) { stream.tags = next; } }; }
+    return this.resourceTable(arn);
+  }
+
   private resourceTable(value: unknown): TableState {
     const arn = String(value ?? ""); const table = Object.values(this.tables).find(candidate => candidate.arn === arn); if (!table) throw new AwsError("ResourceNotFoundException", `Requested resource not found: ${arn}`); return table;
   }
 
   async TagResource(input: any): Promise<any> {
-    const table = this.resourceTable(input.ResourceArn); table.tags = validateTags(input.Tags, table.tags); await this.store.save(); return {};
+    const table = this.taggable(input.ResourceArn); table.tags = validateTags(input.Tags, table.tags); await this.store.save(); return {};
   }
 
   async UntagResource(input: any): Promise<any> {
-    const table = this.resourceTable(input.ResourceArn); if (!Array.isArray(input.TagKeys) || input.TagKeys.length < 1 || input.TagKeys.length > 50 || new Set(input.TagKeys).size !== input.TagKeys.length || input.TagKeys.some((key: unknown) => typeof key !== "string" || key.length < 1 || key.length > 128 || /^aws:/i.test(key))) throw new AwsError("ValidationException", "TagKeys must contain between 1 and 50 unique valid tag keys"); for (const key of input.TagKeys) delete table.tags[key]; await this.store.save(); return {};
+    const table = this.taggable(input.ResourceArn); if (!Array.isArray(input.TagKeys) || input.TagKeys.length < 1 || input.TagKeys.length > 50 || new Set(input.TagKeys).size !== input.TagKeys.length || input.TagKeys.some((key: unknown) => typeof key !== "string" || key.length < 1 || key.length > 128 || /^aws:/i.test(key))) throw new AwsError("ValidationException", "TagKeys must contain between 1 and 50 unique valid tag keys"); for (const key of input.TagKeys) delete table.tags[key]; await this.store.save(); return {};
   }
 
   async ListTagsOfResource(input: any): Promise<any> {
-    if (input.NextToken !== undefined) throw new AwsError("ValidationException", "Invalid NextToken"); const table = this.resourceTable(input.ResourceArn); return { Tags: Object.entries(table.tags).sort(([left], [right]) => left.localeCompare(right)).map(([Key, Value]) => ({ Key, Value })) };
+    if (input.NextToken !== undefined) throw new AwsError("ValidationException", "Invalid NextToken"); const table = this.taggable(input.ResourceArn); return { Tags: Object.entries(table.tags).sort(([left], [right]) => left.localeCompare(right)).map(([Key, Value]) => ({ Key, Value })) };
   }
 
   private async policyResource(value: unknown): Promise<string> {
@@ -954,6 +1025,8 @@ export class DynamoDbService {
 
   private cloneReplicaTable(source: TableState, region: string): TableState {
     const replica = clone(source); replica.id = id(32); replica.arn = `arn:aws:dynamodb:${region}:${this.store.accountId}:table/${source.name}`; replica.createdAt = this.clock.now(); replica.status = "ACTIVE"; replica.tags = {}; replica.restoreSummary = undefined; replica.latestStreamArn = undefined; replica.streamSequence = 0; replica.globalTable = undefined; replica.contributorInsights = {}; replica.kinesisStreamingDestinations = {};
+    // AWS never synchronizes deletion protection or PITR to a new replica: both start off.
+    replica.deletionProtectionEnabled = false; replica.pointInTimeRecovery = { status: "DISABLED", recoveryPeriodInDays: 35, sequence: 0 };
     if (replica.streamSpecification?.StreamEnabled && replica.streamSpecification.StreamViewType) this.createStreamDescriptorForRegion(replica, region, replica.streamSpecification.StreamViewType);
     return replica;
   }
@@ -969,7 +1042,7 @@ export class DynamoDbService {
     const membership = table.globalTable!;
     const ReplicationGroup = membership.replicaRegions.map(region => {
       const replica = this.store.regionState(region).tables[table.name]; const state = replica?.globalTable; const indexes = replica?.globalSecondaryIndexes ?? [];
-      return { RegionName: region, ReplicaArn: replica?.arn ?? `arn:aws:dynamodb:${region}:${this.store.accountId}:table/${table.name}`, ReplicaStatus: state?.lastReplicationError ? "REGION_DISABLED" : state?.status ?? "REGION_DISABLED", ReplicaStatusPercentProgress: state?.status === "ACTIVE" ? "100" : "50", ...(state?.lastReplicationError ? { ReplicaStatusDescription: state.lastReplicationError } : {}), ...(indexes.length ? { GlobalSecondaryIndexes: indexes.map(index => ({ IndexName: index.indexName })) } : {}), ...(replica?.sse.kmsMasterKeyId ? { KMSMasterKeyId: replica.sse.kmsMasterKeyId } : {}) };
+      return { RegionName: region, ReplicaArn: replica?.arn ?? `arn:aws:dynamodb:${region}:${this.store.accountId}:table/${table.name}`, ReplicaStatus: state?.lastReplicationError ? "REPLICATION_NOT_AUTHORIZED" : state?.status ?? "REGION_DISABLED", ReplicaStatusPercentProgress: state?.status === "ACTIVE" ? "100" : "50", ...(state?.lastReplicationError ? { ReplicaStatusDescription: state.lastReplicationError } : {}), ...(indexes.length ? { GlobalSecondaryIndexes: indexes.map(index => ({ IndexName: index.indexName })) } : {}), ...(replica?.sse.kmsMasterKeyId ? { KMSMasterKeyId: replica.sse.kmsMasterKeyId } : {}) };
     });
     return { CreationDateTime: membership.createdAt / 1000, GlobalTableArn: this.globalTableArn(table.name), GlobalTableName: table.name, GlobalTableStatus: ReplicationGroup.every((replica: any) => replica.ReplicaStatus === "ACTIVE") ? "ACTIVE" : "UPDATING", ReplicationGroup };
   }
@@ -978,7 +1051,7 @@ export class DynamoDbService {
     return table.globalTable!.replicaRegions.map(region => {
       const replica = this.store.regionState(region).tables[table.name]; if (!replica) return { RegionName: region, ReplicaStatus: "REGION_DISABLED" };
       const auto = replica.autoScaling ?? {}; const regionAuto = auto.replicas?.[region];
-      return { RegionName: region, ReplicaBillingModeSummary: { BillingMode: replica.billingMode, ...(replica.billingModeLastUpdatedAt !== undefined ? { LastUpdateToPayPerRequestDateTime: replica.billingModeLastUpdatedAt / 1000 } : {}) }, ReplicaProvisionedReadCapacityUnits: replica.provisionedThroughput?.ReadCapacityUnits ?? 0, ReplicaProvisionedWriteCapacityUnits: replica.provisionedThroughput?.WriteCapacityUnits ?? 0, ...(regionAuto?.provisionedRead ? { ReplicaProvisionedReadCapacityAutoScalingSettings: autoScalingDescription(regionAuto.provisionedRead) } : {}), ...(auto.provisionedWrite ? { ReplicaProvisionedWriteCapacityAutoScalingSettings: autoScalingDescription(auto.provisionedWrite) } : {}), ReplicaStatus: replica.globalTable?.lastReplicationError ? "REGION_DISABLED" : replica.globalTable?.status ?? "REGION_DISABLED", ReplicaTableClassSummary: { TableClass: replica.tableClass, ...(replica.tableClassLastUpdatedAt !== undefined ? { LastUpdateDateTime: replica.tableClassLastUpdatedAt / 1000 } : {}) }, ReplicaGlobalSecondaryIndexSettings: (replica.globalSecondaryIndexes ?? []).map(index => ({ IndexName: index.indexName, IndexStatus: index.indexStatus ?? "ACTIVE", ProvisionedReadCapacityUnits: index.provisionedThroughput?.ReadCapacityUnits ?? 0, ProvisionedWriteCapacityUnits: index.provisionedThroughput?.WriteCapacityUnits ?? 0, ...(regionAuto?.globalSecondaryIndexes?.[index.indexName]?.provisionedRead ? { ProvisionedReadCapacityAutoScalingSettings: autoScalingDescription(regionAuto.globalSecondaryIndexes[index.indexName].provisionedRead) } : {}), ...(auto.globalSecondaryIndexes?.[index.indexName]?.provisionedWrite ? { ProvisionedWriteCapacityAutoScalingSettings: autoScalingDescription(auto.globalSecondaryIndexes[index.indexName].provisionedWrite) } : {}) })) };
+      return { RegionName: region, ReplicaBillingModeSummary: { BillingMode: replica.billingMode, ...(replica.billingModeLastUpdatedAt !== undefined ? { LastUpdateToPayPerRequestDateTime: replica.billingModeLastUpdatedAt / 1000 } : {}) }, ReplicaProvisionedReadCapacityUnits: replica.provisionedThroughput?.ReadCapacityUnits ?? 0, ReplicaProvisionedWriteCapacityUnits: replica.provisionedThroughput?.WriteCapacityUnits ?? 0, ...(regionAuto?.provisionedRead ? { ReplicaProvisionedReadCapacityAutoScalingSettings: autoScalingDescription(regionAuto.provisionedRead) } : {}), ...(auto.provisionedWrite ? { ReplicaProvisionedWriteCapacityAutoScalingSettings: autoScalingDescription(auto.provisionedWrite) } : {}), ReplicaStatus: replica.globalTable?.lastReplicationError ? "REPLICATION_NOT_AUTHORIZED" : replica.globalTable?.status ?? "REGION_DISABLED", ReplicaTableClassSummary: { TableClass: replica.tableClass, ...(replica.tableClassLastUpdatedAt !== undefined ? { LastUpdateDateTime: replica.tableClassLastUpdatedAt / 1000 } : {}) }, ReplicaGlobalSecondaryIndexSettings: (replica.globalSecondaryIndexes ?? []).map(index => ({ IndexName: index.indexName, IndexStatus: index.indexStatus ?? "ACTIVE", ProvisionedReadCapacityUnits: index.provisionedThroughput?.ReadCapacityUnits ?? 0, ProvisionedWriteCapacityUnits: index.provisionedThroughput?.WriteCapacityUnits ?? 0, ...(regionAuto?.globalSecondaryIndexes?.[index.indexName]?.provisionedRead ? { ProvisionedReadCapacityAutoScalingSettings: autoScalingDescription(regionAuto.globalSecondaryIndexes[index.indexName].provisionedRead) } : {}), ...(auto.globalSecondaryIndexes?.[index.indexName]?.provisionedWrite ? { ProvisionedWriteCapacityAutoScalingSettings: autoScalingDescription(auto.globalSecondaryIndexes[index.indexName].provisionedWrite) } : {}) })) };
     });
   }
 
@@ -1047,6 +1120,8 @@ export class DynamoDbService {
     const update = input.ReplicaUpdates[0]; const kinds = ["Create", "Delete", "Update"].filter(kind => update?.[kind]); if (kinds.length !== 1 || Object.keys(update).length !== 1) throw new AwsError("ValidationException", "Each replica update must contain exactly one Create, Delete, or Update action"); const request = update[kinds[0]]; const region = this.validateRegionName(request.RegionName); if (region === this.region) throw new AwsError("ValidationException", "Replica update RegionName must differ from the request Region");
     if (kinds[0] === "Create") {
       if (table.globalTable?.replicaRegions.includes(region)) throw new AwsError("ReplicaAlreadyExistsException", "The specified replica is already part of the global table"); const targetState = this.store.regionState(region); if (targetState.tables[table.name]) throw new AwsError("ResourceInUseException", `A table named ${table.name} already exists in ${region}`);
+      // Streams are enabled by default on every replica of a current (MREC) global table.
+      if (!table.streamSpecification?.StreamEnabled) this.createStreamDescriptor(table, "NEW_AND_OLD_IMAGES", "ENABLED");
       const target = this.cloneReplicaTable(table, region); targetState.tables[target.name] = target; const entries = table.globalTable ? [...this.globalReplicaEntries(table), [region, target] as [string, TableState]] : [[this.region, table] as [string, TableState], [region, target] as [string, TableState]]; this.installGlobalMembership(table, entries, "2019.11.21");
       for (const [, replica] of entries) if (replica.globalTable) replica.globalTable.status = "UPDATING";
     } else if (kinds[0] === "Delete") this.removeGlobalReplica(table, region);
@@ -1061,7 +1136,7 @@ export class DynamoDbService {
   }
 
   private backupDetails(backup: DynamoBackupState, status: "CREATING" | "AVAILABLE" | "DELETED" = backup.backupStatus): any {
-    return { BackupArn: backup.backupArn, BackupCreationDateTime: backup.createdAt / 1000, BackupName: backup.backupName, BackupSizeBytes: backup.sizeBytes, BackupStatus: status, BackupType: backup.backupType };
+    return { BackupArn: backup.backupArn, BackupCreationDateTime: backup.createdAt / 1000, ...(backup.expiresAt ? { BackupExpiryDateTime: backup.expiresAt / 1000 } : {}), BackupName: backup.backupName, BackupSizeBytes: backup.sizeBytes, BackupStatus: status, BackupType: backup.backupType };
   }
 
   private backupSummary(backup: DynamoBackupState): any {
@@ -1076,7 +1151,7 @@ export class DynamoDbService {
   }
 
   private requireBackup(value: unknown): DynamoBackupState {
-    const arn = String(value ?? ""); const backup = this.backups[arn]; if (!backup) throw new AwsError("BackupNotFoundException", "Backup not found for the given BackupARN"); return backup;
+    const arn = String(value ?? ""); const backup = this.backups[arn]; if (!backup || (backup.expiresAt !== undefined && backup.expiresAt <= this.clock.now())) throw new AwsError("BackupNotFoundException", "Backup not found for the given BackupARN"); return backup;
   }
 
   private requireBackupTable(value: unknown): TableState {
@@ -1097,7 +1172,8 @@ export class DynamoDbService {
     if (input.BackupType !== undefined && !["USER", "SYSTEM", "AWS_BACKUP", "ALL"].includes(input.BackupType)) throw new AwsError("ValidationException", "Invalid BackupType");
     const tableValue = input.TableName === undefined ? undefined : String(input.TableName); const tableName = tableValue?.match(/^arn:[^:]+:dynamodb:[^:]+:\d{12}:table\/([^/]+)$/)?.[1] ?? tableValue; const lower = input.TimeRangeLowerBound === undefined ? undefined : Number(input.TimeRangeLowerBound) * 1000; const upper = input.TimeRangeUpperBound === undefined ? undefined : Number(input.TimeRangeUpperBound) * 1000;
     if (lower !== undefined && !Number.isFinite(lower) || upper !== undefined && !Number.isFinite(upper)) throw new AwsError("ValidationException", "Invalid backup time range");
-    let values = Object.values(this.backups).filter(backup => (!tableName || backup.sourceTableName === tableName) && ([undefined, "USER", "ALL"].includes(input.BackupType)) && (lower === undefined || backup.createdAt >= lower) && (upper === undefined || backup.createdAt < upper)).sort((left, right) => right.createdAt - left.createdAt || left.backupArn.localeCompare(right.backupArn));
+    const listNow = this.clock.now();
+    let values = Object.values(this.backups).filter(backup => (!tableName || backup.sourceTableName === tableName) && (input.BackupType === "ALL" || (input.BackupType ?? "USER") === backup.backupType) && (!backup.expiresAt || backup.expiresAt > listNow) && (lower === undefined || backup.createdAt >= lower) && (upper === undefined || backup.createdAt < upper)).sort((left, right) => right.createdAt - left.createdAt || left.backupArn.localeCompare(right.backupArn));
     if (input.ExclusiveStartBackupArn !== undefined) { const index = values.findIndex(backup => backup.backupArn === input.ExclusiveStartBackupArn); if (index < 0) throw new AwsError("ValidationException", "ExclusiveStartBackupArn is invalid for this request"); values = values.slice(index + 1); }
     const limit = input.Limit ?? 100; const page = values.slice(0, limit); return { BackupSummaries: page.map(backup => this.backupSummary(backup)), ...(values.length > page.length && page.length ? { LastEvaluatedBackupArn: page.at(-1)!.backupArn } : {}) };
   }
@@ -1377,8 +1453,9 @@ export class DynamoDbService {
           const files = await listLocalImportFiles(this.localObjectPath(job.s3BucketSource.S3Bucket, job.s3BucketSource.S3KeyPrefix));
           for (const file of files) {
             const raw = await readFile(file);
-            const imported = decodeImportLines(raw, job.inputCompressionType, file);
-            const items = validateImportedItems(table, imported, (candidate, item) => validateIndexAttributes(candidate, item));
+            const countError = () => { job.errorCount = (job.errorCount ?? 0) + 1; };
+            const imported = decodeImportLines(raw, job.inputCompressionType, file, countError);
+            const items = validateImportedItems(table, imported, (candidate, item) => validateIndexAttributes(candidate, item), countError);
             Object.assign(table.items, items);
             job.processedSizeBytes += raw.length;
             job.processedItemCount += imported.length;
@@ -1390,10 +1467,10 @@ export class DynamoDbService {
             if (pin.completed) { await port.releasePins([this.importPin(pin)], caller).catch(() => undefined); continue; }
             let objectItemCount = 0;
             for await (const item of streamPinnedImportItems(port, caller, pin, job.inputCompressionType)) {
-              validateItem(table, item);
-              validateIndexAttributes(table, item);
-              table.items[stableItemKey(table, item)] = clone(item);
               objectItemCount++;
+              // AWS skips items that fail validation, counts them, and fails the job at the end with ItemValidationError.
+              try { validateItem(table, item); validateIndexAttributes(table, item); } catch (error) { if (error instanceof AwsError && error.code === "ValidationException") { job.errorCount = (job.errorCount ?? 0) + 1; continue; } throw error; }
+              table.items[stableItemKey(table, item)] = clone(item);
             }
             if (pin.manifestItemCount !== undefined && objectItemCount !== pin.manifestItemCount) throw new AwsError("ValidationException", `The DynamoDB data object item count does not match its manifest: ${pin.key}`);
             pin.completed = true;
@@ -1404,8 +1481,8 @@ export class DynamoDbService {
             await port.releasePins([this.importPin(pin)], caller).catch(() => undefined);
           }
         }
+        if (job.errorCount) { table.items = {}; job.importedItemCount = 0; await this.store.save(); throw new AwsError("ItemValidationError", "Some of the items failed validation checks and were not imported. Please check CloudWatch error logs for more details."); }
         job.importedItemCount = Object.keys(table.items).length;
-        job.errorCount = 0;
         job.stage = "VALIDATE";
         await this.store.save();
       }
@@ -1572,7 +1649,7 @@ export class DynamoDbService {
     if (!Array.isArray(globals) || globals.some((index: any) => !existingGlobals.has(index?.IndexName)) || !Array.isArray(locals) || locals.some((index: any) => !existingLocals.has(index?.IndexName))) throw new AwsError("ValidationException", "Secondary index overrides must reference indexes from the source table");
     const provisioned = input.ProvisionedThroughputOverride ?? source.provisionedThroughput; const onDemand = input.OnDemandThroughputOverride ?? source.onDemandThroughput; const sse = input.SSESpecificationOverride ?? (source.sse.sseType === "KMS" ? { Enabled: true, SSEType: "KMS", ...(source.sse.kmsMasterKeyId ? { KMSMasterKeyId: source.sse.kmsMasterKeyId } : {}) } : { Enabled: false });
     const usedAttributes = new Set([...source.keySchema, ...globals.flatMap((index: any) => index.KeySchema ?? []), ...locals.flatMap((index: any) => index.KeySchema ?? [])].map((key: any) => key.AttributeName));
-    return { TableName: input.TargetTableName, AttributeDefinitions: clone(source.attributeDefinitions.filter(definition => usedAttributes.has(definition.AttributeName))), KeySchema: clone(source.keySchema), BillingMode: billingMode, ...(billingMode === "PROVISIONED" && provisioned ? { ProvisionedThroughput: { ReadCapacityUnits: provisioned.ReadCapacityUnits, WriteCapacityUnits: provisioned.WriteCapacityUnits } } : {}), ...(billingMode === "PAY_PER_REQUEST" && onDemand && Object.keys(onDemand).length ? { OnDemandThroughput: clone(onDemand) } : {}), ...(source.warmThroughput ? { WarmThroughput: { ReadUnitsPerSecond: source.warmThroughput.ReadUnitsPerSecond, WriteUnitsPerSecond: source.warmThroughput.WriteUnitsPerSecond } } : {}), ...(globals.length ? { GlobalSecondaryIndexes: clone(globals) } : {}), ...(locals.length ? { LocalSecondaryIndexes: clone(locals) } : {}), TableClass: source.tableClass, DeletionProtectionEnabled: false, SSESpecification: sse };
+    return { TableName: input.TargetTableName, AttributeDefinitions: clone(source.attributeDefinitions.filter(definition => usedAttributes.has(definition.AttributeName))), KeySchema: clone(source.keySchema), BillingMode: billingMode, ...(billingMode === "PROVISIONED" && provisioned ? { ProvisionedThroughput: { ReadCapacityUnits: provisioned.ReadCapacityUnits, WriteCapacityUnits: provisioned.WriteCapacityUnits } } : {}), ...(billingMode === "PAY_PER_REQUEST" && onDemand && Object.keys(onDemand).length ? { OnDemandThroughput: clone(onDemand) } : {}), ...(source.warmThroughput ? { WarmThroughput: { ReadUnitsPerSecond: source.warmThroughput.ReadUnitsPerSecond, WriteUnitsPerSecond: source.warmThroughput.WriteUnitsPerSecond } } : {}), ...(globals.length ? { GlobalSecondaryIndexes: clone(globals) } : {}), ...(locals.length ? { LocalSecondaryIndexes: clone(locals) } : {}), TableClass: "STANDARD", DeletionProtectionEnabled: false, SSESpecification: sse };
   }
 
   private async restoreTable(source: TableState, items: Record<string, Item>, input: any, summary: { sourceBackupArn?: string; sourceTableArn?: string; restoreDateTime: number }): Promise<any> {
@@ -1629,7 +1706,12 @@ export class DynamoDbService {
     const table = requireTableControl(this.store, this.region, input.TableName);
     if (table.status !== "ACTIVE") throw new AwsError("ResourceInUseException", "Table is being updated");
     const updates = input.GlobalSecondaryIndexUpdates ?? [];
-    if (!Array.isArray(updates) || updates.length > 1) throw new AwsError("ValidationException", "Only one global secondary index may be created, updated, or deleted per UpdateTable call");
+    if (!Array.isArray(updates)) throw new AwsError("ValidationException", "GlobalSecondaryIndexUpdates must be a list");
+    // AWS allows several GSI throughput Updates per call, but only one Create or Delete, and not combined with a table throughput change.
+    const structural = updates.filter((update: any) => update?.Create || update?.Delete);
+    const touched = updates.map((update: any) => String((update?.Create ?? update?.Update ?? update?.Delete)?.IndexName ?? "")); if (new Set(touched).size !== touched.length) throw new AwsError("ValidationException", "One or more parameter values were invalid: An index name was specified more than once in GlobalSecondaryIndexUpdates");
+    if (structural.length > 1) throw new AwsError("ValidationException", "Only one global secondary index may be created or deleted per UpdateTable call");
+    if (structural.length && (input.ProvisionedThroughput !== undefined || input.BillingMode !== undefined)) throw new AwsError("ValidationException", "One or more parameter values were invalid: Cannot change the provisioned throughput of the table in the same request that creates or deletes a global secondary index");
     const fields = ["BillingMode", "ProvisionedThroughput", "OnDemandThroughput", "WarmThroughput", "TableClass", "DeletionProtectionEnabled", "SSESpecification", "StreamSpecification", "ReplicaUpdates"];
     if (!updates.length && !fields.some(field => input[field] !== undefined)) throw new AwsError("ValidationException", "No updates were specified");
     if (input.StreamSpecification !== undefined) this.validateStreamSpecification(input.StreamSpecification);
@@ -1642,15 +1724,20 @@ export class DynamoDbService {
     if (input.BillingMode !== undefined) {
       if (!["PROVISIONED", "PAY_PER_REQUEST"].includes(input.BillingMode)) throw new AwsError("ValidationException", "Invalid BillingMode");
       if (input.BillingMode === "PROVISIONED") { if (input.OnDemandThroughput !== undefined) throw new AwsError("ValidationException", "OnDemandThroughput is only valid in PAY_PER_REQUEST capacity mode"); next.provisionedThroughput = updateThroughput(next.provisionedThroughput, input.ProvisionedThroughput, now); delete next.onDemandThroughput; }
-      else { if (input.ProvisionedThroughput !== undefined) throw new AwsError("ValidationException", "ProvisionedThroughput is not valid in PAY_PER_REQUEST capacity mode"); next.billingModeLastUpdatedAt = now; }
+      else {
+        if (input.ProvisionedThroughput !== undefined) throw new AwsError("ValidationException", "ProvisionedThroughput is not valid in PAY_PER_REQUEST capacity mode");
+        // AWS allows at most four provisioned-to-on-demand switches in a rolling 24-hour window; the reverse switch is unrestricted.
+        if (next.billingMode === "PROVISIONED") { const recent = (next.onDemandSwitchTimes ?? []).filter(time => now - time < 24 * 3_600_000); if (recent.length >= 4) throw new AwsError("LimitExceededException", "Subscriber limit exceeded: A table can be switched to on-demand capacity mode at most 4 times in a 24-hour rolling window"); next.onDemandSwitchTimes = [...recent, now]; }
+        next.billingModeLastUpdatedAt = now;
+      }
       next.billingMode = input.BillingMode;
     } else if (input.ProvisionedThroughput !== undefined) {
-      if (next.billingMode !== "PROVISIONED") throw new AwsError("ValidationException", "ProvisionedThroughput is only valid in PROVISIONED capacity mode"); next.provisionedThroughput = updateThroughput(next.provisionedThroughput, input.ProvisionedThroughput, now);
+      if (next.billingMode !== "PROVISIONED") throw new AwsError("ValidationException", "ProvisionedThroughput is only valid in PROVISIONED capacity mode"); next.provisionedThroughput = updateThroughput(next.provisionedThroughput, input.ProvisionedThroughput, now, "the table");
     }
     if (input.OnDemandThroughput !== undefined) {
       if (next.billingMode !== "PAY_PER_REQUEST") throw new AwsError("ValidationException", "OnDemandThroughput is only valid in PAY_PER_REQUEST capacity mode"); const changed = validateOnDemandThroughput(input.OnDemandThroughput, true)!; const merged = { ...(next.onDemandThroughput ?? {}), ...changed }; for (const field of ["MaxReadRequestUnits", "MaxWriteRequestUnits"] as const) if (input.OnDemandThroughput[field] === -1) delete merged[field]; next.onDemandThroughput = merged;
     }
-    if (input.WarmThroughput !== undefined) { next.warmThroughput = validateWarmThroughput(input.WarmThroughput, now, "UPDATING"); finishes.push(() => { if (next.warmThroughput) next.warmThroughput.status = "ACTIVE"; }); }
+    if (input.WarmThroughput !== undefined) { next.warmThroughput = validateWarmThroughput(input.WarmThroughput, now, "UPDATING", next.warmThroughput); finishes.push(() => { if (next.warmThroughput) next.warmThroughput.status = "ACTIVE"; }); }
     if (input.TableClass !== undefined) { if (!["STANDARD", "STANDARD_INFREQUENT_ACCESS"].includes(input.TableClass)) throw new AwsError("ValidationException", "Invalid TableClass"); if (next.tableClass !== input.TableClass) next.tableClassLastUpdatedAt = now; next.tableClass = input.TableClass; }
     if (input.DeletionProtectionEnabled !== undefined) { if (typeof input.DeletionProtectionEnabled !== "boolean") throw new AwsError("ValidationException", "DeletionProtectionEnabled must be a boolean"); next.deletionProtectionEnabled = input.DeletionProtectionEnabled; }
     if (input.SSESpecification !== undefined) next.sse = validateSse(input.SSESpecification, now);
@@ -1669,13 +1756,14 @@ export class DynamoDbService {
         if (!index) throw new AwsError("ValidationException", "The table does not have the specified index");
         if (update.Update) {
           if (request.ProvisionedThroughput === undefined && request.OnDemandThroughput === undefined && request.WarmThroughput === undefined) throw new AwsError("ValidationException", "An index capacity update is required");
-          if (request.ProvisionedThroughput !== undefined) { if (next.billingMode !== "PROVISIONED") throw new AwsError("ValidationException", "ProvisionedThroughput is only valid in PROVISIONED capacity mode"); index.provisionedThroughput = updateThroughput(index.provisionedThroughput, request.ProvisionedThroughput, now); }
+          if (request.ProvisionedThroughput !== undefined) { if (next.billingMode !== "PROVISIONED") throw new AwsError("ValidationException", "ProvisionedThroughput is only valid in PROVISIONED capacity mode"); index.provisionedThroughput = updateThroughput(index.provisionedThroughput, request.ProvisionedThroughput, now, `the index ${index.indexName}`); }
           if (request.OnDemandThroughput !== undefined) { if (next.billingMode !== "PAY_PER_REQUEST") throw new AwsError("ValidationException", "OnDemandThroughput is only valid in PAY_PER_REQUEST capacity mode"); const changed = validateOnDemandThroughput(request.OnDemandThroughput, true)!; const merged = { ...(index.onDemandThroughput ?? {}), ...changed }; for (const field of ["MaxReadRequestUnits", "MaxWriteRequestUnits"] as const) if (request.OnDemandThroughput[field] === -1) delete merged[field]; index.onDemandThroughput = merged; }
-          if (request.WarmThroughput !== undefined) index.warmThroughput = validateWarmThroughput(request.WarmThroughput, now, "UPDATING");
+          if (request.WarmThroughput !== undefined) index.warmThroughput = validateWarmThroughput(request.WarmThroughput, now, "UPDATING", index.warmThroughput);
           index.indexStatus = "UPDATING"; finishes.push(() => { index.indexStatus = "ACTIVE"; if (index.warmThroughput) index.warmThroughput.status = "ACTIVE"; });
         } else { index.indexStatus = "DELETING"; finishes.push(() => { next.globalSecondaryIndexes = next.globalSecondaryIndexes?.filter(candidate => candidate !== index); delete next.contributorInsights[index.indexName]; next.attributeDefinitions = activeAttributeDefinitions(next); }); }
       }
     }
+    if (input.StreamSpecification?.StreamEnabled === false && next.globalTable?.version === "2019.11.21") throw new AwsError("ValidationException", "DynamoDB Streams cannot be disabled on a replica of a global table");
     if (input.StreamSpecification !== undefined) { const configured = this.configureStream(next, input.StreamSpecification); if (configured.retired) finishes.push(() => { configured.retired!.streamStatus = "DISABLED"; }); if (configured.enabled) finishes.push(() => { configured.enabled!.streamStatus = "ENABLED"; }); }
     this.tables[next.name] = next; await this.store.save(); this.transition(next, () => finishes.forEach(finish => finish())); return { TableDescription: tableDescription(next, this.store) };
   }
@@ -1683,15 +1771,18 @@ export class DynamoDbService {
   async DescribeTable(input: any): Promise<any> { return { Table: tableDescription(requireTableControl(this.store, this.region, input.TableName), this.store) }; }
 
   async ListTables(input: any): Promise<any> {
+    if (input.Limit !== undefined && (!Number.isInteger(input.Limit) || input.Limit < 1 || input.Limit > 100)) throw new AwsError("ValidationException", `1 validation error detected: Value '${String(input.Limit)}' at 'limit' failed to satisfy constraint: Member must have value between 1 and 100`);
     let names = Object.keys(this.tables).sort();
     if (input.ExclusiveStartTableName) names = names.slice(names.indexOf(input.ExclusiveStartTableName) + 1);
-    const limit = input.Limit ?? names.length;
+    const limit = input.Limit ?? 100;
     return { TableNames: names.slice(0, limit), ...(names.length > limit ? { LastEvaluatedTableName: names[limit - 1] } : {}) };
   }
 
   async DeleteTable(input: any): Promise<any> {
     const table = requireTableControl(this.store, this.region, input.TableName); if (table.deletionProtectionEnabled) throw new AwsError("ValidationException", "Resource cannot be deleted because deletion protection is enabled. Disable deletion protection first.");
     if (table.globalTable) { const remaining = table.globalTable.replicaRegions.filter(region => region !== this.region); for (const region of remaining) { const replica = this.store.regionState(region).tables[table.name]; if (!replica?.globalTable) continue; if (remaining.length === 1) delete replica.globalTable; else replica.globalTable.replicaRegions = [...remaining]; } }
+    // Deleting a table with PITR on leaves a SYSTEM backup named <table>$DeletedTableBackup that expires after 35 days.
+    if (table.pointInTimeRecovery?.status === "ENABLED") { const now = this.clock.now(); const snapshot = await this.backupPersistence.createSnapshot(table); const arn = `${table.arn}/backup/${String(now).padStart(13, "0")}-${id(8)}`; this.backups[arn] = { backupArn: arn, backupName: `${table.name}$DeletedTableBackup`, backupType: "SYSTEM", backupStatus: "AVAILABLE", createdAt: now, expiresAt: now + 35 * 24 * 3_600_000, sizeBytes: snapshot.sizeBytes, sourceTableArn: table.arn, sourceTableId: table.id, sourceTableName: table.name, snapshotHash: snapshot.hash }; }
     this.retireStream(table, "DISABLED");
     delete this.resourcePolicies[table.arn]; delete this.resourcePolicyMutationTimes[table.arn];
     delete this.tables[table.name];
@@ -1706,13 +1797,15 @@ export class DynamoDbService {
     const prior = attempt ? this.reconcileIntegrationAttempt(attempt) : undefined; if (prior) return structuredClone(prior.output);
     validateExpressionRequest(input);
     validateReturnItemCollectionMetrics(input.ReturnItemCollectionMetrics);
+    validateReturnValues(input.ReturnValues, ["NONE", "ALL_OLD"]);
+    validateReturnValuesOnConditionCheckFailure(input.ReturnValuesOnConditionCheckFailure);
     const table = requireTable(this.store, this.region, input.TableName); assertDataPlaneAvailable(table);
     validateItem(table, input.Item);
     validateIndexAttributes(table, input.Item);
     const key = stableItemKey(table, input.Item);
     const previous = table.items[key];
     const condition = parseConditionExpression(input.ConditionExpression, expressionContext(input));
-    if (!evaluateCondition(condition, previous ?? {}, expressionContext(input))) throw new AwsError("ConditionalCheckFailedException", "The conditional request failed");
+    if (!evaluateCondition(condition, previous ?? {}, expressionContext(input))) throw conditionFailure(input, previous);
     const writeUnits = this.itemWriteUnits(input.Item); const charge = emptyCapacity(table.name); addCapacityUnits(charge, "table", 0, writeUnits); writeIndexCapacity(charge, table, previous, input.Item, item => this.itemWriteUnits(item)); this.takeCapacityCharge(table, "write", charge, [input.Item]); table.items[key] = clone(input.Item); await this.journalChanges(table, [{ key, item: input.Item }]); await this.emitStreamRecord(table, { oldImage: previous, newImage: input.Item }); await this.replicateGlobalChanges(table, [{ key, item: input.Item }]); await this.publishContributorMetrics(table, [input.Item], "AccessFrequency", undefined, false, true);
     const output = { ...(input.ReturnValues === "ALL_OLD" && previous ? { Attributes: clone(previous) } : {}), ...(formatConsumedCapacity(input.ReturnConsumedCapacity, charge) ? { ConsumedCapacity: formatConsumedCapacity(input.ReturnConsumedCapacity, charge) } : {}), ...itemCollectionMetricsResponse(input.ReturnItemCollectionMetrics, [{ table, items: [input.Item] }], "single") }; if (attempt) this.acceptIntegrationAttempt(attempt, output); await this.store.save(); return output;
   }
@@ -1736,12 +1829,14 @@ export class DynamoDbService {
     const prior = attempt ? this.reconcileIntegrationAttempt(attempt) : undefined; if (prior) return structuredClone(prior.output);
     validateExpressionRequest(input);
     validateReturnItemCollectionMetrics(input.ReturnItemCollectionMetrics);
+    validateReturnValues(input.ReturnValues, ["NONE", "ALL_OLD"]);
+    validateReturnValuesOnConditionCheckFailure(input.ReturnValuesOnConditionCheckFailure);
     const table = requireTable(this.store, this.region, input.TableName); assertDataPlaneAvailable(table);
     validateKey(table, input.Key);
     const key = stableItemKey(table, input.Key);
     const previous = table.items[key];
     const condition = parseConditionExpression(input.ConditionExpression, expressionContext(input));
-    if (!evaluateCondition(condition, previous ?? {}, expressionContext(input))) throw new AwsError("ConditionalCheckFailedException", "The conditional request failed");
+    if (!evaluateCondition(condition, previous ?? {}, expressionContext(input))) throw conditionFailure(input, previous);
     const writeUnits = this.itemWriteUnits(previous ?? input.Key); const charge = emptyCapacity(table.name); addCapacityUnits(charge, "table", 0, writeUnits); writeIndexCapacity(charge, table, previous, undefined, item => this.itemWriteUnits(item)); this.takeCapacityCharge(table, "write", charge, [previous ?? input.Key]); delete table.items[key]; await this.journalChanges(table, [{ key }]); if (previous) await this.emitStreamRecord(table, { oldImage: previous }); await this.replicateGlobalChanges(table, [{ key }]); await this.publishContributorMetrics(table, [previous ?? input.Key], "AccessFrequency", undefined, false, true);
     const output = { ...(input.ReturnValues === "ALL_OLD" && previous ? { Attributes: clone(previous) } : {}), ...(formatConsumedCapacity(input.ReturnConsumedCapacity, charge) ? { ConsumedCapacity: formatConsumedCapacity(input.ReturnConsumedCapacity, charge) } : {}), ...itemCollectionMetricsResponse(input.ReturnItemCollectionMetrics, [{ table, items: [previous ?? input.Key] }], "single") }; if (attempt) this.acceptIntegrationAttempt(attempt, output); await this.store.save(); return output;
   }
@@ -1753,19 +1848,23 @@ export class DynamoDbService {
     const prior = attempt ? this.reconcileIntegrationAttempt(attempt) : undefined; if (prior) return structuredClone(prior.output);
     validateExpressionRequest(input);
     validateReturnItemCollectionMetrics(input.ReturnItemCollectionMetrics);
+    validateReturnValues(input.ReturnValues, ["NONE", "ALL_OLD", "UPDATED_OLD", "ALL_NEW", "UPDATED_NEW"]);
+    validateReturnValuesOnConditionCheckFailure(input.ReturnValuesOnConditionCheckFailure);
     const table = requireTable(this.store, this.region, input.TableName); assertDataPlaneAvailable(table);
     validateKey(table, input.Key);
     const key = stableItemKey(table, input.Key);
-    const existing = table.items[key]; const previous = clone(existing ?? input.Key);
+    const existing = table.items[key];
+    // Conditions on a missing item see an empty item, exactly as AWS does, so attribute_not_exists(pk) is the insert-only idiom and attribute_exists(pk) is update-only.
     const condition = parseConditionExpression(input.ConditionExpression, expressionContext(input));
-    if (!evaluateCondition(condition, previous, expressionContext(input))) throw new AwsError("ConditionalCheckFailedException", "The conditional request failed");
-    if (!input.UpdateExpression) throw new AwsError("ValidationException", "UpdateExpression is required");
-    const update = applyUpdateExpression(previous, String(input.UpdateExpression), expressionContext(input));
+    if (!evaluateCondition(condition, existing ?? {}, expressionContext(input))) throw conditionFailure(input, existing);
+    // The key seeds the working item so a creating update starts from the key attributes; AWS accepts an update with no UpdateExpression as a key-only upsert.
+    const seed = clone(existing ?? input.Key);
+    const update = input.UpdateExpression === undefined ? { item: seed, oldValues: {}, newValues: {} } : applyUpdateExpression(seed, String(input.UpdateExpression), expressionContext(input));
     validateItem(table, update.item);
     validateIndexAttributes(table, update.item);
     if (stableItemKey(table, update.item) !== key) throw new AwsError("ValidationException", "One or more parameter values were invalid: Cannot update attribute that is part of the key");
     const writeUnits = this.itemWriteUnits(update.item); const charge = emptyCapacity(table.name); addCapacityUnits(charge, "table", 0, writeUnits); writeIndexCapacity(charge, table, existing, update.item, item => this.itemWriteUnits(item)); this.takeCapacityCharge(table, "write", charge, [update.item]); table.items[key] = update.item; await this.journalChanges(table, [{ key, item: update.item }]); await this.emitStreamRecord(table, { oldImage: existing, newImage: update.item }); await this.replicateGlobalChanges(table, [{ key, item: update.item }]); await this.publishContributorMetrics(table, [update.item], "AccessFrequency", undefined, false, true);
-    const attributes = input.ReturnValues === "ALL_OLD" ? previous : input.ReturnValues === "ALL_NEW" ? update.item : input.ReturnValues === "UPDATED_OLD" ? update.oldValues : input.ReturnValues === "UPDATED_NEW" ? update.newValues : undefined;
+    const attributes = input.ReturnValues === "ALL_OLD" ? existing : input.ReturnValues === "ALL_NEW" ? update.item : input.ReturnValues === "UPDATED_OLD" ? update.oldValues : input.ReturnValues === "UPDATED_NEW" ? update.newValues : undefined;
     const output = { ...(attributes && Object.keys(attributes).length ? { Attributes: clone(attributes) } : {}), ...(formatConsumedCapacity(input.ReturnConsumedCapacity, charge) ? { ConsumedCapacity: formatConsumedCapacity(input.ReturnConsumedCapacity, charge) } : {}), ...itemCollectionMetricsResponse(input.ReturnItemCollectionMetrics, [{ table, items: [update.item] }], "single") }; if (attempt) this.acceptIntegrationAttempt(attempt, output); await this.store.save(); return output;
   }
 
@@ -1786,6 +1885,8 @@ export class DynamoDbService {
       if (!Number.isInteger(input.Segment) || input.Segment < 0 || input.Segment >= input.TotalSegments) throw new AwsError("ValidationException", "Segment must be an integer between 0 and TotalSegments minus 1");
     }
     const schemaTable = index ? { ...table, keySchema: index.keySchema } : table;
+    validateEnum(input.Select, "select", ["ALL_ATTRIBUTES", "ALL_PROJECTED_ATTRIBUTES", "SPECIFIC_ATTRIBUTES", "COUNT"]);
+    if (input.Select === "ALL_PROJECTED_ATTRIBUTES" && !index) throw new AwsError("ValidationException", "ALL_PROJECTED_ATTRIBUTES can be used only when Querying using an IndexName");
     if (input.Select === "SPECIFIC_ATTRIBUTES" && !input.ProjectionExpression) throw new AwsError("ValidationException", "Select type SPECIFIC_ATTRIBUTES requires ProjectionExpression");
     if (input.Select && input.Select !== "SPECIFIC_ATTRIBUTES" && input.ProjectionExpression) throw new AwsError("ValidationException", "Select and ProjectionExpression can only be used together when Select is SPECIFIC_ATTRIBUTES");
     const context = expressionContext(input);
@@ -1795,6 +1896,8 @@ export class DynamoDbService {
     const projectionPaths = parseProjectionExpression(input.ProjectionExpression, context);
     const projectedNames = index ? new Set([...table.keySchema, ...index.keySchema].map(key => key.AttributeName)) : undefined; for (const name of index?.projection.NonKeyAttributes ?? []) projectedNames!.add(name);
     const filterNames = new Set(conditionPaths(filter).map(path => path[0]).filter((name): name is string => typeof name === "string")); const filterNeedsBase = Boolean(index && index.projection.ProjectionType !== "ALL" && [...filterNames].some(name => !projectedNames!.has(name)));
+    // Native Query rejects key attributes in the filter; compiled PartiQL statements legitimately carry their WHERE clause as a post-read filter.
+    if (query && !internal) { const keyInFilter = schemaTable.keySchema.find(schema => filterNames.has(schema.AttributeName)); if (keyInFilter) throw new AwsError("ValidationException", `Filter Expression can only contain non-primary key attributes: Primary key attribute: ${keyInFilter.AttributeName}`); }
     const projectionNeedsBase = Boolean(index && index.projection.ProjectionType !== "ALL" && projectionPaths.some(path => typeof path[0] === "string" && !projectedNames!.has(path[0])));
     if (isGlobal && filterNeedsBase) throw new AwsError("ValidationException", "One or more parameter values were invalid: FilterExpression contains an attribute that is not projected into the index");
     const compareKeys = (left: Item, right: Item): number => {
@@ -1830,13 +1933,15 @@ export class DynamoDbService {
     const readsBaseTable = Boolean(filterNeedsBase || returnsBaseAttributes);
     const processedItem = (item: Item): Item => index && !readsBaseTable ? projectedIndexItem(table, index, item) : item;
     const outputItem = (item: Item): Item => index && !returnsBaseAttributes ? projectedIndexItem(table, index, item) : item;
-    const evaluated: Item[] = []; let processedBytes = 0;
+    const evaluated: Item[] = []; let processedBytes = 0; let stoppedAtPageSize = false;
     for (const item of items) {
       if (evaluated.length >= limit) break;
       const size = Buffer.byteLength(JSON.stringify(processedItem(item)));
-      if (processedBytes + size > DYNAMODB_READ_PAGE_BYTES) break;
+      if (processedBytes + size > DYNAMODB_READ_PAGE_BYTES) { stoppedAtPageSize = true; break; }
       evaluated.push(item); processedBytes += size;
     }
+    // AWS returns LastEvaluatedKey whenever the page ended at Limit or the 1 MB boundary, even if no items follow.
+    const pageBoundary = evaluated.length > 0 && (stoppedAtPageSize || evaluated.length >= limit);
     const matched = evaluated.filter(item => evaluateCondition(filter, processedItem(item), context));
     if (isGlobal && input.Select === "ALL_ATTRIBUTES" && index!.projection.ProjectionType !== "ALL") throw new AwsError("ValidationException", "ALL_ATTRIBUTES is not supported for this index projection");
     if (isGlobal && projectionNeedsBase) { const unavailable = projectionPaths.find(path => typeof path[0] === "string" && !projectedNames!.has(path[0]))![0]; throw new AwsError("ValidationException", `Attribute ${unavailable} is not projected into the index`); }
@@ -1849,7 +1954,7 @@ export class DynamoDbService {
     } else addCapacityUnits(charge, "table", evaluated.reduce((sum, item) => sum + this.itemReadUnits(item, consistent), 0) || this.itemReadUnits(undefined, consistent), 0);
     this.takeCapacityCharge(table, "read", charge, evaluated); await this.publishContributorMetrics(table, evaluated, "AccessFrequency", index?.indexName);
     const consumedCapacity = formatConsumedCapacity(input.ReturnConsumedCapacity, charge);
-    return { ...(projected ? { Items: projected } : {}), Count: matched.length, ScannedCount: evaluated.length, ...(items.length > evaluated.length && evaluated.length ? { LastEvaluatedKey: index ? indexKey(table, index, evaluated.at(-1)!) : keyFromItem(table, evaluated.at(-1)!) } : {}), ...(consumedCapacity ? { ConsumedCapacity: consumedCapacity } : {}) };
+    return { ...(projected ? { Items: projected } : {}), Count: matched.length, ScannedCount: evaluated.length, ...(pageBoundary ? { LastEvaluatedKey: index ? indexKey(table, index, evaluated.at(-1)!) : keyFromItem(table, evaluated.at(-1)!) } : {}), ...(consumedCapacity ? { ConsumedCapacity: consumedCapacity } : {}) };
   }
 
   async Scan(input: any): Promise<any> { return this.withRequestMetrics("Scan", () => this.executeScan(input)); }
@@ -1858,6 +1963,7 @@ export class DynamoDbService {
   async Query(input: any): Promise<any> { return this.withRequestMetrics("Query", () => this.executeQuery(input)); }
 
   private async executeQuery(input: any): Promise<any> {
+    translateLegacyParameters(input);
     if (!input.KeyConditionExpression) throw new AwsError("ValidationException", "KeyConditionExpression is required");
     return this.readMany(input, true);
   }
@@ -1929,7 +2035,9 @@ export class DynamoDbService {
     }
     if (plan.kind === "exists") throw new AwsError("ValidationException", "EXISTS can only be used in ExecuteTransaction");
     const key = this.partiqlKey(plan, table); const current = table.items[stableItemKey(table, key)];
-    if (plan.kind === "update" && !current) throw new AwsError("ConditionalCheckFailedException", "The conditional request failed", 400, input.ReturnValuesOnConditionCheckFailure === "ALL_OLD" ? { Item: undefined } : undefined);
+    // PartiQL UPDATE of a missing item is a failed condition, but DELETE of a missing key succeeds with zero items
+    // (ql-reference.delete: "SUCCESS is returned with 0 items deleted").
+    if (plan.kind === "update" && !current) throw new AwsError("ConditionalCheckFailedException", "The conditional request failed");
     if (plan.kind === "delete" && !current) return { Items: [], ...capacity(input, table.name) };
     try {
       const common = { TableName: table.name, Key: key, ...(plan.conditionExpression ? { ConditionExpression: plan.conditionExpression } : {}), ...(plan.expressionAttributeNames ? { ExpressionAttributeNames: plan.expressionAttributeNames } : {}), ...(plan.expressionAttributeValues ? { ExpressionAttributeValues: plan.expressionAttributeValues } : {}), ReturnConsumedCapacity: input.ReturnConsumedCapacity };
@@ -1998,6 +2106,9 @@ export class DynamoDbService {
 
   private async executeBatchGetItem(input: any): Promise<any> {
     const Responses: Record<string, Item[]> = {}; const charges = new Map<string, CapacityCharge>(); const contributors = new Map<string, Item[]>();
+    validateReturnConsumedCapacity(input.ReturnConsumedCapacity);
+    if (!input.RequestItems || typeof input.RequestItems !== "object" || Array.isArray(input.RequestItems) || !Object.keys(input.RequestItems).length) throw new AwsError("ValidationException", "1 validation error detected: Value at 'requestItems' failed to satisfy constraint: Member must have length greater than or equal to 1");
+    for (const [name, request] of Object.entries<any>(input.RequestItems)) if (!request || typeof request !== "object" || !Array.isArray(request.Keys) || !request.Keys.length) throw new AwsError("ValidationException", `1 validation error detected: Value at 'requestItems.${name}.keys' failed to satisfy constraint: Member must have length greater than or equal to 1`);
     const total = Object.values<any>(input.RequestItems ?? {}).reduce((sum, request) => sum + (request.Keys?.length ?? 0), 0);
     if (total > 100) throw new AwsError("ValidationException", "Too many items requested for the BatchGetItem call");
     for (const [name, request] of Object.entries<any>(input.RequestItems ?? {})) {
@@ -2014,6 +2125,9 @@ export class DynamoDbService {
 
   private async executeBatchWriteItem(input: any): Promise<any> {
     validateReturnItemCollectionMetrics(input.ReturnItemCollectionMetrics);
+    validateReturnConsumedCapacity(input.ReturnConsumedCapacity);
+    if (!input.RequestItems || typeof input.RequestItems !== "object" || Array.isArray(input.RequestItems) || !Object.keys(input.RequestItems).length) throw new AwsError("ValidationException", "1 validation error detected: Value at 'requestItems' failed to satisfy constraint: Member must have length greater than or equal to 1");
+    for (const [name, requests] of Object.entries(input.RequestItems)) if (!Array.isArray(requests) || !requests.length) throw new AwsError("ValidationException", `1 validation error detected: Value at 'requestItems.${name}' failed to satisfy constraint: Member must have length greater than or equal to 1`);
     const count = Object.values<any[]>(input.RequestItems ?? {}).reduce((sum, requests) => sum + requests.length, 0);
     if (count > 25) throw new AwsError("ValidationException", "Too many items requested for the BatchWriteItem call");
     const pending = new Map<string, Record<string, Item>>(); const charges = new Map<string, CapacityCharge>(); const journal = new Map<string, DynamoPitrChange[]>(); const streamChanges = new Map<string, DynamoStreamChange[]>(); const contributors = new Map<string, Item[]>(); const metricItems = new Map<string, Item[]>();
@@ -2081,22 +2195,26 @@ export class DynamoDbService {
       if (kind === "Update" && !request.UpdateExpression) throw new AwsError("ValidationException", "UpdateExpression is required for Update");
     }
     const lockKeys = [...targets, ...(token ? [`\0client-request-token\0${token}`] : [])].sort();
-    return this.withTransactionLocks(lockKeys, async () => {
+    if (token) { if (this.transactionsInFlight.has(token)) throw new AwsError("TransactionInProgressException", "The transaction with the given request token is already in progress."); this.transactionsInFlight.add(token); }
+    try { return await this.withTransactionLocks(lockKeys, async () => {
       if (token && tokens[token]) {
         if (tokens[token].hash !== hash) throw new AwsError("IdempotentParameterMismatchException", "A request with the same client token but different parameters was received");
         return clone(tokens[token].response as any);
       }
       const working = new Map<string, Record<string, Item>>(); for (const name of new Set(tableNames)) working.set(name, clone(this.tables[name].items));
-      const reasons = normalized.map(() => ({ Code: "None", Message: "None" })); const streamChanges: Array<DynamoStreamChange | undefined> = normalized.map(() => undefined); let failed = -1;
+      // AWS omits Message entirely for actions that did not fail.
+      const reasons: Array<{ Code: string; Message?: string; Item?: Item }> = normalized.map(() => ({ Code: "None" })); const streamChanges: Array<DynamoStreamChange | undefined> = normalized.map(() => undefined); let failed = -1;
       for (let index = 0; index < normalized.length; index++) {
         const { kind, request, table, key } = normalized[index]; const items = working.get(table.name)!; const current = items[key];
         const condition = parseConditionExpression(request.ConditionExpression, expressionContext(request));
-        if (!evaluateCondition(condition, current ?? {}, expressionContext(request))) { failed = index; reasons[index] = { Code: "ConditionalCheckFailed", Message: "The conditional request failed", ...(request.ReturnValuesOnConditionCheckFailure === "ALL_OLD" && current ? { Item: clone(current) } : {}) }; break; }
+        // AWS evaluates every action's condition and reports each failure, so keep going after the first one (no item appears twice, so later checks are unaffected).
+        if (!evaluateCondition(condition, current ?? {}, expressionContext(request))) { if (failed < 0) failed = index; reasons[index] = { Code: "ConditionalCheckFailed", Message: "The conditional request failed", ...(request.ReturnValuesOnConditionCheckFailure === "ALL_OLD" && current ? { Item: clone(current) } : {}) }; continue; }
+        if (failed >= 0) continue;
         if (kind === "Put") { streamChanges[index] = { oldImage: current, newImage: request.Item }; items[key] = clone(request.Item); }
         else if (kind === "Delete") { if (current) streamChanges[index] = { oldImage: current }; delete items[key]; }
         else if (kind === "Update") { const updated = applyUpdateExpression(clone(current ?? request.Key), request.UpdateExpression, expressionContext(request)).item; validateItem(table, updated); validateIndexAttributes(table, updated); if (stableItemKey(table, updated) !== key) throw new AwsError("ValidationException", "Cannot update attribute that is part of the key"); streamChanges[index] = { oldImage: current, newImage: updated }; items[key] = updated; }
       }
-      if (failed >= 0) throw new AwsError("TransactionCanceledException", "Transaction cancelled, please refer cancellation reasons for specific reasons", 400, { CancellationReasons: reasons });
+      if (failed >= 0) throw new AwsError("TransactionCanceledException", `Transaction cancelled, please refer cancellation reasons for specific reasons [${reasons.map(reason => reason.Code).join(", ")}]`, 400, { CancellationReasons: reasons });
       if (process.env.STACKSIM_DDB_FAIL_TRANSACTION_AFTER_EVALUATION === "true") throw new AwsError("InternalServerError", "Injected transaction failure after evaluation", 500);
       const charges = new Map<string, CapacityCharge>(); const contributors = new Map<string, Item[]>(); const metricItems = new Map<string, Item[]>();
       for (const { kind, request, table, key } of normalized) if (kind !== "ConditionCheck") {
@@ -2114,7 +2232,7 @@ export class DynamoDbService {
       };
       if (token) tokens[token] = { hash, expiresAt: this.clock.now() + 10 * 60_000, response: clone(response) };
       await this.store.save(); return response;
-    });
+    }); } finally { if (token) this.transactionsInFlight.delete(token); }
   }
 
   private validateTransactionEnvelope(input: any, actions: any, operation: "get" | "write"): asserts actions is any[] {

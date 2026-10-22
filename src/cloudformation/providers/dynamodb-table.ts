@@ -751,7 +751,9 @@ export function createDynamoDbTableProvider(dynamodb: DynamoDbService): Producti
       return mutate(desired.TableName, () => dynamodb.DeleteResourcePolicy({ ResourceArn: current.streamArn!, ExpectedRevisionId: revisionId }));
     }
     if (streamConfigurationChanged) {
-      return mutate(desired.TableName, () => dynamodb.UpdateTable({ TableName: desired.TableName, StreamSpecification: desired.StreamSpecification ? { StreamEnabled: true, StreamViewType: desired.StreamSpecification.StreamViewType } : { StreamEnabled: false } }));
+      // DynamoDB cannot change a view type in place: like CloudFormation, disable the current stream first and enable the new one on the next pass.
+      const disableFirst = Boolean(current.model.StreamSpecification && desired.StreamSpecification);
+      return mutate(desired.TableName, () => dynamodb.UpdateTable({ TableName: desired.TableName, StreamSpecification: desired.StreamSpecification && !disableFirst ? { StreamEnabled: true, StreamViewType: desired.StreamSpecification.StreamViewType } : { StreamEnabled: false } }));
     }
 
     const wantedTags = Object.fromEntries(tagInput(desired, context).map(tag => [tag.Key, tag.Value]));

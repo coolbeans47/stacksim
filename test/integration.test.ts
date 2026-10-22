@@ -42,9 +42,9 @@ test("DynamoDB core table and item APIs work through AWS SDK v3", async () => {
   );
 
   await dynamodb.send(new PutItemCommand({ TableName: "Notes", Item: { pk: { S: "course" }, sk: { N: "1" }, title: { S: "First" }, views: { N: "1" } }, ConditionExpression: "attribute_not_exists(pk)" }));
-  const got = await dynamodb.send(new GetItemCommand({ TableName: "Notes", Key: { pk: { S: "course" }, sk: { N: "1" } }, ProjectionExpression: "title, views" }));
+  const got = await dynamodb.send(new GetItemCommand({ TableName: "Notes", Key: { pk: { S: "course" }, sk: { N: "1" } }, ProjectionExpression: "title, #views", ExpressionAttributeNames: { "#views": "views" } }));
   assert.deepEqual(got.Item, { title: { S: "First" }, views: { N: "1" } });
-  const updated = await dynamodb.send(new UpdateItemCommand({ TableName: "Notes", Key: { pk: { S: "course" }, sk: { N: "1" } }, UpdateExpression: "SET #title = :title ADD views :one", ExpressionAttributeNames: { "#title": "title" }, ExpressionAttributeValues: { ":title": { S: "Updated" }, ":one": { N: "1" } }, ReturnValues: "ALL_NEW" }));
+  const updated = await dynamodb.send(new UpdateItemCommand({ TableName: "Notes", Key: { pk: { S: "course" }, sk: { N: "1" } }, UpdateExpression: "SET #title = :title ADD #views :one", ExpressionAttributeNames: { "#title": "title", "#views": "views" }, ExpressionAttributeValues: { ":title": { S: "Updated" }, ":one": { N: "1" } }, ReturnValues: "ALL_NEW" }));
   assert.equal(updated.Attributes?.views?.N, "2");
   assert.equal(updated.Attributes?.title?.S, "Updated");
 

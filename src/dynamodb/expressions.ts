@@ -1,13 +1,14 @@
 import { AwsError } from "../errors.js";
 import type { AttributeValue, Item, TableState } from "../types.js";
 import { addNumbers, attributeType, clone, compareAttributeValues, equalAttributeValues, validateAttributeValue } from "./values.js";
+import { DYNAMODB_RESERVED_WORDS } from "./reserved-words.js";
 
 type Path = Array<string | number>;
 type TokenType = "name" | "value" | "number" | "keyword" | "symbol" | "eof";
 interface Token { type: TokenType; value: string; position: number }
 
 const KEYWORDS = new Set(["AND", "OR", "NOT", "BETWEEN", "IN", "SET", "REMOVE", "ADD", "DELETE"]);
-const RESERVED = new Set(("ABORT ABSOLUTE ACTION ADD ALL ALTER ANALYZE AND ANY AS ASC ATTRIBUTE AUTHORIZATION AVG BACKUP BASE BATCH BEGIN BETWEEN BINARY BOTH BY CASE CAST CHECK CLUSTER COMMENT COMMIT CONDITION CONNECT CONSISTENT CONSTRAINT COUNT CREATE CROSS CURRENT DATABASE DATE DAY DECIMAL DELETE DESC DESCRIBE DISTINCT DROP ELSE END ESCAPE EXISTS EXPLAIN FALSE FILTER FIRST FOR FROM FULL FUNCTION GLOBAL GRANT GROUP HASH HAVING IN INDEX INNER INSERT INTERSECT INTO IS ITEM ITEMS JOIN KEY KEYS LAST LEFT LEVEL LIKE LIMIT LOCAL MAP MODIFY MULTI NAME NAMES NATIONAL NATURAL NO NONE NOT NULL NUMBER NUMERIC OF OFFLINE ON ONLY OPEN OR ORDER OUTER OVER PARTITION PATH PRECISION PRIMARY PROJECTION PUT RANGE READ REAL REBUILD RECORD RECURSIVE REMOVE RENAME REPLACE RESOURCE RESTORE RETURN ROLE ROLLBACK ROW RULE SAVE SCAN SCHEMA SELECT SESSION SET SIZE SOME START STATUS STREAM STRING SUM TABLE TAG THEN THROUGH TIME TIMESTAMP TO TRANSACTION TRUE TYPE UNION UNIQUE UPDATE USER USING VALUE VALUES VIEW WHEN WHERE WITH WRITE YEAR").split(" "));
+const RESERVED = new Set(DYNAMODB_RESERVED_WORDS);
 
 export type ValueExpression =
   | { kind: "path"; path: Path }
@@ -26,6 +27,34 @@ export type ConditionExpression =
 export interface ExpressionContext {
   names?: Record<string, string>;
   values?: Record<string, AttributeValue>;
+  /** Set while evaluating UpdateExpression operands, where AWS reports missing operands instead of treating them as absent. */
+  update?: boolean;
+}
+
+/**
+ * Reject ExpressionAttributeNames/Values entries that no expression in the request references.
+ * AWS validates this before touching the item, so an unused placeholder is always a ValidationException.
+ */
+export function validateExpressionUsage(names: Record<string, string> | undefined, values: Record<string, AttributeValue> | undefined, sources: Array<string | undefined>): void {
+  const expressions = sources.filter((source): source is string => typeof source === "string" && source.length > 0);
+  if (names !== undefined && (typeof names !== "object" || names === null || Array.isArray(names))) throw new AwsError("ValidationException", "ExpressionAttributeNames must be a map");
+  if (values !== undefined && (typeof values !== "object" || values === null || Array.isArray(values))) throw new AwsError("ValidationException", "ExpressionAttributeValues must be a map");
+  if (names && !Object.keys(names).length) throw new AwsError("ValidationException", "ExpressionAttributeNames must not be empty");
+  if (values && !Object.keys(values).length) throw new AwsError("ValidationException", "ExpressionAttributeValues must not be empty");
+  if (!names && !values) return;
+  if (!expressions.length) {
+    if (names) throw new AwsError("ValidationException", "ExpressionAttributeNames can only be specified when using expressions");
+    throw new AwsError("ValidationException", "ExpressionAttributeValues can only be specified when using expressions");
+  }
+  const used = new Set<string>();
+  for (const source of expressions) {
+    // Placeholders are lexically distinct, so a regex scan is enough; the parser reports any syntax error separately.
+    for (const match of source.matchAll(/[#:][A-Za-z0-9_]+/g)) used.add(match[0]);
+  }
+  const unusedNames = Object.keys(names ?? {}).filter(token => !used.has(token));
+  if (unusedNames.length) throw new AwsError("ValidationException", `Value provided in ExpressionAttributeNames unused in expressions: keys: {${unusedNames.join(", ")}}`);
+  const unusedValues = Object.keys(values ?? {}).filter(token => !used.has(token));
+  if (unusedValues.length) throw new AwsError("ValidationException", `Value provided in ExpressionAttributeValues unused in expressions: keys: {${unusedValues.join(", ")}}`);
 }
 
 export function conditionPaths(expression: ConditionExpression | undefined): Path[] {
@@ -261,7 +290,8 @@ function evaluateValue(expression: ValueExpression, item: Item, context: Express
   }
   const args = expression.args.map(argument => evaluateValue(argument, item, context));
   if (expression.name === "size") {
-    const value = runtimeAttribute(args[0]); if (!value) throw new AwsError("ValidationException", "The provided expression refers to an attribute that does not exist in the item");
+    // In condition and filter expressions size() of a missing attribute is simply absent, so comparisons evaluate false.
+    const value = runtimeAttribute(args[0]); if (!value) { if (context.update) throw new AwsError("ValidationException", "The provided expression refers to an attribute that does not exist in the item"); return undefined; }
     const type = attributeType(value); const content = (value as any)[type];
     if (["S", "B"].includes(type)) return type === "B" ? Buffer.from(content, "base64").length : Buffer.byteLength(content);
     if (["L", "M", "SS", "NS", "BS"].includes(type)) return Array.isArray(content) ? content.length : Object.keys(content).length;
@@ -374,7 +404,7 @@ export function applyUpdateExpression(item: Item, source: string, context: Expre
     const old = getPath(output, operation.path); if (old !== undefined) setProjectionPath(oldValues, operation.path, old);
     if (operation.action === "REMOVE") removePath(output, operation.path);
     else {
-      const value = runtimeAttribute(evaluateValue(operation.value!, output, context)); if (!value) throw new AwsError("ValidationException", "Update expression evaluated to no value");
+      const value = runtimeAttribute(evaluateValue(operation.value!, output, { ...context, update: true })); if (!value) throw new AwsError("ValidationException", "The provided expression refers to an attribute that does not exist in the item");
       if (operation.action === "SET") setPath(output, operation.path, value);
       else {
         if (operation.path.length !== 1) throw new AwsError("ValidationException", `${operation.action} action supports only top-level attributes`);

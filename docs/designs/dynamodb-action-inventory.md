@@ -63,3 +63,5 @@ Generated companion for `src/dynamodb/action-inventory.ts`.
 | UpdateTimeToLive | DDB-04 | implemented |
 
 Streams actions: `DescribeStream`, `GetRecords`, `GetShardIterator`, `ListStreams`.
+
+Since `DDB-15` (2026-10-22) this inventory is also the wire dispatch allow-list: `DynamoDbService.handle` only invokes an action named here for the `DynamoDB_20120810` target and only the four Streams actions for `DynamoDBStreams_20120810`. Any other method name or target prefix returns `UnknownOperationException`, so internal lifecycle and helper methods are never reachable from a request.

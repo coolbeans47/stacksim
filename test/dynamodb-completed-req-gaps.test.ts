@@ -129,12 +129,12 @@ test("DDBGAP-02 DescribeTable.Replicas reports per-Region status after policy de
 
     const global = await west.send(new DescribeGlobalTableCommand({ GlobalTableName: "ReplicaStatus" }));
     const eastGlobal = global.GlobalTableDescription?.ReplicationGroup?.find(replica => replica.RegionName === eastRegion);
-    assert.equal(eastGlobal?.ReplicaStatus, "REGION_DISABLED");
+    assert.equal(eastGlobal?.ReplicaStatus, "REPLICATION_NOT_AUTHORIZED");
 
     const described = await west.send(new DescribeTableCommand({ TableName: "ReplicaStatus" }));
     const eastReplica = described.Table?.Replicas?.find(replica => replica.RegionName === eastRegion);
     const westReplica = described.Table?.Replicas?.find(replica => replica.RegionName === westRegion);
-    assert.equal(eastReplica?.ReplicaStatus, "REGION_DISABLED");
+    assert.equal(eastReplica?.ReplicaStatus, "REPLICATION_NOT_AUTHORIZED");
     assert.match(eastReplica?.ReplicaStatusDescription ?? "", /not authorized/);
     assert.equal(westReplica?.ReplicaStatus, "ACTIVE");
 
@@ -143,7 +143,7 @@ test("DDBGAP-02 DescribeTable.Replicas reports per-Region status after policy de
     simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, region: westRegion, clock, authMode: "off" });
     await simulator.start(); west = clientFor(simulator, westRegion);
     const afterRestart = await west.send(new DescribeTableCommand({ TableName: "ReplicaStatus" }));
-    assert.equal(afterRestart.Table?.Replicas?.find(replica => replica.RegionName === eastRegion)?.ReplicaStatus, "REGION_DISABLED");
+    assert.equal(afterRestart.Table?.Replicas?.find(replica => replica.RegionName === eastRegion)?.ReplicaStatus, "REPLICATION_NOT_AUTHORIZED");
     assert.equal(afterRestart.Table?.Replicas?.find(replica => replica.RegionName === westRegion)?.ReplicaStatus, "ACTIVE");
   } finally {
     west?.destroy(); east?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });

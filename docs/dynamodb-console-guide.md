@@ -24,17 +24,18 @@ The DynamoDB service in StackSim has a left navigation bar with these top-level 
 
 | Area | Purpose |
 |------|---------|
-| **Overview** | Account summary and quick links |
-| **Tables** | Create, list, and open tables |
-| **Global tables** | Multi-Region replica overview |
-| **Exports and streams** | Account-level export jobs and stream guidance |
-| **Imports** | Create tables from local DynamoDB JSON files |
-| **Contributor insights** | Hot-key and throttle monitoring |
-| **Transaction builder** | Compose and run `TransactWriteItems` |
+| **Dashboard** | Account summary and quick links |
+| **Tables** | Create, list, select, and act on tables (Actions menu: view details, explore items, update settings, create backup, export to S3, delete) |
+| **Explore items** | Pick a table and open its Scan/Query item explorer |
 | **PartiQL editor** | SQL-compatible reads and writes |
 | **Backups** | Account-level on-demand backup list |
+| **Exports to S3** | Account-level export jobs and stream guidance |
+| **Imports from S3** | Create tables from DynamoDB JSON in S3 (or opted-in local files) |
+| **Global tables** | Multi-Region replica overview |
+| **Contributor insights** | Hot-key and throttle monitoring |
+| **Transaction builder (local)** | Compose and run `TransactWriteItems`; a StackSim learning tool with no AWS console equivalent |
 
-Opening a table shows tabs: **Overview**, **Explore table items**, **Indexes**, **Monitor**, **Capacity**, **Additional settings**, **Backups**, **Exports and streams**, **Global tables**, **Contributor insights**, **Permissions**, and **Tags**.
+Opening a table shows the same tabs as the AWS console, in the same order: **Overview**, **Indexes**, **Monitor**, **Global tables**, **Backups**, **Exports and streams**, **Additional settings**, **Permissions**, and **Tags**. Read/write capacity and auto scaling live under **Additional settings**, Contributor Insights lives under **Monitor**, and **Explore table items** is a button on the table page (and the **Explore items** navigation entry), not a tab.
 
 ---
 
@@ -91,8 +92,8 @@ The **Create table** wizard collects:
 
 - **Table name**
 - **Partition key** (required) and optional **sort key** — String, Number, or Binary
-- **Table settings** — on-demand or provisioned capacity
-- Optional **secondary indexes** (GSI or LSI at creation time)
+- **Table settings** — **Default settings** (on-demand, DynamoDB Standard, no indexes, DynamoDB-owned encryption, deletion protection off) or **Customize settings**
+- Under **Customize settings**: **Table class**, **Read/write capacity settings** (on-demand with an optional maximum table throughput, or provisioned with per-side auto scaling on/off, min/max/target or fixed units), **Secondary indexes** (global or local, with attribute projections), **Encryption at rest** (owned by DynamoDB, AWS managed key, or a customer managed key), **Deletion protection**, **Warm throughput**, an optional **Resource-based policy**, and **Tags**
 
 #### Why use it
 
@@ -128,7 +129,7 @@ Items can add any attributes (`Album`, `Year`, `Genre`) without altering the tab
 
 #### What it is
 
-Read-only summary: table status, ARN, partition and sort keys, item count, table size, and capacity mode.
+Read-only summary laid out like the AWS console: **General information** (partition key, sort key, capacity mode, table status), **Items summary** (item count, table size, average item size, with an **Explore table items** button), and **Additional info** (ARN, table ID, creation date, table class, read/write capacity, warm throughput, deletion protection, encryption, TTL, DynamoDB stream, point-in-time recovery, and global-table status, each linking to the tab that manages it).
 
 #### Why use it
 
@@ -192,7 +193,7 @@ The table primary key supports one access pattern. Secondary indexes add alterna
 
 | Type | Partition key | When created | Use case |
 |------|---------------|--------------|----------|
-| **GSI** | Any attribute | Anytime | Most alternate access patterns |
+| **GSI** | Any top-level String, Number, or Binary attribute | Anytime | Most alternate access patterns |
 | **LSI** | Same as table | Only at table creation | Alternate sort key on same partition |
 
 **Projection** controls copied attributes: `ALL`, `KEYS_ONLY`, or `INCLUDE` specific attributes.
@@ -246,7 +247,9 @@ Metrics publish to local CloudWatch after DynamoDB requests. Charts describe loc
 
 ---
 
-### Capacity
+### Additional settings — Read/write capacity and auto scaling
+
+These two cards sit at the top of the **Additional settings** tab, as in the AWS console. The **Edit** dialog shows only the fields for the selected capacity mode: provisioned read/write capacity units, or an optional maximum table throughput for on-demand.
 
 #### Read/write capacity
 
@@ -277,7 +280,7 @@ Configuration and consumed-capacity reporting are active. Set `STACKSIM_DDB_ENFO
 
 ##### What it is
 
-Target-tracking descriptors: minimum/maximum capacity units and target utilization percentage for reads and writes.
+Target-tracking descriptors, configured separately for reads and writes: auto scaling on or off, minimum/maximum capacity units, and target utilization percentage.
 
 ##### Why use it
 
@@ -349,7 +352,7 @@ Automatically deletes items when a designated **Number** attribute contains an e
 
 TTL removes session records, cache entries, temporary tokens, and time-bound data without application delete logic or write capacity for each expiration.
 
-In AWS, deletion typically occurs within 48 hours after expiration; expired items may still appear in reads until deleted.
+In AWS, expired items are deleted within a few days of their expiration time (the API reference still says "typically within two days"); expired items may still appear in reads until deleted.
 
 ##### How it works in StackSim
 
@@ -442,7 +445,7 @@ Captures ordered change records for each item mutation. **Stream view type** opt
 
 Streams power event-driven architectures: Lambda consumers react to inserts, updates, and deletes; cross-service sync; audit trails; and cache invalidation.
 
-Changing view type in AWS creates a new stream ARN.
+In AWS the view type cannot be edited in place: turn the stream off, then on again with the new view type, which creates a new stream ARN. The previous ARN stays readable for 24 hours and is still shown as the latest stream while the stream is off.
 
 ##### How it works in StackSim
 

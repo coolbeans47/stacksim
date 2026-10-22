@@ -20,35 +20,61 @@ function validateNumber(value: unknown): asserts value is string {
   if (!Number.isSafeInteger(exponent) || significant > 38 || adjustedExponent > 125 || adjustedExponent < -130) throw new AwsError("ValidationException", "Number overflow. Attempting to store a number with magnitude larger than supported range");
 }
 
-export function validateAttributeValue(value: unknown, path = "attribute"): asserts value is AttributeValue {
+const MAX_NESTING_DEPTH = 32;
+const MAX_ATTRIBUTE_NAME_BYTES = 64 * 1024;
+
+export function validateAttributeValue(value: unknown, path = "attribute", depth = 1): asserts value is AttributeValue {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new AwsError("ValidationException", `Invalid AttributeValue at ${path}`);
+  if (depth > MAX_NESTING_DEPTH) throw new AwsError("ValidationException", "Nesting Levels have exceeded supported limits");
   const type = attributeType(value as AttributeValue);
   const content = (value as any)[type];
   if (type === "S" && typeof content !== "string") throw new AwsError("ValidationException", `Expected string at ${path}`);
-  if (type === "N") validateNumber(content);
+  // Numbers are stored in AWS's canonical form (leading and trailing zeros trimmed), so GetItem returns "1.1" for "1.10".
+  if (type === "N") { validateNumber(content); (value as any).N = canonicalNumber(content); }
   if (type === "B" && typeof content !== "string") throw new AwsError("ValidationException", `Expected base64 binary string at ${path}`);
   if (type === "BOOL" && typeof content !== "boolean") throw new AwsError("ValidationException", `Expected boolean at ${path}`);
   if (type === "NULL" && content !== true) throw new AwsError("ValidationException", `NULL must be true at ${path}`);
   if (type === "L") {
     if (!Array.isArray(content)) throw new AwsError("ValidationException", `Expected list at ${path}`);
-    content.forEach((item, index) => validateAttributeValue(item, `${path}[${index}]`));
+    content.forEach((item, index) => validateAttributeValue(item, `${path}[${index}]`, depth + 1));
   }
   if (type === "M") {
     if (!content || typeof content !== "object" || Array.isArray(content)) throw new AwsError("ValidationException", `Expected map at ${path}`);
-    for (const [name, item] of Object.entries(content)) { if (!name) throw new AwsError("ValidationException", "Empty attribute names are not supported"); validateAttributeValue(item, `${path}.${name}`); }
+    for (const [name, item] of Object.entries(content)) { validateAttributeName(name); validateAttributeValue(item, `${path}.${name}`, depth + 1); }
   }
   if (["SS", "NS", "BS"].includes(type)) {
     if (!Array.isArray(content) || content.length === 0) throw new AwsError("ValidationException", "An AttributeValue may not contain an empty set");
-    if (type === "NS") content.forEach(validateNumber);
+    if (type === "NS") { content.forEach(validateNumber); (value as any).NS = content.map((item: string) => canonicalNumber(item)); }
     else if (content.some(item => typeof item !== "string")) throw new AwsError("ValidationException", `Expected string values in ${type}`);
-    if (new Set(content).size !== content.length) throw new AwsError("ValidationException", "Input collection contains duplicates");
+    if (new Set((value as any)[type]).size !== content.length) throw new AwsError("ValidationException", "Input collection contains duplicates");
   }
+}
+
+function validateAttributeName(name: string): void {
+  if (!name) throw new AwsError("ValidationException", "Empty attribute names are not supported");
+  if (Buffer.byteLength(name) > MAX_ATTRIBUTE_NAME_BYTES) throw new AwsError("ValidationException", "Attribute name exceeds the maximum length of 64 KB");
+}
+
+/**
+ * AWS canonical number text: sign, no leading or trailing zeros, no plus sign or exponent unless the plain form
+ * would need more than 38 padding zeros, in which case scientific notation with an explicit exponent sign is used.
+ */
+export function canonicalNumber(value: string): string {
+  let { coefficient, scale } = decimal(value);
+  if (coefficient === 0n) return "0";
+  while (coefficient % 10n === 0n) { coefficient /= 10n; scale--; }
+  const negative = coefficient < 0n; const digits = (negative ? -coefficient : coefficient).toString(); const sign = negative ? "-" : "";
+  const scientific = () => { const exponent = digits.length - 1 - scale; return `${sign}${digits[0]}${digits.length > 1 ? `.${digits.slice(1)}` : ""}E${exponent >= 0 ? "+" : "-"}${Math.abs(exponent)}`; };
+  if (scale <= 0) { const trailingZeros = -scale; return digits.length + trailingZeros <= 38 ? `${sign}${digits}${"0".repeat(trailingZeros)}` : scientific(); }
+  if (scale < digits.length) return `${sign}${digits.slice(0, digits.length - scale)}.${digits.slice(digits.length - scale)}`;
+  const leadingZeros = scale - digits.length;
+  return leadingZeros + digits.length <= 38 ? `${sign}0.${"0".repeat(leadingZeros)}${digits}` : scientific();
 }
 
 export function validateItem(table: TableState, item: unknown, requireCompleteKey = true): asserts item is Item {
   if (!item || typeof item !== "object" || Array.isArray(item)) throw new AwsError("ValidationException", "Item must be a map of AttributeValue objects");
   for (const [name, value] of Object.entries(item)) {
-    if (!name) throw new AwsError("ValidationException", "Empty attribute names are not supported");
+    validateAttributeName(name);
     validateAttributeValue(value, name);
   }
   if (requireCompleteKey) validateKey(table, item as Item, false);
@@ -56,6 +82,7 @@ export function validateItem(table: TableState, item: unknown, requireCompleteKe
 }
 
 export function validateKey(table: TableState, key: Item, exact = true): void {
+  if (!key || typeof key !== "object" || Array.isArray(key)) throw new AwsError("ValidationException", "1 validation error detected: Value null at 'key' failed to satisfy constraint: Member must not be null");
   if (exact && Object.keys(key).length !== table.keySchema.length) throw new AwsError("ValidationException", "The provided key element does not match the schema");
   for (const schema of table.keySchema) {
     const value = key[schema.AttributeName];

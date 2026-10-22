@@ -129,7 +129,10 @@ test("DynamoDB secondary indexes stay sparse, projected, ordered, paginated, and
       KeyConditionExpression: "tenant = :tenant", ExpressionAttributeValues: { ":tenant": { S: "a" } },
     }));
     assert.deepEqual(lsiSecond.Items?.map(item => item.recordId.N), ["5", "1"]);
-    assert.equal(lsiSecond.LastEvaluatedKey, undefined);
+    // The page ended exactly at Limit, so AWS returns a key; the next page is empty and has none.
+    assert.ok(lsiSecond.LastEvaluatedKey);
+    const lsiThird = await client.send(new QueryCommand({ TableName: "IndexedRecords", IndexName: "ByCreated", Limit: 2, ExclusiveStartKey: lsiSecond.LastEvaluatedKey, KeyConditionExpression: "tenant = :tenant", ExpressionAttributeValues: { ":tenant": { S: "a" } } }));
+    assert.deepEqual(lsiThird.Items, []); assert.equal(lsiThird.LastEvaluatedKey, undefined);
     const lsiReverse = await client.send(new QueryCommand({
       TableName: "IndexedRecords", IndexName: "ByCreated", ScanIndexForward: false,
       KeyConditionExpression: "tenant = :tenant", ExpressionAttributeValues: { ":tenant": { S: "a" } },
@@ -186,7 +189,9 @@ test("DynamoDB secondary indexes stay sparse, projected, ordered, paginated, and
     assert.deepEqual(scanFirst.LastEvaluatedKey, { tenant: { S: "a" }, recordId: { N: "2" }, category: { S: "books" }, score: { N: "1" } });
     const scanSecond = await client.send(new ScanCommand({ TableName: "IndexedRecords", IndexName: "ByCategory", Limit: 2, ExclusiveStartKey: scanFirst.LastEvaluatedKey }));
     assert.deepEqual(scanSecond.Items?.map(item => [item.category.S, item.score.N]), [["books", "2"], ["books", "3"]]);
-    assert.equal(scanSecond.LastEvaluatedKey, undefined);
+    assert.ok(scanSecond.LastEvaluatedKey);
+    const scanThird = await client.send(new ScanCommand({ TableName: "IndexedRecords", IndexName: "ByCategory", Limit: 2, ExclusiveStartKey: scanSecond.LastEvaluatedKey }));
+    assert.deepEqual(scanThird.Items, []); assert.equal(scanThird.LastEvaluatedKey, undefined);
 
     await client.send(new UpdateItemCommand({
       TableName: "IndexedRecords", Key: { tenant: { S: "a" }, recordId: { N: "2" } },
@@ -364,7 +369,7 @@ test("secondary-index definitions reject invalid LSI keys, projection overflow a
     await validation(client.send(new CreateTableCommand({
       TableName: "TooManyProjected", BillingMode: "PAY_PER_REQUEST",
       AttributeDefinitions: [{ AttributeName: "pk", AttributeType: "S" }, { AttributeName: "gpk", AttributeType: "S" }], KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }],
-      GlobalSecondaryIndexes: [{ IndexName: "OversizedInclude", KeySchema: [{ AttributeName: "gpk", KeyType: "HASH" }], Projection: { ProjectionType: "INCLUDE", NonKeyAttributes: Array.from({ length: 21 }, (_, index) => `projected${index}`) } }],
+      GlobalSecondaryIndexes: [{ IndexName: "OversizedInclude", KeySchema: [{ AttributeName: "gpk", KeyType: "HASH" }], Projection: { ProjectionType: "INCLUDE", NonKeyAttributes: Array.from({ length: 101 }, (_, index) => `projected${index}`) } }],
     })));
     await validation(client.send(new CreateTableCommand({
       TableName: "DuplicateProjection", BillingMode: "PAY_PER_REQUEST",

@@ -25,14 +25,14 @@ before(async () => {
 after(async () => { documentClient.destroy(); client.destroy(); await simulator.stop(); await rm(root, { recursive: true, force: true }); });
 
 test("condition grammar supports precedence, parentheses, IN and document functions", async () => {
-  const item = { pk: { S: "grammar" }, sk: { N: "1" }, profile: { M: { fullName: { S: "Ada Lovelace" }, tags: { L: [{ S: "math" }, { S: "code" }] } } }, state: { S: "ready" }, score: { N: "900719925474099312345678901234567890" } } as const;
+  const item = { pk: { S: "grammar" }, sk: { N: "1" }, profile: { M: { fullName: { S: "Ada Lovelace" }, tags: { L: [{ S: "math" }, { S: "code" }] } } }, phase: { S: "ready" }, score: { N: "900719925474099312345678901234567890" } } as const;
   await client.send(new PutItemCommand({ TableName: "ExpressionTable", Item: item as any }));
   const cases = [
     ["attribute_exists(profile.fullName) AND begins_with(profile.fullName, :prefix)", { ":prefix": { S: "Ada" } }, true],
     ["contains(profile.tags, :tag) AND attribute_type(score, :number)", { ":tag": { S: "code" }, ":number": { S: "N" } }, true],
-    ["size(profile.tags) = :two AND state IN (:ready, :done)", { ":two": { N: "2" }, ":ready": { S: "ready" }, ":done": { S: "done" } }, true],
-    ["NOT (state = :done OR attribute_not_exists(profile))", { ":done": { S: "done" } }, true],
-    ["state = :done OR state = :ready AND attribute_exists(profile)", { ":done": { S: "done" }, ":ready": { S: "ready" } }, true],
+    ["size(profile.tags) = :two AND phase IN (:ready, :done)", { ":two": { N: "2" }, ":ready": { S: "ready" }, ":done": { S: "done" } }, true],
+    ["NOT (phase = :done OR attribute_not_exists(profile))", { ":done": { S: "done" } }, true],
+    ["phase = :done OR phase = :ready AND attribute_exists(profile)", { ":done": { S: "done" }, ":ready": { S: "ready" } }, true],
   ] as const;
   for (const [expression, values, expected] of cases) {
     const result = await client.send(new ScanCommand({ TableName: "ExpressionTable", FilterExpression: expression, ExpressionAttributeValues: values as any }));
@@ -51,8 +51,8 @@ test("update grammar supports nested SET, arithmetic, functions, REMOVE, ADD and
   }));
   assert.equal((first.Attributes?.profile as any).M.visits.N, "9007199254740994");
   assert.deepEqual((first.Attributes?.profile as any).M.tags.L, [{ S: "a" }, { S: "b" }]);
-  const second = await client.send(new UpdateItemCommand({ TableName: "ExpressionTable", Key: { pk: { S: "updates" }, sk: { N: "1" } }, UpdateExpression: "ADD counter :five DELETE labels :remove", ExpressionAttributeValues: { ":five": { N: "5" }, ":remove": { SS: ["one"] } }, ReturnValues: "ALL_NEW" }));
-  assert.equal(second.Attributes?.counter?.N, "5");
+  const second = await client.send(new UpdateItemCommand({ TableName: "ExpressionTable", Key: { pk: { S: "updates" }, sk: { N: "1" } }, UpdateExpression: "ADD tally :five DELETE labels :remove", ExpressionAttributeValues: { ":five": { N: "5" }, ":remove": { SS: ["one"] } }, ReturnValues: "ALL_NEW" }));
+  assert.equal(second.Attributes?.tally?.N, "5");
   assert.deepEqual(second.Attributes?.labels?.SS, ["two"]);
   assert.equal((second.Attributes?.profile as any).M.obsolete, undefined);
 });

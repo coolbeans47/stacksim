@@ -102,7 +102,7 @@ export async function listLocalImportFiles(path: string): Promise<string[]> {
   return result;
 }
 
-export function decodeImportLines(raw: Buffer, compression: "NONE" | "GZIP", label: string): Item[] {
+export function decodeImportLines(raw: Buffer, compression: "NONE" | "GZIP", label: string, onError?: (message: string) => void): Item[] {
   let decoded: Buffer;
   try { decoded = compression === "GZIP" ? gunzipSync(raw) : raw; }
   catch { throw new AwsError("ValidationException", `Unable to decompress import data file ${label}`); }
@@ -111,9 +111,9 @@ export function decodeImportLines(raw: Buffer, compression: "NONE" | "GZIP", lab
     if (!line.trim()) continue;
     let value: any;
     try { value = JSON.parse(line); }
-    catch { throw new AwsError("ValidationException", `Invalid DynamoDB JSON at ${label}:${index + 1}`); }
+    catch { const message = `Invalid DynamoDB JSON at ${label}:${index + 1}`; if (onError) { onError(message); continue; } throw new AwsError("ValidationException", message); }
     if (!value?.Item || typeof value.Item !== "object" || Array.isArray(value.Item)) {
-      throw new AwsError("ValidationException", `DynamoDB JSON lines must contain an Item object (${label}:${index + 1})`);
+      const message = `DynamoDB JSON lines must contain an Item object (${label}:${index + 1})`; if (onError) { onError(message); continue; } throw new AwsError("ValidationException", message);
     }
     imported.push(value.Item);
   }
@@ -258,11 +258,11 @@ export async function writeS3ExportManifests(input: {
   return manifestFilesKey;
 }
 
-export function validateImportedItems(table: TableState, imported: Item[], validateIndexes: (table: TableState, item: Item) => void): Record<string, Item> {
+export function validateImportedItems(table: TableState, imported: Item[], validateIndexes: (table: TableState, item: Item) => void, onError?: (message: string) => void): Record<string, Item> {
   const items: Record<string, Item> = {};
   for (const item of imported) {
-    validateItem(table, item);
-    validateIndexes(table, item);
+    try { validateItem(table, item); validateIndexes(table, item); }
+    catch (error) { if (onError && error instanceof AwsError && error.code === "ValidationException") { onError(error.message); continue; } throw error; }
     items[stableItemKey(table, item)] = clone(item);
   }
   return items;

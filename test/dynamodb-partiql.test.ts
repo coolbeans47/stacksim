@@ -64,7 +64,10 @@ test("DynamoDB PartiQL executes literal and parameterized CRUD, projections, ind
     const second = await client.send(new ExecuteStatementCommand({ Statement: pageStatement, Parameters: [{ S: "acme" }], Limit: 1, NextToken: first.NextToken }));
     assert.deepEqual(second.Items?.map(item => item.recordId?.N), ["2"]); assert.ok(second.NextToken);
     const third = await client.send(new ExecuteStatementCommand({ Statement: pageStatement, Parameters: [{ S: "acme" }], Limit: 1, NextToken: second.NextToken }));
-    assert.deepEqual(third.Items?.map(item => item.recordId?.N), ["1"]); assert.equal(third.NextToken, undefined);
+    // The third page ends exactly at Limit, so AWS still returns a token; the following page is empty and closes the cursor.
+    assert.deepEqual(third.Items?.map(item => item.recordId?.N), ["1"]); assert.ok(third.NextToken);
+    const fourth = await client.send(new ExecuteStatementCommand({ Statement: pageStatement, Parameters: [{ S: "acme" }], Limit: 1, NextToken: third.NextToken }));
+    assert.deepEqual(fourth.Items, []); assert.equal(fourth.NextToken, undefined);
     await validation(client.send(new ExecuteStatementCommand({ Statement: `SELECT * FROM "PartiqlRecords" WHERE tenant=?`, Parameters: [{ S: "acme" }], Limit: 1, NextToken: `${first.NextToken}x` })));
     await validation(client.send(new ExecuteStatementCommand({ Statement: `${pageStatement} LIMIT 2`, Parameters: [{ S: "acme" }] })), "ValidationException");
 
