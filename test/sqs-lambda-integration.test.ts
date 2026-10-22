@@ -127,7 +127,7 @@ test("SQS event-source mappings use queue leases, filtering, partial acknowledge
     assert.equal(sqs.acknowledged.has(partial), false); assert.equal(sqs.acknowledged.has(failed), false); assert.ok(sqs.maximumInFlight >= 2, "mapping maximum concurrency allows two leased batches");
     assert.ok((sqs.maximumInFlightByQueue.get(source.queueArn) ?? 0) <= 2, "a configured maximum concurrency of two remains enforced");
     clock.advance(5_000); await pump(clock, () => (sqs.messages.get(source.queueArn)?.find(message => message.id === partial)?.receiveCount ?? 0) >= 2 && (sqs.messages.get(source.queueArn)?.find(message => message.id === failed)?.receiveCount ?? 0) >= 2);
-    const view = await lambda!.send(new GetEventSourceMappingCommand({ UUID: created.UUID })); assert.equal(view.EventSourceArn, source.queueArn); assert.equal(view.BisectBatchOnFunctionError, undefined); assert.ok(["Partial batch failure", "Function error"].includes(view.LastProcessingResult ?? ""));
+    const view = await lambda!.send(new GetEventSourceMappingCommand({ UUID: created.UUID })); assert.equal(view.EventSourceArn, source.queueArn); assert.equal(view.BisectBatchOnFunctionError, undefined); assert.ok(["PROBLEM: Partial batch failure", "PROBLEM: Function call failed"].includes(view.LastProcessingResult ?? ""));
 
     const unboundedMapping = await lambda!.send(new CreateEventSourceMappingCommand({ FunctionName: fn.FunctionArn, EventSourceArn: unboundedSource.queueArn, BatchSize: 1 })); clock.advance(0);
     await pump(clock, () => simulator.store.regionState(region).lambdaEventSourceMappings[unboundedMapping.UUID!]?.state === "Enabled");
@@ -155,7 +155,7 @@ test("Lambda asynchronous SQS destinations and ordinary dead-letter queues use S
     await lambda.send(new InvokeCommand({ FunctionName: "async-sqs", InvocationType: "Event", Payload: Buffer.from(JSON.stringify({ value: "bad", fail: true })) })); clock.advance(0);
     await pump(clock, () => sqs.deliveries.filter(delivery => delivery.queueArn === destination.queueArn).length === 2 && sqs.deliveries.some(delivery => delivery.queueArn === deadLetter.queueArn));
     const failure = JSON.parse(sqs.deliveries.filter(delivery => delivery.queueArn === destination.queueArn)[1].input.MessageBody); assert.equal(failure.requestContext.condition, "RetriesExhausted"); assert.equal(failure.responseContext.functionError, "Unhandled");
-    const dlq = sqs.deliveries.find(delivery => delivery.queueArn === deadLetter.queueArn)!; assert.deepEqual(JSON.parse(dlq.input.MessageBody), { value: "bad", fail: true }); assert.match(dlq.input.MessageAttributes?.RequestID.StringValue ?? "", /^[a-f0-9]{32}$/); assert.equal(dlq.input.MessageAttributes?.ErrorCode.StringValue, "200"); assert.match(dlq.input.MessageAttributes?.ErrorMessage.StringValue ?? "", /intentional async failure/);
+    const dlq = sqs.deliveries.find(delivery => delivery.queueArn === deadLetter.queueArn)!; assert.deepEqual(JSON.parse(dlq.input.MessageBody), { value: "bad", fail: true }); assert.match(dlq.input.MessageAttributes?.RequestID.StringValue ?? "", /^[0-9a-f-]{36}$/); assert.equal(dlq.input.MessageAttributes?.ErrorCode.StringValue, "200"); assert.match(dlq.input.MessageAttributes?.ErrorMessage.StringValue ?? "", /intentional async failure/);
   } finally { lambda?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
 });
 

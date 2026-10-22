@@ -133,7 +133,7 @@ test("all statically exported production schemas declare the complete retention 
     "AWS::RDS::DBInstance", "AWS::RDS::DBParameterGroup", "AWS::S3::Bucket", "AWS::S3::BucketPolicy",
     "AWS::SES::ConfigurationSet", "AWS::SES::ConfigurationSetEventDestination", "AWS::SES::ContactList", "AWS::SES::CustomVerificationEmailTemplate", "AWS::SES::EmailIdentity", "AWS::SES::Template",
     "AWS::SNS::Subscription", "AWS::SNS::Topic", "AWS::SNS::TopicInlinePolicy", "AWS::SNS::TopicPolicy",
-    "AWS::SQS::Queue", "AWS::SQS::QueuePolicy", "AWS::SecretsManager::ResourcePolicy", "AWS::SecretsManager::RotationSchedule", "AWS::SecretsManager::Secret", "AWS::SecretsManager::SecretTargetAttachment", "AWS::SSM::Parameter", "AWS::StepFunctions::Activity", "AWS::StepFunctions::StateMachine", "Custom::AmplifyDynamoDBTable", "Custom::CDKBucketDeployment", "Custom::S3AutoDeleteObjects",
+    "AWS::SQS::Queue", "AWS::SQS::QueuePolicy", "AWS::SecretsManager::ResourcePolicy", "AWS::SecretsManager::RotationSchedule", "AWS::SecretsManager::Secret", "AWS::SecretsManager::SecretTargetAttachment", "AWS::SSM::Parameter", "AWS::StepFunctions::Activity", "AWS::StepFunctions::StateMachine", "Custom::AmplifyDynamoDBTable", "Custom::CDKBucketDeployment", "Custom::S3AutoDeleteObjects", "Custom::S3BucketNotifications",
   ].sort((left, right) => left.localeCompare(right));
   assert.deepEqual(schemas.map(item => item.typeName), expectedTypes);
   for (const item of schemas) {

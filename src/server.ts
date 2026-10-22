@@ -57,6 +57,7 @@ import {
   createCloudWatchCfn10Providers,
   createLogGroupProvider,
   createRdsCloudFormationProviders,
+  createS3BucketNotificationsProvider,
   createS3BucketPolicyProvider,
   createS3BucketProvider,
   createSsmParameterProvider,
@@ -787,6 +788,8 @@ export class StackSim {
       const xrayTraceMatch = url.pathname.match(/^\/_stacksim\/api\/xray\/traces\/(1-[0-9a-f]{8}-[0-9a-f]{24})$/); if (req.method === "GET" && xrayTraceMatch) { const trace = services.xray.consoleTraceSafe(xrayTraceMatch[1]); return trace ? json(res, trace) : json(res, { code: "TraceNotFound", message: "The trace is unavailable or expired." }, 404); }
       if (req.method === "GET" && url.pathname === "/_stacksim/api/xray/service-graph") return json(res, services.xray.GetServiceGraph({ StartTime: Number(url.searchParams.get("start") ?? 0), EndTime: Number(url.searchParams.get("end") ?? this.clock.now() / 1000) }));
       if (req.method === "GET" && url.pathname === "/_stacksim/api/secrets-manager/secrets") return json(res, { secrets: services.secretsmanager.localMetadata() });
+      // GetFunction's Code.Location: a signed, short-lived download of the stored package.
+      if (req.method === "GET" && url.pathname.startsWith("/_stacksim/lambda/code/")) return services.lambda.serveCodeArchive(req, res, url);
       if (req.method === "GET" && url.pathname === "/_stacksim/api/lambda/async") {
         const functionName = url.searchParams.get("functionName") ?? undefined; const now = this.clock.now(); const events = Object.values(this.store.regionState(region).lambdaAsyncInvocations).filter(event => !functionName || event.functionName === functionName).sort((left, right) => left.enqueuedAt - right.enqueuedAt || left.eventId.localeCompare(right.eventId));
         return json(res, { functionName, queued: events.filter(event => event.status === "QUEUED").length, leased: events.filter(event => event.status === "LEASED").length, retrying: events.filter(event => event.attempts > 0).length, oldestEventAgeMs: events.length ? Math.max(0, now - events[0].enqueuedAt) : 0, events: events.map(event => ({ eventId: event.eventId, functionName: event.functionName, qualifier: event.qualifier, enqueuedAt: event.enqueuedAt, nextAttemptAt: event.nextAttemptAt, attempts: event.attempts, status: event.status, lastAttemptAt: event.lastAttemptAt, lastError: event.lastError })) });
@@ -1144,6 +1147,7 @@ export class StackSim {
         createSecretsManagerRotationScheduleProvider(secretsmanager),
         createSecretsManagerSecretTargetAttachmentProvider(secretsmanager),
         createS3BucketPolicyProvider(s3),
+        createS3BucketNotificationsProvider(s3, this.store),
         createCdkBucketDeploymentProvider(s3, this.store, this.cloudfront),
         ...createCloudFrontCloudFormationProviders(this.cloudfront),
         createLambdaFunctionProvider(lambda, s3),

@@ -34,20 +34,21 @@ test("Lambda SDK text/JSON REPORT uses worker lifetime peak RSS across warm call
         const logs = Buffer.from(response.LogResult!, "base64").toString();
         const report = format === "JSON" ? logs.trim().split("\n").map(line => JSON.parse(line)).find(line => line.type === "platform.report").record : undefined;
         const peak = report ? report.metrics.maxMemoryUsedMB : Number(/Max Memory Used: ([\d.]+) MB/.exec(logs)?.[1]);
-        assert.ok(peak > 0 && peak !== 10240); assert.ok(peak + 0.01 >= payload.peakMB);
+        // The text REPORT rounds to whole MB as AWS does; JSON keeps the exact measurement.
+        assert.ok(peak > 0 && peak !== 10240); assert.ok(peak + (report ? 0.01 : 0.5) >= payload.peakMB);
         if (report) { assert.equal(report.metrics.memorySizeMB, 10240); assert.equal(report.memoryUsage.scope, "worker-lifetime-excluding-children"); assert.equal(report.resourceLimits.memory, "descriptor-only"); }
-        else assert.match(logs, /worker lifetime peak RSS; excludes child processes/);
+        else assert.match(logs, /\tMax Memory Used: \d+ MB(\t|$)/m);
         reports.push(peak);
       }
       assert.equal(pids[0], pids[1]); assert.ok(reports[1] >= reports[0]);
       const crashed: any = await client.send(new InvokeCommand({ FunctionName: name, Payload: Buffer.from('{"crash":true}'), LogType: "Tail" }));
       const logs = Buffer.from(crashed.LogResult!, "base64").toString(); assert.equal(crashed.FunctionError, "Unhandled");
       if (format === "JSON") { const report = logs.trim().split("\n").map(line => JSON.parse(line)).find(line => line.type === "platform.report").record; assert.equal(report.metrics.maxMemoryUsedMB, undefined); assert.equal(report.memoryUsage.reason, "worker-ended-without-measurement"); }
-      else assert.match(logs, /Max Memory Used: unavailable/);
+      else { assert.doesNotMatch(logs, /Max Memory Used/); assert.match(logs, /REPORT RequestId: \S+\tDuration: [\d.]+ ms\tBilled Duration: \d+ ms\tMemory Size: 10240 MB$/m); }
       // Image runtime deliberately supplies no worker-process measurement.
       const lines: string[] = (simulator.lambda as any).formatLogLines({ packageType: "Image", memorySize: 512, loggingConfig: { logFormat: format } }, "image", "request", "$LATEST", 5, 5, []);
       if (format === "JSON") { const report = lines.map(line => JSON.parse(line)).find(line => line.type === "platform.report").record; assert.equal(report.metrics.maxMemoryUsedMB, undefined); assert.equal(report.memoryUsage.reason, "container-peak-unavailable"); assert.equal(report.resourceLimits.memory, "docker-limit-requested"); }
-      else assert.match(lines.join("\n"), /Max Memory Used: unavailable \(container-peak-unavailable\)/);
+      else assert.doesNotMatch(lines.join("\n"), /Max Memory Used/);
     }
   } finally { client?.destroy(); await simulator.stop(); await rm(root, { recursive: true, force: true }); }
 });

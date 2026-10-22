@@ -16,6 +16,8 @@ export function sendAwsError(res: ServerResponse, error: unknown, protocol: "jso
   res.statusCode = awsError.status;
   if (awsError.details?.retryAfterSeconds !== undefined) res.setHeader("Retry-After", String(awsError.details.retryAfterSeconds));
   res.setHeader("content-type", protocol === "json" ? "application/x-amz-json-1.0" : "application/json");
+  // REST-JSON services name the error in a header as well as the body.
+  if (protocol === "rest") res.setHeader("x-amzn-ErrorType", awsError.code);
   res.end(JSON.stringify(protocol === "json"
     ? { __type: `${namespace}${awsError.code}`, message: awsError.message, ...awsError.details }
     : { message: awsError.message, __type: awsError.code, ...awsError.details }));

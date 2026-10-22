@@ -312,7 +312,7 @@ test("pinned standard CDK exercises the complete CFN-06 provider set through dep
     assert.equal((await invoke(lambda, v1.BundledFunctionName, "v1", "bundled", "live")).executedVersion, "1");
     assert.equal((await lambda.send(new GetAliasCommand({ FunctionName: v1.BundledFunctionName, Name: "live" }))).FunctionVersion, "1");
     const lambdaPolicy = JSON.parse((await lambda.send(new GetLambdaPolicyCommand({ FunctionName: v1.BundledFunctionName }))).Policy!);
-    assert.ok(lambdaPolicy.Statement.some((statement: any) => statement.Principal === "events.amazonaws.com" && statement.Action === "lambda:InvokeFunction" && statement.Condition?.ArnLike?.["AWS:SourceArn"] === `arn:aws:events:${region}:000000000000:rule/cfn06-local`));
+    assert.ok(lambdaPolicy.Statement.some((statement: any) => statement.Principal?.Service === "events.amazonaws.com" && statement.Action === "lambda:InvokeFunction" && statement.Condition?.ArnLike?.["AWS:SourceArn"] === `arn:aws:events:${region}:000000000000:rule/cfn06-local`));
     const roleV1 = (await iam.send(new GetRoleCommand({ RoleName: v1.WorkloadRoleName }))).Role!; assert.equal(roleV1.MaxSessionDuration, 3600);
     const managedV1 = (await iam.send(new GetIamPolicyCommand({ PolicyArn: v1.StreamPolicyArn }))).Policy!;
     const managedDocumentV1 = (await iam.send(new GetPolicyVersionCommand({ PolicyArn: v1.StreamPolicyArn, VersionId: managedV1.DefaultVersionId! }))).PolicyVersion?.Document ?? "";

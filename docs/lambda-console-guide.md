@@ -49,7 +49,7 @@ Filterable table: name, description, runtime, last modified. **Create function**
 |-------|---------|
 | **Package type** | Zip or Container image |
 | **Name** | Function identifier |
-| **Runtime / Handler** | Zip: nodejs22.x, handler path |
+| **Runtime / Handler** | Zip: Node.js 18/20/22/24, handler path. Python, Java, .NET, Go, Ruby, and custom runtimes are intentionally unsupported for now; `CreateFunction` rejects them |
 | **Image URI** | Container: local/OCI source |
 | **Code** | Inline editor or ZIP upload |
 | **Execution role** | IAM role with `lambda.amazonaws.com` trust |
@@ -78,7 +78,7 @@ Tabs: **Code**, **Test**, **Monitor**, **Configuration**, **Durable executions**
 
 #### How it works in StackSim
 
-DynamoDB stream triggers are fully supported. S3 notifications are configured from S3 console; other trigger types are not available from this panel.
+DynamoDB stream triggers are fully supported. S3 notifications are configured from the S3 console, from the S3 API, or from CDK (`bucket.addEventNotification(…, new LambdaDestination(fn))` and `S3EventSource` deploy through the native `Custom::S3BucketNotifications` provider); other trigger types are not available from this panel.
 
 ### Test tab
 
@@ -86,7 +86,7 @@ DynamoDB stream triggers are fully supported. S3 notifications are configured fr
 
 **Execution result** — status, duration, response, log tail, durable execution link.
 
-In the log tail, **Memory Size** is the configured allocation. **Max Memory Used** is Node ZIP worker lifetime peak RSS, including initialization and earlier warm calls, excluding child processes. It can stay high across warm calls after an allocation is freed. It is not an enforced memory limit. A worker exit/timeout or unavailable host measurement is labeled **unavailable**; JSON reports omit the numeric usage field and include a status/reason. Image peak memory is unavailable separately from Docker's requested memory and scratch limits. ZIP memory and scratch sizes are descriptor-only. General configuration explains this boundary; [the reference](reference.md#learning-measurements-and-permission-explanations) defines the measurement.
+In the log tail, **Memory Size** is the configured allocation. **Max Memory Used** is Node ZIP worker lifetime peak RSS, including initialization and earlier warm calls, excluding child processes. It can stay high across warm calls after an allocation is freed. It is not an enforced memory limit. The text REPORT prints it rounded to whole MB like AWS and omits it after a worker exit/timeout or when the host cannot measure; JSON reports omit the numeric usage field and include a status/reason. A cold start adds `Init Duration`; a timeout adds `Status: timeout`. Image peak memory is unavailable separately from Docker's requested memory and scratch limits. ZIP memory and scratch sizes are descriptor-only. General configuration explains this boundary; [the reference](reference.md#learning-measurements-and-permission-explanations) defines the measurement.
 
 ### Monitor tab
 
@@ -167,11 +167,11 @@ Layers merge under `/opt` in invocation order during local runs.
 
 | Feature | StackSim behavior |
 |---------|-------------------|
-| Runtimes | Node.js primary; container local executor |
+| Runtimes | Node.js 18, 20, 22, and 24 ZIP functions run locally; container images run through the opt-in Docker executor. Python and every other managed or custom runtime are intentionally unsupported for now: `CreateFunction` and `UpdateFunctionConfiguration` reject them (the only python3.13 functions are the never-invoked CDK helper resources CloudFormation creates) |
 | Triggers | DynamoDB streams; SQS via separate console |
 | VPC / EFS | Configuration only |
 | X-Ray | Mode stored; no segments |
-| Async destinations | Lambda, SQS, EventBridge active; SNS/S3 blocked |
+| Async destinations | Lambda, SQS, SNS, EventBridge, and S3 (OnFailure) active; the execution role needs the matching send/publish/put permission in enforce mode |
 | Function URL | Local HTTP endpoint |
 | Warm reuse | Sequential Node ZIP invokes may reuse module state, client singletons, private `/tmp`, and one log stream; concurrent invokes lease separate workers. Code/config changes, crash, timeout, idle expiry, shutdown, and restart cold-start replacements. |
 | Provisioned concurrency | `READY` means the requested Node ZIP workers have completed module initialization. Image-function provisioned concurrency is rejected until reusable/prewarmed containers exist. |

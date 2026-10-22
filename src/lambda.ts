@@ -1,11 +1,15 @@
 import { trustPolicySource, resourcePolicySource, mergeProvenance } from "./iam/provenance.js";
 import type { LambdaMemoryUsage } from "./lambda-memory.js";
 import type { ChildProcess } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { createZip } from "./core/zip-create.js";
+import { getCloudFormationOwner } from "./core/internal-request.js";
 import { readdirSync } from "node:fs";
 import { copyFile, lstat, mkdir, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createRequire } from "node:module";
-import { delimiter, dirname, resolve } from "node:path";
+import { delimiter, dirname, join, parse, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { AwsError, sendAwsError } from "./errors.js";
 import type { PrincipalContext } from "./auth/sigv4.js";
 import type { CloudWatchLogsService } from "./cloudwatch-logs.js";
@@ -20,7 +24,7 @@ import { LambdaConcurrencyController } from "./lambda-concurrency.js";
 import { LambdaLayers } from "./lambda-layers.js";
 import { LambdaImages, type ResolvedLambdaImage } from "./lambda-images.js";
 import { LambdaDockerRuntime } from "./lambda-docker-runtime.js";
-import { LambdaWorkerPool, type LambdaWorkerRuntime, type LambdaWorkerSpec } from "./lambda-worker-pool.js";
+import { LambdaInitializationError, LambdaWorkerPool, type LambdaApplicationLogEntry, type LambdaWorkerRuntime, type LambdaWorkerSpec } from "./lambda-worker-pool.js";
 import { LambdaCapacityProviders } from "./lambda-capacity-providers.js";
 import { LambdaDurableExecutions, durableConfig, durableConfigView } from "./lambda-durable-executions.js";
 import { LambdaFunctionUrls, validateStreamingResponseMetadata, type FunctionUrlTarget, type LambdaStreamCallbacks } from "./lambda-function-urls.js";
@@ -54,20 +58,29 @@ function cloudFormationCallbackSensitiveLogValues(event: unknown): string[] {
 }
 
 const lambdaRuntimeRequire = createRequire(import.meta.url);
+/** Where the local runtime (lambda-runner) lives; exposed as LAMBDA_RUNTIME_DIR. */
+const lambdaRuntimeDirectory = dirname(fileURLToPath(import.meta.url));
+/** AWS code writes to `/tmp`; on Windows that resolves to `<drive>:\tmp`, which does not exist by default. */
+async function ensureHostTmpDirectory(): Promise<void> {
+  if (process.platform !== "win32") return;
+  await mkdir(join(parse(process.cwd()).root, "tmp"), { recursive: true }).catch(() => undefined);
+}
 const simulatorNodeModules = resolve(dirname(lambdaRuntimeRequire.resolve("@aws-sdk/client-lambda")), "..", "..", "..");
 function runtimeNodePathEntries(): string[] { return [...new Set([simulatorNodeModules, ...(process.env.NODE_PATH?.split(delimiter).filter(Boolean) ?? [])])]; }
 
+/** FunctionName as the API documents it: a name, full ARN, version/alias ARN, or partial ARN (`123456789012:function:name`). */
 function parseFunctionTarget(value: string): { name: string; qualifier?: string } {
   value = decodeURIComponent(value);
-  const raw = value.startsWith("arn:") ? value.split(":function:")[1] ?? value : value;
-  const parts = raw.split(":"); return { name: parts[0], qualifier: parts[1] };
+  const match = value.match(/^(?:arn:[^:]*:lambda:[^:]*:[^:]*:)?(?:\d{12}:)?(?:function:)?([^:]+)(?::(.+))?$/);
+  if (!match) return { name: value };
+  return { name: match[1], ...(match[2] !== undefined ? { qualifier: match[2] } : {}) };
 }
 function sanitizedRuntimeHostEnvironment(): NodeJS.ProcessEnv {
   const sanitized: NodeJS.ProcessEnv = {};
   // Node is launched by absolute path.  Retain only conventional process/OS
   // compatibility values; host credentials, proxy settings, NODE_OPTIONS,
   // package-manager settings, and arbitrary simulator secrets are not inherited.
-  for (const name of ["PATH", "Path", "SystemRoot", "SYSTEMROOT", "WINDIR", "ComSpec", "PATHEXT", "LANG", "LC_ALL", "TZ"]) {
+  for (const name of ["PATH", "Path", "SystemRoot", "SYSTEMROOT", "WINDIR", "ComSpec", "PATHEXT", "LANG", "LC_ALL"]) {
     if (process.env[name] !== undefined) sanitized[name] = process.env[name];
   }
   return sanitized;
@@ -79,6 +92,7 @@ function sanitizedFunctionEnvironment(environment: Readonly<Record<string, strin
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_CREDENTIAL_EXPIRATION",
     "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_LAMBDA",
     "AWS_LAMBDA_FUNCTION_NAME", "AWS_LAMBDA_FUNCTION_VERSION", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE", "AWS_LAMBDA_INITIALIZATION_TYPE",
+    "_HANDLER", "AWS_EXECUTION_ENV", "AWS_LAMBDA_LOG_GROUP_NAME", "AWS_LAMBDA_LOG_STREAM_NAME",
     "LAMBDA_TASK_ROOT", "LAMBDA_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP", "STACKSIM_ENDPOINT", "STACKSIM_LAMBDA_EPHEMERAL_STORAGE_SIZE", "STACKSIM_LAMBDA_OPT_DIR",
     "STACKSIM_CLOUDFORMATION_CALLBACK_PORT", "STACKSIM_CLOUDFORMATION_NETWORK_PORTS",
   ]);
@@ -93,6 +107,39 @@ function tags(input: unknown): Record<string, string> {
  * CloudWatch Logs delivers to Lambda as either its global or its Regional
  * service principal; AWS accepts a permission for either form.
  */
+function arnPatternMatches(pattern: string, value: string | undefined): boolean {
+  return new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`).test(value ?? "");
+}
+
+/**
+ * Every condition stored on a function-policy statement counts on the
+ * service-invoke path, not only the source ARN and account. A service
+ * principal carries no organization and does not arrive through a function
+ * URL, so `aws:PrincipalOrgID` and `lambda:FunctionUrlAuthType` never match
+ * here and `lambda:InvokedViaFunctionUrl` matches only `false`; a condition
+ * key this path cannot evaluate fails closed.
+ */
+function serviceInvokeConditionsSatisfied(conditions: Record<string, Record<string, unknown>>, sourceArn: string | undefined, sourceAccount: string | undefined): boolean {
+  for (const [operator, entries] of Object.entries(conditions)) for (const [rawKey, expected] of Object.entries(entries ?? {})) {
+    const key = rawKey.toLowerCase(); const values = (Array.isArray(expected) ? expected : [expected]).map(String);
+    if (key === "aws:sourcearn") {
+      const matched = operator === "ArnLike" || operator === "StringLike" ? values.some(value => arnPatternMatches(value, sourceArn)) : operator === "ArnEquals" || operator === "StringEquals" ? values.includes(sourceArn ?? "") : false;
+      if (!matched) return false; continue;
+    }
+    if (key === "aws:sourceaccount") { if (operator !== "StringEquals" || !values.includes(sourceAccount ?? "")) return false; continue; }
+    if (key === "lambda:invokedviafunctionurl") { if (operator !== "Bool" || !values.map(value => value.toLowerCase()).includes("false")) return false; continue; }
+    return false;
+  }
+  return true;
+}
+
+/** AddPermission stores principals in the policy-document shape AWS renders: `{Service}` for services, `{AWS}` for accounts and IAM ARNs, `*` as is. */
+function policyPrincipal(value: string): string | { Service: string } | { AWS: string } {
+  if (value === "*") return "*";
+  if (/^[a-z0-9.-]+\.amazonaws\.com(?:\.cn)?$/.test(value)) return { Service: value };
+  return { AWS: value };
+}
+
 function sameServicePrincipal(granted: unknown, caller: string): boolean {
   const regional = /^logs\.[a-z0-9-]+\.amazonaws\.com$/;
   return (granted === "logs.amazonaws.com" && regional.test(caller)) || (caller === "logs.amazonaws.com" && typeof granted === "string" && regional.test(granted));
@@ -105,6 +152,8 @@ export class LambdaService {
   /** When the pending async worker wake fires; an event due sooner replaces it. */
   private asyncWorkerWakeAt?: number;
   private asyncWorkerRunning = false;
+  /** Asynchronous invocations currently being processed; shutdown drains them. */
+  private readonly asyncInFlight = new Set<Promise<void>>();
   private asyncWorker = Promise.resolve();
   private stopped = true;
   private readonly eventSources: LambdaEventSourceMappings;
@@ -154,11 +203,13 @@ export class LambdaService {
       void this.store.save();
     });
     this.layers = new LambdaLayers(store, region, clock);
+    this.layers.setContentLocation(codeDir => this.codeDownloadUrl(codeDir));
+    this.layers.setArchiveReader(content => this.codeArchive(content));
     this.images = new LambdaImages(region);
     this.capacityProviders = new LambdaCapacityProviders(store, region, clock, scheduler, authMode, rootRecovery);
     this.durableExecutions = new LambdaDurableExecutions(store, region, clock, scheduler, {
-      invokeExecution: (execution, input) => { const fn = this.require(execution.functionName); const resolved: ResolvedFunction = { fn, executable: execution.executable, requestedQualifier: execution.requestedQualifier, executedVersion: execution.executedVersion, qualifiedArn: execution.functionArn }; return this.invokeRuntime(fn.functionName, Buffer.from(JSON.stringify(input)), id(24), { qualifier: execution.requestedQualifier, lineage: execution.lineage, durableReplay: true, durableExecutionArn: execution.durableExecutionArn, resolvedOverride: resolved }); },
-      invokeChained: async (execution, functionName, payload) => { const target = this.resolveInvocation(functionName); if (this.authMode === "enforce" && evaluateRoleAuthorization(this.store.ensureAccount().iam, execution.executable.role, "lambda:InvokeFunction", target.qualifiedArn).decision !== "allowed") throw new AwsError("AccessDeniedException", `Execution role ${execution.executable.role} cannot invoke ${target.qualifiedArn}`, 403); return this.invoke(functionName, payload, id(24), { lineage: [...(execution.lineage ?? []), execution.functionArn] }); },
+      invokeExecution: (execution, input) => { const fn = this.require(execution.functionName); const resolved: ResolvedFunction = { fn, executable: execution.executable, requestedQualifier: execution.requestedQualifier, executedVersion: execution.executedVersion, qualifiedArn: execution.functionArn }; return this.invokeRuntime(fn.functionName, Buffer.from(JSON.stringify(input)), randomUUID(), { qualifier: execution.requestedQualifier, lineage: execution.lineage, durableReplay: true, durableExecutionArn: execution.durableExecutionArn, resolvedOverride: resolved }); },
+      invokeChained: async (execution, functionName, payload) => { const target = this.resolveInvocation(functionName); if (this.authMode === "enforce" && evaluateRoleAuthorization(this.store.ensureAccount().iam, execution.executable.role, "lambda:InvokeFunction", target.qualifiedArn).decision !== "allowed") throw new AwsError("AccessDeniedException", `Execution role ${execution.executable.role} cannot invoke ${target.qualifiedArn}`, 403); return this.invoke(functionName, payload, randomUUID(), { lineage: [...(execution.lineage ?? []), execution.functionArn] }); },
       deliverDeadLetter: execution => this.deliverDurableDeadLetter(execution),
       terminateExecution: arn => this.activeDurableChildren.get(arn)?.(),
     });
@@ -171,12 +222,14 @@ export class LambdaService {
     this.eventSources = new LambdaEventSourceMappings(store, region, clock, {
       resolveFunction: target => { const resolved = this.resolve(target); return { functionName: resolved.fn.functionName, ...(resolved.requestedQualifier ? { qualifier: resolved.requestedQualifier } : {}), functionArn: resolved.qualifiedArn, role: resolved.executable.role, timeout: resolved.executable.timeout }; },
       invoke: (functionName, qualifier, payload, requestId, lineage) => this.invokeEventSource(functionName, qualifier, payload, requestId, lineage),
+      s3BucketExists: async bucketName => { try { return Boolean(await this.s3Service?.readBucketInternal(bucketName)); } catch { return false; } },
+      writeS3Destination: (bucketArn, prefix, record, role) => this.writeS3DestinationRecord(bucketArn, prefix, record, role),
     }, authMode, telemetry, scheduler, sqs);
   }
   private get tokens(): PaginationTokens { return new PaginationTokens(this.store.state.installation.paginationSecret); }
   setS3Service(service: S3Service): void { this.s3Service = service; }
   private require(nameOrArn: string): LambdaState {
-    const { name } = parseFunctionTarget(nameOrArn); const fn = this.store.regionState(this.region).functions[name]; if (!fn) throw new AwsError("ResourceNotFoundException", `Function not found: ${name}`, 404);
+    const { name } = parseFunctionTarget(nameOrArn); const fn = this.store.regionState(this.region).functions[name]; if (!fn) throw new AwsError("ResourceNotFoundException", `Function not found: arn:aws:lambda:${this.region}:${this.store.accountId}:function:${name}`, 404);
     fn.tags ??= {}; fn.versions ??= {}; fn.aliases ??= {}; fn.policies ??= {}; fn.eventInvokeConfigs ??= {}; fn.provisionedConcurrencyConfigs ??= {}; fn.functionUrlConfigs ??= {}; fn.functionScalingConfigs ??= {}; fn.layers ??= []; fn.packageType ??= "Zip"; fn.architectures ??= ["x86_64"]; fn.ephemeralStorageSize ??= 512; fn.loggingConfig ??= { logFormat: "Text", logGroup: `/aws/lambda/${fn.functionName}` }; fn.tracingMode ??= "PassThrough"; fn.fileSystemConfigs ??= []; fn.vpcConfig ??= { subnetIds: [], securityGroupIds: [], ipv6AllowedForDualStack: false }; fn.runtimeManagementConfig ??= { updateRuntimeOn: "Auto" }; fn.recursiveLoop ??= "Terminate"; for (const version of Object.values(fn.versions)) { version.layers ??= []; version.packageType ??= "Zip"; version.architectures ??= ["x86_64"]; version.ephemeralStorageSize ??= 512; version.loggingConfig ??= { logFormat: "Text", logGroup: `/aws/lambda/${fn.functionName}` }; version.tracingMode ??= "PassThrough"; version.fileSystemConfigs ??= []; version.vpcConfig ??= { subnetIds: [], securityGroupIds: [], ipv6AllowedForDualStack: false }; version.runtimeManagementConfig ??= { updateRuntimeOn: "Auto" }; } fn.revisionId ??= id(32); return fn;
   }
   private resolve(nameOrArn: string, explicitQualifier?: string): ResolvedFunction {
@@ -185,6 +238,8 @@ export class LambdaService {
     let version = qualifier;
     const alias = fn.aliases?.[qualifier];
     if (alias) { const draw = this.random(); let cursor = 0; version = alias.functionVersion; for (const [candidate, weight] of Object.entries(alias.additionalVersionWeights).sort(([a], [b]) => Number(a) - Number(b))) { cursor += weight; if (draw < cursor) { version = candidate; break; } } }
+    // An alias may point at $LATEST, in which case it follows the mutable function.
+    if (version === "$LATEST") return { fn, executable: fn, requestedQualifier: qualifier, executedVersion: "$LATEST", qualifiedArn: `${fn.functionArn}:${qualifier}` };
     const snapshot = fn.versions?.[version]; if (!snapshot) throw new AwsError("ResourceNotFoundException", `Function not found: ${fn.functionName}:${qualifier}`, 404);
     return { fn, executable: snapshot, requestedQualifier: qualifier, executedVersion: version, qualifiedArn: `${fn.functionArn}:${qualifier}` };
   }
@@ -203,22 +258,55 @@ export class LambdaService {
     } catch { /* A missing local artifact is reported by the normal code path. */ }
     return undefined;
   }
+  /** AWS Lambda timestamps use `2019-09-26T20:28:40.438+0000`, not the ISO `Z` suffix. */
+  private lambdaTimestamp(iso: string): string { return iso.replace(/Z$/, "+0000"); }
+  /**
+   * The FunctionConfiguration shape: optional containers are omitted when
+   * empty, as AWS does; a Pending function has no LastUpdateStatus yet; Node
+   * functions carry the SnapStart and runtime-version fields AWS always returns.
+   */
   private configuration(resolved: ResolvedFunction): any {
     const { fn, executable: item } = resolved;
+    const variables = Object.keys(item.environment ?? {}).length ? item.environment : undefined;
+    const lastUpdateStatus = fn.lastUpdateStatus ?? ((fn.state ?? "Active") === "Pending" ? undefined : "Successful");
     return {
-      FunctionName: fn.functionName, FunctionArn: resolved.qualifiedArn, ...(item.packageType === "Zip" ? { Runtime: item.runtime, Handler: item.handler } : {}), Role: item.role, CodeSize: item.codeSize, Description: item.description, Timeout: item.timeout, MemorySize: item.memorySize, LastModified: item.lastModified, CodeSha256: item.codeSha256, Version: resolved.executedVersion, RevisionId: resolved.executedVersion === "$LATEST" ? fn.revisionId : (item as LambdaVersionState).revisionId, State: fn.state ?? "Active", StateReason: fn.stateReason, LastUpdateStatus: fn.lastUpdateStatus ?? "Successful", LastUpdateStatusReason: fn.lastUpdateStatusReason,
-      Environment: { Variables: item.environment, ...(item.environmentError ? { Error: { ErrorCode: item.environmentError.errorCode, Message: item.environmentError.message } } : {}) },
-      ...(item.packageType === "Zip" ? { Layers: this.layers.functionView(item.layers) } : { ImageConfigResponse: { ImageConfig: this.images.imageConfigView(item.imageConfig) } }), PackageType: item.packageType, Architectures: item.architectures,
+      FunctionName: fn.functionName, FunctionArn: resolved.qualifiedArn, ...(item.packageType === "Zip" ? { Runtime: item.runtime, Handler: item.handler } : {}), Role: item.role, CodeSize: item.codeSize, Description: item.description, Timeout: item.timeout, MemorySize: item.memorySize, LastModified: this.lambdaTimestamp(item.lastModified), CodeSha256: item.codeSha256, Version: resolved.executedVersion, RevisionId: resolved.executedVersion === "$LATEST" ? fn.revisionId : (item as LambdaVersionState).revisionId, State: fn.state ?? "Active", ...(fn.stateReason ? { StateReason: fn.stateReason } : {}), ...(fn.stateReasonCode ? { StateReasonCode: fn.stateReasonCode } : {}), ...(lastUpdateStatus ? { LastUpdateStatus: lastUpdateStatus } : {}), ...(fn.lastUpdateStatusReason ? { LastUpdateStatusReason: fn.lastUpdateStatusReason } : {}), ...(fn.lastUpdateStatusReasonCode ? { LastUpdateStatusReasonCode: fn.lastUpdateStatusReasonCode } : {}),
+      ...(variables || item.environmentError ? { Environment: { ...(variables ? { Variables: variables } : {}), ...(item.environmentError ? { Error: { ErrorCode: item.environmentError.errorCode, Message: item.environmentError.message } } : {}) } } : {}),
+      ...(item.packageType === "Zip" ? (item.layers?.length ? { Layers: this.layers.functionView(item.layers) } : {}) : { ImageConfigResponse: { ImageConfig: this.images.imageConfigView(item.imageConfig) } }), PackageType: item.packageType, Architectures: item.architectures,
       EphemeralStorage: { Size: item.ephemeralStorageSize },
       LoggingConfig: { LogFormat: item.loggingConfig.logFormat, ...(item.loggingConfig.applicationLogLevel ? { ApplicationLogLevel: item.loggingConfig.applicationLogLevel } : {}), ...(item.loggingConfig.systemLogLevel ? { SystemLogLevel: item.loggingConfig.systemLogLevel } : {}), LogGroup: item.loggingConfig.logGroup },
-      TracingConfig: { Mode: item.tracingMode }, DeadLetterConfig: item.deadLetterTargetArn ? { TargetArn: item.deadLetterTargetArn } : {},
-      FileSystemConfigs: item.fileSystemConfigs.map(config => ({ Arn: config.arn, LocalMountPath: config.localMountPath })),
-      VpcConfig: { SubnetIds: item.vpcConfig.subnetIds, SecurityGroupIds: item.vpcConfig.securityGroupIds, Ipv6AllowedForDualStack: item.vpcConfig.ipv6AllowedForDualStack },
+      TracingConfig: { Mode: item.tracingMode }, ...(item.deadLetterTargetArn ? { DeadLetterConfig: { TargetArn: item.deadLetterTargetArn } } : {}),
+      ...(item.fileSystemConfigs.length ? { FileSystemConfigs: item.fileSystemConfigs.map(config => ({ Arn: config.arn, LocalMountPath: config.localMountPath })) } : {}),
+      VpcConfig: { SubnetIds: item.vpcConfig.subnetIds, SecurityGroupIds: item.vpcConfig.securityGroupIds, VpcId: "", Ipv6AllowedForDualStack: item.vpcConfig.ipv6AllowedForDualStack },
+      ...(item.packageType === "Zip" ? { SnapStart: { ApplyOn: "None", OptimizationStatus: "Off" }, RuntimeVersionConfig: { RuntimeVersionArn: `arn:aws:lambda:${this.region}::runtime:${createHash("sha256").update(item.runtime).digest("hex")}` } } : {}),
       ...(item.kmsKeyArn ? { KMSKeyArn: item.kmsKeyArn } : {}), ...(fn.codeSigningConfigArn ? { CodeSigningConfigArn: fn.codeSigningConfigArn } : {}), ...(item.capacityProviderConfig ? { CapacityProviderConfig: this.capacityProviders.assignmentView(item.capacityProviderConfig) } : {}), ...(item.durableConfig ? { DurableConfig: durableConfigView(item.durableConfig) } : {}),
     };
   }
+  /** Fields that make a published version: a publish with nothing changed returns the newest version instead of a new one. */
+  private publicationFingerprint(item: Executable): string {
+    return JSON.stringify({ codeSha256: item.codeSha256, runtime: item.runtime, handler: item.handler, role: item.role, timeout: item.timeout, memorySize: item.memorySize, environment: Object.entries(item.environment ?? {}).sort(), layers: (item.layers ?? []).map(layer => layer.arn), architectures: item.architectures, ephemeralStorageSize: item.ephemeralStorageSize, loggingConfig: item.loggingConfig, tracingMode: item.tracingMode, deadLetterTargetArn: item.deadLetterTargetArn, fileSystemConfigs: item.fileSystemConfigs, vpcConfig: item.vpcConfig, kmsKeyArn: item.kmsKeyArn, runtimeManagementConfig: item.runtimeManagementConfig, imageUri: item.imageUri, imageConfig: item.imageConfig, capacityProviderConfig: item.capacityProviderConfig, durableConfig: item.durableConfig });
+  }
+  /** A short-lived signed download for a stored package, as AWS presigns `Code.Location`. */
+  private codeDownloadUrl(codeDir: string): string {
+    return `${this.controlEndpoint()}/_stacksim/lambda/code/${encodeURIComponent(this.tokens.encode("LambdaCodeDownload", { dir: codeDir, expiresAt: this.clock.now() + 10 * 60_000 }))}.zip`;
+  }
+  async serveCodeArchive(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    void req;
+    try {
+      const token = decodeURIComponent(url.pathname.slice("/_stacksim/lambda/code/".length).replace(/\.zip$/, ""));
+      let cursor: { dir: string; expiresAt: number }; try { cursor = this.tokens.decode("LambdaCodeDownload", token); } catch { throw new AwsError("AccessDeniedException", "The code download link is not valid", 403); }
+      if (cursor.expiresAt < this.clock.now()) throw new AwsError("AccessDeniedException", "The code download link has expired", 403);
+      const root = resolve(this.store.root); const dir = resolve(cursor.dir);
+      if (!dir.startsWith(root)) throw new AwsError("AccessDeniedException", "The code download link is not valid", 403);
+      const entries: Array<{ name: string; content: Buffer }> = [];
+      const walk = async (directory: string): Promise<void> => { for (const entry of await readdir(directory, { withFileTypes: true })) { const path = resolve(directory, entry.name); if (entry.isDirectory()) await walk(path); else if (entry.isFile()) entries.push({ name: path.slice(dir.length + 1).split("\\").join("/"), content: await readFile(path) }); } };
+      try { await walk(dir); } catch { throw new AwsError("ResourceNotFoundException", "The deployment package is no longer stored", 404); }
+      const zip = createZip(entries.sort((left, right) => left.name.localeCompare(right.name)));
+      res.statusCode = 200; res.setHeader("content-type", "application/zip"); res.setHeader("content-length", zip.length); res.setHeader("content-disposition", "attachment; filename=\"function.zip\""); res.end(zip);
+    } catch (error) { sendAwsError(res, error, "rest"); }
+  }
   private publishSnapshot(fn: LambdaState, version: string, description = fn.description, cloudFormationOperationToken?: string): LambdaVersionState {
-    const snapshot: LambdaVersionState = { version, functionArn: `${fn.functionArn}:${version}`, packageType: fn.packageType, ...(fn.imageConfig ? { imageConfig: structuredClone(fn.imageConfig) } : {}), ...(fn.imageUri ? { imageUri: fn.imageUri } : {}), ...(fn.resolvedImageUri ? { resolvedImageUri: fn.resolvedImageUri } : {}), ...(fn.imageExecutionUri ? { imageExecutionUri: fn.imageExecutionUri } : {}), ...(fn.imageSource ? { imageSource: fn.imageSource } : {}), runtime: fn.runtime, role: fn.role, handler: fn.handler, timeout: fn.timeout, memorySize: fn.memorySize, description, environment: structuredClone(fn.environment), codeSha256: fn.codeSha256, codeSize: fn.codeSize, codeUnzippedSize: fn.codeUnzippedSize, codeDir: fn.codeDir, layers: structuredClone(fn.layers ?? []), architectures: structuredClone(fn.architectures), ephemeralStorageSize: fn.ephemeralStorageSize, loggingConfig: structuredClone(fn.loggingConfig), tracingMode: fn.tracingMode, ...(fn.deadLetterTargetArn ? { deadLetterTargetArn: fn.deadLetterTargetArn } : {}), fileSystemConfigs: structuredClone(fn.fileSystemConfigs), vpcConfig: structuredClone(fn.vpcConfig), ...(fn.kmsKeyArn ? { kmsKeyArn: fn.kmsKeyArn } : {}), runtimeManagementConfig: structuredClone(fn.runtimeManagementConfig), ...(fn.environmentError ? { environmentError: structuredClone(fn.environmentError) } : {}), lastModified: fn.lastModified, revisionId: id(32), ...(cloudFormationOperationToken ? { cloudFormationOperationToken } : {}) };
+    const snapshot: LambdaVersionState = { version, functionArn: `${fn.functionArn}:${version}`, packageType: fn.packageType, ...(fn.imageConfig ? { imageConfig: structuredClone(fn.imageConfig) } : {}), ...(fn.imageUri ? { imageUri: fn.imageUri } : {}), ...(fn.resolvedImageUri ? { resolvedImageUri: fn.resolvedImageUri } : {}), ...(fn.imageExecutionUri ? { imageExecutionUri: fn.imageExecutionUri } : {}), ...(fn.imageSource ? { imageSource: fn.imageSource } : {}), runtime: fn.runtime, role: fn.role, handler: fn.handler, timeout: fn.timeout, memorySize: fn.memorySize, description, environment: structuredClone(fn.environment), codeSha256: fn.codeSha256, codeSize: fn.codeSize, codeUnzippedSize: fn.codeUnzippedSize, codeDir: fn.codeDir, layers: structuredClone(fn.layers ?? []), architectures: structuredClone(fn.architectures), ephemeralStorageSize: fn.ephemeralStorageSize, loggingConfig: structuredClone(fn.loggingConfig), tracingMode: fn.tracingMode, ...(fn.deadLetterTargetArn ? { deadLetterTargetArn: fn.deadLetterTargetArn } : {}), fileSystemConfigs: structuredClone(fn.fileSystemConfigs), vpcConfig: structuredClone(fn.vpcConfig), ...(fn.kmsKeyArn ? { kmsKeyArn: fn.kmsKeyArn } : {}), runtimeManagementConfig: structuredClone(fn.runtimeManagementConfig), ...(fn.environmentError ? { environmentError: structuredClone(fn.environmentError) } : {}), lastModified: fn.lastModified, revisionId: randomUUID(), ...(cloudFormationOperationToken ? { cloudFormationOperationToken } : {}) };
     if (fn.capacityProviderConfig) snapshot.capacityProviderConfig = structuredClone(fn.capacityProviderConfig);
     if (fn.durableConfig) snapshot.durableConfig = structuredClone(fn.durableConfig);
     fn.versions![version] = snapshot; return snapshot;
@@ -232,7 +320,7 @@ export class LambdaService {
   private durableInvocationResult(execution: LambdaDurableExecutionState, requestId: string, invocation?: Awaited<ReturnType<LambdaDurableExecutions["run"]>>["invocation"], timedOut = false, interrupted = false): InvokeResult {
     const common = { statusCode: 200, requestId: invocation?.requestId ?? requestId, durationMs: invocation?.durationMs ?? 0, billedDurationMs: invocation?.billedDurationMs ?? 1, executedVersion: execution.executedVersion, ...(invocation?.logResult ? { logResult: invocation.logResult } : {}), durableExecutionArn: execution.durableExecutionArn };
     if (interrupted || invocation?.interrupted) return { ...common, payload: Buffer.from("null"), interrupted: true };
-    if (timedOut) return { ...common, payload: Buffer.from(JSON.stringify({ errorMessage: `Task timed out after ${execution.executable.timeout}.00 seconds`, errorType: "TimeoutError" })), functionError: "Unhandled" };
+    if (timedOut) return { ...common, payload: Buffer.from(JSON.stringify({ errorMessage: `RequestId: ${common.requestId} Error: Task timed out after ${execution.executable.timeout}.00 seconds`, errorType: "Sandbox.Timedout", trace: [] })), functionError: "Unhandled" };
     if (execution.status === "SUCCEEDED") return { ...common, payload: Buffer.from(execution.result ?? "null") };
     if (execution.status !== "RUNNING") { const error = execution.error ?? { ErrorType: execution.status, ErrorMessage: `Durable execution ${execution.status.toLowerCase()}` }; return { ...common, payload: Buffer.from(JSON.stringify({ errorMessage: error.ErrorMessage, errorType: error.ErrorType, errorData: error.ErrorData, stackTrace: error.StackTrace })), functionError: "Unhandled" }; }
     if (invocation?.functionError) return { ...common, payload: invocation.payload, functionError: invocation.functionError };
@@ -251,14 +339,26 @@ export class LambdaService {
     }
     if (!publish) return undefined; this.capacityProviders.assertSnapshotQuota(fn); return String(++fn.version);
   }
-  private validateConfiguration(input: any, creating = false): void {
+  /**
+   * `pinnedHelper` admits the python3.13 runtime for the CloudFormation-created
+   * CDK helper functions only; those are never executed locally. Every other
+   * non-Node.js runtime is intentionally unsupported.
+   */
+  private validateConfiguration(input: any, creating = false, pinnedHelper = false): void {
     if (creating && (!input.FunctionName || !/^[A-Za-z0-9-_]{1,64}$/.test(input.FunctionName))) throw new AwsError("InvalidParameterValueException", "FunctionName must be 1-64 letters, numbers, hyphens, or underscores");
-    if (input.Runtime && !/^(?:nodejs(?:18|20|22|24)\.x|python3\.13)$/.test(input.Runtime)) throw new AwsError("InvalidParameterValueException", "Only Node.js 18, 20, 22, and 24 and the pinned CDK helper's python3.13 runtime are accepted");
+    if (input.Runtime && !/^nodejs(?:18|20|22|24)\.x$/.test(input.Runtime) && !(pinnedHelper && input.Runtime === "python3.13")) throw new AwsError("InvalidParameterValueException", `Runtime ${input.Runtime} is not supported by StackSim: only Node.js runtimes (nodejs18.x, nodejs20.x, nodejs22.x, nodejs24.x) run locally. Python, Java, .NET, Go, Ruby, and custom runtimes are intentionally unsupported for now.`);
     if (input.Handler && (!/^[^\s]{1,128}$/.test(input.Handler) || !input.Handler.includes("."))) throw new AwsError("InvalidParameterValueException", "Handler must use module.export format");
     if (input.Timeout !== undefined && (!Number.isInteger(input.Timeout) || input.Timeout < 1 || input.Timeout > 900)) throw new AwsError("InvalidParameterValueException", "Timeout must be between 1 and 900 seconds");
     if (input.MemorySize !== undefined && (!Number.isInteger(input.MemorySize) || input.MemorySize < 128 || input.MemorySize > 10_240)) throw new AwsError("InvalidParameterValueException", "MemorySize must be between 128 and 10240 MB");
     if (input.Description !== undefined && (typeof input.Description !== "string" || input.Description.length > 256)) throw new AwsError("InvalidParameterValueException", "Description must not exceed 256 characters");
-    if (input.Environment !== undefined) { if (!input.Environment || typeof input.Environment !== "object" || Array.isArray(input.Environment) || !input.Environment.Variables || typeof input.Environment.Variables !== "object" || Array.isArray(input.Environment.Variables)) throw new AwsError("InvalidParameterValueException", "Environment.Variables must be a string map"); const environment = input.Environment.Variables; if (Object.keys(environment).some(key => !/^[A-Za-z][A-Za-z0-9_]+$/.test(key)) || Object.values(environment).some(value => typeof value !== "string") || Buffer.byteLength(JSON.stringify(environment)) > 4096) throw new AwsError("InvalidParameterValueException", "Lambda environment keys and string values must fit within 4 KB"); }
+    if (input.Environment !== undefined) {
+      // `Variables` is optional on the API; an empty Environment clears the variables.
+      if (!input.Environment || typeof input.Environment !== "object" || Array.isArray(input.Environment) || (input.Environment.Variables !== undefined && (!input.Environment.Variables || typeof input.Environment.Variables !== "object" || Array.isArray(input.Environment.Variables)))) throw new AwsError("InvalidParameterValueException", "Environment.Variables must be a string map");
+      const environment = input.Environment.Variables ?? {};
+      if (Object.keys(environment).some(key => !/^[A-Za-z][A-Za-z0-9_]+$/.test(key))) throw new AwsError("InvalidParameterValueException", "Environment variable keys must start with a letter, contain only letters, numbers, and underscores, and be at least two characters long");
+      if (Object.values(environment).some(value => typeof value !== "string")) throw new AwsError("InvalidParameterValueException", "Environment variable values must be strings");
+      if (Buffer.byteLength(JSON.stringify(environment)) > 4096) throw new AwsError("InvalidParameterValueException", "Lambda environment variables must fit within 4 KB");
+    }
     if (input.Architectures !== undefined && (!Array.isArray(input.Architectures) || input.Architectures.length !== 1 || !new Set(["x86_64", "arm64"]).has(input.Architectures[0]))) throw new AwsError("InvalidParameterValueException", "Architectures must contain exactly one of x86_64 or arm64");
     if (input.EphemeralStorage !== undefined && (!input.EphemeralStorage || !Number.isInteger(input.EphemeralStorage.Size) || input.EphemeralStorage.Size < 512 || input.EphemeralStorage.Size > 10_240)) throw new AwsError("InvalidParameterValueException", "EphemeralStorage.Size must be between 512 and 10240 MB");
     if (input.TracingConfig !== undefined && (!input.TracingConfig || !new Set(["Active", "PassThrough"]).has(input.TracingConfig.Mode))) throw new AwsError("InvalidParameterValueException", "TracingConfig.Mode must be Active or PassThrough");
@@ -281,7 +381,7 @@ export class LambdaService {
       if (input.CodeSigningConfigArn !== undefined) throw new AwsError("InvalidParameterValueException", "Code signing configuration is supported only for Zip functions");
       const code = input.Code; if (code && (code.ZipFile !== undefined || code.S3Bucket !== undefined || code.S3Key !== undefined || code.S3ObjectVersion !== undefined || code.SourceKMSKeyArn !== undefined)) throw new AwsError("InvalidParameterValueException", "Image functions accept only Code.ImageUri");
     } else {
-      if (creating && (!input.Code?.ZipFile || !input.Handler || !input.Runtime || !input.Role)) throw new AwsError("InvalidParameterValueException", "FunctionName, Code.ZipFile, Handler, Runtime and Role are required");
+      if (creating && ((input.Code?.ZipFile === undefined && !(input.Code?.S3Bucket && input.Code?.S3Key)) || !input.Handler || !input.Runtime || !input.Role)) throw new AwsError("InvalidParameterValueException", "FunctionName, Code (ZipFile or S3Bucket and S3Key), Handler, Runtime and Role are required");
       if (input.ImageConfig !== undefined || input.Code?.ImageUri !== undefined) throw new AwsError("InvalidParameterValueException", "ImageUri and ImageConfig are valid only for image functions");
     }
     return packageType;
@@ -341,14 +441,25 @@ export class LambdaService {
       if (decision !== "allowed") throw new AwsError("AccessDeniedException", `User ${principal.principalArn} is not authorized to perform iam:PassRole on ${roleArn}`, 403);
     }
   }
+  /** The deployment package named by a CreateFunction `Code` or UpdateFunctionCode body: inline base64 or a local S3 object. */
+  private async codeArchive(code: any): Promise<Buffer> {
+    if (code?.ZipFile !== undefined) { if (typeof code.ZipFile !== "string") throw new AwsError("InvalidParameterValueException", "ZipFile must be base64-encoded archive bytes"); return Buffer.from(code.ZipFile, "base64"); }
+    if (typeof code?.S3Bucket === "string" && typeof code?.S3Key === "string") {
+      if (code.S3ObjectVersion !== undefined && typeof code.S3ObjectVersion !== "string") throw new AwsError("InvalidParameterValueException", "S3ObjectVersion must be a string");
+      if (!this.s3Service) throw new AwsError("InvalidParameterValueException", "S3 deployment packages are unavailable because the local S3 service is not configured");
+      try { return (await this.s3Service.readObjectBytes(code.S3Bucket, code.S3Key, code.S3ObjectVersion, 50 * 1024 * 1024)).body; }
+      catch (error) { if (error instanceof AwsError && error.status < 500) throw new AwsError("InvalidParameterValueException", `Error occurred while GetObject. S3 Error Code: ${error.code}. S3 Error Message: ${error.message}`); throw error; }
+    }
+    throw new AwsError("InvalidParameterValueException", "ZipFile or S3Bucket and S3Key are required");
+  }
   private async installCode(fn: LambdaState, zip: Buffer): Promise<void> {
     const limit = Number(process.env.STACKSIM_LAMBDA_ZIP_LIMIT ?? 50 * 1024 * 1024); if (zip.length > limit) throw new AwsError("RequestEntityTooLargeException", `Zipped size must be smaller than ${limit} bytes`, 413);
     const base = resolve(this.store.root, "functions"); await mkdir(base, { recursive: true }); const destination = resolve(base, `${fn.functionName}-${id(8)}`); let extraction; try { extraction = await extractZip(zip, destination, { maxUncompressedSize: 262_144_000 }); this.layers.validateFunctionLayers(fn.layers ?? [], fn.runtime, extraction.uncompressedSize, fn.architectures[0]); } catch (error) { await rm(destination, { recursive: true, force: true }); throw error; }
-    const old = fn.codeDir; fn.codeDir = destination; fn.codeSize = zip.length; fn.codeUnzippedSize = extraction.uncompressedSize; fn.codeSha256 = sha256(zip); fn.lastModified = new Date(this.clock.now()).toISOString(); fn.revisionId = id(32);
+    const old = fn.codeDir; fn.codeDir = destination; fn.codeSize = zip.length; fn.codeUnzippedSize = extraction.uncompressedSize; fn.codeSha256 = sha256(zip); fn.lastModified = new Date(this.clock.now()).toISOString(); fn.revisionId = randomUUID();
     if (old && !Object.values(fn.versions ?? {}).some(version => version.codeDir === old)) await rm(old, { recursive: true, force: true });
   }
   private installImage(fn: LambdaState, image: ResolvedLambdaImage): void {
-    fn.imageUri = image.imageUri; fn.resolvedImageUri = image.resolvedImageUri; if (image.executionImageUri) fn.imageExecutionUri = image.executionImageUri; else delete fn.imageExecutionUri; fn.imageSource = image.imageSource; fn.codeSha256 = image.codeSha256; fn.codeSize = image.codeSize; fn.codeUnzippedSize = image.codeSize; fn.codeDir = ""; fn.lastModified = new Date(this.clock.now()).toISOString(); fn.revisionId = id(32);
+    fn.imageUri = image.imageUri; fn.resolvedImageUri = image.resolvedImageUri; if (image.executionImageUri) fn.imageExecutionUri = image.executionImageUri; else delete fn.imageExecutionUri; fn.imageSource = image.imageSource; fn.codeSha256 = image.codeSha256; fn.codeSize = image.codeSize; fn.codeUnzippedSize = image.codeSize; fn.codeDir = ""; fn.lastModified = new Date(this.clock.now()).toISOString(); fn.revisionId = randomUUID();
   }
   private assertCodeSigningDeployment(fn: LambdaState): void {
     if (!fn.codeSigningConfigArn) return; const config = this.requireCodeSigningConfig(fn.codeSigningConfigArn); if (config.untrustedArtifactOnDeployment === "Enforce") throw new AwsError("InvalidCodeSignatureException", "The attached code signing policy is Enforce, and local ZIP artifacts cannot be verified without AWS Signer", 400);
@@ -403,15 +514,18 @@ export class LambdaService {
     return {
       fingerprint, functionName: fn.functionName, executedVersion: resolved.executedVersion, handler: executable.handler, logStreamName, initializationType, provisionedFor,
       prepareRuntime: async () => {
+        await ensureHostTmpDirectory();
         const runtime = await this.prepareRuntime(executable, id(32));
         if (options.trustedCaCertificatePath) await copyFile(options.trustedCaCertificatePath, resolve(runtime.tmpDir, "cloudformation-callback-ca.pem"));
         return runtime;
       },
       launchEnvironment: (runtime: LambdaWorkerRuntime) => ({
-        ...sanitizedRuntimeHostEnvironment(), NODE_PATH: runtime.nodePath,
+        // The execution environment runs in UTC as on AWS (Node reads "UTC"; AWS spells it ":UTC"); a function may override TZ.
+        ...sanitizedRuntimeHostEnvironment(), TZ: "UTC", NODE_PATH: runtime.nodePath,
         ...sanitizedFunctionEnvironment(executable.environment),
         AWS_REGION: this.region, AWS_DEFAULT_REGION: this.region, AWS_ENDPOINT_URL: this.controlEndpoint(), AWS_ENDPOINT_URL_LAMBDA: this.controlEndpoint(), STACKSIM_ENDPOINT: this.controlEndpoint(),
         AWS_LAMBDA_FUNCTION_NAME: fn.functionName, AWS_LAMBDA_FUNCTION_VERSION: resolved.executedVersion, AWS_LAMBDA_FUNCTION_MEMORY_SIZE: String(executable.memorySize), AWS_LAMBDA_INITIALIZATION_TYPE: initializationType,
+        _HANDLER: executable.handler, AWS_EXECUTION_ENV: `AWS_Lambda_${executable.runtime}`, AWS_LAMBDA_LOG_GROUP_NAME: executable.loggingConfig.logGroup, AWS_LAMBDA_LOG_STREAM_NAME: logStreamName, LAMBDA_RUNTIME_DIR: lambdaRuntimeDirectory,
         LAMBDA_TASK_ROOT: runtime.codeDir, TMPDIR: runtime.tmpDir, TMP: runtime.tmpDir, TEMP: runtime.tmpDir, STACKSIM_LAMBDA_EPHEMERAL_STORAGE_SIZE: String(executable.ephemeralStorageSize),
         ...(runtime.optDir ? { STACKSIM_LAMBDA_OPT_DIR: runtime.optDir } : {}), ...options.environmentOverrides, ...credentials,
         ...(options.trustedCaCertificatePath ? { NODE_EXTRA_CA_CERTS: resolve(runtime.tmpDir, "cloudformation-callback-ca.pem") } : {}),
@@ -433,7 +547,9 @@ export class LambdaService {
         if (kind === "create") fn.state = "Active";
         fn.lastUpdateStatus = "Successful";
         delete fn.stateReason;
+        delete fn.stateReasonCode;
         delete fn.lastUpdateStatusReason;
+        delete fn.lastUpdateStatusReasonCode;
         void this.store.save().then(resolve, reject);
       });
     });
@@ -472,9 +588,8 @@ export class LambdaService {
     for (const key of keys) for (const statement of resolved.fn.policies?.[key]?.statements ?? []) {
       if (statement.Action !== "lambda:InvokeFunction" && statement.Action !== "lambda:*") continue;
       const p = typeof statement.Principal === "string" ? statement.Principal : statement.Principal.Service ?? statement.Principal.AWS; if (p !== "*" && p !== principal && !sameServicePrincipal(p, principal)) continue;
-      if (statement.Resource !== resolved.qualifiedArn && statement.Resource !== resolved.fn.functionArn) continue; const conditions = statement.Condition ?? {};
-      const arnLike = conditions.ArnLike?.["AWS:SourceArn"] ?? conditions.ArnLike?.["aws:SourceArn"]; if (arnLike && !new RegExp(`^${arnLike.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`).test(sourceArn ?? "")) continue;
-      const account = conditions.StringEquals?.["AWS:SourceAccount"] ?? conditions.StringEquals?.["aws:SourceAccount"]; if (account && account !== sourceAccount) continue; allowed = true;
+      if (statement.Resource !== resolved.qualifiedArn && statement.Resource !== resolved.fn.functionArn) continue;
+      if (!serviceInvokeConditionsSatisfied(statement.Condition ?? {}, sourceArn, sourceAccount)) continue; allowed = true;
     }
     if (!allowed) throw new AwsError("AccessDeniedException", "The caller is not authorized to invoke this Lambda function", 403);
   }
@@ -501,7 +616,9 @@ export class LambdaService {
   setEventBridgeService(service: EventBridgeService): void { this.eventBridgeService = service; }
 
   async enqueueEventBridgeInvocation(targetArn: string, payload: Buffer, ruleArn: string, roleArn?: string, lineage: string[] = []): Promise<string> {
+    // EventBridge always invokes Lambda targets through the function's resource-based policy; a target RoleArn adds a role check but never replaces it.
     if (!roleArn) return this.enqueueServiceInvocation(targetArn, payload, "events.amazonaws.com", ruleArn, this.store.accountId, lineage);
+    this.assertResourcePermission(targetArn, "events.amazonaws.com", ruleArn, this.store.accountId);
     const resolved = this.resolveInvocation(targetArn);
     const context = roleSessionAuthorizationContext(roleArn, this.region, this.clock.now(), { "aws:SourceArn": ruleArn, "aws:SourceAccount": this.store.accountId });
     if (evaluateRoleAuthorization(this.store.ensureAccount().iam, roleArn, "lambda:InvokeFunction", resolved.qualifiedArn, context).decision !== "allowed") throw new AwsError("AccessDeniedException", `EventBridge target role ${roleArn} cannot invoke ${resolved.qualifiedArn}.`, 403);
@@ -537,7 +654,7 @@ export class LambdaService {
     const destinations: any = {}; if (config.destinationConfig?.onSuccess) destinations.OnSuccess = { Destination: config.destinationConfig.onSuccess }; if (config.destinationConfig?.onFailure) destinations.OnFailure = { Destination: config.destinationConfig.onFailure };
     return { FunctionArn: this.configArn(fn, config.qualifier), LastModified: config.lastModified / 1000, ...(config.maximumEventAgeInSeconds !== undefined ? { MaximumEventAgeInSeconds: config.maximumEventAgeInSeconds } : {}), ...(config.maximumRetryAttempts !== undefined ? { MaximumRetryAttempts: config.maximumRetryAttempts } : {}), ...(Object.keys(destinations).length ? { DestinationConfig: destinations } : {}) };
   }
-  private validateDestination(destination: unknown, condition: "OnSuccess" | "OnFailure"): string | undefined {
+  private async validateDestination(destination: unknown, condition: "OnSuccess" | "OnFailure"): Promise<string | undefined> {
     if (destination === undefined || destination === null || destination === "") return undefined; if (typeof destination !== "string") throw new AwsError("InvalidParameterValueException", `${condition} destination must be an ARN`);
     const lambda = destination.match(/^arn:(?:aws|aws-us-gov|aws-cn):lambda:([^:]+):(\d{12}):function:([A-Za-z0-9-_]{1,64})(?::([A-Za-z0-9-_$]+))?$/); if (lambda) { if (lambda[1] !== this.region || lambda[2] !== this.store.accountId) throw new AwsError("InvalidParameterValueException", "Lambda destinations must use this simulator account and Region"); this.resolve(destination); return destination; }
     const sqs = destination.match(/^arn:(?:aws|aws-us-gov|aws-cn):sqs:([^:]+):(\d{12}):([^:]+)$/);
@@ -551,23 +668,30 @@ export class LambdaService {
       try { this.snsService.assertTopicExists(destination); } catch { throw new AwsError("InvalidParameterValueException", `SNS destination topic does not exist: ${destination}`); }
       return destination;
     }
-    if (/^arn:(?:aws|aws-us-gov|aws-cn):s3:/.test(destination)) throw new AwsError("InvalidParameterValueException", "The s3 destination dependency is not available in this simulator");
+    const s3 = destination.match(/^arn:(?:aws|aws-us-gov|aws-cn):s3:::([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])$/);
+    if (s3) {
+      if (condition !== "OnFailure") throw new AwsError("InvalidParameterValueException", "S3 destinations are supported only for OnFailure");
+      if (!this.s3Service) throw new AwsError("InvalidParameterValueException", "The S3 destination service is unavailable in this simulator");
+      let bucket: unknown; try { bucket = await this.s3Service.readBucketInternal(s3[1]); } catch { bucket = undefined; }
+      if (!bucket) throw new AwsError("InvalidParameterValueException", `S3 destination bucket does not exist: ${destination}`);
+      return destination;
+    }
     throw new AwsError("InvalidParameterValueException", `${condition} destination must be a Lambda, SQS, SNS, S3, or EventBridge ARN`);
   }
-  private eventInvokeConfigInput(fn: LambdaState, qualifier: string | undefined, input: any, replace: boolean): LambdaEventInvokeConfigState {
+  private async eventInvokeConfigInput(fn: LambdaState, qualifier: string | undefined, input: any, replace: boolean): Promise<LambdaEventInvokeConfigState> {
     if (qualifier) this.resolve(fn.functionName, qualifier); const previous = fn.eventInvokeConfigs?.[this.configKey(qualifier)]; const age = input.MaximumEventAgeInSeconds === undefined ? replace ? undefined : previous?.maximumEventAgeInSeconds : input.MaximumEventAgeInSeconds; const retries = input.MaximumRetryAttempts === undefined ? replace ? undefined : previous?.maximumRetryAttempts : input.MaximumRetryAttempts;
     if (age !== undefined && (!Number.isInteger(age) || age < 60 || age > 21_600)) throw new AwsError("InvalidParameterValueException", "MaximumEventAgeInSeconds must be between 60 and 21600"); if (retries !== undefined && (!Number.isInteger(retries) || retries < 0 || retries > 2)) throw new AwsError("InvalidParameterValueException", "MaximumRetryAttempts must be between 0 and 2");
     const destinationInput = input.DestinationConfig; let onSuccess = replace ? undefined : previous?.destinationConfig?.onSuccess; let onFailure = replace ? undefined : previous?.destinationConfig?.onFailure;
-    if (destinationInput !== undefined) { if (!destinationInput || typeof destinationInput !== "object" || Array.isArray(destinationInput)) throw new AwsError("InvalidParameterValueException", "DestinationConfig must be an object"); if (destinationInput.OnSuccess !== undefined) onSuccess = this.validateDestination(destinationInput.OnSuccess?.Destination, "OnSuccess"); if (destinationInput.OnFailure !== undefined) onFailure = this.validateDestination(destinationInput.OnFailure?.Destination, "OnFailure"); }
+    if (destinationInput !== undefined) { if (!destinationInput || typeof destinationInput !== "object" || Array.isArray(destinationInput)) throw new AwsError("InvalidParameterValueException", "DestinationConfig must be an object"); if (destinationInput.OnSuccess !== undefined) onSuccess = await this.validateDestination(destinationInput.OnSuccess?.Destination, "OnSuccess"); if (destinationInput.OnFailure !== undefined) onFailure = await this.validateDestination(destinationInput.OnFailure?.Destination, "OnFailure"); }
     if ((onSuccess || onFailure) && this.resolve(fn.functionName, qualifier).executable.durableConfig) throw new AwsError("InvalidParameterValueException", "Durable functions do not support Lambda invocation destinations");
     return { ...(qualifier ? { qualifier } : {}), ...(age !== undefined ? { maximumEventAgeInSeconds: age } : {}), ...(retries !== undefined ? { maximumRetryAttempts: retries } : {}), ...(onSuccess || onFailure ? { destinationConfig: { ...(onSuccess ? { onSuccess } : {}), ...(onFailure ? { onFailure } : {}) } } : {}), lastModified: this.clock.now() };
   }
   private async putEventInvokeConfig(nameOrArn: string, qualifier: string | undefined, input: any, replace: boolean): Promise<any> {
-    const fn = this.require(nameOrArn); const config = this.eventInvokeConfigInput(fn, qualifier, input, replace); fn.eventInvokeConfigs![this.configKey(qualifier)] = config; await this.store.save(); return this.eventInvokeConfigView(fn, config);
+    const fn = this.require(nameOrArn); const config = await this.eventInvokeConfigInput(fn, qualifier, input, replace); fn.eventInvokeConfigs![this.configKey(qualifier)] = config; await this.store.save(); return this.eventInvokeConfigView(fn, config);
   }
   private async enqueueAsync(nameOrArn: string, qualifier: string | undefined, payload: Buffer, lineage?: string[], stableEventId?: string): Promise<string> {
     const resolved = this.resolveInvocation(nameOrArn, qualifier); if ((resolved.fn.state ?? "Active") !== "Active" || (resolved.fn.lastUpdateStatus ?? "Successful") === "InProgress") throw new AwsError("ResourceConflictException", "The function is currently in a non-invokable state", 409); let parsed: unknown; try { parsed = payload.length ? JSON.parse(payload.toString("utf8")) : null; } catch { throw new AwsError("InvalidRequestContentException", "Could not parse request body into JSON", 400); } void parsed;
-    const eventId = stableEventId ?? id(32); const payloadBase64 = payload.toString("base64"); const existing = this.asyncQueue[eventId];
+    const eventId = stableEventId ?? randomUUID(); const payloadBase64 = payload.toString("base64"); const existing = this.asyncQueue[eventId];
     if (existing) { if (existing.functionName === resolved.fn.functionName && existing.qualifier === resolved.requestedQualifier && existing.payloadBase64 === payloadBase64) return eventId; throw new AwsError("ResourceConflictException", `Async invocation identity ${eventId} is already owned by different content`, 409); }
     const now = this.clock.now(); this.asyncQueue[eventId] = { eventId, functionName: resolved.fn.functionName, ...(resolved.requestedQualifier ? { qualifier: resolved.requestedQualifier } : {}), payloadBase64, enqueuedAt: now, nextAttemptAt: now, attempts: 0, status: "QUEUED", ...(lineage?.length ? { lineage: [...lineage] } : {}) }; await this.store.save(); await this.publishAsyncMetric("AsyncEventsReceived", resolved.fn.functionName); await this.publishQueueDepth(resolved.fn.functionName); this.scheduleAsyncWorker(0); return eventId;
   }
@@ -581,12 +705,23 @@ export class LambdaService {
   private scheduleNextAsyncWorker(): void {
     if (this.stopped || this.asyncWorkerCancel || this.asyncWorkerRunning) return; const now = this.clock.now(); const times = Object.values(this.asyncQueue).map(event => event.status === "LEASED" ? event.leaseUntil ?? now : event.nextAttemptAt); if (!times.length) return; this.scheduleAsyncWorker(Math.max(0, Math.min(...times) - now));
   }
+  /**
+   * Every due event is leased and processed at once, as the Lambda service
+   * runs queued asynchronous invocations concurrently; the concurrency
+   * controller throttles what the function cannot absorb. The loop repeats
+   * until nothing is due, so an event enqueued during a wave is not held back.
+   */
   private async runAsyncWorker(): Promise<void> {
     if (this.stopped || this.asyncWorkerRunning) return; this.asyncWorkerRunning = true;
     try {
-      const now = this.clock.now(); for (const event of Object.values(this.asyncQueue)) if (event.status === "LEASED" && (event.leaseUntil ?? 0) <= now) { event.status = "QUEUED"; delete event.leaseId; delete event.leaseUntil; }
-      const event = Object.values(this.asyncQueue).filter(item => item.status === "QUEUED" && item.nextAttemptAt <= now).sort((left, right) => left.nextAttemptAt - right.nextAttemptAt || left.enqueuedAt - right.enqueuedAt || left.eventId.localeCompare(right.eventId))[0]; if (!event) return;
-      event.status = "LEASED"; event.leaseId = id(24); event.leaseUntil = now + 30_000; await this.store.save(); await this.processAsyncEvent(event);
+      for (;;) {
+        if (this.stopped) return;
+        const now = this.clock.now(); for (const event of Object.values(this.asyncQueue)) if (event.status === "LEASED" && (event.leaseUntil ?? 0) <= now) { event.status = "QUEUED"; delete event.leaseId; delete event.leaseUntil; }
+        const due = Object.values(this.asyncQueue).filter(item => item.status === "QUEUED" && item.nextAttemptAt <= now).sort((left, right) => left.nextAttemptAt - right.nextAttemptAt || left.enqueuedAt - right.enqueuedAt || left.eventId.localeCompare(right.eventId)); if (!due.length) return;
+        for (const event of due) { event.status = "LEASED"; event.leaseId = randomUUID(); event.leaseUntil = now + 30_000; } await this.store.save();
+        // Dispatch without waiting for the wave, so an event that arrives while these run starts at once rather than after them.
+        for (const event of due) { const task: Promise<void> = this.processAsyncEvent(event).catch(() => undefined).finally(() => { this.asyncInFlight.delete(task); }); this.asyncInFlight.add(task); }
+      }
     } finally { this.asyncWorkerRunning = false; this.scheduleNextAsyncWorker(); }
   }
   private eventConfigFor(event: LambdaAsyncInvocationState): LambdaEventInvokeConfigState | undefined {
@@ -601,7 +736,10 @@ export class LambdaService {
       const result = await this.invoke(event.functionName, Buffer.from(event.payloadBase64, "base64"), event.eventId, { qualifier: event.qualifier, lineage: event.lineage }); if (!result.functionError) { await this.finishAsyncEvent(event, "Success", result); return; }
       event.lastError = Buffer.from(result.payload).toString("utf8"); if (event.attempts <= (config?.maximumRetryAttempts ?? 2) && this.clock.now() - event.enqueuedAt < maxAgeMs) { await this.retryAsyncEvent(event, event.attempts === 1 ? 60_000 : 120_000); return; } await this.finishAsyncEvent(event, "RetriesExhausted", result);
     } catch (error) {
-      event.lastError = error instanceof Error ? error.message : String(error); const retryable = error instanceof AwsError && (error.status >= 500 || error.status === 429 || error.code === "ResourceConflictException"); if (retryable && this.clock.now() - event.enqueuedAt < maxAgeMs) { await this.retryAsyncEvent(event, Math.min(300_000, 1000 * 2 ** Math.min(8, event.attempts - 1))); return; } await this.finishAsyncEvent(event, "RetriesExhausted", undefined, error);
+      event.lastError = error instanceof Error ? error.message : String(error);
+      // Reserved concurrency of zero never admits an invocation, so the event goes straight to its failure destination without retries, as on AWS.
+      const reservedToZero = error instanceof AwsError && error.code === "TooManyRequestsException" && error.details?.Reason === "ReservedFunctionConcurrentInvocationLimitExceeded" && this.store.regionState(this.region).functions[event.functionName]?.reservedConcurrentExecutions === 0;
+      const retryable = !reservedToZero && error instanceof AwsError && (error.status >= 500 || error.status === 429 || error.code === "ResourceConflictException"); if (retryable && this.clock.now() - event.enqueuedAt < maxAgeMs) { await this.retryAsyncEvent(event, Math.min(300_000, 1000 * 2 ** Math.min(8, event.attempts - 1))); return; } await this.finishAsyncEvent(event, "RetriesExhausted", undefined, error);
     }
   }
   private async retryAsyncEvent(event: LambdaAsyncInvocationState, delayMs: number): Promise<void> { event.nextAttemptAt = this.clock.now() + delayMs; delete event.leaseId; delete event.leaseUntil; await this.publishAsyncMetric("AsyncEventsRetried", event.functionName); await this.publishQueueDepth(event.functionName); event.status = "QUEUED"; await this.store.save(); }
@@ -614,7 +752,9 @@ export class LambdaService {
     if (!this.sqsService || !this.sqsService.resolveQueueArn(destination)) throw new AwsError("ResourceNotFoundException", `SQS destination queue does not exist: ${destination}`, 404);
     if (!role) throw new AwsError("AccessDeniedException", `No execution role is available to send to ${destination}`, 403);
     if (this.sqsService.sendAuthorizedMessageToArn) {
-      await this.sqsService.sendAuthorizedMessageToArn(destination, input, { kind: "role", roleArn: role, sourceArn, sourceAccount: this.store.accountId, deliveryLineage: deliveryLineage?.slice(-32) });
+      // With enforcement off, no path evaluates the execution role's policy.
+      const identityAuthorization = this.authMode === "enforce" ? undefined : { decision: "allowed", reason: "Authorization enforcement is disabled", matchedStatements: [] } as AuthorizationResult;
+      await this.sqsService.sendAuthorizedMessageToArn(destination, input, { kind: "role", roleArn: role, sourceArn, sourceAccount: this.store.accountId, deliveryLineage: deliveryLineage?.slice(-32), ...(identityAuthorization ? { identityAuthorization } : {}) });
       return;
     }
     if (this.authMode === "enforce" && evaluateRoleAuthorization(this.store.ensureAccount().iam, role, "sqs:SendMessage", destination).decision !== "allowed") throw new AwsError("AccessDeniedException", `Execution role ${role} cannot send to ${destination}`, 403);
@@ -646,17 +786,35 @@ export class LambdaService {
         if (!this.eventBridgeService) throw new AwsError("ResourceNotFoundException", "The EventBridge destination service is unavailable.", 404);
         const functionArn = source ? `${source.functionArn}:${event.qualifier ?? "$LATEST"}` : `arn:aws:lambda:${this.region}:${this.store.accountId}:function:${event.functionName}:${event.qualifier ?? "$LATEST"}`;
         await this.eventBridgeService.publishServiceEvent({ source: "lambda", detailType: condition === "Success" ? "Lambda Function Invocation Result - Success" : "Lambda Function Invocation Result - Failure", detail: record, resources: [functionArn, destination], eventBusName: destination, roleArn: role, requireRole: true, deliveryLineage: [...(event.lineage ?? []), functionArn, destination] });
+      } else if (destination.startsWith("arn:aws:s3:::")) {
+        await this.writeS3DestinationRecord(destination, `aws/lambda/async/${event.functionName}`, record, role);
       } else {
         if (this.authMode === "enforce" && role && evaluateRoleAuthorization(this.store.ensureAccount().iam, role, "lambda:InvokeFunction", destination).decision !== "allowed") throw new AwsError("AccessDeniedException", `Execution role ${role} cannot invoke destination ${destination}`, 403);
-        const lineage = source ? [...(event.lineage ?? []), `${source.functionArn}:${event.qualifier ?? "$LATEST"}`] : event.lineage; await this.invoke(destination, Buffer.from(JSON.stringify(record)), id(24), { lineage });
+        // A Lambda destination is itself an asynchronous invocation with its own queue, retries, and destinations.
+        const lineage = source ? [...(event.lineage ?? []), `${source.functionArn}:${event.qualifier ?? "$LATEST"}`] : event.lineage; await this.enqueueAsync(destination, undefined, Buffer.from(JSON.stringify(record)), lineage);
       }
     } catch { await this.publishAsyncMetric("DestinationDeliveryFailures", event.functionName); }
+  }
+  /**
+   * An S3 destination stores the invocation record as one JSON object under
+   * the documented prefix: `<prefix>/YYYY/MM/DD/YYYY-MM-DDTHH.MM.SS-<uuid>`.
+   */
+  async writeS3DestinationRecord(bucketArn: string, prefix: string, record: unknown, role: string | undefined): Promise<void> {
+    if (!this.s3Service) throw new AwsError("ResourceNotFoundException", "The S3 destination service is unavailable.", 404);
+    const bucket = bucketArn.slice("arn:aws:s3:::".length).split("/")[0]; if (!bucket) throw new AwsError("InvalidParameterValueException", `Invalid S3 destination ${bucketArn}`);
+    if (!role) throw new AwsError("AccessDeniedException", `No execution role is available to write to ${bucketArn}`, 403);
+    const stamp = new Date(this.clock.now()).toISOString(); const key = `${prefix}/${stamp.slice(0, 10).replace(/-/g, "/")}/${stamp.slice(0, 19).replace(/:/g, ".")}-${randomUUID()}`;
+    if (this.authMode === "enforce" && evaluateRoleAuthorization(this.store.ensureAccount().iam, role, "s3:PutObject", `arn:aws:s3:::${bucket}/${key}`).decision !== "allowed") throw new AwsError("AccessDeniedException", `Execution role ${role} cannot write to ${bucketArn}`, 403);
+    await this.s3Service.putObjectBytesInternal(bucket, key, Buffer.from(JSON.stringify(record)), { contentType: "application/json" });
   }
   private async deliverAsyncDeadLetter(event: LambdaAsyncInvocationState, destination: string, result?: InvokeResult, error?: unknown): Promise<void> {
     let resolved: ResolvedFunction | undefined; try { resolved = this.resolveInvocation(event.functionName, event.qualifier); } catch { /* A deleted function cannot authorize a new delivery. */ }
     const role = resolved?.executable.role ?? this.store.regionState(this.region).functions[event.functionName]?.role;
     const errorCode = String(result?.statusCode ?? (error instanceof AwsError ? error.status : 200));
-    const errorMessage = String(event.lastError ?? (error instanceof Error ? error.message : error ?? result?.functionError ?? "Lambda asynchronous invocation failed")).slice(0, 10_240);
+    // The attribute carries the first 1 KB of the error message, not the whole error payload.
+    let lastError = String(event.lastError ?? (error instanceof Error ? error.message : error ?? result?.functionError ?? "Lambda asynchronous invocation failed"));
+    try { const parsed = JSON.parse(lastError); if (parsed && typeof parsed === "object" && typeof parsed.errorMessage === "string") lastError = parsed.errorMessage; } catch { /* Not a function-error payload. */ }
+    const errorMessage = Buffer.from(lastError).subarray(0, 1024).toString("utf8");
     const messageAttributes: Record<string, LambdaSqsMessageAttributeValue> = {
       RequestID: { DataType: "String", StringValue: event.eventId },
       ErrorCode: { DataType: "Number", StringValue: errorCode },
@@ -678,7 +836,7 @@ export class LambdaService {
       } else if (destination.includes(":sqs:")) {
         await this.sendSqsUsingRole(destination, { MessageBody: Buffer.from(event.payloadBase64, "base64").toString("utf8"), MessageAttributes: messageAttributes }, role, functionArn, [...(event.lineage ?? []), ...(functionArn ? [functionArn] : []), destination]);
       } else throw new AwsError("InvalidParameterValueException", "Dead-letter destinations must be SQS or SNS");
-    } catch { await this.publishAsyncMetric("DestinationDeliveryFailures", event.functionName); }
+    } catch { await this.publishAsyncMetric("DeadLetterErrors", event.functionName); }
   }
   private async deliverDurableDeadLetter(execution: LambdaDurableExecutionState): Promise<void> {
     const destination = execution.deadLetterDelivery?.targetArn ?? execution.executable.deadLetterTargetArn;
@@ -748,7 +906,7 @@ export class LambdaService {
   }
   /** Marks active invocations replayable before network listeners begin draining. */
   beginShutdown(): void { this.stopped = true; }
-  async invoke(nameOrArn: string, payload: Buffer, requestId = id(24), options: InvokeOptions = {}): Promise<InvokeResult> { const resolved = options.resolvedOverride ?? this.resolveInvocation(nameOrArn, options.qualifier); const result = resolved.executable.durableConfig && !options.durableReplay ? await this.invokeDurable(resolved, payload, requestId, options, "RequestResponse") : await this.invokeRuntime(nameOrArn, payload, requestId, { ...options, resolvedOverride: resolved }); if (options.integrationAttemptAcceptance && !result.interrupted) await options.integrationAttemptAcceptance(result); return result; }
+  async invoke(nameOrArn: string, payload: Buffer, requestId: string = randomUUID(), options: InvokeOptions = {}): Promise<InvokeResult> { const resolved = options.resolvedOverride ?? this.resolveInvocation(nameOrArn, options.qualifier); const result = resolved.executable.durableConfig && !options.durableReplay ? await this.invokeDurable(resolved, payload, requestId, options, "RequestResponse") : await this.invokeRuntime(nameOrArn, payload, requestId, { ...options, resolvedOverride: resolved }); if (options.integrationAttemptAcceptance && !result.interrupted) await options.integrationAttemptAcceptance(result); return result; }
   /** CFN-14 invokes a normal local ZIP runtime with an invocation-local public callback CA. */
   async invokeCloudFormationCustomResource(nameOrArn: string, payload: Buffer, requestId: string, caCertificatePath: string, callbackPort: number, timeoutMs: number, callbackCompleted?: Promise<void>): Promise<InvokeResult> {
     const resolved = this.resolveInvocation(nameOrArn);
@@ -784,7 +942,7 @@ export class LambdaService {
       return { payload: Buffer.from("null"), statusCode: 200, requestId, durationMs: 0, billedDurationMs: 1, executedVersion: resolved.executedVersion, interrupted: true };
     }
   }
-  async invokeStreaming(nameOrArn: string, payload: Buffer, requestId = id(24), options: InvokeOptions = {}, callbacks: LambdaStreamCallbacks): Promise<InvokeResult> { const resolved = this.resolveInvocation(nameOrArn, options.qualifier); if (resolved.executable.durableConfig) throw new AwsError("InvalidParameterValueException", "InvokeWithResponseStream is not supported for durable functions"); return this.invokeRuntime(nameOrArn, payload, requestId, { ...options, resolvedOverride: resolved }, callbacks); }
+  async invokeStreaming(nameOrArn: string, payload: Buffer, requestId: string = randomUUID(), options: InvokeOptions = {}, callbacks: LambdaStreamCallbacks): Promise<InvokeResult> { const resolved = this.resolveInvocation(nameOrArn, options.qualifier); if (resolved.executable.durableConfig) throw new AwsError("InvalidParameterValueException", "InvokeWithResponseStream is not supported for durable functions"); return this.invokeRuntime(nameOrArn, payload, requestId, { ...options, resolvedOverride: resolved }, callbacks); }
   private async invokeZipWorkerRuntime(resolved: ResolvedFunction, event: unknown, requestId: string, options: InvokeOptions, streamCallbacks?: LambdaStreamCallbacks): Promise<InvokeResult> {
     const { fn, executable } = resolved;
     const lease = await this.concurrency.acquire({ functionName: fn.functionName, requestedQualifier: resolved.requestedQualifier });
@@ -796,9 +954,10 @@ export class LambdaService {
     const spec = this.workerSpec(resolved, options, credentials, lease.initializationType, provisionedFor);
     let worker: Awaited<ReturnType<LambdaWorkerPool["lease"]>> | undefined;
     try {
-      worker = await this.workerPool.lease(spec);
+      try { worker = await this.workerPool.lease(spec); }
+      catch (error) { if (error instanceof LambdaInitializationError) return await this.initializationFailure(resolved, spec, requestId, options, error, streamCallbacks); throw error; }
       if (this.stopped) throw new Error("Lambda invocation was interrupted by simulator shutdown");
-      const context = { awsRequestId: requestId, functionName: fn.functionName, functionVersion: resolved.executedVersion, invokedFunctionArn: resolved.qualifiedArn, memoryLimitInMB: String(executable.memorySize), logGroupName: executable.loggingConfig.logGroup, logStreamName: worker.spec.logStreamName, callbackWaitsForEmptyEventLoop: false, clientContext: options.clientContext, identity: undefined, __timeoutMs: effectiveTimeoutMs };
+      const context = { awsRequestId: requestId, functionName: fn.functionName, functionVersion: resolved.executedVersion, invokedFunctionArn: resolved.qualifiedArn, memoryLimitInMB: String(executable.memorySize), logGroupName: executable.loggingConfig.logGroup, logStreamName: worker.spec.logStreamName, callbackWaitsForEmptyEventLoop: true, clientContext: options.clientContext, identity: undefined, __timeoutMs: effectiveTimeoutMs };
       await streamCallbacks?.onStart?.({ requestId, executedVersion: resolved.executedVersion });
       if (options.durableExecutionArn) this.activeDurableChildren.set(options.durableExecutionArn, () => { void worker?.terminate(); });
       const result = await worker.invoke({
@@ -810,7 +969,8 @@ export class LambdaService {
       const durationMs = result.durationMs; const billedDurationMs = Math.max(1, Math.ceil(durationMs));
       const redact = (message: string) => [...new Set(options.sensitiveLogValues ?? [])].filter(Boolean).sort((left, right) => right.length - left.length).reduce((value, secret) => value.replaceAll(secret, "[REDACTED]"), message);
       const applicationLines = result.applicationLogs.map(entry => ({ ...entry, message: redact(entry.message) }));
-      const logLines = this.formatLogLines(executable, fn.functionName, requestId, resolved.executedVersion, durationMs, billedDurationMs, applicationLines, options.serviceLogContext, result.memoryUsage);
+      const outcome = { initDurationMs: result.initDurationMs, status: result.timedOut ? "timeout" as const : result.ok || result.callbackTerminated ? "success" as const : "error" as const, timeoutMessage: result.timedOut ? result.error?.errorMessage : undefined };
+      const logLines = this.formatLogLines(executable, fn.functionName, requestId, resolved.executedVersion, durationMs, billedDurationMs, applicationLines, options.serviceLogContext, result.memoryUsage, undefined, outcome);
       await this.writeLogs(fn, executable.role, executable.loggingConfig.logGroup, worker.spec.logStreamName, logLines, [...(options.lineage ?? []), resolved.qualifiedArn]);
       const logBytes = Buffer.from(logLines.join("\n") + "\n");
       const common = { memoryUsage: result.memoryUsage ?? { status: "unavailable" as const, reason: "worker-ended-without-measurement" as const }, statusCode: 200, logResult: logBytes.subarray(Math.max(0, logBytes.length - 4096)).toString("base64"), requestId, durationMs, billedDurationMs, executedVersion: resolved.executedVersion };
@@ -818,7 +978,7 @@ export class LambdaService {
       const invocation: InvokeResult = result.callbackTerminated || interrupted
         ? { ...common, payload: Buffer.from("null"), ...(interrupted ? { interrupted: true } : {}) }
         : result.ok
-          ? { ...common, payload: Buffer.from(JSON.stringify(result.result ?? null)) }
+          ? { ...common, payload: Buffer.from(result.resultJson ?? "null") }
           : { ...common, payload: Buffer.from(JSON.stringify(result.error ?? { errorMessage: "Lambda runtime failed", errorType: "Runtime.ExitError" })), functionError: "Unhandled" };
       if (this.telemetry) {
         const metricTime = this.clock.now(); const dimensions = { FunctionName: fn.functionName };
@@ -835,10 +995,32 @@ export class LambdaService {
       await lease.release();
     }
   }
+  /**
+   * The function's module could not be loaded (wrong handler, missing module,
+   * syntax error, or a throw during initialization). As on AWS, this is a
+   * function error: 200 with `X-Amz-Function-Error`, a `Runtime.*` payload,
+   * and the init output in the function log.
+   */
+  private async initializationFailure(resolved: ResolvedFunction, spec: LambdaWorkerSpec, requestId: string, options: InvokeOptions, failure: LambdaInitializationError, streamCallbacks?: LambdaStreamCallbacks): Promise<InvokeResult> {
+    const { fn, executable } = resolved;
+    await streamCallbacks?.onStart?.({ requestId, executedVersion: resolved.executedVersion });
+    const durationMs = failure.initDurationMs; const billedDurationMs = Math.max(1, Math.ceil(durationMs));
+    const redact = (message: string) => [...new Set(options.sensitiveLogValues ?? [])].filter(Boolean).sort((left, right) => right.length - left.length).reduce((value, secret) => value.replaceAll(secret, "[REDACTED]"), message);
+    const payload = { errorType: failure.errorType, errorMessage: failure.errorMessage, trace: failure.trace };
+    const entries = [...failure.initializationLogs, { level: "ERROR", message: `Uncaught Exception\t${JSON.stringify({ errorType: failure.errorType, errorMessage: failure.errorMessage, stack: failure.trace })}` }].map(entry => ({ ...entry, message: redact(entry.message) }));
+    const logLines = this.formatLogLines(executable, fn.functionName, requestId, resolved.executedVersion, durationMs, billedDurationMs, [], options.serviceLogContext, undefined, { entries, durationMs, errorType: failure.errorType });
+    await this.writeLogs(fn, executable.role, executable.loggingConfig.logGroup, spec.logStreamName, logLines, [...(options.lineage ?? []), resolved.qualifiedArn]);
+    const logBytes = Buffer.from(logLines.join("\n") + "\n");
+    if (this.telemetry) {
+      const metricTime = this.clock.now(); const dimensions = { FunctionName: fn.functionName };
+      await Promise.all([this.telemetry.publish({ namespace: "AWS/Lambda", metricName: "Invocations", dimensions, value: 1, unit: "Count", timestamp: metricTime }), this.telemetry.publish({ namespace: "AWS/Lambda", metricName: "Duration", dimensions, value: durationMs, unit: "Milliseconds", timestamp: metricTime }), this.telemetry.publish({ namespace: "AWS/Lambda", metricName: "Errors", dimensions, value: 1, unit: "Count", timestamp: metricTime })]).catch(() => undefined);
+    }
+    return { memoryUsage: { status: "unavailable", reason: "worker-ended-without-measurement" }, statusCode: 200, logResult: logBytes.subarray(Math.max(0, logBytes.length - 4096)).toString("base64"), requestId, durationMs, billedDurationMs, executedVersion: resolved.executedVersion, payload: Buffer.from(JSON.stringify(payload)), functionError: "Unhandled" };
+  }
   private async invokeRuntime(nameOrArn: string, payload: Buffer, requestId: string, options: InvokeOptions, streamCallbacks?: LambdaStreamCallbacks): Promise<InvokeResult> {
     const resolved = options.resolvedOverride ?? this.resolveInvocation(nameOrArn, options.qualifier); const { fn, executable } = resolved; if (options.enforceResourcePolicy && options.principal) this.assertResourcePermission(nameOrArn, options.principal, options.sourceArn, options.sourceAccount, options.qualifier);
     if (fn.recursiveLoop === "Terminate" && (options.lineage?.length ?? 0) >= 16) { await this.publishAsyncMetric("RecursiveInvocationsDropped", fn.functionName); throw new AwsError("RecursiveInvocationException", "Lambda stopped this invocation because the recursive invocation lineage reached 16", 400); }
-    if ((fn.state ?? "Active") !== "Active" || (fn.lastUpdateStatus ?? "Successful") === "InProgress") throw new AwsError("ResourceConflictException", "The function is currently in a non-invokable state", 409); if (payload.length > 6 * 1024 * 1024) throw new AwsError("RequestTooLargeException", "Request payload size exceeded the synchronous invocation limit", 413);
+    if ((fn.state ?? "Active") !== "Active" || (fn.lastUpdateStatus ?? "Successful") !== "Successful") throw new AwsError("ResourceConflictException", fn.lastUpdateStatus === "Failed" ? `The function is currently in a non-invokable state: the last update failed (${fn.lastUpdateStatusReason ?? "no reason recorded"}); retry the update` : "The function is currently in a non-invokable state", 409); if (payload.length > 6 * 1024 * 1024) throw new AwsError("RequestTooLargeException", "Request payload size exceeded the synchronous invocation limit", 413);
     let event: unknown = null; if (payload.length) { try { event = JSON.parse(payload.toString("utf8")); } catch { throw new AwsError("InvalidRequestContentException", "Could not parse request body into JSON", 400); } }
     const inheritedCallbackSecrets = cloudFormationCallbackSensitiveLogValues(event);
     if (inheritedCallbackSecrets.length) options = { ...options, sensitiveLogValues: [...(options.sensitiveLogValues ?? []), ...inheritedCallbackSecrets] };
@@ -861,15 +1043,37 @@ export class LambdaService {
       return invocation;
     } finally { if (options.durableExecutionArn) this.activeDurableChildren.delete(options.durableExecutionArn); await lease.release(); }
   }
-  private formatLogLines(executable: Executable, functionName: string, requestId: string, version: string, durationMs: number, billedDurationMs: number, application: Array<{ message: string; level: string }>, serviceLogContext?: InvokeOptions["serviceLogContext"], observedMemory?: LambdaMemoryUsage): string[] {
+  /**
+   * The function log as the AWS Node.js runtime writes it. Text format prefixes
+   * each application line with `timestamp\trequestId\tlevel\t` and folds embedded
+   * newlines to carriage returns; REPORT carries the measured peak memory when
+   * there is one, `Init Duration` on a cold start, and the timeout status.
+   */
+  private formatLogLines(executable: Executable, functionName: string, requestId: string, version: string, durationMs: number, billedDurationMs: number, application: LambdaApplicationLogEntry[], serviceLogContext?: InvokeOptions["serviceLogContext"], observedMemory?: LambdaMemoryUsage, initialization?: { entries: LambdaApplicationLogEntry[]; durationMs: number; errorType: string }, outcome: { initDurationMs?: number; status?: "success" | "error" | "timeout"; timeoutMessage?: string } = {}): string[] {
     const memoryUsage: LambdaMemoryUsage = observedMemory ?? { status: "unavailable", reason: executable.packageType === "Image" ? "container-peak-unavailable" : "worker-ended-without-measurement" };
-    const memoryText = memoryUsage.status === "measured" ? `${memoryUsage.maxMemoryUsedMB.toFixed(2)} MB (worker lifetime peak RSS; excludes child processes)` : `unavailable (${memoryUsage.reason})`;
+    const json = executable.loggingConfig.logFormat === "JSON"; const status = outcome.status ?? "success";
     const now = new Date(this.clock.now()).toISOString(); const levels = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"]; const minimum = levels.indexOf(executable.loggingConfig.applicationLogLevel ?? "INFO"); const output: string[] = [];
+    const stamp = (entry: LambdaApplicationLogEntry) => entry.timestamp === undefined ? now : new Date(entry.timestamp).toISOString();
+    const level = (entry: LambdaApplicationLogEntry) => levels.includes(entry.level) ? entry.level : "INFO";
+    // Init-phase lines carry the literal request ID "undefined", as on AWS.
+    const line = (entry: LambdaApplicationLogEntry, id: string | undefined) => json ? JSON.stringify({ timestamp: stamp(entry), level: level(entry), ...(id ? { requestId: id } : {}), message: entry.message }) : `${stamp(entry)}\t${id ?? "undefined"}\t${level(entry)}\t${entry.message.replace(/\n/g, "\r")}`;
     if (serviceLogContext) output.push(`STACKSIM-SERVICE-CORRELATION ${JSON.stringify({ timestamp: now, lambdaRequestId: requestId, functionName, ...serviceLogContext })}`);
-    const systemEnabled = (executable.loggingConfig.systemLogLevel ?? "INFO") !== "WARN"; const start = `START RequestId: ${requestId} Version: ${version}`; const end = `END RequestId: ${requestId}`; const report = `REPORT RequestId: ${requestId}\tDuration: ${durationMs.toFixed(2)} ms\tBilled Duration: ${billedDurationMs} ms\tMemory Size: ${executable.memorySize} MB\tMax Memory Used: ${memoryText}`;
-    if (systemEnabled) output.push(executable.loggingConfig.logFormat === "JSON" ? JSON.stringify({ time: now, type: "platform.start", record: { requestId, functionName, version } }) : start);
-    for (const entry of application) { const level = levels.includes(entry.level) ? entry.level : "INFO"; if (executable.loggingConfig.logFormat === "JSON" && levels.indexOf(level) < minimum) continue; output.push(executable.loggingConfig.logFormat === "JSON" ? JSON.stringify({ timestamp: now, level, requestId, message: entry.message }) : entry.message); }
-    if (systemEnabled) { if (executable.loggingConfig.logFormat === "JSON") { output.push(JSON.stringify({ time: now, type: "platform.runtimeDone", record: { requestId, status: "success" } })); output.push(JSON.stringify({ time: now, type: "platform.report", record: { requestId, metrics: { durationMs: Number(durationMs.toFixed(2)), billedDurationMs, memorySizeMB: executable.memorySize, ...(memoryUsage.status === "measured" ? { maxMemoryUsedMB: memoryUsage.maxMemoryUsedMB } : {}) }, memoryUsage, resourceLimits: { memory: executable.packageType === "Image" ? "docker-limit-requested" : "descriptor-only", scratch: executable.packageType === "Image" ? "docker-limit-requested" : "descriptor-only" } } })); } else output.push(end, report); }
+    const systemEnabled = (executable.loggingConfig.systemLogLevel ?? "INFO") !== "WARN"; const start = `START RequestId: ${requestId} Version: ${version}`; const end = `END RequestId: ${requestId}`;
+    const report = [`REPORT RequestId: ${requestId}`, `Duration: ${durationMs.toFixed(2)} ms`, `Billed Duration: ${billedDurationMs} ms`, `Memory Size: ${executable.memorySize} MB`, ...(memoryUsage.status === "measured" ? [`Max Memory Used: ${Math.round(memoryUsage.maxMemoryUsedMB)} MB`] : []), ...(outcome.initDurationMs !== undefined ? [`Init Duration: ${outcome.initDurationMs.toFixed(2)} ms`] : []), ...(status === "timeout" ? ["Status: timeout", "Error Type: Sandbox.Timedout"] : [])].join("\t");
+    if (initialization) {
+      // A failed initialization logs the init-phase output and its INIT_REPORT before START, as the AWS runtime does.
+      for (const entry of initialization.entries) output.push(line(entry, undefined));
+      if (systemEnabled) output.push(json ? JSON.stringify({ time: now, type: "platform.initReport", record: { initializationType: "on-demand", phase: "init", status: "error", errorType: initialization.errorType, metrics: { durationMs: Number(initialization.durationMs.toFixed(2)) } } }) : `INIT_REPORT Init Duration: ${initialization.durationMs.toFixed(2)} ms\tPhase: init\tStatus: error\tError Type: ${initialization.errorType}`);
+    }
+    if (systemEnabled) output.push(json ? JSON.stringify({ time: now, type: "platform.start", record: { requestId, functionName, version } }) : start);
+    for (const entry of application) { if (json && levels.indexOf(level(entry)) < minimum) continue; output.push(line(entry, requestId)); }
+    if (status === "timeout" && outcome.timeoutMessage) output.push(json ? JSON.stringify({ timestamp: now, level: "ERROR", requestId, message: outcome.timeoutMessage }) : outcome.timeoutMessage);
+    if (systemEnabled) {
+      if (json) {
+        output.push(JSON.stringify({ time: now, type: "platform.runtimeDone", record: { requestId, status } }));
+        output.push(JSON.stringify({ time: now, type: "platform.report", record: { requestId, status, ...(status === "timeout" ? { errorType: "Sandbox.Timedout" } : {}), metrics: { durationMs: Number(durationMs.toFixed(2)), billedDurationMs, memorySizeMB: executable.memorySize, ...(memoryUsage.status === "measured" ? { maxMemoryUsedMB: memoryUsage.maxMemoryUsedMB } : {}), ...(outcome.initDurationMs !== undefined ? { initDurationMs: Number(outcome.initDurationMs.toFixed(2)) } : {}) }, memoryUsage, resourceLimits: { memory: executable.packageType === "Image" ? "docker-limit-requested" : "descriptor-only", scratch: executable.packageType === "Image" ? "docker-limit-requested" : "descriptor-only" } } }));
+      } else output.push(end, report);
+    }
     return output;
   }
   private async writeLogs(fn: LambdaState, roleArn: string, groupName: string, streamName: string, lines: string[], deliveryLineage: string[] = []): Promise<void> {
@@ -907,7 +1111,7 @@ export class LambdaService {
       environmentOverrides: { ...(options.environmentOverrides ?? {}), AWS_ENDPOINT_URL: secureServiceEndpoint, AWS_ENDPOINT_URL_LAMBDA: secureServiceEndpoint, STACKSIM_ENDPOINT: secureServiceEndpoint, STACKSIM_CLOUDFORMATION_CALLBACK_PORT: String(callbackPort), STACKSIM_CLOUDFORMATION_NETWORK_PORTS: `${endpoint.port},${callbackPort}` },
     });
   }
-  async stop(): Promise<void> { this.beginShutdown(); this.capacityProviders.stop(); this.durableExecutions.shutdown(); this.asyncWorkerCancel?.(); this.asyncWorkerCancel = undefined; const asyncWorkerStop = this.asyncWorker; for (const cancel of this.provisionedTransitions.values()) cancel(); this.provisionedTransitions.clear(); const eventSourceStop = this.eventSources.stop(); const dockerStop = this.dockerRuntime.stop(); const workerStop = this.workerPool.stop(); this.activeDurableChildren.clear(); await Promise.all([eventSourceStop, dockerStop, workerStop, this.durableExecutions.flush(), asyncWorkerStop]); await Promise.allSettled([...this.functionTransitions]); this.concurrency.reset(); }
+  async stop(): Promise<void> { this.beginShutdown(); this.capacityProviders.stop(); this.durableExecutions.shutdown(); this.asyncWorkerCancel?.(); this.asyncWorkerCancel = undefined; const asyncWorkerStop = Promise.all([this.asyncWorker, ...this.asyncInFlight]).then(() => undefined); for (const cancel of this.provisionedTransitions.values()) cancel(); this.provisionedTransitions.clear(); const eventSourceStop = this.eventSources.stop(); const dockerStop = this.dockerRuntime.stop(); const workerStop = this.workerPool.stop(); this.activeDurableChildren.clear(); await Promise.all([eventSourceStop, dockerStop, workerStop, this.durableExecutions.flush(), asyncWorkerStop]); await Promise.allSettled([...this.functionTransitions]); this.concurrency.reset(); }
 
   async handle(req: IncomingMessage, res: ServerResponse, pathname: string, url = new URL(req.url ?? pathname, "http://localhost"), principal?: PrincipalContext): Promise<any> {
     let activeHotswapRecord: CloudFormationHotswapDriftState | undefined;
@@ -925,7 +1129,7 @@ export class LambdaService {
       const responseStreamMatch = pathname.match(/^\/2021-11-15\/functions\/([^/]+)\/response-streaming-invocations$/);
       if (responseStreamMatch && req.method === "POST") {
         const name = decodeURIComponent(responseStreamMatch[1]); const qualifier = url.searchParams.get("Qualifier") ?? undefined; const invocationType = String(req.headers["x-amz-invocation-type"] ?? "RequestResponse"); if (!new Set(["RequestResponse", "DryRun"]).has(invocationType)) throw new AwsError("InvalidParameterValueException", "InvokeWithResponseStream supports RequestResponse or DryRun"); const logType = String(req.headers["x-amz-log-type"] ?? "None"); if (!new Set(["None", "Tail"]).has(logType) || (logType === "Tail" && invocationType !== "RequestResponse")) throw new AwsError("InvalidParameterValueException", "LogType Tail is supported only for RequestResponse invocations"); if (req.headers["x-amz-tenant-id"]) throw new AwsError("InvalidParameterValueException", "TenantId requires a multi-tenant Lambda configuration that is not available"); const body = await readBody(req); if (body.length > 6 * 1024 * 1024) throw new AwsError("RequestTooLargeException", "Request payload size exceeded the synchronous invocation limit", 413); if (body.length) try { JSON.parse(body.toString("utf8")); } catch { throw new AwsError("InvalidRequestContentException", "Could not parse request body into JSON", 400); } let clientContext: unknown; const encoded = req.headers["x-amz-client-context"]; if (encoded) try { clientContext = JSON.parse(Buffer.from(String(encoded), "base64").toString("utf8")); } catch { throw new AwsError("InvalidParameterValueException", "ClientContext is not valid base64 JSON"); } const resolved = this.resolve(name, qualifier); if (resolved.executable.durableConfig) throw new AwsError("InvalidParameterValueException", "InvokeWithResponseStream is not supported for durable functions"); if (invocationType === "DryRun") { res.statusCode = 204; return res.end(); }
-        res.statusCode = 200; res.setHeader("content-type", "application/vnd.amazon.eventstream"); const result = await this.invokeStreaming(name, body, id(24), { qualifier, clientContext, lineage: principal?.lambdaLineage }, { onStart: value => { res.setHeader("x-amz-executed-version", value.executedVersion); res.setHeader("x-amzn-requestid", value.requestId); res.flushHeaders(); }, onChunk: chunk => writeWithBackpressure(res, eventStreamMessage("PayloadChunk", chunk, "application/octet-stream")) }); const complete = { ...(result.functionError ? { ErrorCode: result.functionError, ErrorDetails: result.payload.toString("utf8") } : {}), ...(logType === "Tail" ? { LogResult: result.logResult } : {}) }; await writeWithBackpressure(res, eventStreamMessage("InvokeComplete", Buffer.from(JSON.stringify(complete)), "application/json")); return res.end();
+        res.statusCode = 200; res.setHeader("content-type", "application/vnd.amazon.eventstream"); const result = await this.invokeStreaming(name, body, randomUUID(), { qualifier, clientContext, lineage: principal?.lambdaLineage }, { onStart: value => { res.setHeader("x-amz-executed-version", value.executedVersion); res.setHeader("x-amzn-requestid", value.requestId); res.flushHeaders(); }, onChunk: chunk => writeWithBackpressure(res, eventStreamMessage("PayloadChunk", chunk, "application/octet-stream")) }); const complete = { ...(result.functionError ? { ErrorCode: result.functionError, ErrorDetails: result.payload.toString("utf8") } : {}), ...(logType === "Tail" ? { LogResult: result.logResult } : {}) }; await writeWithBackpressure(res, eventStreamMessage("InvokeComplete", Buffer.from(JSON.stringify(complete)), "application/json")); return res.end();
       }
       if (pathname.startsWith("/2018-10-31/layers")) return await this.layers.handle(req, res, pathname, url);
       if (pathname.startsWith("/2015-03-31/event-source-mappings")) return await this.eventSources.handle(req, res, pathname, url);
@@ -967,17 +1171,26 @@ export class LambdaService {
       const tagMatch = pathname.match(/^\/2017-03-31\/tags\/(.+)$/);
       if (tagMatch) { const resource = decodeURIComponent(tagMatch[1]); if (!resource.startsWith("arn:aws:lambda:")) throw new AwsError("InvalidParameterValueException", "Resource must be a Lambda ARN"); const mappingUuid = resource.match(/:event-source-mapping:([^:]+)$/)?.[1]; let targetTags: Record<string, string>; const signingConfig = this.store.regionState(this.region).lambdaCodeSigningConfigs[resource]; if (signingConfig) targetTags = signingConfig.tags; else if (mappingUuid) { const mapping = this.store.regionState(this.region).lambdaEventSourceMappings[mappingUuid]; if (!mapping || mapping.eventSourceMappingArn !== resource) throw new AwsError("ResourceNotFoundException", "Event source mapping not found", 404); targetTags = mapping.tags; } else { const target = parseFunctionTarget(resource); const resolved = this.resolve(target.name, target.qualifier); targetTags = resolved.fn.tags!; } if (req.method === "GET") return json(res, { Tags: targetTags }); const input = JSON.parse((await readBody(req)).toString("utf8") || "{}"); if (req.method === "POST") { const additions = tags(input.Tags); if (new Set([...Object.keys(targetTags), ...Object.keys(additions)]).size > 50) throw new AwsError("InvalidParameterValueException", "A maximum of 50 tags is allowed"); Object.assign(targetTags, additions); await this.store.save(); res.statusCode = 204; return res.end(); } if (req.method === "DELETE") { const keys = url.searchParams.getAll("tagKeys"); if (!keys.length || keys.length > 50) throw new AwsError("InvalidParameterValueException", "TagKeys must contain between 1 and 50 keys"); for (const key of keys) delete targetTags[key]; await this.store.save(); res.statusCode = 204; return res.end(); } }
       if (pathname === "/2015-03-31/functions" && req.method === "POST") {
-        const input = JSON.parse((await readBody(req)).toString("utf8")); if (this.store.regionState(this.region).functions[input.FunctionName]) throw new AwsError("ResourceConflictException", `Function already exists: ${input.FunctionName}`, 409); this.validateConfiguration(input, true); const packageType = this.validatePackageConfiguration(input, true); this.validateRole(input.Role, principal, `arn:aws:lambda:${this.region}:${this.store.accountId}:function:${input.FunctionName}`);
+        const input = JSON.parse((await readBody(req)).toString("utf8"));
+        // FunctionName accepts the name or any ARN form; the function is stored under its bare name.
+        if (typeof input.FunctionName === "string") input.FunctionName = parseFunctionTarget(input.FunctionName).name;
+        if (typeof input.FunctionName !== "string" || !/^[A-Za-z0-9-_]{1,64}$/.test(input.FunctionName)) throw new AwsError("InvalidParameterValueException", "1 validation error detected: Value at 'functionName' failed to satisfy constraint: Member must satisfy regular expression pattern: (arn:(aws[a-zA-Z-]*)?:lambda:)?([a-z]{2}(-gov)?-[a-z]+-\\d{1}:)?(\\d{12}:)?(function:)?([a-zA-Z0-9-_]+)(:(\\$LATEST|[a-zA-Z0-9-_]+))?");
+        if (this.store.regionState(this.region).functions[input.FunctionName]) throw new AwsError("ResourceConflictException", `Function already exists: ${input.FunctionName}`, 409); this.validateConfiguration(input, true, Boolean(getCloudFormationOwner(req))); const packageType = this.validatePackageConfiguration(input, true); this.validateRole(input.Role, principal, `arn:aws:lambda:${this.region}:${this.store.accountId}:function:${input.FunctionName}`);
         if (input.Publish !== undefined && typeof input.Publish !== "boolean") throw new AwsError("InvalidParameterValueException", "Publish must be a boolean"); if (input.Publish && input.PublishTo !== undefined) throw new AwsError("InvalidParameterValueException", "Publish and PublishTo cannot be used together"); if (input.PublishTo !== undefined && input.PublishTo !== "LATEST_PUBLISHED") throw new AwsError("InvalidParameterValueException", "PublishTo must be LATEST_PUBLISHED");
         const advanced = this.executableConfiguration(input, input.FunctionName, undefined, principal); const runtime = packageType === "Zip" ? input.Runtime : ""; const handler = packageType === "Zip" ? input.Handler : ""; const layers = packageType === "Zip" ? this.layers.resolveFunctionLayers(input.Layers, runtime, 0, advanced.architectures[0]) : [];
-        const fn: LambdaState = { functionName: input.FunctionName, functionArn: `arn:aws:lambda:${this.region}:${this.store.accountId}:function:${input.FunctionName}`, runtime, role: input.Role, handler, timeout: input.Timeout ?? 3, memorySize: input.MemorySize ?? 128, description: input.Description ?? "", environment: input.Environment?.Variables ?? {}, codeSha256: "", codeSize: 0, codeUnzippedSize: 0, codeDir: "", layers, ...advanced, version: 0, revisionId: id(32), tags: tags(input.Tags), versions: {}, aliases: {}, policies: {}, eventInvokeConfigs: {}, provisionedConcurrencyConfigs: {}, functionUrlConfigs: {}, functionScalingConfigs: {}, ...(input.CodeSigningConfigArn ? { codeSigningConfigArn: input.CodeSigningConfigArn } : {}), recursiveLoop: "Terminate", lastModified: new Date(this.clock.now()).toISOString(), state: "Pending", lastUpdateStatus: "InProgress" };
+        const fn: LambdaState = { functionName: input.FunctionName, functionArn: `arn:aws:lambda:${this.region}:${this.store.accountId}:function:${input.FunctionName}`, runtime, role: input.Role, handler, timeout: input.Timeout ?? 3, memorySize: input.MemorySize ?? 128, description: input.Description ?? "", environment: input.Environment?.Variables ?? {}, codeSha256: "", codeSize: 0, codeUnzippedSize: 0, codeDir: "", layers, ...advanced, version: 0, revisionId: randomUUID(), tags: tags(input.Tags), versions: {}, aliases: {}, policies: {}, eventInvokeConfigs: {}, provisionedConcurrencyConfigs: {}, functionUrlConfigs: {}, functionScalingConfigs: {}, ...(input.CodeSigningConfigArn ? { codeSigningConfigArn: input.CodeSigningConfigArn } : {}), recursiveLoop: "Terminate", lastModified: new Date(this.clock.now()).toISOString(), state: "Pending", stateReason: "The function is being created.", stateReasonCode: "Creating" };
         if (input.PublishTo !== undefined) this.capacityProviders.assertPublishCapacity(fn);
-        if (packageType === "Image") this.installImage(fn, await this.images.resolve(input.Code.ImageUri, advanced.architectures[0])); else { this.assertCodeSigningDeployment(fn); await this.installCode(fn, Buffer.from(input.Code.ZipFile, "base64")); }
+        if (packageType === "Image") this.installImage(fn, await this.images.resolve(input.Code.ImageUri, advanced.architectures[0])); else { this.assertCodeSigningDeployment(fn); await this.installCode(fn, await this.codeArchive(input.Code)); }
         this.store.regionState(this.region).functions[fn.functionName] = fn; const publishedVersion = this.publicationTarget(fn, Boolean(input.Publish), input.PublishTo); if (publishedVersion) this.publishSnapshot(fn, publishedVersion); await this.store.save(); const output = this.configuration(this.resolve(fn.functionName, publishedVersion)); this.transition(fn, "create"); return json(res, output, 201);
       }
-      if (pathname === "/2015-03-31/functions" && req.method === "GET") { const functions = Object.values(this.store.regionState(this.region).functions).sort((a, b) => a.functionName.localeCompare(b.functionName)); const max = Math.min(10_000, Math.max(1, Number(url.searchParams.get("MaxItems") ?? 50))); let start = 0; const marker = url.searchParams.get("Marker"); if (marker) { try { start = this.tokens.decode<{ index: number }>("ListFunctions", marker).index; } catch { throw new AwsError("InvalidParameterValueException", "Invalid Marker"); } } const page = functions.slice(start, start + max); const next = start + page.length; return json(res, { Functions: page.map(fn => this.configuration(this.resolve(fn.functionName))), ...(next < functions.length ? { NextMarker: this.tokens.encode("ListFunctions", { index: next }) } : {}) }); }
+      if (pathname === "/2015-03-31/functions" && req.method === "GET") {
+        const functionVersion = url.searchParams.get("FunctionVersion"); if (functionVersion !== null && functionVersion !== "ALL") throw new AwsError("InvalidParameterValueException", "FunctionVersion must be ALL when specified");
+        // FunctionVersion=ALL lists each function's $LATEST followed by its published versions.
+        const values = Object.values(this.store.regionState(this.region).functions).sort((a, b) => a.functionName.localeCompare(b.functionName)).flatMap(fn => [this.configuration(this.resolve(fn.functionName)), ...(functionVersion === "ALL" ? Object.keys(fn.versions ?? {}).filter(version => /^\d+$/.test(version)).sort((a, b) => Number(a) - Number(b)).map(version => this.configuration(this.resolve(fn.functionName, version))) : [])]);
+        const max = Math.min(10_000, Math.max(1, Number(url.searchParams.get("MaxItems") ?? 50))); let start = 0; const marker = url.searchParams.get("Marker"); if (marker) { try { start = this.tokens.decode<{ index: number }>("ListFunctions", marker).index; } catch { throw new AwsError("InvalidParameterValueException", "Invalid Marker"); } } const page = values.slice(start, start + max); const next = start + page.length; return json(res, { Functions: page, ...(next < values.length ? { NextMarker: this.tokens.encode("ListFunctions", { index: next }) } : {}) });
+      }
       const match = pathname.match(/^\/2015-03-31\/functions\/([^/]+)(.*)$/); if (!match) throw new AwsError("ResourceNotFoundException", "Unknown Lambda route", 404); const target = parseFunctionTarget(decodeURIComponent(match[1])); const name = target.name; const suffix = match[2]; const qualifier = url.searchParams.get("Qualifier") ?? target.qualifier;
-      if (suffix === "" && req.method === "GET") { const resolved = this.resolve(name, qualifier); const inlineSource = this.inlineCodeSource(resolved.executable); const source = inlineSource ? await readFile(resolve(resolved.executable.codeDir, inlineSource.FileName), "utf8") : undefined; const code = resolved.executable.packageType === "Image" ? { RepositoryType: "ECR", ImageUri: resolved.executable.imageUri, ResolvedImageUri: resolved.executable.resolvedImageUri, LocalImageSource: resolved.executable.imageSource } : { RepositoryType: "S3", Location: `file://${resolved.executable.codeDir}`, ...(inlineSource ? { StackSimCodeSource: { ...inlineSource, Source: source } } : {}) }; return json(res, { Configuration: this.configuration(resolved), Code: code, Tags: resolved.fn.tags, ...(resolved.fn.reservedConcurrentExecutions !== undefined ? { Concurrency: { ReservedConcurrentExecutions: resolved.fn.reservedConcurrentExecutions } } : {}) }); }
+      if (suffix === "" && req.method === "GET") { const resolved = this.resolve(name, qualifier); const inlineSource = this.inlineCodeSource(resolved.executable); const source = inlineSource ? await readFile(resolve(resolved.executable.codeDir, inlineSource.FileName), "utf8") : undefined; const code = resolved.executable.packageType === "Image" ? { RepositoryType: "ECR", ImageUri: resolved.executable.imageUri, ResolvedImageUri: resolved.executable.resolvedImageUri, LocalImageSource: resolved.executable.imageSource } : { RepositoryType: "S3", Location: this.codeDownloadUrl(resolved.executable.codeDir), ...(inlineSource ? { StackSimCodeSource: { ...inlineSource, Source: source } } : {}) }; return json(res, { Configuration: this.configuration(resolved), Code: code, Tags: resolved.fn.tags, ...(resolved.fn.reservedConcurrentExecutions !== undefined ? { Concurrency: { ReservedConcurrentExecutions: resolved.fn.reservedConcurrentExecutions } } : {}) }); }
       if (suffix === "" && req.method === "DELETE") { const target = parseFunctionTarget(name); const requested = qualifier ?? target.qualifier; const fn = this.require(target.name); if (this.durableExecutions.hasRunningForFunction(fn.functionName, requested && requested !== "$LATEST" ? requested : undefined)) throw new AwsError("ResourceConflictException", "Cannot delete a function or version with running durable executions", 409); if (requested && requested !== "$LATEST") { if (!fn.versions?.[requested]) throw new AwsError("ResourceNotFoundException", "Version not found", 404); if (Object.values(fn.aliases ?? {}).some(alias => alias.functionVersion === requested || alias.additionalVersionWeights[requested] !== undefined)) throw new AwsError("ResourceConflictException", "Cannot delete a version that is referenced by an alias", 409); if (fn.provisionedConcurrencyConfigs![requested]) throw new AwsError("ResourceConflictException", "Cannot delete a version with provisioned concurrency configured", 409); const dir = fn.versions[requested].codeDir; await this.workerPool.retireFunctionVersion(fn.functionName, requested); delete fn.versions[requested]; delete fn.eventInvokeConfigs![requested]; delete fn.functionScalingConfigs![requested]; this.eventSources.disableForFunction(fn.functionName, requested); if (dir && dir !== fn.codeDir && !Object.values(fn.versions).some(version => version.codeDir === dir)) await rm(dir, { recursive: true, force: true }); } else { for (const qualifier of Object.keys(fn.provisionedConcurrencyConfigs!)) { const key = this.provisionedKey(fn.functionName, qualifier); this.provisionedTransitions.get(key)?.(); this.provisionedTransitions.delete(key); } await this.workerPool.retireFunctionVersion(fn.functionName); delete this.store.regionState(this.region).functions[fn.functionName]; this.eventSources.disableForFunction(fn.functionName); for (const [eventId, event] of Object.entries(this.asyncQueue)) if (event.functionName === fn.functionName) delete this.asyncQueue[eventId]; const dirs = new Set([fn.codeDir, ...Object.values(fn.versions ?? {}).map(version => version.codeDir)].filter(Boolean)); await Promise.all([...dirs].map(dir => rm(dir, { recursive: true, force: true }))); } await this.store.save(); res.statusCode = 204; return res.end(); }
       if (suffix.startsWith("/invocations") && req.method === "POST" && isPinnedCdkHotswapRequest(req) && this.s3Service) {
         const fn = this.require(name);
@@ -990,7 +1203,7 @@ export class LambdaService {
           completeHotswapDrift(this.store.regionState(this.region).cloudformation, activeHotswapRecord, `${fn.revisionId ?? "unknown"}:invoke:${requestPayloadDigest(payload)}`, this.clock.now());
           await hotswapCheckpoint(this.store.regionState(this.region).cloudformation, "after-direct-call", activeHotswapRecord);
           await this.store.save();
-          res.statusCode = 200; res.setHeader("content-type", "application/json"); res.setHeader("x-amzn-requestid", id(24)); return res.end("{}");
+          res.statusCode = 200; res.setHeader("content-type", "application/json"); res.setHeader("x-amzn-requestid", randomUUID()); return res.end("{}");
         }
       }
       if (suffix === "/code" && req.method === "PUT") {
@@ -1010,17 +1223,13 @@ export class LambdaService {
           fn.architectures = [architecture]; fn.lastUpdateStatus = "InProgress"; this.installImage(fn, image);
         } else {
           if (input.ImageUri !== undefined) throw new AwsError("InvalidParameterValueException", "ImageUri is valid only for image functions");
-          const zip = input.ZipFile !== undefined
-            ? Buffer.from(input.ZipFile, "base64")
-            : typeof input.S3Bucket === "string" && typeof input.S3Key === "string" && this.s3Service
-              ? (await this.s3Service.readObjectBytes(input.S3Bucket, input.S3Key, input.S3ObjectVersion, 50 * 1024 * 1024)).body
-              : undefined;
-          if (!zip) throw new AwsError("InvalidParameterValueException", "ZipFile or S3Bucket and S3Key are required");
+          const zip = await this.codeArchive(input);
           this.assertCodeSigningDeployment(fn);
           if (input.DryRun) return json(res, this.configuration(this.resolve(name)));
           await this.workerPool.retireFunctionVersion(fn.functionName, "$LATEST");
           const previousArchitectures = fn.architectures; fn.architectures = [architecture]; fn.lastUpdateStatus = "InProgress";
-          try { await this.installCode(fn, zip); } catch (error) { fn.architectures = previousArchitectures; fn.lastUpdateStatus = "Successful"; throw error; }
+          // A failed code update leaves LastUpdateStatus=Failed with its reason until a later update succeeds; the previous code stays installed.
+          try { await this.installCode(fn, zip); } catch (error) { fn.architectures = previousArchitectures; fn.lastUpdateStatus = "Failed"; fn.lastUpdateStatusReason = error instanceof Error ? error.message : String(error); fn.lastUpdateStatusReasonCode = "InvalidZipFileException"; await this.store.save(); throw error; }
         }
         const publishedVersion = this.publicationTarget(fn, Boolean(input.Publish), input.PublishTo); if (publishedVersion) this.publishSnapshot(fn, publishedVersion); if (activeHotswapRecord) { completeHotswapDrift(this.store.regionState(this.region).cloudformation, activeHotswapRecord, fn.revisionId ?? "unknown", this.clock.now()); await hotswapCheckpoint(this.store.regionState(this.region).cloudformation, "after-direct-call", activeHotswapRecord); } await this.store.save(); const output = this.configuration(this.resolve(name, publishedVersion)); this.transition(fn, "update"); return json(res, output);
       }
@@ -1039,20 +1248,20 @@ export class LambdaService {
         if (input.Role) fn.role = input.Role; if (input.Timeout !== undefined) fn.timeout = input.Timeout; if (input.MemorySize !== undefined) fn.memorySize = input.MemorySize; if (input.Description !== undefined) fn.description = input.Description;
         if (input.Environment !== undefined) { fn.environment = input.Environment.Variables; delete fn.environmentError; }
         if (input.CodeSigningConfigArn !== undefined) { if (input.CodeSigningConfigArn) fn.codeSigningConfigArn = input.CodeSigningConfigArn; else delete fn.codeSigningConfigArn; }
-        fn.lastModified = new Date(this.clock.now()).toISOString(); fn.revisionId = id(32); fn.lastUpdateStatus = "InProgress"; if (activeHotswapRecord) { completeHotswapDrift(this.store.regionState(this.region).cloudformation, activeHotswapRecord, fn.revisionId, this.clock.now()); await hotswapCheckpoint(this.store.regionState(this.region).cloudformation, "after-direct-call", activeHotswapRecord); } await this.store.save(); const output = this.configuration(this.resolve(name)); this.transition(fn, "update"); return json(res, output);
+        fn.lastModified = new Date(this.clock.now()).toISOString(); fn.revisionId = randomUUID(); fn.lastUpdateStatus = "InProgress"; if (activeHotswapRecord) { completeHotswapDrift(this.store.regionState(this.region).cloudformation, activeHotswapRecord, fn.revisionId, this.clock.now()); await hotswapCheckpoint(this.store.regionState(this.region).cloudformation, "after-direct-call", activeHotswapRecord); } await this.store.save(); const output = this.configuration(this.resolve(name)); this.transition(fn, "update"); return json(res, output);
       }
-      if (suffix === "/versions" && req.method === "POST") { if (qualifier && qualifier !== "$LATEST") throw new AwsError("InvalidParameterValueException", "A version cannot be published from a published version or alias"); const input = JSON.parse((await readBody(req)).toString("utf8") || "{}"); const fn = this.require(name); const operationToken = input.StackSimCloudFormationOperationToken; if (operationToken !== undefined && (typeof operationToken !== "string" || !/^[a-f0-9]{64}$/.test(operationToken))) throw new AwsError("InvalidParameterValueException", "StackSimCloudFormationOperationToken must contain 64 lowercase hexadecimal characters"); if (operationToken && input.PublishTo !== undefined) throw new AwsError("InvalidParameterValueException", "A CloudFormation operation token can publish only a numeric version"); if (operationToken) { const existing = Object.values(fn.versions!).filter(candidate => candidate.cloudFormationOperationToken === operationToken); if (existing.length > 1) throw new AwsError("ResourceConflictException", "Multiple published versions carry the same CloudFormation operation token", 409); if (existing[0]) { if (input.Description !== undefined && input.Description !== existing[0].description || input.CodeSha256 !== undefined && input.CodeSha256 !== existing[0].codeSha256) throw new AwsError("ResourceConflictException", "The CloudFormation operation token belongs to a different published version", 409); return json(res, this.configuration(this.resolve(name, existing[0].version)), 201); } } if (input.CodeSha256 !== undefined && input.CodeSha256 !== fn.codeSha256) throw new AwsError("PreconditionFailedException", "CodeSha256 does not match", 412); if (input.RevisionId && input.RevisionId !== fn.revisionId) throw new AwsError("PreconditionFailedException", "RevisionId does not match", 412); const version = this.publicationTarget(fn, input.PublishTo === undefined, input.PublishTo)!; this.publishSnapshot(fn, version, input.Description ?? fn.description, operationToken); await this.store.save(); return json(res, this.configuration(this.resolve(name, version)), 201); }
+      if (suffix === "/versions" && req.method === "POST") { if (qualifier && qualifier !== "$LATEST") throw new AwsError("InvalidParameterValueException", "A version cannot be published from a published version or alias"); const input = JSON.parse((await readBody(req)).toString("utf8") || "{}"); const fn = this.require(name); const operationToken = input.StackSimCloudFormationOperationToken; if (operationToken !== undefined && (typeof operationToken !== "string" || !/^[a-f0-9]{64}$/.test(operationToken))) throw new AwsError("InvalidParameterValueException", "StackSimCloudFormationOperationToken must contain 64 lowercase hexadecimal characters"); if (operationToken && input.PublishTo !== undefined) throw new AwsError("InvalidParameterValueException", "A CloudFormation operation token can publish only a numeric version"); if (operationToken) { const existing = Object.values(fn.versions!).filter(candidate => candidate.cloudFormationOperationToken === operationToken); if (existing.length > 1) throw new AwsError("ResourceConflictException", "Multiple published versions carry the same CloudFormation operation token", 409); if (existing[0]) { if (input.Description !== undefined && input.Description !== existing[0].description || input.CodeSha256 !== undefined && input.CodeSha256 !== existing[0].codeSha256) throw new AwsError("ResourceConflictException", "The CloudFormation operation token belongs to a different published version", 409); return json(res, this.configuration(this.resolve(name, existing[0].version)), 201); } } if (input.CodeSha256 !== undefined && input.CodeSha256 !== fn.codeSha256) throw new AwsError("PreconditionFailedException", "CodeSha256 does not match", 412); if (input.RevisionId && input.RevisionId !== fn.revisionId) throw new AwsError("PreconditionFailedException", "RevisionId does not match", 412); if (input.PublishTo === undefined && !operationToken) { const newest = Object.values(fn.versions ?? {}).filter(candidate => /^\d+$/.test(candidate.version)).sort((a, b) => Number(b.version) - Number(a.version))[0]; if (newest && this.publicationFingerprint(fn) === this.publicationFingerprint(newest)) return json(res, this.configuration(this.resolve(name, newest.version)), 201); } const version = this.publicationTarget(fn, input.PublishTo === undefined, input.PublishTo)!; this.publishSnapshot(fn, version, input.Description ?? fn.description, operationToken); await this.store.save(); return json(res, this.configuration(this.resolve(name, version)), 201); }
       if (suffix === "/versions" && req.method === "GET") { const fn = this.require(name); const operationToken = url.searchParams.get("stacksim-cloudformation-operation-token"); if (operationToken !== null && !/^[a-f0-9]{64}$/.test(operationToken)) throw new AwsError("InvalidParameterValueException", "Invalid CloudFormation operation token"); const versions = Object.keys(fn.versions!).filter(version => operationToken === null || fn.versions![version].cloudFormationOperationToken === operationToken).sort((a, b) => a === "$LATEST.PUBLISHED" ? -1 : b === "$LATEST.PUBLISHED" ? 1 : Number(a) - Number(b)); const values = operationToken === null ? [this.configuration(this.resolve(name)), ...versions.map(version => this.configuration(this.resolve(name, version)))] : versions.map(version => this.configuration(this.resolve(name, version))); const requestedMax = Number(url.searchParams.get("MaxItems") ?? 50); if (!Number.isInteger(requestedMax) || requestedMax < 1 || requestedMax > 10_000) throw new AwsError("InvalidParameterValueException", "MaxItems must be between 1 and 10000"); const max = Math.min(50, requestedMax); let start = 0; const marker = url.searchParams.get("Marker"); if (marker) try { const cursor = this.tokens.decode<{ functionName: string; index: number }>("ListVersionsByFunction", marker); if (cursor.functionName !== fn.functionName) throw new Error(); start = cursor.index; } catch { throw new AwsError("InvalidParameterValueException", "Invalid Marker"); } const page = values.slice(start, start + max); const next = start + page.length; return json(res, { Versions: page, ...(next < values.length ? { NextMarker: this.tokens.encode("ListVersionsByFunction", { functionName: fn.functionName, index: next }) } : {}) }); }
-      if (suffix === "/aliases" && req.method === "POST") { const input = JSON.parse((await readBody(req)).toString("utf8")); const fn = this.require(name); this.validateAlias(fn, input.Name, input.FunctionVersion, input.RoutingConfig?.AdditionalVersionWeights); if (fn.aliases![input.Name]) throw new AwsError("ResourceConflictException", "Alias already exists", 409); const alias: LambdaAliasState = { name: input.Name, functionVersion: input.FunctionVersion, description: input.Description, revisionId: id(32), additionalVersionWeights: input.RoutingConfig?.AdditionalVersionWeights ?? {} }; fn.aliases![alias.name] = alias; await this.store.save(); return json(res, this.aliasView(fn, alias), 201); }
-      if (suffix === "/aliases" && req.method === "GET") { const fn = this.require(name); const functionVersion = url.searchParams.get("FunctionVersion"); if (functionVersion && !/^\d+$/.test(functionVersion)) throw new AwsError("InvalidParameterValueException", "FunctionVersion must be a published numeric version"); const values = Object.values(fn.aliases!).filter(alias => !functionVersion || alias.functionVersion === functionVersion).sort((a, b) => a.name.localeCompare(b.name)); const max = Number(url.searchParams.get("MaxItems") ?? 50); if (!Number.isInteger(max) || max < 1 || max > 10_000) throw new AwsError("InvalidParameterValueException", "MaxItems must be between 1 and 10000"); let start = 0; const marker = url.searchParams.get("Marker"); if (marker) try { const cursor = this.tokens.decode<{ functionName: string; functionVersion?: string; index: number }>("ListAliases", marker); if (cursor.functionName !== fn.functionName || cursor.functionVersion !== (functionVersion ?? undefined)) throw new Error(); start = cursor.index; } catch { throw new AwsError("InvalidParameterValueException", "Invalid Marker"); } const page = values.slice(start, start + max); const next = start + page.length; return json(res, { Aliases: page.map(alias => this.aliasView(fn, alias)), ...(next < values.length ? { NextMarker: this.tokens.encode("ListAliases", { functionName: fn.functionName, functionVersion: functionVersion ?? undefined, index: next }) } : {}) }); }
-      const aliasMatch = suffix.match(/^\/aliases\/([^/]+)$/); if (aliasMatch) { const fn = this.require(name); const alias = fn.aliases![decodeURIComponent(aliasMatch[1])]; if (!alias) throw new AwsError("ResourceNotFoundException", "Alias not found", 404); if (req.method === "GET") return json(res, this.aliasView(fn, alias)); if (req.method === "PUT") { const input = JSON.parse((await readBody(req)).toString("utf8")); if (input.RevisionId && input.RevisionId !== alias.revisionId) throw new AwsError("PreconditionFailedException", "RevisionId does not match", 412); this.validateAlias(fn, alias.name, input.FunctionVersion ?? alias.functionVersion, input.RoutingConfig?.AdditionalVersionWeights ?? alias.additionalVersionWeights); if (input.FunctionVersion) alias.functionVersion = input.FunctionVersion; if (input.Description !== undefined) alias.description = input.Description; if (input.RoutingConfig) alias.additionalVersionWeights = input.RoutingConfig.AdditionalVersionWeights ?? {}; alias.revisionId = id(32); const provisioned = fn.provisionedConcurrencyConfigs![alias.name]; if (provisioned) { provisioned.status = "IN_PROGRESS"; provisioned.allocatedProvisionedConcurrentExecutions = 0; provisioned.lastModified = new Date(this.clock.now()).toISOString(); delete provisioned.statusReason; } await this.store.save(); if (provisioned) this.scheduleProvisionedReady(fn, provisioned, 0); return json(res, this.aliasView(fn, alias)); } if (req.method === "DELETE") { if (fn.provisionedConcurrencyConfigs![alias.name]) throw new AwsError("ResourceConflictException", "Cannot delete an alias with provisioned concurrency configured", 409); if (fn.functionUrlConfigs![alias.name]) throw new AwsError("ResourceConflictException", "Cannot delete an alias with a function URL configured", 409); delete fn.aliases![alias.name]; this.eventSources.disableForFunction(fn.functionName, alias.name); await this.store.save(); res.statusCode = 204; return res.end(); } }
-      if (suffix === "/policy" && req.method === "POST") { const input = JSON.parse((await readBody(req)).toString("utf8")); const fn = this.require(name); if (qualifier) this.resolve(name, qualifier); if (!input.Principal || !/^lambda:[A-Za-z*]+$/.test(input.Action ?? "")) throw new AwsError("InvalidParameterValueException", "Principal and a valid Lambda action are required"); if (input.SourceAccount && !/^\d{12}$/.test(input.SourceAccount)) throw new AwsError("InvalidParameterValueException", "SourceAccount must be a 12-digit account ID"); if (input.FunctionUrlAuthType !== undefined && !new Set(["NONE", "AWS_IAM"]).has(input.FunctionUrlAuthType)) throw new AwsError("InvalidParameterValueException", "FunctionUrlAuthType must be NONE or AWS_IAM"); if (input.InvokedViaFunctionUrl !== undefined && typeof input.InvokedViaFunctionUrl !== "boolean") throw new AwsError("InvalidParameterValueException", "InvokedViaFunctionUrl must be a boolean"); const key = qualifier ?? ""; const policy = fn.policies![key] ??= { revisionId: id(32), statements: [] }; if (input.RevisionId && input.RevisionId !== policy.revisionId) throw new AwsError("PreconditionFailedException", "RevisionId does not match", 412); if (!/^[A-Za-z0-9-_]{1,100}$/.test(input.StatementId ?? "") || policy.statements.some(statement => statement.Sid === input.StatementId)) throw new AwsError("ResourceConflictException", "The statement id already exists or is invalid", 409); const resource = qualifier ? `${fn.functionArn}:${qualifier}` : fn.functionArn; const statement: LambdaResourcePolicyState["statements"][number] = { Sid: input.StatementId, Effect: "Allow", Principal: input.Principal, Action: input.Action, Resource: resource }; const condition: Record<string, Record<string, string>> = {}; if (input.SourceArn) condition.ArnLike = { "AWS:SourceArn": input.SourceArn }; if (input.SourceAccount) (condition.StringEquals ??= {})["AWS:SourceAccount"] = input.SourceAccount; if (input.PrincipalOrgID) (condition.StringEquals ??= {})["aws:PrincipalOrgID"] = input.PrincipalOrgID; if (input.FunctionUrlAuthType) (condition.StringEquals ??= {})["lambda:FunctionUrlAuthType"] = input.FunctionUrlAuthType; if (input.InvokedViaFunctionUrl !== undefined) (condition.Bool ??= {})["lambda:InvokedViaFunctionUrl"] = String(input.InvokedViaFunctionUrl); if (Object.keys(condition).length) statement.Condition = condition; policy.statements.push(statement); policy.revisionId = id(32); await this.store.save(); return json(res, { Statement: JSON.stringify(statement), RevisionId: policy.revisionId }, 201); }
-      if (suffix === "/policy" && req.method === "GET") { const fn = this.require(name); const policy = fn.policies![qualifier ?? ""]; if (!policy) throw new AwsError("ResourceNotFoundException", "The resource you requested does not exist", 404); return json(res, { Policy: JSON.stringify({ Version: "2012-10-17", Id: "default", Statement: policy.statements }), RevisionId: policy.revisionId }); }
-      const policyMatch = suffix.match(/^\/policy\/([^/]+)$/); if (policyMatch && req.method === "DELETE") { const fn = this.require(name); const policy = fn.policies![qualifier ?? ""]; if (!policy) throw new AwsError("ResourceNotFoundException", "Policy not found", 404); const index = policy.statements.findIndex(statement => statement.Sid === decodeURIComponent(policyMatch[1])); if (index < 0) throw new AwsError("ResourceNotFoundException", "Statement not found", 404); const revision = url.searchParams.get("RevisionId"); if (revision && revision !== policy.revisionId) throw new AwsError("PreconditionFailedException", "RevisionId does not match", 412); policy.statements.splice(index, 1); policy.revisionId = id(32); await this.store.save(); res.statusCode = 204; return res.end(); }
-      if (suffix.startsWith("/invocations") && req.method === "POST") { const invocationType = String(req.headers["x-amz-invocation-type"] ?? "RequestResponse"); if (!["RequestResponse", "Event", "DryRun"].includes(invocationType)) throw new AwsError("InvalidParameterValueException", "Invalid InvocationType"); const logType = String(req.headers["x-amz-log-type"] ?? "None"); if (!["None", "Tail"].includes(logType) || (logType === "Tail" && invocationType !== "RequestResponse")) throw new AwsError("InvalidParameterValueException", "LogType Tail is supported only for RequestResponse invocations"); const body = await readBody(req); const resolved = this.resolveInvocation(name, qualifier); const payloadLimit = invocationType === "Event" ? 1024 * 1024 : 6 * 1024 * 1024; if (body.length > payloadLimit) throw new AwsError("RequestTooLargeException", "Request payload size exceeded the invocation limit", 413); if (body.length) try { JSON.parse(body.toString("utf8")); } catch { throw new AwsError("InvalidRequestContentException", "Could not parse request body into JSON", 400); } let clientContext: unknown; const encoded = req.headers["x-amz-client-context"]; if (encoded) try { clientContext = JSON.parse(Buffer.from(String(encoded), "base64").toString("utf8")); } catch { throw new AwsError("InvalidParameterValueException", "ClientContext is not valid base64 JSON"); } const durableExecutionName = req.headers["x-amz-durable-execution-name"] === undefined ? undefined : String(req.headers["x-amz-durable-execution-name"]); const traceHeader = req.headers["x-amzn-trace-id"] === undefined ? undefined : String(req.headers["x-amzn-trace-id"]); if (durableExecutionName !== undefined && !resolved.executable.durableConfig) throw new AwsError("InvalidParameterValueException", "X-Amz-Durable-Execution-Name is valid only for durable functions"); if (resolved.executable.durableConfig) this.durableQualifier(name, qualifier ?? resolved.requestedQualifier); if (invocationType === "DryRun") { res.statusCode = 204; return res.end(); } const options = { clientContext, qualifier, lineage: principal?.lambdaLineage, durableExecutionName, traceHeader, resolvedOverride: resolved }; if (invocationType === "Event") { if (resolved.executable.durableConfig) { const result = await this.invokeDurable(resolved, body, id(24), options, "Event"); res.statusCode = 202; res.setHeader("x-amz-durable-execution-arn", result.durableExecutionArn!); res.setHeader("x-amz-executed-version", result.executedVersion); res.setHeader("x-amzn-requestid", result.requestId); return res.end(); } await this.enqueueAsync(name, qualifier, body, principal?.lambdaLineage); res.statusCode = 202; return res.end(); } const result = await this.invoke(name, body, id(24), options); res.statusCode = result.statusCode; res.setHeader("content-type", "application/json"); res.setHeader("x-amz-executed-version", result.executedVersion); res.setHeader("x-amzn-requestid", result.requestId); res.setHeader("x-stacksim-duration-ms", result.durationMs.toFixed(2)); res.setHeader("x-stacksim-billed-duration-ms", String(result.billedDurationMs)); if (result.durableExecutionArn) res.setHeader("x-amz-durable-execution-arn", result.durableExecutionArn); if (logType === "Tail") res.setHeader("x-amz-log-result", result.logResult!); if (result.functionError) res.setHeader("x-amz-function-error", result.functionError); return res.end(result.payload); }
+      if (suffix === "/aliases" && req.method === "POST") { const input = JSON.parse((await readBody(req)).toString("utf8")); const fn = this.require(name); this.validateAlias(fn, input.Name, input.FunctionVersion, input.RoutingConfig?.AdditionalVersionWeights); if (fn.aliases![input.Name]) throw new AwsError("ResourceConflictException", "Alias already exists", 409); const alias: LambdaAliasState = { name: input.Name, functionVersion: input.FunctionVersion, description: input.Description, revisionId: randomUUID(), additionalVersionWeights: input.RoutingConfig?.AdditionalVersionWeights ?? {} }; fn.aliases![alias.name] = alias; await this.store.save(); return json(res, this.aliasView(fn, alias), 201); }
+      if (suffix === "/aliases" && req.method === "GET") { const fn = this.require(name); const functionVersion = url.searchParams.get("FunctionVersion"); if (functionVersion && !/^(?:\$LATEST|\d+)$/.test(functionVersion)) throw new AwsError("InvalidParameterValueException", "FunctionVersion must be $LATEST or a published numeric version"); const values = Object.values(fn.aliases!).filter(alias => !functionVersion || alias.functionVersion === functionVersion).sort((a, b) => a.name.localeCompare(b.name)); const max = Number(url.searchParams.get("MaxItems") ?? 50); if (!Number.isInteger(max) || max < 1 || max > 10_000) throw new AwsError("InvalidParameterValueException", "MaxItems must be between 1 and 10000"); let start = 0; const marker = url.searchParams.get("Marker"); if (marker) try { const cursor = this.tokens.decode<{ functionName: string; functionVersion?: string; index: number }>("ListAliases", marker); if (cursor.functionName !== fn.functionName || cursor.functionVersion !== (functionVersion ?? undefined)) throw new Error(); start = cursor.index; } catch { throw new AwsError("InvalidParameterValueException", "Invalid Marker"); } const page = values.slice(start, start + max); const next = start + page.length; return json(res, { Aliases: page.map(alias => this.aliasView(fn, alias)), ...(next < values.length ? { NextMarker: this.tokens.encode("ListAliases", { functionName: fn.functionName, functionVersion: functionVersion ?? undefined, index: next }) } : {}) }); }
+      const aliasMatch = suffix.match(/^\/aliases\/([^/]+)$/); if (aliasMatch) { const fn = this.require(name); const alias = fn.aliases![decodeURIComponent(aliasMatch[1])]; if (!alias) throw new AwsError("ResourceNotFoundException", "Alias not found", 404); if (req.method === "GET") return json(res, this.aliasView(fn, alias)); if (req.method === "PUT") { const input = JSON.parse((await readBody(req)).toString("utf8")); if (input.RevisionId && input.RevisionId !== alias.revisionId) throw new AwsError("PreconditionFailedException", "RevisionId does not match", 412); this.validateAlias(fn, alias.name, input.FunctionVersion ?? alias.functionVersion, input.RoutingConfig?.AdditionalVersionWeights ?? alias.additionalVersionWeights); if (input.FunctionVersion) alias.functionVersion = input.FunctionVersion; if (input.Description !== undefined) alias.description = input.Description; if (input.RoutingConfig) alias.additionalVersionWeights = input.RoutingConfig.AdditionalVersionWeights ?? {}; alias.revisionId = randomUUID(); const provisioned = fn.provisionedConcurrencyConfigs![alias.name]; if (provisioned) { provisioned.status = "IN_PROGRESS"; provisioned.allocatedProvisionedConcurrentExecutions = 0; provisioned.lastModified = new Date(this.clock.now()).toISOString(); delete provisioned.statusReason; } await this.store.save(); if (provisioned) this.scheduleProvisionedReady(fn, provisioned, 0); return json(res, this.aliasView(fn, alias)); } if (req.method === "DELETE") { if (fn.provisionedConcurrencyConfigs![alias.name]) throw new AwsError("ResourceConflictException", "Cannot delete an alias with provisioned concurrency configured", 409); if (fn.functionUrlConfigs![alias.name]) throw new AwsError("ResourceConflictException", "Cannot delete an alias with a function URL configured", 409); delete fn.aliases![alias.name]; this.eventSources.disableForFunction(fn.functionName, alias.name); await this.store.save(); res.statusCode = 204; return res.end(); } }
+      if (suffix === "/policy" && req.method === "POST") { const input = JSON.parse((await readBody(req)).toString("utf8")); const fn = this.require(name); if (qualifier) this.resolve(name, qualifier); if (!input.Principal || !/^lambda:[A-Za-z*]+$/.test(input.Action ?? "")) throw new AwsError("InvalidParameterValueException", "Principal and a valid Lambda action are required"); if (input.SourceAccount && !/^\d{12}$/.test(input.SourceAccount)) throw new AwsError("InvalidParameterValueException", "SourceAccount must be a 12-digit account ID"); if (input.FunctionUrlAuthType !== undefined && !new Set(["NONE", "AWS_IAM"]).has(input.FunctionUrlAuthType)) throw new AwsError("InvalidParameterValueException", "FunctionUrlAuthType must be NONE or AWS_IAM"); if (input.InvokedViaFunctionUrl !== undefined && typeof input.InvokedViaFunctionUrl !== "boolean") throw new AwsError("InvalidParameterValueException", "InvokedViaFunctionUrl must be a boolean"); const key = qualifier ?? ""; const policy = fn.policies![key] ??= { revisionId: randomUUID(), statements: [] }; if (input.RevisionId && input.RevisionId !== policy.revisionId) throw new AwsError("PreconditionFailedException", "RevisionId does not match", 412); if (!/^[A-Za-z0-9-_]{1,100}$/.test(input.StatementId ?? "") || policy.statements.some(statement => statement.Sid === input.StatementId)) throw new AwsError("ResourceConflictException", "The statement id already exists or is invalid", 409); const resource = qualifier ? `${fn.functionArn}:${qualifier}` : fn.functionArn; const statement: LambdaResourcePolicyState["statements"][number] = { Sid: input.StatementId, Effect: "Allow", Principal: policyPrincipal(String(input.Principal)), Action: input.Action, Resource: resource }; const condition: Record<string, Record<string, string>> = {}; if (input.SourceArn) condition.ArnLike = { "AWS:SourceArn": input.SourceArn }; if (input.SourceAccount) (condition.StringEquals ??= {})["AWS:SourceAccount"] = input.SourceAccount; if (input.PrincipalOrgID) (condition.StringEquals ??= {})["aws:PrincipalOrgID"] = input.PrincipalOrgID; if (input.FunctionUrlAuthType) (condition.StringEquals ??= {})["lambda:FunctionUrlAuthType"] = input.FunctionUrlAuthType; if (input.InvokedViaFunctionUrl !== undefined) (condition.Bool ??= {})["lambda:InvokedViaFunctionUrl"] = String(input.InvokedViaFunctionUrl); if (Object.keys(condition).length) statement.Condition = condition; policy.statements.push(statement); policy.revisionId = randomUUID(); await this.store.save(); return json(res, { Statement: JSON.stringify(statement) }, 201); }
+      if (suffix === "/policy" && req.method === "GET") { const fn = this.require(name); const policy = fn.policies![qualifier ?? ""]; if (!policy || !policy.statements.length) throw new AwsError("ResourceNotFoundException", "The resource you requested does not exist", 404); return json(res, { Policy: JSON.stringify({ Version: "2012-10-17", Id: "default", Statement: policy.statements }), RevisionId: policy.revisionId }); }
+      const policyMatch = suffix.match(/^\/policy\/([^/]+)$/); if (policyMatch && req.method === "DELETE") { const fn = this.require(name); const policy = fn.policies![qualifier ?? ""]; if (!policy) throw new AwsError("ResourceNotFoundException", "Policy not found", 404); const index = policy.statements.findIndex(statement => statement.Sid === decodeURIComponent(policyMatch[1])); if (index < 0) throw new AwsError("ResourceNotFoundException", "Statement not found", 404); const revision = url.searchParams.get("RevisionId"); if (revision && revision !== policy.revisionId) throw new AwsError("PreconditionFailedException", "RevisionId does not match", 412); policy.statements.splice(index, 1); policy.revisionId = randomUUID(); await this.store.save(); res.statusCode = 204; return res.end(); }
+      if (suffix.startsWith("/invocations") && req.method === "POST") { const invocationType = String(req.headers["x-amz-invocation-type"] ?? "RequestResponse"); if (!["RequestResponse", "Event", "DryRun"].includes(invocationType)) throw new AwsError("InvalidParameterValueException", "Invalid InvocationType"); const logType = String(req.headers["x-amz-log-type"] ?? "None"); if (!["None", "Tail"].includes(logType) || (logType === "Tail" && invocationType !== "RequestResponse")) throw new AwsError("InvalidParameterValueException", "LogType Tail is supported only for RequestResponse invocations"); const body = await readBody(req); const resolved = this.resolveInvocation(name, qualifier); const payloadLimit = invocationType === "Event" ? 1024 * 1024 : 6 * 1024 * 1024; if (body.length > payloadLimit) throw new AwsError("RequestTooLargeException", "Request payload size exceeded the invocation limit", 413); if (body.length) try { JSON.parse(body.toString("utf8")); } catch { throw new AwsError("InvalidRequestContentException", "Could not parse request body into JSON", 400); } let clientContext: unknown; const encoded = req.headers["x-amz-client-context"]; if (encoded) try { clientContext = JSON.parse(Buffer.from(String(encoded), "base64").toString("utf8")); } catch { throw new AwsError("InvalidParameterValueException", "ClientContext is not valid base64 JSON"); } const durableExecutionName = req.headers["x-amz-durable-execution-name"] === undefined ? undefined : String(req.headers["x-amz-durable-execution-name"]); const traceHeader = req.headers["x-amzn-trace-id"] === undefined ? undefined : String(req.headers["x-amzn-trace-id"]); if (durableExecutionName !== undefined && !resolved.executable.durableConfig) throw new AwsError("InvalidParameterValueException", "X-Amz-Durable-Execution-Name is valid only for durable functions"); if (resolved.executable.durableConfig) this.durableQualifier(name, qualifier ?? resolved.requestedQualifier); if (invocationType === "DryRun") { res.statusCode = 204; return res.end(); } const options = { clientContext, qualifier, lineage: principal?.lambdaLineage, durableExecutionName, traceHeader, resolvedOverride: resolved }; if (invocationType === "Event") { if (resolved.executable.durableConfig) { const result = await this.invokeDurable(resolved, body, randomUUID(), options, "Event"); res.statusCode = 202; res.setHeader("x-amz-durable-execution-arn", result.durableExecutionArn!); res.setHeader("x-amz-executed-version", result.executedVersion); res.setHeader("x-amzn-requestid", result.requestId); return res.end(); } await this.enqueueAsync(name, qualifier, body, principal?.lambdaLineage); res.statusCode = 202; return res.end(); } const result = await this.invoke(name, body, randomUUID(), options); res.statusCode = result.statusCode; res.setHeader("content-type", "application/json"); res.setHeader("x-amz-executed-version", result.executedVersion); res.setHeader("x-amzn-requestid", result.requestId); res.setHeader("x-stacksim-duration-ms", result.durationMs.toFixed(2)); res.setHeader("x-stacksim-billed-duration-ms", String(result.billedDurationMs)); if (result.durableExecutionArn) res.setHeader("x-amz-durable-execution-arn", result.durableExecutionArn); if (logType === "Tail") res.setHeader("x-amz-log-result", result.logResult!); if (result.functionError) res.setHeader("x-amz-function-error", result.functionError); return res.end(result.payload); }
       throw new AwsError("ResourceNotFoundException", "Unknown Lambda route", 404);
     } catch (error) { if (activeHotswapRecord?.status === "PENDING") { failHotswapDrift(activeHotswapRecord, error, this.clock.now()); await this.store.save().catch(() => undefined); } sendAwsError(res, error, "rest"); }
   }
-  private validateAlias(fn: LambdaState, name: string, version: string, weights: Record<string, number> = {}): void { if (!/^[A-Za-z-_][A-Za-z0-9-_]{0,127}$/.test(name ?? "") || /^\d+$/.test(name)) throw new AwsError("InvalidParameterValueException", "Invalid alias name"); if (!fn.versions?.[version]) throw new AwsError("InvalidParameterValueException", "Aliases must reference a published version"); let total = 0; for (const [candidate, weight] of Object.entries(weights)) { if (!fn.versions[candidate] || candidate === version || typeof weight !== "number" || weight < 0 || weight > 1) throw new AwsError("InvalidParameterValueException", "Invalid additional version weight"); total += weight; } if (total > 1) throw new AwsError("InvalidParameterValueException", "Additional version weights cannot exceed 1"); }
-  private aliasView(fn: LambdaState, alias: LambdaAliasState): any { return { AliasArn: `${fn.functionArn}:${alias.name}`, Name: alias.name, FunctionVersion: alias.functionVersion, Description: alias.description, RevisionId: alias.revisionId, RoutingConfig: { AdditionalVersionWeights: alias.additionalVersionWeights } }; }
+  private validateAlias(fn: LambdaState, name: string, version: string, weights: Record<string, number> = {}): void { if (!/^[A-Za-z-_][A-Za-z0-9-_]{0,127}$/.test(name ?? "") || /^\d+$/.test(name)) throw new AwsError("InvalidParameterValueException", "Invalid alias name"); if (version !== "$LATEST" && !fn.versions?.[version]) throw new AwsError("InvalidParameterValueException", "Aliases must reference $LATEST or a published version"); let total = 0; for (const [candidate, weight] of Object.entries(weights)) { if (!fn.versions?.[candidate] || candidate === version || typeof weight !== "number" || weight < 0 || weight > 1) throw new AwsError("InvalidParameterValueException", "Invalid additional version weight"); total += weight; } if (total > 1) throw new AwsError("InvalidParameterValueException", "Additional version weights cannot exceed 1"); }
+  private aliasView(fn: LambdaState, alias: LambdaAliasState): any { return { AliasArn: `${fn.functionArn}:${alias.name}`, Name: alias.name, FunctionVersion: alias.functionVersion, Description: alias.description, RevisionId: alias.revisionId, ...(Object.keys(alias.additionalVersionWeights ?? {}).length ? { RoutingConfig: { AdditionalVersionWeights: alias.additionalVersionWeights } } : {}) }; }
 }

@@ -55,6 +55,12 @@ function invalid(provider: AnyProvider, message: string): never {
   throw new InvalidProviderDeclarationError(provider.typeName || "<missing>", message);
 }
 
+/**
+ * CDK helper custom resources implemented natively. They keep a declared
+ * schema and never fall back to the general Lambda-backed provider.
+ */
+export const NATIVE_CUSTOM_RESOURCE_TYPES: ReadonlySet<string> = new Set(["Custom::CDKBucketDeployment", "Custom::S3BucketNotifications"]);
+
 function assertUnique(values: readonly string[], provider: AnyProvider, description: string): void {
   if (new Set(values).size !== values.length) invalid(provider, `${description} contains duplicates`);
 }
@@ -67,7 +73,7 @@ export function validateProviderDeclaration(provider: AnyProvider): void {
   if (provider.visibility !== "production" && provider.visibility !== "test-only") invalid(provider, "visibility must be production or test-only");
   if (!provider.schema || provider.schema.typeName !== provider.typeName) invalid(provider, "schema.typeName must match typeName");
   if (provider.schema.unknownProperties !== "REJECT" && provider.schema.unknownProperties !== "ALLOW") invalid(provider, "unknownProperties must be REJECT or ALLOW");
-  const isGeneralCustomResource = provider.typeName === "AWS::CloudFormation::CustomResource" || provider.typeName.startsWith("Custom::") && provider.typeName !== "Custom::CDKBucketDeployment";
+  const isGeneralCustomResource = provider.typeName === "AWS::CloudFormation::CustomResource" || provider.typeName.startsWith("Custom::") && !NATIVE_CUSTOM_RESOURCE_TYPES.has(provider.typeName);
   if (provider.schema.unknownProperties === "ALLOW" && !isGeneralCustomResource) invalid(provider, "only a general Lambda custom-resource provider may allow additional properties");
   if (!provider.schema.properties || typeof provider.schema.properties !== "object" || Array.isArray(provider.schema.properties)) invalid(provider, "schema.properties must be an object");
 
@@ -147,7 +153,7 @@ export class CloudFormationProviderRegistry {
 
   get(typeName: string): AnyProductionProvider | undefined {
     const exact = this.providers.get(typeName);
-    if (exact || !typeName.startsWith("Custom::") || typeName === "Custom::CDKBucketDeployment" || !this.customResourceFactory) return exact;
+    if (exact || !typeName.startsWith("Custom::") || NATIVE_CUSTOM_RESOURCE_TYPES.has(typeName) || !this.customResourceFactory) return exact;
     const cached = this.customResourceProviders.get(typeName);
     if (cached) return cached;
     const dynamic = this.customResourceFactory(typeName);

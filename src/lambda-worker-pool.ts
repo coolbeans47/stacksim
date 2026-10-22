@@ -37,17 +37,22 @@ export interface LambdaWorkerInvocation {
   onChunk?(chunk: Buffer): Promise<void> | void;
 }
 
+export interface LambdaApplicationLogEntry { message: string; level: string; /** Simulator clock time the line was received. */ timestamp?: number }
+
 export interface LambdaWorkerInvocationResult {
   memoryUsage?: LambdaMemoryUsage;
   ok: boolean;
-  result?: unknown;
-  error?: { errorMessage: string; errorType: string; stackTrace?: string[] };
+  /** The handler result, already serialized by the runtime. */
+  resultJson?: string;
+  error?: { errorMessage: string; errorType: string; trace?: string[] };
   streamed?: boolean;
   metadata?: Record<string, unknown>;
   durationMs: number;
+  /** Present on the first invocation of an on-demand execution environment. */
+  initDurationMs?: number;
   timedOut: boolean;
   callbackTerminated: boolean;
-  applicationLogs: Array<{ message: string; level: string }>;
+  applicationLogs: LambdaApplicationLogEntry[];
 }
 
 interface RunnerMessage {
@@ -55,13 +60,25 @@ interface RunnerMessage {
   type: "ready" | "result";
   invocationId?: string;
   ok: boolean;
-  result?: unknown;
-  error?: { errorMessage: string; errorType: string; stackTrace?: string[] };
+  resultJson?: string;
+  error?: { errorMessage: string; errorType: string; trace?: string[] };
   streamed?: boolean;
   metadata?: Record<string, unknown>;
 }
 
 class LambdaWorkerProtocolError extends Error {}
+
+/** The runtime could not load the handler module; invocation reports it as a function error. */
+export class LambdaInitializationError extends Error {
+  readonly errorType: string;
+  readonly errorMessage: string;
+  readonly trace: string[];
+  constructor(error: { errorMessage: string; errorType: string; trace?: string[] }, readonly initializationLogs: LambdaApplicationLogEntry[], readonly initDurationMs: number) {
+    super(error.errorMessage);
+    this.name = "LambdaInitializationError";
+    this.errorType = error.errorType; this.errorMessage = error.errorMessage; this.trace = error.trace ?? [];
+  }
+}
 
 function runnerArguments(): string[] {
   const compiled = fileURLToPath(new URL("./lambda-runner.js", import.meta.url));
@@ -105,6 +122,13 @@ export class LambdaWorker {
   private rejectReady!: (error: Error) => void;
   private closed: Promise<void>;
   private resolveClosed!: () => void;
+  private readonly spawnedAt = performance.now();
+  /** Spawn-to-ready time; reported as Init Duration on the environment's first invocation. */
+  private initDurationMs = 0;
+  private invoked = false;
+  /** Resolved when the runner reports that its initialization-phase logs are complete. */
+  private resolveInitializationLogs?: () => void;
+  private readonly initializationLogsComplete = new Promise<void>(resolve => { this.resolveInitializationLogs = resolve; });
 
   constructor(
     readonly spec: LambdaWorkerSpec,
@@ -160,8 +184,16 @@ export class LambdaWorker {
       try { message = JSON.parse(line); }
       catch { return this.fail(new LambdaWorkerProtocolError("Lambda runtime emitted malformed result protocol JSON")); }
       if (message.type === "ready") {
-        if (message.ok) this.resolveReady();
-        else { this.retireOnRelease = true; this.rejectReady(new Error(message.error?.errorMessage ?? "Lambda runtime initialization failed")); void this.terminate(); }
+        if (message.ok) { this.initDurationMs = performance.now() - this.spawnedAt; this.resolveReady(); }
+        else {
+          this.retireOnRelease = true;
+          const initDurationMs = performance.now() - this.spawnedAt;
+          const failure = message.error ?? { errorMessage: "Lambda runtime initialization failed", errorType: "Runtime.InitError" };
+          // The runner flushes its init-phase logs on another pipe before reporting; wait briefly for them so the function log keeps the init output.
+          void Promise.race([this.initializationLogsComplete, new Promise<void>(resolve => setTimeout(resolve, 250).unref())]).then(() => {
+            this.rejectReady(new LambdaInitializationError(failure, [...this.initializationLogs], initDurationMs)); this.initializationLogs = []; void this.terminate();
+          });
+        }
         continue;
       }
       if (message.type !== "result" || !this.current || message.invocationId !== this.current.invocationId) return this.fail(new LambdaWorkerProtocolError("Lambda runtime emitted an unexpected result protocol message"));
@@ -176,9 +208,9 @@ export class LambdaWorker {
       const line = this.logPending.slice(0, newline); this.logPending = this.logPending.slice(newline + 1); if (!line) continue;
       try {
         const value = JSON.parse(line);
-        if (value.type === "complete" && typeof value.invocationId === "string") { const current = this.current; if (current && current.invocationId === value.invocationId) current.resolveLogsComplete(); continue; }
+        if (value.type === "complete" && typeof value.invocationId === "string") { if (value.invocationId === "initialization") this.resolveInitializationLogs?.(); const current = this.current; if (current && current.invocationId === value.invocationId) current.resolveLogsComplete(); continue; }
         if (typeof value.message !== "string") continue;
-        const entry = { message: value.message, level: String(value.level ?? "INFO") };
+        const entry: LambdaApplicationLogEntry = { message: value.message, level: String(value.level ?? "INFO"), timestamp: this.clock.now() };
         if (value.invocationId === "initialization") this.initializationLogs.push(entry);
         else if (typeof value.invocationId === "string" && this.current?.invocationId === value.invocationId) {
           const logs = this.invocationLogs.get(value.invocationId) ?? []; logs.push(entry); this.invocationLogs.set(value.invocationId, logs);
@@ -224,6 +256,9 @@ export class LambdaWorker {
   async invoke(input: LambdaWorkerInvocation): Promise<LambdaWorkerInvocationResult> {
     if (this.dead || this.current) throw new Error("Lambda worker is not available");
     this.busy = true; this.lastUsedAt = this.clock.now();
+    // Only an on-demand environment's first invocation pays and reports initialization; provisioned environments initialized ahead of time.
+    const initDurationMs = !this.invoked && this.spec.initializationType === "on-demand" ? this.initDurationMs : undefined;
+    this.invoked = true;
     const started = performance.now(); let timedOut = false; let callbackTerminated = false; let closed = false;
     const result = new Promise<RunnerMessage>((resolve, reject) => {
       let resolveLogsComplete!: () => void; const logsComplete = new Promise<void>(resolveLogs => { resolveLogsComplete = resolveLogs; });
@@ -240,12 +275,15 @@ export class LambdaWorker {
       await this.current!.logsComplete;
       const applicationLogs = [...this.initializationLogs, ...(this.invocationLogs.get(input.invocationId) ?? [])];
       this.initializationLogs = []; this.invocationLogs.delete(input.invocationId);
-      return { memoryUsage: message.memoryUsage, ok: message.ok, result: message.result, error: message.error, streamed: message.streamed, metadata: message.metadata, durationMs: performance.now() - started, timedOut, callbackTerminated, applicationLogs };
+      return { memoryUsage: message.memoryUsage, ok: message.ok, resultJson: message.resultJson, error: message.error, streamed: message.streamed, metadata: message.metadata, durationMs: performance.now() - started, initDurationMs, timedOut, callbackTerminated, applicationLogs };
     } catch (error) {
       const applicationLogs = [...this.initializationLogs, ...(this.invocationLogs.get(input.invocationId) ?? [])];
       this.initializationLogs = []; this.invocationLogs.delete(input.invocationId);
-      if (callbackTerminated) return { ok: true, result: null, durationMs: performance.now() - started, timedOut, callbackTerminated, applicationLogs };
-      return { ok: false, error: { errorMessage: timedOut ? `Task timed out after ${(input.timeoutMs / 1000).toFixed(2)} seconds` : error instanceof Error ? error.message : String(error), errorType: timedOut ? "TimeoutError" : "Runtime.ExitError" }, durationMs: performance.now() - started, timedOut, callbackTerminated, applicationLogs };
+      if (callbackTerminated) return { ok: true, resultJson: "null", durationMs: performance.now() - started, initDurationMs, timedOut, callbackTerminated, applicationLogs };
+      const failure = timedOut
+        ? { errorMessage: `RequestId: ${input.invocationId} Error: Task timed out after ${(input.timeoutMs / 1000).toFixed(2)} seconds`, errorType: "Sandbox.Timedout", trace: [] }
+        : { errorMessage: error instanceof Error ? error.message : String(error), errorType: "Runtime.ExitError", trace: [] };
+      return { ok: false, error: failure, durationMs: performance.now() - started, initDurationMs, timedOut, callbackTerminated, applicationLogs };
     } finally {
       closed = true; clearTimeout(timer); this.current = undefined; this.busy = false; this.lastUsedAt = this.clock.now();
     }

@@ -109,7 +109,7 @@ test("S3-06 through S3-08 govern versions, transition/restore archives, and dura
     const records = delivered.Messages?.flatMap(message => {
       try { return JSON.parse(message.Body ?? "{}").Records ?? []; } catch { return []; }
     }) ?? [];
-    assert.ok(records.some((record: any) => record.eventName === "ObjectCreated:Put" && record.s3.object.key === "incoming%2Farchive.txt"));
+    assert.ok(records.some((record: any) => record.eventName === "ObjectCreated:Put" && record.s3.object.key === "incoming/archive.txt"));
   } finally {
     s3.destroy(); sqs.destroy(); lambda.destroy(); await simulator.stop(); await rm(root, { recursive: true, force: true });
   }

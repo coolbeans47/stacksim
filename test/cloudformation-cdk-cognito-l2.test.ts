@@ -204,7 +204,7 @@ test("repository-pinned CDK UserPool L2 defaults and Cognito trigger permission 
     }))).Policy!);
     assert.ok(triggerPolicy.Statement.some((statement: any) =>
       statement.Action === "lambda:InvokeFunction"
-      && statement.Principal === "cognito-idp.amazonaws.com"
+      && statement.Principal?.Service === "cognito-idp.amazonaws.com"
       && statement.Condition?.ArnLike?.["AWS:SourceArn"] === described.UserPool?.Arn
     ));
 

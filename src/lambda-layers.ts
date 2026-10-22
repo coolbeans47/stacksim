@@ -11,7 +11,20 @@ import { id, json, readBody, sha256 } from "./util.js";
 
 const MAX_UNZIPPED_SIZE = 262_144_000;
 const LAYER_NAME = /^[A-Za-z0-9-_]{1,140}$/;
-const SUPPORTED_RUNTIMES = new Set(["nodejs18.x", "nodejs20.x", "nodejs22.x", "python3.13"]);
+/**
+ * Every runtime identifier the Lambda API accepts for layer compatibility
+ * metadata. It is a label: attaching a layer to a function still checks the
+ * function's own runtime, and local execution remains Node.js only.
+ */
+export const LAMBDA_RUNTIME_IDENTIFIERS: ReadonlySet<string> = new Set([
+  "nodejs", "nodejs4.3", "nodejs4.3-edge", "nodejs6.10", "nodejs8.10", "nodejs10.x", "nodejs12.x", "nodejs14.x", "nodejs16.x", "nodejs18.x", "nodejs20.x", "nodejs22.x", "nodejs24.x",
+  "python2.7", "python3.6", "python3.7", "python3.8", "python3.9", "python3.10", "python3.11", "python3.12", "python3.13", "python3.14",
+  "java8", "java8.al2", "java11", "java17", "java21", "java25",
+  "dotnetcore1.0", "dotnetcore2.0", "dotnetcore2.1", "dotnetcore3.1", "dotnet6", "dotnet8", "dotnet10",
+  "go1.x", "ruby2.5", "ruby2.7", "ruby3.2", "ruby3.3", "ruby3.4",
+  "provided", "provided.al2", "provided.al2023",
+]);
+const SUPPORTED_RUNTIMES = LAMBDA_RUNTIME_IDENTIFIERS as Set<string>;
 const ARCHITECTURES = new Set(["x86_64", "arm64"]);
 
 interface LayerArn { region: string; accountId: string; name: string; version?: number }
@@ -35,7 +48,15 @@ function pageSize(url: URL): number {
 }
 
 export class LambdaLayers {
+  private contentLocation?: (codeDir: string) => string;
+  private archiveReader?: (content: { ZipFile?: string; S3Bucket?: string; S3Key?: string; S3ObjectVersion?: string }) => Promise<Buffer>;
+
   constructor(private readonly store: StateStore, private readonly region: string, private readonly clock: Clock) {}
+
+  /** GetLayerVersion's `Content.Location`: a signed download of the stored archive. */
+  setContentLocation(location: (codeDir: string) => string): void { this.contentLocation = location; }
+  /** Resolves `Content` (inline ZipFile or a local S3 object) to archive bytes. */
+  setArchiveReader(reader: (content: { ZipFile?: string; S3Bucket?: string; S3Key?: string; S3ObjectVersion?: string }) => Promise<Buffer>): void { this.archiveReader = reader; }
   private get tokens(): PaginationTokens { return new PaginationTokens(this.store.state.installation.paginationSecret); }
   private get state(): Record<string, LambdaLayerState> { return this.store.regionState(this.region).lambdaLayers; }
 
@@ -74,7 +95,7 @@ export class LambdaLayers {
   }
 
   private view(item: LambdaLayerVersionState): any {
-    return { Content: { Location: `file://${item.codeDir}`, CodeSha256: item.codeSha256, CodeSize: item.codeSize }, LayerArn: item.layerArn, LayerVersionArn: item.arn, Description: item.description, CreatedDate: item.createdDate, Version: item.version, CompatibleRuntimes: item.compatibleRuntimes, LicenseInfo: item.licenseInfo, CompatibleArchitectures: item.compatibleArchitectures, ...(item.cloudFormationOwner ? { StackSimCloudFormationOwner: item.cloudFormationOwner } : {}), ...(item.cloudFormationOperationToken ? { StackSimCloudFormationOperationToken: item.cloudFormationOperationToken } : {}) };
+    return { Content: { Location: this.contentLocation?.(item.codeDir) ?? `file://${item.codeDir}`, CodeSha256: item.codeSha256, CodeSize: item.codeSize }, LayerArn: item.layerArn, LayerVersionArn: item.arn, Description: item.description, CreatedDate: item.createdDate, Version: item.version, CompatibleRuntimes: item.compatibleRuntimes, LicenseInfo: item.licenseInfo, CompatibleArchitectures: item.compatibleArchitectures, ...(item.cloudFormationOwner ? { StackSimCloudFormationOwner: item.cloudFormationOwner } : {}), ...(item.cloudFormationOperationToken ? { StackSimCloudFormationOperationToken: item.cloudFormationOperationToken } : {}) };
   }
 
   private matches(item: LambdaLayerVersionState, runtime?: string | null, architecture?: string | null): boolean {
@@ -137,12 +158,14 @@ export class LambdaLayers {
           return json(res, this.view(existing), 201);
         }
       }
-      if (!input.Content?.ZipFile || typeof input.Content.ZipFile !== "string") { if (input.Content?.S3Bucket || input.Content?.S3Key) throw new AwsError("InvalidParameterValueException", "S3 layer content is not available in this simulator"); throw new AwsError("InvalidParameterValueException", "Content.ZipFile is required"); }
+      const inlineContent = typeof input.Content?.ZipFile === "string" && input.Content.ZipFile.length > 0; const s3Content = typeof input.Content?.S3Bucket === "string" && typeof input.Content?.S3Key === "string";
+      if (!inlineContent && !s3Content) throw new AwsError("InvalidParameterValueException", "Content.ZipFile or Content.S3Bucket and Content.S3Key are required");
+      if (s3Content && !this.archiveReader) throw new AwsError("InvalidParameterValueException", "S3 layer content is unavailable because the local S3 service is not configured");
       if (typeof input.Description !== "undefined" && (typeof input.Description !== "string" || input.Description.length > 256)) throw new AwsError("InvalidParameterValueException", "Description must be at most 256 characters");
       if (typeof input.LicenseInfo !== "undefined" && (typeof input.LicenseInfo !== "string" || input.LicenseInfo.length > 512)) throw new AwsError("InvalidParameterValueException", "LicenseInfo must be at most 512 characters");
       const compatibleRuntimes = validateList(input.CompatibleRuntimes, "CompatibleRuntimes", 15, SUPPORTED_RUNTIMES);
       const compatibleArchitectures = validateList(input.CompatibleArchitectures, "CompatibleArchitectures", 2, ARCHITECTURES) as Array<"x86_64" | "arm64">;
-      const zip = Buffer.from(input.Content.ZipFile, "base64"); const zippedLimit = Number(process.env.STACKSIM_LAMBDA_ZIP_LIMIT ?? 50 * 1024 * 1024);
+      const zip = inlineContent ? Buffer.from(input.Content.ZipFile, "base64") : await this.archiveReader!(input.Content); const zippedLimit = Number(process.env.STACKSIM_LAMBDA_ZIP_LIMIT ?? 50 * 1024 * 1024);
       if (!zip.length) throw new AwsError("InvalidParameterValueException", "Content.ZipFile is not a valid ZIP archive");
       if (zip.length > zippedLimit) throw new AwsError("RequestEntityTooLargeException", `Zipped size must be smaller than ${zippedLimit} bytes`, 413);
       const layer = this.state[layerName] ??= { layerName, layerArn: `arn:aws:lambda:${this.region}:${this.store.accountId}:layer:${layerName}`, nextVersion: 1, versions: {} };

@@ -897,7 +897,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         if (typeof parsed?.errorMessage === "string") message = parsed.errorMessage;
         if (typeof parsed?.errorType === "string") errorType = parsed.errorType;
       } catch { /* Preserve the safe generic message. */ }
-      if (errorType === "TimeoutError") {
+      if (errorType === "Sandbox.Timedout") {
         throw new AwsError("UnexpectedLambdaException", message);
       }
       throw new AwsError("UserLambdaValidationException", message);

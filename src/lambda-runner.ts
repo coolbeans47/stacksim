@@ -175,7 +175,8 @@ function captureConsole(): void {
   for (const [method, level] of Object.entries(levels)) (console as any)[method] = (...values: unknown[]) => emitApplicationLog(level, formatWithOptions({ colors: false, depth: 8 }, ...values));
   const capture = (level: string) => function (chunk: any, encoding?: any, callback?: any): boolean {
     const actualCallback = typeof encoding === "function" ? encoding : callback;
-    emitApplicationLog(level, Buffer.isBuffer(chunk) ? chunk.toString((typeof encoding === "string" ? encoding : "utf8") as BufferEncoding) : String(chunk));
+    // A raw stream write carries its own line terminator; the log line does not.
+    emitApplicationLog(level, (Buffer.isBuffer(chunk) ? chunk.toString((typeof encoding === "string" ? encoding : "utf8") as BufferEncoding) : String(chunk)).replace(/\r?\n$/, ""));
     if (typeof actualCallback === "function") queueMicrotask(actualCallback);
     return true;
   };
@@ -269,9 +270,14 @@ export async function resolve(specifier, context, next) {
   register(`data:text/javascript,${encodeURIComponent(hooks)}`, { data: { parentURL: pathToFileURL(join(sdkRoot, "runtime-sdk.mjs")).href } });
 }
 
+/** Initialization errors carry the AWS Node.js runtime's `Runtime.*` error type. */
+function runtimeError(errorType: string, message: string): Error {
+  const error = new Error(message); (error as any).lambdaErrorType = errorType; return error;
+}
+
 async function loadHandler(request: InitializeRequest): Promise<Function> {
   const dot = request.handler.lastIndexOf(".");
-  if (dot < 1) throw new Error(`Invalid handler '${request.handler}'. Expected module.exportName`);
+  if (dot < 1) throw runtimeError("Runtime.MalformedHandlerName", `Bad handler '${request.handler}': not of form 'module.export'`);
   const moduleName = request.handler.slice(0, dot);
   const exportName = request.handler.slice(dot + 1);
   const modulePath = resolve(request.codeDir, moduleName);
@@ -288,8 +294,50 @@ async function loadHandler(request: InitializeRequest): Promise<Function> {
   registerRuntimeSdkForEsm();
   const loaded: any = await import(pathToFileURL(candidate).href);
   const handler = loaded[exportName] ?? loaded.default?.[exportName];
-  if (typeof handler !== "function") throw new Error(`Handler export '${exportName}' was not found in ${moduleName}`);
+  if (typeof handler !== "function") throw runtimeError("Runtime.HandlerNotFound", `${moduleName}.${exportName} is undefined or not exported`);
   return handler;
+}
+
+/**
+ * Shape an initialization failure as the AWS Node.js runtime reports it:
+ * `Runtime.ImportModuleError` for a missing module or dependency,
+ * `Runtime.UserCodeSyntaxError` for code that does not parse, the explicit
+ * `Runtime.*` types above, and otherwise the thrown error's own name.
+ */
+function initializationError(error: any): { errorMessage: string; errorType: string; trace: string[] } {
+  const trace = stackTrace(error);
+  if (typeof error?.lambdaErrorType === "string") return { errorMessage: error.message, errorType: error.lambdaErrorType, trace };
+  if (error?.code === "ERR_MODULE_NOT_FOUND" || error?.code === "MODULE_NOT_FOUND") return { errorMessage: `Error: ${error.message}`, errorType: "Runtime.ImportModuleError", trace };
+  if (error instanceof SyntaxError) return { errorMessage: `SyntaxError: ${error.message}`, errorType: "Runtime.UserCodeSyntaxError", trace };
+  return { errorMessage: error?.message ?? String(error), errorType: error?.name ?? "Error", trace };
+}
+
+/** The AWS Node.js runtime's `trace`: the stack's lines without the runtime's own frames. */
+function stackTrace(error: unknown): string[] {
+  if (!(error instanceof Error) || typeof error.stack !== "string") return [];
+  return error.stack.split("\n").filter(line => !line.includes("lambda-runner."));
+}
+
+/**
+ * A handler-phase failure as the AWS Node.js runtime reports it: an Error's
+ * name, message, and trace; any other thrown value by its type and string form.
+ */
+function functionError(error: unknown): { errorMessage: string; errorType: string; trace: string[] } {
+  if (error instanceof Error) return { errorMessage: error.message, errorType: error.name || "Error", trace: stackTrace(error) };
+  return { errorMessage: String(error), errorType: typeof error, trace: [] };
+}
+
+/**
+ * `callbackWaitsForEmptyEventLoop`: hold the response until nothing the handler
+ * started still keeps the event loop alive (timers, sockets, open connections),
+ * exactly as the AWS runtime does with its `beforeExit` listener. The runtime's
+ * own protocol pipe is unreferenced for the wait so only the function's work
+ * counts; free keep-alive sockets are already unreferenced by Node's agent. The
+ * invocation timeout, enforced by the simulator, still applies while waiting.
+ */
+async function waitForEmptyEventLoop(): Promise<void> {
+  await new Promise<void>(resolve => { process.once("beforeExit", resolve); process.stdin.unref(); });
+  process.stdin.ref();
 }
 
 const dynamicEnvironment = new Set<string>();
@@ -309,23 +357,27 @@ async function invoke(handler: Function, request: InvokeRequest): Promise<Record
   (request.context as any).getRemainingTimeInMillis = () => Math.max(0, timeoutMs - (performance.now() - started));
   delete (request.context as any).__timeoutMs;
   const keepAlive = setInterval(() => undefined, 1_000);
+  const drainEventLoop = async () => { clearInterval(keepAlive); if ((request.context as any).callbackWaitsForEmptyEventLoop !== false) await waitForEmptyEventLoop(); };
   try {
     if (request.streaming && (handler as any)[STREAMING_HANDLER]) {
       const response = new LambdaResponseStream(); await handler(request.event, response, request.context);
       if (!response.writableEnded) throw new Error("The response stream was not ended before the handler completed");
-      await response.finished(); return { ok: true, streamed: true, metadata: response.metadata };
+      await response.finished(); await drainEventLoop(); return { ok: true, streamed: true, metadata: response.metadata };
     } else if (request.streaming) {
       const result = await invokeOrdinary(handler, request.event, request.context); const bytes = Buffer.from(JSON.stringify(result ?? null));
       await new Promise<void>((resolveWrite, reject) => sendStream({ type: "chunk", payload: bytes.toString("base64") }, error => error ? reject(error) : resolveWrite()));
       await new Promise<void>((resolveWrite, reject) => sendStream({ type: "end" }, error => error ? reject(error) : resolveWrite()));
-      return { ok: true, streamed: true };
+      await drainEventLoop(); return { ok: true, streamed: true };
     } else if ((handler as any)[STREAMING_HANDLER]) {
       throw new Error("Response streaming handlers require InvokeWithResponseStream or a RESPONSE_STREAM function URL");
     } else {
-      const result = await invokeOrdinary(handler, request.event, request.context); return { ok: true, result };
+      const result = await invokeOrdinary(handler, request.event, request.context);
+      // Serialize here so a circular or BigInt result is a function error, not a dead runtime.
+      const resultJson = JSON.stringify(result ?? null);
+      await drainEventLoop(); return { ok: true, resultJson };
     }
   }
-  catch (error: any) { return { ok: false, error: { errorMessage: error?.message ?? String(error), errorType: error?.name ?? "Error", stackTrace: String(error?.stack ?? "").split("\n") } }; }
+  catch (error: any) { return { ok: false, error: functionError(error) }; }
   finally { clearInterval(keepAlive); clearEnvironment(); currentInvocationId = "between-invocations"; }
 }
 
@@ -343,7 +395,7 @@ process.stdin.on("data", chunk => {
       const request = JSON.parse(line) as InitializeRequest | InvokeRequest;
       if (request.type === "initialize") {
         try { handler = await loadHandler(request); protocol.write(`${JSON.stringify({ type: "ready", ok: true })}\n`); }
-        catch (error: any) { protocol.write(`${JSON.stringify({ type: "ready", ok: false, error: { errorMessage: error?.message ?? String(error), errorType: error?.name ?? "Error", stackTrace: String(error?.stack ?? "").split("\n") } })}\n`); process.exitCode = 1; }
+        catch (error: any) { const failure = initializationError(error); await finishApplicationLogs("initialization"); protocol.write(`${JSON.stringify({ type: "ready", ok: false, error: failure })}\n`); process.exitCode = 1; }
       } else if (request.type === "invoke" && handler) {
         const result = await invoke(handler, request); await finishApplicationLogs(request.invocationId); protocol.write(`${JSON.stringify({ type: "result", invocationId: request.invocationId, ...result, memoryUsage: measureWorkerMemory() })}\n`);
       } else throw new Error("Lambda runtime received an invalid protocol request");

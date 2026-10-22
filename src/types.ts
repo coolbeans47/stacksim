@@ -476,10 +476,14 @@ export interface LambdaState extends LambdaExecutableConfigurationState {
   lastModified: string;
   state?: "Pending" | "Active" | "Failed" | "Inactive";
   stateReason?: string;
+  /** AWS StateReasonCode, for example Creating. */
+  stateReasonCode?: string;
   /** Simulator-only, payload-free diagnostic for the most recent platform log delivery failure. */
   lastLogDeliveryError?: { time: number; code: string; message: string };
   lastUpdateStatus?: "InProgress" | "Successful" | "Failed";
   lastUpdateStatusReason?: string;
+  /** AWS LastUpdateStatusReasonCode, for example InvalidZipFileException. */
+  lastUpdateStatusReasonCode?: string;
 }
 
 export interface LambdaProvisionedConcurrencyConfigState {
@@ -602,7 +606,7 @@ export interface LambdaEventSourceMappingState {
   functionQualifier?: string;
   functionArn: string;
   enabled: boolean;
-  state: "Creating" | "Enabled" | "Disabled" | "Updating" | "Deleting";
+  state: "Creating" | "Enabling" | "Enabled" | "Disabling" | "Disabled" | "Updating" | "Deleting";
   stateTransitionReason: string;
   batchSize: number;
   maximumBatchingWindowInSeconds: number;

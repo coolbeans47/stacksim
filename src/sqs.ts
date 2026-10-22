@@ -143,7 +143,7 @@ export interface SqsConsumerAcknowledgeInput { queueArn: string; receiptHandles:
 
 export type SqsAuthorizedMessageCaller =
   | { kind: "service"; principal: string; sourceArn: string; sourceAccount: string; deliveryLineage?: string[] }
-  | { kind: "role"; roleArn: string; sourceArn?: string; sourceAccount?: string; deliveryLineage?: string[] };
+  | { kind: "role"; roleArn: string; sourceArn?: string; sourceAccount?: string; deliveryLineage?: string[]; /** A decision the calling service already made, for example "allowed" while authorization enforcement is off. */ identityAuthorization?: AuthorizationResult };
 
 interface RedrivePolicy { deadLetterTargetArn: string; maxReceiveCount: number }
 interface RedriveAllowPolicy { redrivePermission: "allowAll" | "denyAll" | "byQueue"; sourceQueueArns?: string[] }
@@ -1346,7 +1346,7 @@ export class SqsService {
           "aws:RequestedRegion": this.region,
           "aws:CurrentTime": new Date(this.clock.now()).toISOString(),
         })
-      : this.roleQueueAuthorization(queue, caller.roleArn, "sqs:SendMessage", {
+      : caller.identityAuthorization ?? this.roleQueueAuthorization(queue, caller.roleArn, "sqs:SendMessage", {
           ...(caller.sourceArn ? { "aws:SourceArn": caller.sourceArn } : {}),
           ...(caller.sourceAccount ? { "aws:SourceAccount": caller.sourceAccount } : {}),
         });

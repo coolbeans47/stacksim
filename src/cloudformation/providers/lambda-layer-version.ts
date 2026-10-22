@@ -2,6 +2,7 @@ import { providerValidationPathSegments } from "./contract.js";
 import { createHash } from "node:crypto";
 import { AwsError } from "../../errors.js";
 import type { LambdaService } from "../../lambda.js";
+import { LAMBDA_RUNTIME_IDENTIFIERS } from "../../lambda-layers.js";
 import type { S3Service } from "../../s3.js";
 import {
   ProviderReferenceError,
@@ -90,7 +91,7 @@ function validateNested(properties: Record<string, unknown>, context: ProviderCo
   if (properties.Description !== undefined && (typeof properties.Description !== "string" || properties.Description.length > 256)) invalid("Properties.Description", "Description must be a string no longer than 256 characters");
   if (properties.LicenseInfo !== undefined && (typeof properties.LicenseInfo !== "string" || properties.LicenseInfo.length > 512)) invalid("Properties.LicenseInfo", "LicenseInfo must be a string no longer than 512 characters");
   if (properties.CompatibleArchitectures !== undefined && (!Array.isArray(properties.CompatibleArchitectures) || properties.CompatibleArchitectures.length > 2 || new Set(properties.CompatibleArchitectures).size !== properties.CompatibleArchitectures.length || properties.CompatibleArchitectures.some(value => !["x86_64", "arm64"].includes(String(value))))) invalid("Properties.CompatibleArchitectures", "CompatibleArchitectures must contain unique x86_64 or arm64 values");
-  if (properties.CompatibleRuntimes !== undefined && (!Array.isArray(properties.CompatibleRuntimes) || properties.CompatibleRuntimes.length > 15 || new Set(properties.CompatibleRuntimes).size !== properties.CompatibleRuntimes.length || properties.CompatibleRuntimes.some(value => !["nodejs18.x", "nodejs20.x", "nodejs22.x", "python3.13"].includes(String(value))))) invalid("Properties.CompatibleRuntimes", "CompatibleRuntimes is limited to runtimes implemented by stacksim");
+  if (properties.CompatibleRuntimes !== undefined && (!Array.isArray(properties.CompatibleRuntimes) || properties.CompatibleRuntimes.length > 15 || new Set(properties.CompatibleRuntimes).size !== properties.CompatibleRuntimes.length || properties.CompatibleRuntimes.some(value => !LAMBDA_RUNTIME_IDENTIFIERS.has(String(value))))) invalid("Properties.CompatibleRuntimes", "CompatibleRuntimes must contain at most 15 unique Lambda runtime identifiers");
   return issues;
 }
 

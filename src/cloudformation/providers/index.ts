@@ -11,6 +11,7 @@ export * from "./dynamodb-table.js";
 export * from "./dynamodb-global-table.js";
 export * from "./s3-bucket.js";
 export * from "./s3-bucket-policy.js";
+export * from "./s3-bucket-notifications.js";
 export * from "./ssm-parameter.js";
 export * from "./secrets-manager-secret.js";
 export * from "./secrets-manager-resource-policy.js";

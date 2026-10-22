@@ -240,9 +240,10 @@ export function createLambdaPermissionProvider(lambda: LambdaService): Productio
     ...(statement.Condition?.StringEquals?.["lambda:FunctionUrlAuthType"] ? { FunctionUrlAuthType: String(statement.Condition.StringEquals["lambda:FunctionUrlAuthType"]) as PermissionModel["FunctionUrlAuthType"] } : {}),
     ...(statement.Condition?.Bool?.["lambda:InvokedViaFunctionUrl"] !== undefined ? { InvokedViaFunctionUrl: String(statement.Condition.Bool["lambda:InvokedViaFunctionUrl"]) === "true" } : {}),
   });
+  // The service stores principals in policy-document shape ({Service}/{AWS}); the template holds the bare string.
   const statementMatches = (statement: any, desired: PermissionModel): boolean => statement?.Effect === "Allow"
     && statement.Action === desired.Action
-    && statement.Principal === desired.Principal
+    && statementProperties(desired.FunctionName, statement).Principal === desired.Principal
     && stableJson(statement.Condition ?? {}) === stableJson(expectedCondition(desired));
   return {
     typeName: LAMBDA_PERMISSION_TYPE, providerVersion: 1, visibility: "production", schema: LAMBDA_PERMISSION_SCHEMA,
@@ -471,7 +472,7 @@ export function createLambdaAliasProvider(lambda: LambdaService): ProductionReso
     validate(properties: unknown): readonly ProviderValidationIssue[] {
       const issues = validateDeclaredProperties(properties ?? {}, LAMBDA_ALIAS_SCHEMA); if (!record(properties)) return issues;
       if (typeof properties.Name === "string" && (!/^[A-Za-z-_][A-Za-z0-9-_]{0,127}$/.test(properties.Name) || /^\d+$/.test(properties.Name))) issues.push({ code: "InvalidProperty", path: "Properties.Name", pathSegments: providerValidationPathSegments("Properties.Name"), message: "Name must be a non-numeric Lambda alias name" });
-      if (typeof properties.FunctionVersion === "string" && !/^\d+$/.test(properties.FunctionVersion)) issues.push({ code: "InvalidProperty", path: "Properties.FunctionVersion", pathSegments: providerValidationPathSegments("Properties.FunctionVersion"), message: "Alias must target a published numeric version" });
+      if (typeof properties.FunctionVersion === "string" && !/^(?:\$LATEST|\d+)$/.test(properties.FunctionVersion)) issues.push({ code: "InvalidProperty", path: "Properties.FunctionVersion", pathSegments: providerValidationPathSegments("Properties.FunctionVersion"), message: "Alias must target $LATEST or a published numeric version" });
       provisionedConcurrencyIssues(properties.ProvisionedConcurrencyConfig, "Properties.ProvisionedConcurrencyConfig", issues);
       try { aliasRouting(properties.RoutingConfig); } catch (error) { issues.push({ code: "InvalidProperty", path: "Properties.RoutingConfig", pathSegments: providerValidationPathSegments("Properties.RoutingConfig"), message: error instanceof Error ? error.message : String(error) }); } return issues;
     },

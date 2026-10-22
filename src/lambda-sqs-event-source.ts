@@ -3,7 +3,7 @@ import type { Clock } from "./core/clock.js";
 import type { TelemetryBus } from "./core/telemetry.js";
 import { evaluateRoleAuthorization } from "./iam/evaluator.js";
 import type { StateStore } from "./state.js";
-import { id } from "./util.js";
+import { randomUUID } from "node:crypto";
 
 export interface LambdaSqsQueueDescriptor {
   queueArn: string;
@@ -63,7 +63,7 @@ export interface LambdaSqsMappingState {
   functionQualifier?: string;
   functionArn: string;
   enabled: boolean;
-  state: "Creating" | "Enabled" | "Disabled" | "Updating" | "Deleting";
+  state: "Creating" | "Enabling" | "Enabled" | "Disabling" | "Disabled" | "Updating" | "Deleting";
   stateTransitionReason: string;
   batchSize: number;
   maximumBatchingWindowInSeconds: number;
@@ -114,6 +114,18 @@ const SOURCE_ONLY_FIELDS = [
   "MaximumRecordAgeInSeconds", "MaximumRetryAttempts", "ParallelizationFactor", "ProvisionedPollerConfig", "Queues", "SelfManagedEventSource",
   "SelfManagedKafkaEventSourceConfig", "SourceAccessConfigurations", "StartingPosition", "StartingPositionTimestamp", "Topics", "TumblingWindowInSeconds",
 ];
+
+/**
+ * The wire-visible `LastProcessingResult`. The pollers keep a precise local
+ * outcome; the API reports AWS's shapes: `OK`, `No records processed`, or
+ * `PROBLEM: <reason>`.
+ */
+export function awsProcessingResult(outcome: string): string {
+  if (outcome === "OK" || outcome === "Window batch processed" || outcome === "No records matched event filter") return "OK";
+  if (outcome === "No records processed" || outcome === "No messages processed") return "No records processed";
+  if (outcome.startsWith("PROBLEM: ")) return outcome;
+  return `PROBLEM: ${outcome === "Function error" ? "Function call failed" : outcome}`;
+}
 
 function integer(value: unknown, field: string, minimum: number, maximum: number, fallback: number): number {
   if (value === undefined) return fallback;
@@ -255,7 +267,7 @@ export class LambdaSqsEventSource {
       EventSourceArn: mapping.eventSourceArn,
       FunctionArn: mapping.functionArn,
       LastModified: mapping.lastModified / 1000,
-      LastProcessingResult: mapping.lastProcessingResult,
+      LastProcessingResult: awsProcessingResult(mapping.lastProcessingResult),
       State: mapping.state,
       StateTransitionReason: mapping.stateTransitionReason,
       FunctionResponseTypes: mapping.functionResponseTypes,
@@ -431,7 +443,7 @@ export class LambdaSqsEventSource {
     let result = "OK"; let metricName = "EventSourceMappingSucceeded"; let interrupted = false; const started = this.clock.now();
     try {
       const lineage = [...new Set(messages.flatMap(message => message.deliveryLineage ?? []))].slice(-32);
-      const invocation = await this.callbacks.invoke(mapping.functionName, mapping.functionQualifier, this.payload(mapping.eventSourceArn, messages), id(24), lineage);
+      const invocation = await this.callbacks.invoke(mapping.functionName, mapping.functionQualifier, this.payload(mapping.eventSourceArn, messages), randomUUID(), lineage);
       if (invocation.interrupted) { interrupted = true; return; }
       if (invocation.functionError) { result = "Function error"; metricName = "EventSourceMappingFailed"; return; }
       let successful = messages;

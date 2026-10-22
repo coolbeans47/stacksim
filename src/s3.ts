@@ -2139,7 +2139,8 @@ export class S3Service {
 
   private async enqueueObjectEvent(located: LocatedBucket, index: S3BucketIndex, key: string, object: S3ObjectVersionState | undefined, eventName: string, extra: Record<string, unknown> = {}, context: { lineage?: string[]; principal?: PrincipalContext; sourceIPAddress?: string } = {}): Promise<void> {
     const config = located.bucket.notificationConfiguration; if (!config) return;
-    const encodedKey = encodeURIComponent(key).replace(/%20/g, "+"); const requestId = randomUUID(); const sequencer = createHash("sha256").update(`${located.bucket.name}\0${key}\0${object?.versionId ?? ""}\0${object?.lastModified ?? this.clock.now()}`).digest("hex").slice(0, 32).toUpperCase();
+    // S3 form-encodes the key: spaces become "+" and "/" stays a path separator, so handlers can split the raw key.
+    const encodedKey = encodeURIComponent(key).replace(/%2F/g, "/").replace(/%20/g, "+"); const requestId = randomUUID(); const sequencer = createHash("sha256").update(`${located.bucket.name}\0${key}\0${object?.versionId ?? ""}\0${object?.lastModified ?? this.clock.now()}`).digest("hex").slice(0, 32).toUpperCase();
     const restore = object?.restore ?? (extra.restore as S3ObjectVersionState["restore"] | undefined);
     const serviceGenerated = !context.principal && /^(?:s3:)?(?:Lifecycle(?:Expiration|Transition)|ObjectRestore:(?:Completed|Delete))/.test(eventName);
     const principalId = context.principal?.principalId ?? (serviceGenerated ? "s3.amazonaws.com" : (object?.ownerId ?? located.bucket.ownerId));
@@ -2147,7 +2148,7 @@ export class S3Service {
     const sourceIPAddress = context.sourceIPAddress ?? "127.0.0.1";
     const incomingLineage = context.lineage ?? [];
     const record: any = {
-      eventVersion: "2.3", eventSource: "aws:s3", awsRegion: located.region, eventTime: iso(this.clock.now()), eventName: eventName.replace(/^s3:/, ""),
+      eventVersion: "2.6", eventSource: "aws:s3", awsRegion: located.region, eventTime: iso(this.clock.now()), eventName: eventName.replace(/^s3:/, ""),
       userIdentity: { principalId },
       requestParameters: { sourceIPAddress }, responseElements: { "x-amz-request-id": requestId, "x-amz-id-2": createHash("sha256").update(requestId).digest("base64") },
       s3: { s3SchemaVersion: "1.0", configurationId: "", bucket: { name: located.bucket.name, ownerIdentity: { principalId: located.bucket.ownerId }, arn: located.bucket.arn }, object: { key: encodedKey, size: object?.size ?? 0, eTag: object?.etag || undefined, versionId: object?.versionId === "null" ? undefined : object?.versionId, sequencer, ...(object?.deleteMarker ? { deleteMarker: true } : {}), ...extra } },

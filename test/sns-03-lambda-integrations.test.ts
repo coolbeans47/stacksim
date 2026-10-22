@@ -106,8 +106,12 @@ test("SNS-03 Lambda async and DynamoDB Streams discarded-record destinations pub
     await dynamodb.send(new PutItemCommand({ TableName: "SnsDiscardSource", Item: { id: { S: "discard-me" } } }));
     const discarded = await receiveJson(sqs, queueUrl, clock, value => value.requestContext?.condition === "RetryAttemptsExhausted");
     assert.equal(discarded.requestContext.functionArn, mapping.FunctionArn);
-    assert.equal(discarded.requestPayload.Records[0].dynamodb.Keys.id.S, "discard-me");
-    assert.equal(discarded.responsePayload.eventSourceMappingArn, mapping.EventSourceMappingArn);
+    // The record carries batch metadata only, as on AWS: the records stay in the stream.
+    assert.equal(discarded.requestPayload, undefined);
+    assert.equal(discarded.DDBStreamBatchInfo.streamArn, table.TableDescription!.LatestStreamArn);
+    assert.equal(discarded.DDBStreamBatchInfo.batchSize, 1);
+    assert.ok(discarded.DDBStreamBatchInfo.startSequenceNumber && discarded.DDBStreamBatchInfo.endSequenceNumber && discarded.DDBStreamBatchInfo.shardId);
+    assert.equal(discarded.responseContext.functionError, "Unhandled");
   } finally {
     clients.forEach(client => client.destroy());
     await simulator.stop().catch(() => undefined);

@@ -1088,6 +1088,20 @@ Run `aws configure list` and `aws sts get-caller-identity`. Credential and
 endpoint environment variables override profile settings, so remove stale
 variables before retrying.
 
+### S3 event notifications from CDK
+
+`bucket.addEventNotification(event, new LambdaDestination(fn))` and
+`fn.addEventSource(new S3EventSource(bucket, …))` work. CDK emits a
+`Custom::S3BucketNotifications` resource plus an inline Python helper
+function; StackSim admits the helper but never runs it, and applies the
+notification configuration to the local bucket natively. A bucket created in
+the stack has its configuration replaced; a bucket imported with
+`Bucket.fromBucketName` keeps the configurations the stack did not create.
+Lambda and SQS destinations are supported; SNS topic destinations are rejected
+at `CreateStack` because the local S3 service has no SNS notification path.
+The Lambda permission CDK generates (`s3.amazonaws.com` with the bucket ARN as
+`SourceArn`) is required, as on AWS.
+
 ## 17. Practices to avoid
 
 Do not:

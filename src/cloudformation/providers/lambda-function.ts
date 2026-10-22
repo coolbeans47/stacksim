@@ -4,6 +4,7 @@ import type { LambdaService } from "../../lambda.js";
 import type { S3Service } from "../../s3.js";
 import { AwsError } from "../../errors.js";
 import { createZip } from "../../core/zip-create.js";
+import { S3_BUCKET_NOTIFICATIONS_HANDLER_DESCRIPTION } from "./s3-bucket-notifications.js";
 import {
   ProviderReferenceError,
   type ProductionResourceProvider,
@@ -176,7 +177,8 @@ function validateNested(properties: Record<string, unknown>, context: ProviderCo
     else {
       rejectUnknown(properties.Environment, "Properties.Environment", ["Variables"]);
       const variables = properties.Environment.Variables;
-      if (Object.keys(variables).some(key => !/^[A-Za-z][A-Za-z0-9_]+$/.test(key)) || Buffer.byteLength(JSON.stringify(variables)) > 4096) invalid("Properties.Environment.Variables", "Lambda environment keys and string values must fit within 4 KB");
+      if (Object.keys(variables).some(key => !/^[A-Za-z][A-Za-z0-9_]+$/.test(key))) invalid("Properties.Environment.Variables", "Environment variable keys must start with a letter, contain only letters, numbers, and underscores, and be at least two characters long");
+      else if (Buffer.byteLength(JSON.stringify(variables)) > 4096) invalid("Properties.Environment.Variables", "Lambda environment variables must fit within 4 KB");
     }
   }
   if (properties.EphemeralStorage !== undefined) {
@@ -219,15 +221,25 @@ function validateNested(properties: Record<string, unknown>, context: ProviderCo
   if (properties.Runtime === "python3.13") {
     const variables = record(properties.Environment) && record(properties.Environment.Variables) ? properties.Environment.Variables : undefined;
     const content = record(properties.Code) ? properties.Code : undefined;
-    if (properties.Handler !== "index.handler"
-      || properties.Timeout !== 900
-      || !Array.isArray(properties.Layers)
-      || properties.Layers.length !== 1
-      || !variables
-      || Object.keys(variables).length !== 1
-      || variables.AWS_CA_BUNDLE !== "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
-      || content?.S3Key !== "97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f.zip") {
-      invalid("Properties.Runtime", "python3.13 is reserved for the exact pinned CDK BucketDeployment helper resource");
+    const bucketDeploymentHelper = properties.Handler === "index.handler"
+      && properties.Timeout === 900
+      && Array.isArray(properties.Layers)
+      && properties.Layers.length === 1
+      && variables !== undefined
+      && Object.keys(variables).length === 1
+      && variables.AWS_CA_BUNDLE === "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+      && content?.S3Key === "97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f.zip";
+    // The aws-cdk-lib S3 notifications helper is never invoked locally: the
+    // native Custom::S3BucketNotifications provider applies the configuration.
+    const bucketNotificationsHelper = properties.Handler === "index.handler"
+      && properties.Timeout === 300
+      && properties.Layers === undefined
+      && properties.Environment === undefined
+      && properties.Description === S3_BUCKET_NOTIFICATIONS_HANDLER_DESCRIPTION
+      && typeof content?.ZipFile === "string"
+      && content.ZipFile.includes("put_bucket_notification_configuration");
+    if (!bucketDeploymentHelper && !bucketNotificationsHelper) {
+      invalid("Properties.Runtime", "python3.13 is reserved for the exact pinned CDK BucketDeployment and S3BucketNotifications helper resources");
     }
   }
   if (!properties.FunctionName && generatedName(context).length > 64) invalid("Properties.FunctionName", "Generated function name exceeds the service limit");
@@ -300,8 +312,11 @@ function expectedConfiguration(model: LambdaFunctionModel): Record<(typeof CONFI
 
 function configurationMatches(configuration: Record<string, unknown>, model: LambdaFunctionModel): boolean {
   const expected = expectedConfiguration(model);
+  // GetFunctionConfiguration omits empty optional containers, as AWS does; compare against their empty defaults.
+  const actual: Record<string, unknown> = { ...configuration, Environment: configuration.Environment ?? { Variables: {} }, DeadLetterConfig: configuration.DeadLetterConfig ?? {} };
+  if (record(actual.Environment) && actual.Environment.Variables === undefined) actual.Environment = { ...actual.Environment, Variables: {} };
   const actualLayers = Array.isArray(configuration.Layers) ? configuration.Layers.map(layer => record(layer) ? layer.Arn : layer) : [];
-  return CONFIGURATION_KEYS.every(key => same(configuration[key], expected[key])) && same(actualLayers, model.Layers ?? []);
+  return CONFIGURATION_KEYS.every(key => same(actual[key], expected[key])) && same(actualLayers, model.Layers ?? []);
 }
 
 function inProgress(physicalId: string, phase: string, callbackAfterMs = 25): ProviderInProgress {
@@ -327,6 +342,8 @@ export function createLambdaFunctionProvider(lambda: LambdaService, s3: S3Servic
     method,
     path,
     input,
+    // Marks the request as CloudFormation-originated: the service admits the pinned python3.13 CDK helper functions only on this path.
+    cloudFormationOwner: `${context.stackId}/${context.logicalId}`,
     handle: (req, res, pathname, url) => lambda.handle(req, res, pathname, url, context.principal.identity),
   });
 

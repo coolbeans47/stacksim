@@ -265,6 +265,10 @@ export function relatedResourceLinks(resource) {
       { label: "Monitoring", href: `${base}/monitor` },
     ];
   }
+  if (type === "Custom::S3BucketNotifications") {
+    const bucketName = field(properties, "BucketName", "bucketName");
+    return single(typeof bucketName === "string" && bucketName ? `#/s3/buckets/${encodeURIComponent(bucketName)}/properties` : undefined);
+  }
   if (type === "Custom::CDKBucketDeployment") {
     const destinationBucketName = field(properties, "DestinationBucketName", "destinationBucketName");
     const destinationPrefix = field(properties, "DestinationBucketKeyPrefix", "destinationBucketKeyPrefix");

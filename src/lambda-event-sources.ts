@@ -11,7 +11,16 @@ import { DynamoStreamPersistence } from "./dynamodb/streams.js";
 import type { DynamoStreamDescriptorState, DynamoStreamRecordState, LambdaEventSourceMappingState } from "./types.js";
 import type { StateStore } from "./state.js";
 import { id, json, readJson } from "./util.js";
-import { LambdaSqsEventSource, type LambdaSqsMappingState, type LambdaSqsServicePort } from "./lambda-sqs-event-source.js";
+import { awsProcessingResult, LambdaSqsEventSource, type LambdaSqsMappingState, type LambdaSqsServicePort } from "./lambda-sqs-event-source.js";
+
+const TRANSIENT_STATES = new Set(["Creating", "Updating", "Enabling", "Disabling"]);
+
+/** An update that only toggles `Enabled` passes through `Enabling`/`Disabling`; any other change is `Updating`. */
+function transientUpdateState(input: Record<string, unknown>): "Updating" | "Enabling" | "Disabling" {
+  const changed = Object.keys(input).filter(key => input[key] !== undefined);
+  if (typeof input.Enabled === "boolean" && changed.every(key => key === "Enabled")) return input.Enabled ? "Enabling" : "Disabling";
+  return "Updating";
+}
 
 interface EventSourceFunction {
   functionName: string;
@@ -30,6 +39,10 @@ interface EventSourceInvokeResult {
 interface EventSourceCallbacks {
   resolveFunction(target: string): EventSourceFunction;
   invoke(functionName: string, qualifier: string | undefined, payload: Buffer, requestId: string, lineage?: string[]): Promise<EventSourceInvokeResult>;
+  /** Whether a local S3 bucket exists, for on-failure destination validation. */
+  s3BucketExists(bucketName: string): Promise<boolean>;
+  /** Store a discarded-batch record in an S3 on-failure destination under the function's execution role. */
+  writeS3Destination(bucketArn: string, prefix: string, record: unknown, role: string): Promise<void>;
 }
 
 export interface LambdaSnsServicePort {
@@ -150,7 +163,7 @@ export class LambdaEventSourceMappings {
       EventSourceArn: mapping.eventSourceArn,
       FunctionArn: mapping.functionArn,
       LastModified: mapping.lastModified / 1000,
-      LastProcessingResult: mapping.lastProcessingResult,
+      LastProcessingResult: awsProcessingResult(mapping.lastProcessingResult),
       State: mapping.state,
       StateTransitionReason: mapping.stateTransitionReason,
       DestinationConfig: mapping.destinationOnFailure ? { OnFailure: { Destination: mapping.destinationOnFailure } } : {},
@@ -205,7 +218,7 @@ export class LambdaEventSourceMappings {
     for (const field of SOURCE_FIELDS) if (input[field] !== undefined) throw new AwsError("InvalidParameterValueException", `${field} is not supported for DynamoDB stream event source mappings in this simulator`);
   }
 
-  private discardedRecordDestination(input: any, target: EventSourceFunction, previous?: string): string | undefined {
+  private async discardedRecordDestination(input: any, target: EventSourceFunction, previous?: string): Promise<string | undefined> {
     if (input.DestinationConfig === undefined) return previous;
     const config = input.DestinationConfig;
     if (!config || typeof config !== "object" || Array.isArray(config) || Object.keys(config).some(key => key !== "OnFailure")) throw new AwsError("InvalidParameterValueException", "DestinationConfig must contain only OnFailure");
@@ -220,6 +233,13 @@ export class LambdaEventSourceMappings {
       if (!this.snsService) throw new AwsError("InvalidParameterValueException", "The SNS discarded-record destination dependency is not available in this simulator");
       try { this.snsService.assertTopicExists(destination); } catch { throw new AwsError("ResourceNotFoundException", "The discarded-record SNS destination topic does not exist", 404); }
       if (this.authMode === "enforce" && evaluateRoleAuthorization(this.store.ensureAccount().iam, target.role, "sns:Publish", destination).decision !== "allowed") throw new AwsError("InvalidParameterValueException", `The function execution role is not authorized to publish discarded records to ${destination}`);
+      return destination;
+    }
+    if (destination.startsWith("arn:aws:s3:::")) {
+      const bucket = destination.match(/^arn:aws:s3:::([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])$/)?.[1];
+      if (!bucket) throw new AwsError("InvalidParameterValueException", "DynamoDB discarded-record S3 destinations must be a bucket ARN");
+      if (!await this.callbacks.s3BucketExists(bucket)) throw new AwsError("ResourceNotFoundException", "The discarded-record S3 destination bucket does not exist", 404);
+      if (this.authMode === "enforce" && evaluateRoleAuthorization(this.store.ensureAccount().iam, target.role, "s3:PutObject", `${destination}/*`).decision !== "allowed") throw new AwsError("InvalidParameterValueException", `The function execution role is not authorized to write discarded records to ${destination}`);
       return destination;
     }
     if (!destination.includes(":sqs:")) throw new AwsError("InvalidParameterValueException", `The ${destination.split(":")[2]} discarded-record destination dependency is not available in this simulator`);
@@ -257,12 +277,13 @@ export class LambdaEventSourceMappings {
     return descriptor.trimmedThroughSequence ? afterSequence(descriptor.trimmedThroughSequence) : descriptor.startingSequenceNumber;
   }
 
-  private commonConfiguration(input: any, target: EventSourceFunction, previous?: LambdaEventSourceMappingState): Pick<LambdaEventSourceMappingState, "batchSize" | "maximumBatchingWindowInSeconds" | "parallelizationFactor" | "maximumRecordAgeInSeconds" | "maximumRetryAttempts" | "bisectBatchOnFunctionError" | "tumblingWindowInSeconds" | "functionResponseTypes" | "filterCriteria" | "destinationOnFailure"> {
+  private async commonConfiguration(input: any, target: EventSourceFunction, previous?: LambdaEventSourceMappingState): Promise<Pick<LambdaEventSourceMappingState, "batchSize" | "maximumBatchingWindowInSeconds" | "parallelizationFactor" | "maximumRecordAgeInSeconds" | "maximumRetryAttempts" | "bisectBatchOnFunctionError" | "tumblingWindowInSeconds" | "functionResponseTypes" | "filterCriteria" | "destinationOnFailure">> {
     this.rejectUnsupported(input);
     const batchSize = this.integer(input.BatchSize, "BatchSize", 1, 10_000, previous?.batchSize ?? 100);
     const maximumBatchingWindowInSeconds = this.integer(input.MaximumBatchingWindowInSeconds, "MaximumBatchingWindowInSeconds", 0, 300, previous?.maximumBatchingWindowInSeconds ?? 0);
-    const batchSettingsChanged = !previous || (input.BatchSize !== undefined && batchSize !== previous.batchSize) || (input.MaximumBatchingWindowInSeconds !== undefined && maximumBatchingWindowInSeconds !== previous.maximumBatchingWindowInSeconds);
-    if (batchSettingsChanged && input.BatchSize !== undefined && batchSize > 10 && maximumBatchingWindowInSeconds < 1) throw new AwsError("InvalidParameterValueException", "MaximumBatchingWindowInSeconds must be at least 1 when BatchSize is greater than 10");
+    // A stream mapping accepts its default batch size of 100 with no batching
+    // window, as the official DynamoDB tutorial does; only the SQS adapter
+    // requires a window above ten records.
     const bisect = input.BisectBatchOnFunctionError === undefined ? previous?.bisectBatchOnFunctionError ?? false : input.BisectBatchOnFunctionError;
     if (typeof bisect !== "boolean") throw new AwsError("InvalidParameterValueException", "BisectBatchOnFunctionError must be a boolean");
     return {
@@ -275,7 +296,7 @@ export class LambdaEventSourceMappings {
       tumblingWindowInSeconds: this.integer(input.TumblingWindowInSeconds, "TumblingWindowInSeconds", 0, 900, previous?.tumblingWindowInSeconds ?? 0),
       functionResponseTypes: this.responseTypes(input.FunctionResponseTypes, previous?.functionResponseTypes ?? []),
       filterCriteria: this.filterCriteria(input.FilterCriteria, previous?.filterCriteria),
-      destinationOnFailure: this.discardedRecordDestination(input, target, previous?.destinationOnFailure),
+      destinationOnFailure: await this.discardedRecordDestination(input, target, previous?.destinationOnFailure),
     };
   }
 
@@ -287,7 +308,7 @@ export class LambdaEventSourceMappings {
     if (input.StartingPositionTimestamp !== undefined) throw new AwsError("InvalidParameterValueException", "StartingPositionTimestamp is not supported for DynamoDB Streams; use TRIM_HORIZON or LATEST");
     if (!new Set(["TRIM_HORIZON", "LATEST"]).has(input.StartingPosition)) throw new AwsError("InvalidParameterValueException", "StartingPosition must be TRIM_HORIZON or LATEST");
     if (Object.values(this.mappings).some(mapping => mapping.eventSourceArn === descriptor.streamArn && mapping.functionArn === target.functionArn)) throw new AwsError("ResourceConflictException", "An event source mapping for this function and event source already exists", 409);
-    const configuration = this.commonConfiguration(input, target); const uuid = randomUUID(); const now = this.clock.now(); const enabled = input.Enabled === undefined ? true : input.Enabled;
+    const configuration = await this.commonConfiguration(input, target); const uuid = randomUUID(); const now = this.clock.now(); const enabled = input.Enabled === undefined ? true : input.Enabled;
     if (typeof enabled !== "boolean") throw new AwsError("InvalidParameterValueException", "Enabled must be a boolean");
     const mapping: LambdaEventSourceMappingState = {
       uuid, eventSourceMappingArn: `arn:aws:lambda:${this.region}:${this.store.accountId}:event-source-mapping:${uuid}`,
@@ -325,13 +346,13 @@ export class LambdaEventSourceMappings {
   private async update(mapping: StoredEventSourceMapping, input: any): Promise<any> {
     if (this.isSqsMapping(mapping)) return this.updateSqs(mapping, input);
     if (input.EventSourceArn !== undefined || input.StartingPosition !== undefined || input.StartingPositionTimestamp !== undefined || input.Tags !== undefined) throw new AwsError("InvalidParameterValueException", "EventSourceArn, StartingPosition, StartingPositionTimestamp, and Tags cannot be updated");
-    const previousTumblingWindow = mapping.tumblingWindowInSeconds; const target = input.FunctionName !== undefined ? this.callbacks.resolveFunction(String(input.FunctionName)) : this.callbacks.resolveFunction(mapping.functionArn); this.ensureRolePermissions(target, mapping.eventSourceArn); const configuration = this.commonConfiguration(input, target, mapping);
+    const previousTumblingWindow = mapping.tumblingWindowInSeconds; const target = input.FunctionName !== undefined ? this.callbacks.resolveFunction(String(input.FunctionName)) : this.callbacks.resolveFunction(mapping.functionArn); this.ensureRolePermissions(target, mapping.eventSourceArn); const configuration = await this.commonConfiguration(input, target, mapping);
     if (input.Enabled !== undefined && typeof input.Enabled !== "boolean") throw new AwsError("InvalidParameterValueException", "Enabled must be a boolean");
     Object.assign(mapping, configuration);
     if (input.TumblingWindowInSeconds !== undefined && configuration.tumblingWindowInSeconds !== previousTumblingWindow) { delete mapping.tumblingWindowState; delete mapping.pendingBatch; delete mapping.batchWindowStartedAt; }
     if (target) { mapping.functionName = target.functionName; mapping.functionArn = target.functionArn; if (target.qualifier) mapping.functionQualifier = target.qualifier; else delete mapping.functionQualifier; }
     if (input.Enabled !== undefined) mapping.enabled = input.Enabled;
-    mapping.state = "Updating"; mapping.stateTransitionReason = "USER_INITIATED"; mapping.lastModified = this.clock.now();
+    mapping.state = transientUpdateState(input); mapping.stateTransitionReason = "USER_INITIATED"; mapping.lastModified = this.clock.now();
     await this.store.save(); this.transition(mapping); this.scheduleWorker(0); return this.view(mapping);
   }
 
@@ -345,7 +366,7 @@ export class LambdaEventSourceMappings {
     if (input.ScalingConfig !== undefined && configuration.scalingMaximumConcurrency === undefined) delete mapping.scalingMaximumConcurrency;
     if (target) { mapping.functionName = target.functionName; mapping.functionArn = target.functionArn; if (target.qualifier) mapping.functionQualifier = target.qualifier; else delete mapping.functionQualifier; }
     if (input.Enabled !== undefined) mapping.enabled = input.Enabled;
-    mapping.state = "Updating"; mapping.stateTransitionReason = "USER_INITIATED"; mapping.lastModified = this.clock.now(); this.sqsSource.forget(mapping.uuid);
+    mapping.state = transientUpdateState(input); mapping.stateTransitionReason = "USER_INITIATED"; mapping.lastModified = this.clock.now(); this.sqsSource.forget(mapping.uuid);
     await this.store.save(); this.transition(mapping); this.scheduleWorker(0); return this.view(mapping);
   }
 
@@ -386,7 +407,7 @@ export class LambdaEventSourceMappings {
   }
 
   private transition(mapping: StoredEventSourceMapping): void {
-    const complete = async () => { if (!this.mappings[mapping.uuid] || !["Creating", "Updating"].includes(mapping.state)) return; mapping.state = mapping.enabled ? "Enabled" : "Disabled"; mapping.lastModified = this.clock.now(); await this.store.save(); if (mapping.enabled) this.scheduleWorker(0); };
+    const complete = async () => { if (!this.mappings[mapping.uuid] || !TRANSIENT_STATES.has(mapping.state)) return; mapping.state = mapping.enabled ? "Enabled" : "Disabled"; mapping.lastModified = this.clock.now(); await this.store.save(); if (mapping.enabled) this.scheduleWorker(0); };
     if (this.scheduler) this.scheduler.schedule(complete, 0); else this.clock.setTimeout(() => { void complete(); }, 0);
   }
 
@@ -471,20 +492,23 @@ export class LambdaEventSourceMappings {
     const chunks = pending.tumbling ? [records] : this.invocationChunks(mapping, records);
     for (let offset = 0; offset < chunks.length; offset += mapping.parallelizationFactor) {
       const wave = chunks.slice(offset, offset + mapping.parallelizationFactor);
-      outcomes.push(...await Promise.all(wave.map(async batch => { const descriptor = this.descriptor(mapping.eventSourceArn); const event = pending.tumbling ? { Records: batch, window: { start: new Date(pending.tumbling.start).toISOString(), end: new Date(pending.tumbling.end).toISOString() }, state: pending.tumbling.state, shardId: descriptor?.shardId, eventSourceARN: mapping.eventSourceArn, isFinalInvokeForWindow: pending.tumbling.isFinalInvokeForWindow, isWindowTerminatedEarly: false } : { Records: batch }; try { return { records: batch, result: await this.callbacks.invoke(mapping.functionName, mapping.functionQualifier, Buffer.from(JSON.stringify(event)), id(24)) }; } catch (error) { return { records: batch, error }; } })));
+      outcomes.push(...await Promise.all(wave.map(async batch => { const descriptor = this.descriptor(mapping.eventSourceArn); const event = pending.tumbling ? { Records: batch, window: { start: new Date(pending.tumbling.start).toISOString(), end: new Date(pending.tumbling.end).toISOString() }, state: pending.tumbling.state, shardId: descriptor?.shardId, eventSourceARN: mapping.eventSourceArn, isFinalInvokeForWindow: pending.tumbling.isFinalInvokeForWindow, isWindowTerminatedEarly: false } : { Records: batch }; try { return { records: batch, result: await this.callbacks.invoke(mapping.functionName, mapping.functionQualifier, Buffer.from(JSON.stringify(event)), randomUUID()) }; } catch (error) { return { records: batch, error }; } })));
     }
     if (outcomes.some(outcome => outcome.result?.interrupted)) return;
     const failedInvocation = outcomes.find(outcome => outcome.error || outcome.result?.functionError); if (failedInvocation) return this.failBatch(mapping, records, failedInvocation.error instanceof Error ? failedInvocation.error.message : "Function error");
     if (mapping.functionResponseTypes.includes("ReportBatchItemFailures")) {
-      const identifiers: string[] = [];
+      // Each parallel chunk checkpoints on its own: a chunk reporting no failures is done, and a failed chunk is retried from its lowest failed record only.
+      const retrying: string[] = [];
       for (const outcome of outcomes) {
         let response: any; try { response = JSON.parse(outcome.result!.payload.toString("utf8")); } catch { return this.failBatch(mapping, records, "Invalid partial batch response"); }
         const failures = response?.batchItemFailures; if (failures !== undefined && !Array.isArray(failures)) return this.failBatch(mapping, records, "Invalid partial batch response");
-        if (Array.isArray(failures)) identifiers.push(...failures.map((failure: any) => failure?.itemIdentifier));
+        const identifiers: unknown[] = Array.isArray(failures) ? failures.map((failure: any) => failure?.itemIdentifier) : []; if (!identifiers.length) continue;
+        const chunkSequences = outcome.records.map(record => record.dynamodb.SequenceNumber);
+        if (identifiers.some(value => typeof value !== "string" || !value || !chunkSequences.includes(value))) return this.failBatch(mapping, records, "Invalid partial batch item identifier");
+        const lowest = [...identifiers as string[]].sort(compareSequence)[0]; retrying.push(...chunkSequences.slice(chunkSequences.indexOf(lowest)));
       }
-      if (identifiers.length) {
-        if (identifiers.some((value: unknown) => typeof value !== "string" || !value || !pending.sequenceNumbers.includes(value))) return this.failBatch(mapping, records, "Invalid partial batch item identifier");
-        const failed = [...identifiers].sort(compareSequence)[0]; const index = pending.sequenceNumbers.indexOf(failed); mapping.nextSequenceNumber = failed; pending.sequenceNumbers = pending.sequenceNumbers.slice(index); mapping.lastProcessingResult = "Partial batch failure";
+      if (retrying.length) {
+        retrying.sort(compareSequence); mapping.nextSequenceNumber = retrying[0]; pending.sequenceNumbers = retrying; mapping.lastProcessingResult = "Partial batch failure";
         const remaining = records.filter(record => pending.sequenceNumbers.includes(record.dynamodb.SequenceNumber));
         if (this.expired(mapping, remaining) || (mapping.maximumRetryAttempts !== -1 && pending.attempts > mapping.maximumRetryAttempts)) return this.discard(mapping, this.expired(mapping, remaining) ? "Records expired" : "Retry attempts exhausted", remaining);
         pending.nextAttemptAt = this.clock.now() + RETRY_INTERVAL_MS; await this.store.save(); return;
@@ -526,15 +550,17 @@ export class LambdaEventSourceMappings {
     const destination = mapping.destinationOnFailure; const pending = mapping.pendingBatch;
     if (!destination || !pending) return;
     const condition = /expired/i.test(result) ? "RecordAgeExceeded" : "RetryAttemptsExhausted";
-    const requestContext = { requestId: `${mapping.uuid}:${pending.throughSequenceNumber}`, functionArn: mapping.functionArn, condition, approximateInvokeCount: pending.attempts };
-    const responseContext = { statusCode: 200, executedVersion: mapping.functionQualifier ?? "$LATEST", functionError: "Unhandled" };
-    const responsePayload = { errorMessage: result, eventSourceArn: mapping.eventSourceArn, eventSourceMappingArn: mapping.eventSourceMappingArn, discardedRecordCount: pending.sequenceNumbers.length };
-    let envelope: Record<string, unknown> = { version: "1.0", timestamp: new Date(this.clock.now()).toISOString(), requestContext, requestPayload: { Records: records }, responseContext, responsePayload };
-    if (Buffer.byteLength(JSON.stringify(envelope)) > 900 * 1024) {
-      const compact = records.slice(0, 100).map(record => ({ eventID: record.eventID, eventName: record.eventName, eventSourceARN: record.eventSourceARN, sequenceNumber: record.dynamodb.SequenceNumber, approximateCreationDateTime: record.dynamodb.ApproximateCreationDateTime }));
-      envelope = { version: "1.0", timestamp: new Date(this.clock.now()).toISOString(), requestContext, requestPayload: { Records: compact, sequenceNumbers: pending.sequenceNumbers.slice(0, 1_000), truncated: true }, responseContext, responsePayload: { ...responsePayload, omittedRecordCount: Math.max(0, pending.sequenceNumbers.length - compact.length) } };
-    }
+    const descriptor = this.descriptor(mapping.eventSourceArn); const ordered = [...records].sort((a, b) => compareSequence(a.dynamodb.SequenceNumber, b.dynamodb.SequenceNumber));
+    const arrival = (seconds: number | undefined) => seconds === undefined ? undefined : new Date(seconds * 1000).toISOString();
+    // As on AWS, the record describes the discarded batch; the records themselves stay readable in the stream. An S3 destination also stores them under `payload`.
+    const envelope: Record<string, unknown> = {
+      version: "1.0", timestamp: new Date(this.clock.now()).toISOString(),
+      requestContext: { requestId: `${mapping.uuid}:${pending.throughSequenceNumber}`, functionArn: mapping.functionArn, condition, approximateInvokeCount: pending.attempts },
+      responseContext: { statusCode: 200, executedVersion: mapping.functionQualifier ?? "$LATEST", functionError: "Unhandled" },
+      DDBStreamBatchInfo: { shardId: descriptor?.shardId, startSequenceNumber: pending.sequenceNumbers[0] ?? ordered[0]?.dynamodb.SequenceNumber, endSequenceNumber: pending.sequenceNumbers.at(-1) ?? ordered.at(-1)?.dynamodb.SequenceNumber, approximateArrivalOfFirstRecord: arrival(ordered[0]?.dynamodb.ApproximateCreationDateTime), approximateArrivalOfLastRecord: arrival(ordered.at(-1)?.dynamodb.ApproximateCreationDateTime), batchSize: pending.sequenceNumbers.length, streamArn: mapping.eventSourceArn },
+    };
     const target = this.callbacks.resolveFunction(mapping.functionArn);
+    if (destination.startsWith("arn:aws:s3:::")) { await this.callbacks.writeS3Destination(destination, `aws/lambda/${mapping.functionName}/${mapping.uuid}`, { ...envelope, payload: { Records: ordered } }, target.role); return; }
     if (destination.includes(":sns:")) {
       if (!this.snsService) throw new AwsError("ResourceNotFoundException", "The SNS discarded-record destination service is unavailable", 404);
       const identityAuthorization = this.authMode !== "enforce"
@@ -551,7 +577,7 @@ export class LambdaEventSourceMappings {
       return;
     }
     if (!this.sqsService || !this.sqsService.resolveQueueArn(destination)) throw new AwsError("ResourceNotFoundException", `Discarded-record destination queue does not exist: ${destination}`, 404);
-    if (this.sqsService.sendAuthorizedMessageToArn) await this.sqsService.sendAuthorizedMessageToArn(destination, { MessageBody: JSON.stringify(envelope) }, { kind: "role", roleArn: target.role, sourceArn: mapping.eventSourceArn, sourceAccount: this.store.accountId });
+    if (this.sqsService.sendAuthorizedMessageToArn) await this.sqsService.sendAuthorizedMessageToArn(destination, { MessageBody: JSON.stringify(envelope) }, { kind: "role", roleArn: target.role, sourceArn: mapping.eventSourceArn, sourceAccount: this.store.accountId, ...(this.authMode === "enforce" ? {} : { identityAuthorization: { decision: "allowed", reason: "Authorization enforcement is disabled", matchedStatements: [] } as AuthorizationResult }) });
     else {
       if (this.authMode === "enforce" && evaluateRoleAuthorization(this.store.ensureAccount().iam, target.role, "sqs:SendMessage", destination).decision !== "allowed") throw new AwsError("AccessDeniedException", `Execution role ${target.role} cannot send discarded records to ${destination}`, 403);
       await this.sqsService.sendMessageToArn(destination, { MessageBody: JSON.stringify(envelope) });
@@ -580,6 +606,6 @@ export class LambdaEventSourceMappings {
 
   setSqsService(service: LambdaSqsServicePort): void { this.sqsService = service; this.sqsSource.setService(service); }
   setSnsService(service: LambdaSnsServicePort): void { this.snsService = service; }
-  start(): void { this.stopped = false; this.sqsSource.start(); let recovered = false; for (const mapping of Object.values(this.mappings)) if (["Creating", "Updating"].includes(mapping.state)) { mapping.state = mapping.enabled ? "Enabled" : "Disabled"; mapping.lastModified = this.clock.now(); recovered = true; } if (recovered) void this.store.save(); this.scheduleWorker(0); }
+  start(): void { this.stopped = false; this.sqsSource.start(); let recovered = false; for (const mapping of Object.values(this.mappings)) if (TRANSIENT_STATES.has(mapping.state)) { mapping.state = mapping.enabled ? "Enabled" : "Disabled"; mapping.lastModified = this.clock.now(); recovered = true; } if (recovered) void this.store.save(); this.scheduleWorker(0); }
   async stop(): Promise<void> { this.stopped = true; this.workerCancel?.(); this.workerCancel = undefined; await Promise.all([this.workerPromise?.catch(() => undefined), this.sqsSource.stop()]); }
 }
