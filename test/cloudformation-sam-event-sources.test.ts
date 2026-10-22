@@ -21,6 +21,7 @@ import { ReceiveMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import type { ProviderContext } from "../src/cloudformation/providers/contract.js";
 import { createEventRuleProvider } from "../src/cloudformation/providers/eventbridge-resources.js";
 import { StackSim } from "../src/server.js";
+import { applicationMessage } from "./support/lambda-logs.js";
 
 const credentials = { accessKeyId: "admin", secretAccessKey: "password" };
 const region = "eu-west-1";
@@ -134,8 +135,8 @@ test("SAM-03 event sources, function URLs, and async destinations deploy and del
     const recorded = async (pattern: RegExp): Promise<string> => {
       for (let attempt = 0; attempt < 300; attempt++) {
         try {
-          const found = (await logs.send(new FilterLogEventsCommand({ logGroupName: `/aws/lambda/${recorder}` }))).events?.find(event => pattern.test(event.message ?? ""));
-          if (found) return found.message!;
+          const found = (await logs.send(new FilterLogEventsCommand({ logGroupName: `/aws/lambda/${recorder}` }))).events?.map(event => applicationMessage(event.message ?? "")).find(message => pattern.test(message));
+          if (found !== undefined) return found;
         } catch (error: any) { if (error?.name !== "ResourceNotFoundException") throw error; }
         await sleep(50);
       }

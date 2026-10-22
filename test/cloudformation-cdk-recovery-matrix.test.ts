@@ -134,6 +134,7 @@ const registeredResourceTypes = new Set([
   "Custom::AmplifyDynamoDBTable",
   "Custom::CDKBucketDeployment",
   "Custom::S3AutoDeleteObjects",
+  "Custom::S3BucketNotifications",
 ]);
 
 interface CdkResult { code: number | null; stdout: string; stderr: string }
@@ -280,7 +281,7 @@ test("standard CDK waiters survive the CFN-01 through CFN-08 interruption matrix
     const assembly = join(root, "prepared.out");
     const registeredTypes = ((simulator!.cloudformation as any).providers.list() as Array<{ typeName: string }>).map(provider => provider.typeName).sort();
     assert.equal(cfn0108ResourceTypes.size, 23);
-    assert.equal(registeredResourceTypes.size, 112);
+    assert.equal(registeredResourceTypes.size, 113);
     assert.deepEqual([...registeredResourceTypes].sort(), registeredTypes, "the exact registry inventory must track every registered production provider; this recovery scenario still synthesizes only the historical CFN-01 through CFN-08 fixture");
 
     const prepared = await runCdk(["--output", assembly, "deploy", "RestStack", "--method", "prepare-change-set", "--change-set-name", "recovery-create", "--require-approval", "never"], env);

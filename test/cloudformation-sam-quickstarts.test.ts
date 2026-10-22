@@ -32,6 +32,7 @@ import { GetQueueUrlCommand, SendMessageCommand, SQSClient } from "@aws-sdk/clie
 import { TestClock } from "../src/core/clock.js";
 import { createZip } from "../src/core/zip-create.js";
 import { StackSim } from "../src/server.js";
+import { applicationMessage } from "./support/lambda-logs.js";
 
 // The quick starts are the Node.js 22 `sam init` templates from
 // aws/aws-sam-cli-app-templates (Apache-2.0; see test/fixtures/sam/quickstarts/NOTICE),
@@ -415,7 +416,7 @@ test("sam init cw-event (nodejs22.x) runs on its hourly cron when the clock pass
     assert.ok(clock.now() < Date.UTC(2026, 9, 21, 10, 0, 0), "the deploy finishes before the first cron occurrence");
     clock.advance(Date.UTC(2026, 9, 21, 10, 0, 1) - clock.now());
     const line = await functionLog(fixture, functionName, /"detail-type":"Scheduled Event"/, () => clock.advance(0));
-    assert.equal(Date.parse(JSON.parse(line).time), Date.UTC(2026, 9, 21, 10, 0, 0), "the event is the 10:00 occurrence");
+    assert.equal(Date.parse(JSON.parse(applicationMessage(line)).time), Date.UTC(2026, 9, 21, 10, 0, 0), "the event is the 10:00 occurrence");
 
     await withRunningClock(clock, () => assertEventRemoval(fixture, stackName, template, code, ["ScheduledEventLoggerCloudWatchEvent", "ScheduledEventLoggerCloudWatchEventPermission"]));
   }, clock);

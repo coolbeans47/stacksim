@@ -623,7 +623,7 @@ test.describe("target phase console workflows", () => {
     await expect(triggerHelp).toBeVisible();
     await triggerHelp.hover();
     await expect(triggerCard.getByRole("tooltip")).toContainText("runs your code automatically");
-    await expect(triggerCard.getByRole("tooltip")).toContainText("Add trigger flow supports enabled DynamoDB streams and SQS queues");
+    await expect(triggerCard.getByRole("tooltip")).toContainText("The Add trigger flow supports API Gateway");
 
     await page.goto(`${consoleUrl}#/lambda/functions/phase-panel-help-function/test`);
     const testEventCard = page.locator(".lambda-test-event-card");

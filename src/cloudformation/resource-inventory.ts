@@ -22,5 +22,5 @@ export const CLOUDFORMATION_RESOURCE_INVENTORY = [
   "AWS::SES::CustomVerificationEmailTemplate", "AWS::SES::EmailIdentity", "AWS::SES::Template",
   "AWS::SNS::Subscription", "AWS::SNS::Topic", "AWS::SNS::TopicInlinePolicy", "AWS::SNS::TopicPolicy",
   "AWS::SQS::Queue", "AWS::SQS::QueuePolicy", "AWS::SecretsManager::ResourcePolicy", "AWS::SecretsManager::RotationSchedule", "AWS::SecretsManager::Secret", "AWS::SecretsManager::SecretTargetAttachment", "AWS::SSM::Parameter", "AWS::StepFunctions::Activity", "AWS::StepFunctions::StateMachine",
-  "Custom::AmplifyDynamoDBTable", "Custom::CDKBucketDeployment", "Custom::S3AutoDeleteObjects",
+  "Custom::AmplifyDynamoDBTable", "Custom::CDKBucketDeployment", "Custom::S3AutoDeleteObjects", "Custom::S3BucketNotifications",
 ] as const;

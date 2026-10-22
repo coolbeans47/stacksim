@@ -36,6 +36,7 @@ import { TestClock } from "../src/core/clock.js";
 import { createZip } from "../src/core/zip-create.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/migrations/v1-to-v2.js";
 import { StackSim } from "../src/server.js";
+import { applicationMessage } from "./support/lambda-logs.js";
 
 const region = "eu-west-1";
 const credentials = { accessKeyId: "admin", secretAccessKey: "password" };
@@ -100,6 +101,6 @@ test("a Lambda subscription delivers the first events of a log stream created af
     const delivered = await waitFor(async () => {
       try { return (await logs.send(new FilterLogEventsCommand({ logGroupName: "/aws/lambda/new-stream-subscriber", filterPattern: "DELIVERED" }))).events ?? []; } catch { return []; }
     }, events => events.length > 0);
-    assert.deepEqual(JSON.parse(delivered[0].message!.slice("DELIVERED ".length)).logEvents.map((event: { message: string }) => event.message), ["first event in a new stream"]);
+    assert.deepEqual(JSON.parse(applicationMessage(delivered[0].message!).slice("DELIVERED ".length)).logEvents.map((event: { message: string }) => event.message), ["first event in a new stream"]);
   } finally { clients.forEach(client => client.destroy()); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true }); }
 });

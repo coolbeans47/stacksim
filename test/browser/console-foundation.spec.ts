@@ -422,8 +422,8 @@ test.describe("FND-02 console foundation", () => {
       await page.goto(`${consoleUrl}#/lambda/functions/${functionName}`);
 
       await expect(page.getByRole("heading", { name: functionName })).toBeVisible();
-      await expect(page.locator(".lambda-source-editor-card")).toHaveCount(0);
-      const inventory = page.locator(".s3-trigger-inventory");
+      await expect(page.locator(".lambda-source-editor-card")).toHaveCount(1);
+      const inventory = page.locator(".trigger-card");
       const warning = inventory.locator(".alert.warning");
       await expect(warning.getByText("Partial S3 trigger inventory", { exact: true })).toBeVisible();
       await expect(warning).toContainText("1 bucket could not be inspected with the current permissions or no longer exists.");

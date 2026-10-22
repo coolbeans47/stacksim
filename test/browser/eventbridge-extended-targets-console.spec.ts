@@ -336,7 +336,7 @@ test.describe("EVB-02 extended-target console", () => {
     dialog = page.getByRole("dialog");
     const defaultBusArn = `arn:aws:events:${region}:${account}:event-bus/default`;
     await fillArnCombobox(dialog.getByLabel("Success destination"), defaultBusArn);
-    await expect(dialog.getByText("Lambda, SQS, and EventBridge destinations are active")).toBeVisible();
+    await expect(dialog.getByText("Lambda, SQS, SNS, EventBridge, and S3 (failure only) destinations are active")).toBeVisible();
     await dialog.getByRole("button", { name: "Save" }).click();
     await expect(dialog).not.toBeVisible();
     await expect(asyncCard.getByRole("link", { name: "default", exact: true })).toHaveAttribute("href", "#/eventbridge/event-buses/default/details");
