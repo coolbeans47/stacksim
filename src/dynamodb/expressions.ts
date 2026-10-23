@@ -255,8 +255,7 @@ function setPath(item: Item, path: Path, value: AttributeValue): void {
   }
   const final = path.at(-1)!;
   if (typeof final === "number" && "L" in current) {
-    if (final > current.L.length) throw new AwsError("ValidationException", "The document path provided in the update expression is invalid for update");
-    if (final === current.L.length) current.L.push(clone(value)); else current.L[final] = clone(value);
+    if (final >= current.L.length) current.L.push(clone(value)); else current.L[final] = clone(value);
   } else if (typeof final === "string" && "M" in current) current.M[final] = clone(value);
   else throw new AwsError("ValidationException", "The document path provided in the update expression is invalid for update");
 }
@@ -285,7 +284,8 @@ function evaluateValue(expression: ValueExpression, item: Item, context: Express
   }
   if (expression.kind === "arithmetic") {
     const left = runtimeAttribute(evaluateValue(expression.left, item, context)); const right = runtimeAttribute(evaluateValue(expression.right, item, context));
-    if (!left || !right || attributeType(left) !== "N" || attributeType(right) !== "N") throw new AwsError("ValidationException", "Incorrect operand type for arithmetic update");
+    if (!left || !right) throw new AwsError("ValidationException", "The provided expression refers to an attribute that does not exist in the item");
+    if (attributeType(left) !== "N" || attributeType(right) !== "N") throw new AwsError("ValidationException", "An operand in the update expression has an incorrect data type");
     return { N: addNumbers((left as any).N, (right as any).N, expression.operator === "-") };
   }
   const args = expression.args.map(argument => evaluateValue(argument, item, context));
@@ -396,6 +396,11 @@ function parseUpdate(source: string, context: ExpressionContext): UpdateOperatio
   const operators = operations.reduce((sum, operation) => sum + 1 + (operation.value ? countValueOperators(operation.value) : 0), 0);
   enforceOperatorLimit(operators);
   return operations;
+}
+
+/** Top-level attribute names that an update expression's actions write or remove. */
+export function updateExpressionTargets(source: string, context: ExpressionContext = {}): string[] {
+  return [...new Set(parseUpdate(source, context).map(operation => String(operation.path[0])))];
 }
 
 export function applyUpdateExpression(item: Item, source: string, context: ExpressionContext = {}): { item: Item; oldValues: Item; newValues: Item } {

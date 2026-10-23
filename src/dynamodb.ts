@@ -1,7 +1,8 @@
 import { resourcePolicySource } from "./iam/provenance.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { crc32 } from "node:zlib";
 import { readFile } from "node:fs/promises";
 import { AwsError, sendAwsError } from "./errors.js";
 import type { StateStore } from "./state.js";
@@ -14,7 +15,7 @@ import type { DynamoAutoScalingSettingState, DynamoBackupState, DynamoContributo
 import { acceptedIntegrationAttempt, assertMatchingIntegrationAttempt, integrationOutputDigest, type ServiceIntegrationAttempt } from "./step-functions/integration-attempt.js";
 import { DynamoIntegrationAttemptStore } from "./dynamodb/integration-attempt-store.js";
 import { id, json, readJson } from "./util.js";
-import { applyUpdateExpression, conditionPaths, evaluateCondition, parseConditionExpression, parseProjectionExpression, projectItem, validateExpressionSubstitutions, validateExpressionUsage, validateKeyCondition } from "./dynamodb/expressions.js";
+import { applyUpdateExpression, updateExpressionTargets, conditionPaths, evaluateCondition, parseConditionExpression, parseProjectionExpression, projectItem, validateExpressionSubstitutions, validateExpressionUsage, validateKeyCondition } from "./dynamodb/expressions.js";
 import { DYNAMODB_ACTION_INVENTORY, DYNAMODB_STREAMS_ACTION_INVENTORY } from "./dynamodb/action-inventory.js";
 import { translateLegacyParameters } from "./dynamodb/legacy.js";
 import { attributeType, clone, compareAttributeValues, equalAttributeValues, keyFromItem, stableItemKey, validateItem, validateKey } from "./dynamodb/values.js";
@@ -187,7 +188,7 @@ function validateIndexDefinitions(input: any, now = Date.now()): { local: Dynamo
   const result = { local: local.map((index: any) => normalize(index, true)), global: global.map((index: any) => normalize(index, false)) };
   if (projected > 100) throw new AwsError("ValidationException", "Too many projected attributes across all secondary indexes");
   const used = new Set([...input.KeySchema, ...all.flatMap((index: any) => index.KeySchema)].map((key: any) => key.AttributeName));
-  if (input.AttributeDefinitions.length !== used.size || input.AttributeDefinitions.some((definition: any) => !used.has(definition.AttributeName)) || new Set(input.AttributeDefinitions.map((definition: any) => definition.AttributeName)).size !== input.AttributeDefinitions.length) throw new AwsError("ValidationException", "AttributeDefinitions must exactly match attributes used in key schemas");
+  if (input.AttributeDefinitions.length !== used.size || input.AttributeDefinitions.some((definition: any) => !used.has(definition.AttributeName)) || new Set(input.AttributeDefinitions.map((definition: any) => definition.AttributeName)).size !== input.AttributeDefinitions.length) throw new AwsError("ValidationException", input.AttributeDefinitions.some((definition: any) => !used.has(definition.AttributeName)) ? "One or more parameter values were invalid: Some AttributeDefinitions are not used in the KeySchema or LocalSecondaryIndexes" : "One or more parameter values were invalid: Number of attributes in KeySchema does not exactly match number of attributes defined in AttributeDefinitions");
   return result;
 }
 
@@ -510,8 +511,20 @@ interface DynamoGlobalReplicationChange extends DynamoPitrChange { ttl?: boolean
 function streamSequence(value: number | bigint): string { return String(value).padStart(21, "0"); }
 function streamSequenceValue(value: string): bigint { try { return BigInt(value); } catch { throw new AwsError("ValidationException", "SequenceNumber must be a valid decimal value"); } }
 
+// Exception names map to the BatchStatementError.Code enum: ConditionalCheckFailed | ItemCollectionSizeLimitExceeded |
+// RequestLimitExceeded | ValidationError | ProvisionedThroughputExceeded | TransactionConflict | ThrottlingError |
+// InternalServerError | ResourceNotFound | AccessDenied | DuplicateItem.
+const BATCH_STATEMENT_ERROR_CODES: Record<string, string> = { ConditionalCheckFailedException: "ConditionalCheckFailed", ItemCollectionSizeLimitExceededException: "ItemCollectionSizeLimitExceeded", RequestLimitExceeded: "RequestLimitExceeded", ValidationException: "ValidationError", ProvisionedThroughputExceededException: "ProvisionedThroughputExceeded", TransactionConflictException: "TransactionConflict", ThrottlingException: "ThrottlingError", InternalServerError: "InternalServerError", ResourceNotFoundException: "ResourceNotFound", AccessDeniedException: "AccessDenied", DuplicateItemException: "DuplicateItem" };
+export function batchStatementErrorCode(exceptionCode: string): string { return BATCH_STATEMENT_ERROR_CODES[exceptionCode] ?? "InternalServerError"; }
+
+// API-29: validation errors use the coral validate namespace and protocol-level errors the coral service namespace, as DynamoDB does.
+const CORAL_SERVICE_ERRORS = new Set(["UnknownOperationException", "SerializationException", "AccessDeniedException", "UnrecognizedClientException", "InvalidSignatureException", "IncompleteSignatureException", "MissingAuthenticationTokenException"]);
+function dynamoErrorNamespace(error: unknown): string { const code = error instanceof AwsError ? error.code : ""; return code === "ValidationException" ? "com.amazon.coral.validate#" : CORAL_SERVICE_ERRORS.has(code) ? "com.amazon.coral.service#" : "com.amazonaws.dynamodb.v20120810#"; }
+
 export class DynamoDbService {
   private readonly requestCapacity = new AsyncLocalStorage<CapacityCharge[]>();
+  // Set while a PartiQL request runs: "DynamoDB CloudWatch Contributor Insights does not support PartiQL requests."
+  private readonly partiqlRequest = new AsyncLocalStorage<boolean>();
   private readonly transactionLocks = new Map<string, Promise<void>>();
   /** Client request tokens whose transaction is still executing; a concurrent reuse is TransactionInProgressException, as in AWS. */
   private readonly transactionsInFlight = new Set<string>();
@@ -584,7 +597,7 @@ export class DynamoDbService {
     for (const job of Object.values(this.imports)) if (job.importStatus === "IN_PROGRESS") this.scheduleTransferWork(() => this.advanceImport(job.importArn));
     for (const table of Object.values(this.tables)) for (const insight of Object.values(table.contributorInsights)) if (insight.status === "ENABLING" || insight.status === "DISABLING") this.scheduleTransition(() => { insight.status = insight.status === "ENABLING" ? "ENABLED" : "DISABLED"; insight.lastUpdatedAt = this.clock.now(); });
     for (const table of Object.values(this.tables)) for (const destination of Object.values(table.kinesisStreamingDestinations)) if (destination.status === "ENABLING" || destination.status === "DISABLING" || destination.status === "UPDATING") this.scheduleTransition(() => { destination.status = destination.status === "DISABLING" ? "DISABLED" : "ACTIVE"; destination.lastUpdatedAt = this.clock.now(); destination.statusDescription = this.kinesisDestinationDescription(destination.status); });
-    for (const table of Object.values(this.tables)) if (table.restoreSummary?.restoreInProgress) this.transition(table, () => { if (table.restoreSummary) table.restoreSummary.restoreInProgress = false; for (const index of table.globalSecondaryIndexes ?? []) { index.indexStatus = "ACTIVE"; index.backfilling = false; } });
+    for (const table of Object.values(this.tables)) if (table.restoreSummary?.restoreInProgress) this.transition(table, () => { if (table.restoreSummary) table.restoreSummary.restoreInProgress = false; for (const index of table.globalSecondaryIndexes ?? []) { index.indexStatus = "ACTIVE"; delete index.backfilling; } });
     for (const table of Object.values(this.tables)) {
       if (table.status !== "CREATING" || table.restoreSummary?.restoreInProgress) continue;
       if (Object.values(this.imports).some(job => job.tableArn === table.arn && job.importStatus === "IN_PROGRESS")) continue;
@@ -703,8 +716,8 @@ export class DynamoDbService {
     const table = this.ttlTable(input.TableName); const specification = input.TimeToLiveSpecification;
     if (!specification || typeof specification.Enabled !== "boolean") throw new AwsError("ValidationException", "TimeToLiveSpecification with Enabled and AttributeName is required"); const attributeName = String(specification.AttributeName ?? ""); if (!attributeName || attributeName.length > 255 || /[\x00-\x1f]/.test(attributeName)) throw new AwsError("ValidationException", "TimeToLiveSpecification.AttributeName must contain between 1 and 255 valid characters");
     this.advanceTtlStatus(table); const ttl = table.timeToLive; if (ttl.status === "ENABLING" || ttl.status === "DISABLING") throw new AwsError("ValidationException", "Time to live is being modified for this table"); if (ttl.lastUpdatedAt !== undefined && this.clock.now() - ttl.lastUpdatedAt < this.ttlSchedule.updateCooldownMs) throw new AwsError("ValidationException", "Time to live has been modified multiple times within a fixed interval");
-    if (specification.Enabled) { if (ttl.status === "ENABLED") throw new AwsError("ValidationException", "Time to live is already enabled"); ttl.attributeName = attributeName; ttl.status = "ENABLING"; }
-    else { if (ttl.status === "DISABLED") throw new AwsError("ValidationException", "Time to live is already disabled"); if (ttl.attributeName !== attributeName) throw new AwsError("ValidationException", "The TTL attribute name must match the currently configured attribute"); ttl.status = "DISABLING"; }
+    if (specification.Enabled) { if (ttl.status === "ENABLED") throw new AwsError("ValidationException", "TimeToLive is already enabled"); ttl.attributeName = attributeName; ttl.status = "ENABLING"; }
+    else { if (ttl.status === "DISABLED") throw new AwsError("ValidationException", "TimeToLive is already disabled"); if (ttl.attributeName !== attributeName) throw new AwsError("ValidationException", "The TTL attribute name must match the currently configured attribute"); ttl.status = "DISABLING"; }
     ttl.lastUpdatedAt = this.clock.now(); await this.store.save(); return { TimeToLiveSpecification: { Enabled: Boolean(specification.Enabled), AttributeName: attributeName } };
   }
 
@@ -813,7 +826,7 @@ export class DynamoDbService {
 
   async GetRecords(input: any): Promise<any> {
     if (input.Limit !== undefined && (!Number.isInteger(input.Limit) || input.Limit < 1)) throw new AwsError("ValidationException", `1 validation error detected: Value '${String(input.Limit)}' at 'limit' failed to satisfy constraint: Member must have value greater than or equal to 1`);
-    if (input.Limit !== undefined && input.Limit > 1000) throw new AwsError("LimitExceededException", "GetRecords was called with a value of more than 1000 for the limit request parameter."); let cursor: { streamArn: string; shardId: string; nextSequenceNumber: string; expiresAt: number };
+    if (input.Limit !== undefined && (!Number.isInteger(input.Limit) || input.Limit < 1 || input.Limit > 1000)) throw new AwsError("ValidationException", `1 validation error detected: Value '${String(input.Limit)}' at 'limit' failed to satisfy constraint: Member must have value ${Number(input.Limit) < 1 ? "greater than or equal to 1" : "less than or equal to 1000"}`); let cursor: { streamArn: string; shardId: string; nextSequenceNumber: string; expiresAt: number };
     try { cursor = this.partiqlTokens.decode("DynamoDBStreams.GetRecords", String(input.ShardIterator ?? "")); } catch { throw new AwsError("ValidationException", "Invalid ShardIterator"); }
     if (!cursor || typeof cursor.streamArn !== "string" || typeof cursor.shardId !== "string" || typeof cursor.nextSequenceNumber !== "string" || !Number.isFinite(cursor.expiresAt)) throw new AwsError("ValidationException", "Invalid ShardIterator"); if (cursor.expiresAt <= this.clock.now()) throw new AwsError("ExpiredIteratorException", "The provided iterator exceeds the maximum age allowed");
     const changed = await this.pruneStreams(); const stream = this.requireStream(cursor.streamArn); if (cursor.shardId !== stream.shardId) throw new AwsError("ResourceNotFoundException", "The shard does not exist"); const next = streamSequenceValue(cursor.nextSequenceNumber); if (stream.trimmedThroughSequence && next <= streamSequenceValue(stream.trimmedThroughSequence)) throw new AwsError("TrimmedDataAccessException", "The data you are trying to access has been trimmed");
@@ -831,8 +844,8 @@ export class DynamoDbService {
       try { input = await readJson(req); } catch (error) { throw new AwsError("SerializationException", error instanceof Error ? error.message : "Malformed request body", 400); }
       if (input === null || typeof input !== "object" || Array.isArray(input)) throw new AwsError("SerializationException", "Request body must be a JSON object", 400);
       const output = await (this as any)[operation](input, (req as any).awsPrincipal);
-      json(res, output, 200, "application/x-amz-json-1.0");
-    } catch (error) { if (this.telemetry && operation) { const code = error instanceof AwsError ? error.code : undefined; const tableName = typeof input?.TableName === "string" ? input.TableName : undefined; const metricName = error instanceof AwsError && error.status < 500 ? code === "ConditionalCheckFailedException" ? "ConditionalCheckFailedRequests" : code === "ProvisionedThroughputExceededException" ? "ThrottledRequests" : "UserErrors" : "SystemErrors"; const dimensions: Record<string, string> = metricName === "UserErrors" ? {} : metricName === "ConditionalCheckFailedRequests" ? (tableName ? { TableName: tableName } : {}) : { ...(tableName ? { TableName: tableName } : {}), Operation: operation }; await this.telemetry.publish({ namespace: "AWS/DynamoDB", metricName, dimensions, value: 1, unit: "Count", timestamp: this.clock.now() }).catch(() => undefined); } sendAwsError(res, error); }
+      const body = JSON.stringify(output); res.statusCode = 200; res.setHeader("content-type", "application/x-amz-json-1.0"); res.setHeader("x-amz-crc32", String(crc32(Buffer.from(body)))); res.end(body);
+    } catch (error) { if (this.telemetry && operation) { const code = error instanceof AwsError ? error.code : undefined; const tableName = typeof input?.TableName === "string" ? input.TableName : undefined; const metricName = error instanceof AwsError && error.status < 500 ? code === "ConditionalCheckFailedException" ? "ConditionalCheckFailedRequests" : code === "ProvisionedThroughputExceededException" ? "ThrottledRequests" : "UserErrors" : "SystemErrors"; const dimensions: Record<string, string> = metricName === "UserErrors" ? {} : metricName === "ConditionalCheckFailedRequests" ? (tableName ? { TableName: tableName } : {}) : { ...(tableName ? { TableName: tableName } : {}), Operation: operation }; await this.telemetry.publish({ namespace: "AWS/DynamoDB", metricName, dimensions, value: 1, unit: "Count", timestamp: this.clock.now() }).catch(() => undefined); } sendAwsError(res, error, "json", dynamoErrorNamespace(error)); }
   }
 
   private async withRequestMetrics(operation: string, execute: () => Promise<any>): Promise<any> {
@@ -893,6 +906,7 @@ export class DynamoDbService {
     if (!/^[A-Za-z0-9_.-]{3,255}$/.test(input.TableName)) throw new AwsError("ValidationException", "TableName must be between 3 and 255 characters and contain only letters, numbers, underscores, hyphens, and periods");
     const hashes = input.KeySchema.filter((key: any) => key.KeyType === "HASH"); const ranges = input.KeySchema.filter((key: any) => key.KeyType === "RANGE");
     if (hashes.length !== 1 || ranges.length > 1 || input.KeySchema.length > 2) throw new AwsError("ValidationException", "Invalid KeySchema: exactly one HASH key and at most one RANGE key are required");
+    if (input.KeySchema[0]?.KeyType !== "HASH") throw new AwsError("ValidationException", "Invalid KeySchema: The first KeySchemaElement is not a HASH key type");
     if (new Set(input.KeySchema.map((key: any) => key.AttributeName)).size !== input.KeySchema.length) throw new AwsError("ValidationException", "Key schema contains duplicate attributes");
     for (const key of input.KeySchema) {
       const definition = input.AttributeDefinitions.find((entry: any) => entry.AttributeName === key.AttributeName);
@@ -911,7 +925,7 @@ export class DynamoDbService {
     if (this.tables[input.TableName]) throw new AwsError("ResourceInUseException", `Table already exists: ${input.TableName}`);
     const resourcePolicy = input.ResourcePolicy === undefined ? undefined : validateDynamoResourcePolicy(input.ResourcePolicy);
     const table: TableState = {
-      name: input.TableName, id: id(32), status: "CREATING", createdAt: this.clock.now(),
+      name: input.TableName, id: randomUUID(), status: "CREATING", createdAt: this.clock.now(),
       arn: `arn:aws:dynamodb:${this.region}:${this.store.accountId}:table/${input.TableName}`,
       keySchema: clone(input.KeySchema), attributeDefinitions: clone(input.AttributeDefinitions),
       billingMode, ...(throughput ? { provisionedThroughput: throughput } : {}), ...(onDemandThroughput && Object.keys(onDemandThroughput).length ? { onDemandThroughput } : {}), ...(warmThroughput ? { warmThroughput } : {}),
@@ -937,7 +951,8 @@ export class DynamoDbService {
   }
 
   private resourceTable(value: unknown): TableState {
-    const arn = String(value ?? ""); const table = Object.values(this.tables).find(candidate => candidate.arn === arn); if (!table) throw new AwsError("ResourceNotFoundException", `Requested resource not found: ${arn}`); return table;
+    const arn = String(value ?? ""); if (!/^arn:[^:]+:dynamodb:[^:]+:\d{12}:table\/[A-Za-z0-9_.-]{3,255}$/.test(arn)) throw new AwsError("ValidationException", `Invalid TableArn: Invalid ResourceArn provided as input ${arn}`);
+    const table = Object.values(this.tables).find(candidate => candidate.arn === arn); if (!table) throw new AwsError("ResourceNotFoundException", `Requested resource not found: ${arn}`); return table;
   }
 
   async TagResource(input: any): Promise<any> {
@@ -1029,7 +1044,7 @@ export class DynamoDbService {
   }
 
   private cloneReplicaTable(source: TableState, region: string): TableState {
-    const replica = clone(source); replica.id = id(32); replica.arn = `arn:aws:dynamodb:${region}:${this.store.accountId}:table/${source.name}`; replica.createdAt = this.clock.now(); replica.status = "ACTIVE"; replica.tags = {}; replica.restoreSummary = undefined; replica.latestStreamArn = undefined; replica.streamSequence = 0; replica.globalTable = undefined; replica.contributorInsights = {}; replica.kinesisStreamingDestinations = {};
+    const replica = clone(source); replica.id = randomUUID(); replica.arn = `arn:aws:dynamodb:${region}:${this.store.accountId}:table/${source.name}`; replica.createdAt = this.clock.now(); replica.status = "ACTIVE"; replica.tags = {}; replica.restoreSummary = undefined; replica.latestStreamArn = undefined; replica.streamSequence = 0; replica.globalTable = undefined; replica.contributorInsights = {}; replica.kinesisStreamingDestinations = {};
     // AWS never synchronizes deletion protection or PITR to a new replica: both start off.
     replica.deletionProtectionEnabled = false; replica.pointInTimeRecovery = { status: "DISABLED", recoveryPeriodInDays: 35, sequence: 0 };
     if (replica.streamSpecification?.StreamEnabled && replica.streamSpecification.StreamViewType) this.createStreamDescriptorForRegion(replica, region, replica.streamSpecification.StreamViewType);
@@ -1152,7 +1167,7 @@ export class DynamoDbService {
     const source = (await this.backupPersistence.readSnapshot(backup.snapshotHash)).table;
     const indexDescription = (index: DynamoIndexState) => ({ IndexName: index.indexName, KeySchema: clone(index.keySchema), Projection: clone(index.projection), ...(index.provisionedThroughput ? { ProvisionedThroughput: { ReadCapacityUnits: index.provisionedThroughput.ReadCapacityUnits, WriteCapacityUnits: index.provisionedThroughput.WriteCapacityUnits } } : {}), ...(index.onDemandThroughput && Object.keys(index.onDemandThroughput).length ? { OnDemandThroughput: clone(index.onDemandThroughput) } : {}) });
     const encryption = sseDescription(source.sse);
-    return { BackupDetails: this.backupDetails(backup, status), SourceTableDetails: { BillingMode: source.billingMode, ItemCount: Object.keys(source.items).length, KeySchema: clone(source.keySchema), ...(source.onDemandThroughput && Object.keys(source.onDemandThroughput).length ? { OnDemandThroughput: clone(source.onDemandThroughput) } : {}), ...(source.provisionedThroughput ? { ProvisionedThroughput: { ReadCapacityUnits: source.provisionedThroughput.ReadCapacityUnits, WriteCapacityUnits: source.provisionedThroughput.WriteCapacityUnits } } : {}), TableArn: source.arn, TableCreationDateTime: source.createdAt / 1000, TableId: source.id, TableName: source.name, TableSizeBytes: backup.sizeBytes }, SourceTableFeatureDetails: { GlobalSecondaryIndexes: (source.globalSecondaryIndexes ?? []).map(indexDescription), LocalSecondaryIndexes: (source.localSecondaryIndexes ?? []).map(indexDescription), ...(encryption ? { SSEDescription: encryption } : {}), TimeToLiveDescription: { ...(source.timeToLive.attributeName ? { AttributeName: source.timeToLive.attributeName } : {}), TimeToLiveStatus: source.timeToLive.status } } };
+    return { BackupDetails: this.backupDetails(backup, status), SourceTableDetails: { BillingMode: source.billingMode, ItemCount: Object.keys(source.items).length, KeySchema: clone(source.keySchema), ...(source.onDemandThroughput && Object.keys(source.onDemandThroughput).length ? { OnDemandThroughput: clone(source.onDemandThroughput) } : {}), ...(source.provisionedThroughput ? { ProvisionedThroughput: { ReadCapacityUnits: source.provisionedThroughput.ReadCapacityUnits, WriteCapacityUnits: source.provisionedThroughput.WriteCapacityUnits } } : {}), TableArn: source.arn, TableCreationDateTime: source.createdAt / 1000, TableId: source.id, TableName: source.name, TableSizeBytes: backup.sizeBytes }, SourceTableFeatureDetails: { GlobalSecondaryIndexes: (source.globalSecondaryIndexes ?? []).map(indexDescription), LocalSecondaryIndexes: (source.localSecondaryIndexes ?? []).map(indexDescription), ...(source.streamSpecification?.StreamEnabled ? { StreamDescription: { StreamEnabled: true, StreamViewType: source.streamSpecification.StreamViewType } } : {}), ...(encryption ? { SSEDescription: encryption } : {}), TimeToLiveDescription: { ...(source.timeToLive.attributeName ? { AttributeName: source.timeToLive.attributeName } : {}), TimeToLiveStatus: source.timeToLive.status } } };
   }
 
   private requireBackup(value: unknown): DynamoBackupState {
@@ -1438,7 +1453,7 @@ export class DynamoDbService {
           job.tableArn = table.arn;
           job.tableId = table.id;
           table.status = "CREATING";
-          for (const index of table.globalSecondaryIndexes ?? []) { index.indexStatus = "CREATING"; index.backfilling = true; }
+          for (const index of table.globalSecondaryIndexes ?? []) { index.indexStatus = "CREATING"; delete index.backfilling; }
           await this.store.save();
         } else if (table.arn === job.tableArn && table.status === "CREATING") {
           job.tableId = table.id;
@@ -1504,7 +1519,7 @@ export class DynamoDbService {
         const table = this.tables[tableName];
         if (!table || table.arn !== job.tableArn) throw new AwsError("InternalFailure", "Import target table is missing from the durable checkpoint", 500);
         table.status = "ACTIVE";
-        for (const index of table.globalSecondaryIndexes ?? []) { index.indexStatus = "ACTIVE"; index.backfilling = false; }
+        for (const index of table.globalSecondaryIndexes ?? []) { index.indexStatus = "ACTIVE"; delete index.backfilling; }
         job.importStatus = "COMPLETED";
         job.stage = "COMPLETED";
         job.endTime = this.clock.now();
@@ -1641,7 +1656,7 @@ export class DynamoDbService {
   }
 
   private async publishContributorMetrics(table: TableState, items: Item[], metricName: "AccessFrequency" | "ThrottleFrequency", indexName?: string, throttled = false, includeWriteIndexes = false): Promise<void> {
-    if (!this.telemetry || !items.length) return; const targets: Array<{ index?: DynamoIndexState; insight: DynamoContributorInsightsState }> = [];
+    if (!this.telemetry || !items.length || this.partiqlRequest.getStore()) return; const targets: Array<{ index?: DynamoIndexState; insight: DynamoContributorInsightsState }> = [];
     const add = (index?: DynamoIndexState) => { const insight = table.contributorInsights[index?.indexName ?? CONTRIBUTOR_TABLE_KEY]; if (insight?.status === "ENABLED" && (throttled || insight.mode === "ACCESSED_AND_THROTTLED_KEYS")) targets.push({ index, insight }); };
     if (indexName) add(table.globalSecondaryIndexes?.find(index => index.indexName === indexName)); else { add(); if (includeWriteIndexes) for (const index of table.globalSecondaryIndexes ?? []) add(index); }
     const at = this.clock.now(); await Promise.all(targets.flatMap(({ index }) => items.flatMap(item => { const key = this.contributorMetricKey(item, index?.keySchema ?? table.keySchema); if (!key) return []; return [this.telemetry!.publish({ namespace: CONTRIBUTOR_METRIC_NAMESPACE, metricName, dimensions: { TableName: table.name, ...(index ? { GlobalSecondaryIndexName: index.indexName } : {}), ContributorKey: key }, value: 1, unit: "Count", timestamp: at }).catch(() => undefined)]; })));
@@ -1659,8 +1674,8 @@ export class DynamoDbService {
 
   private async restoreTable(source: TableState, items: Record<string, Item>, input: any, summary: { sourceBackupArn?: string; sourceTableArn?: string; restoreDateTime: number }): Promise<any> {
     if (this.tables[input.TargetTableName]) throw new AwsError("TableAlreadyExistsException", "A target table with the specified name already exists");
-    await this.CreateTable(this.restoreCreateInput(source, input)); const target = requireTable(this.store, this.region, input.TargetTableName); target.items = clone(items); target.tags = {}; target.timeToLive = { status: "DISABLED" }; target.autoScaling = undefined; target.pointInTimeRecovery = { status: "DISABLED", recoveryPeriodInDays: 35, sequence: 0 }; target.status = "CREATING"; for (const index of target.globalSecondaryIndexes ?? []) { index.indexStatus = "CREATING"; index.backfilling = true; } target.restoreSummary = { ...summary, restoreInProgress: true }; await this.store.save();
-    this.transition(target, () => { if (target.restoreSummary) target.restoreSummary.restoreInProgress = false; for (const index of target.globalSecondaryIndexes ?? []) { index.indexStatus = "ACTIVE"; index.backfilling = false; } }); return { TableDescription: tableDescription(target, this.store) };
+    await this.CreateTable(this.restoreCreateInput(source, input)); const target = requireTable(this.store, this.region, input.TargetTableName); target.items = clone(items); target.tags = {}; target.timeToLive = { status: "DISABLED" }; target.autoScaling = undefined; target.pointInTimeRecovery = { status: "DISABLED", recoveryPeriodInDays: 35, sequence: 0 }; target.status = "CREATING"; for (const index of target.globalSecondaryIndexes ?? []) { index.indexStatus = "CREATING"; delete index.backfilling; } target.restoreSummary = { ...summary, restoreInProgress: true }; await this.store.save();
+    this.transition(target, () => { if (target.restoreSummary) target.restoreSummary.restoreInProgress = false; for (const index of target.globalSecondaryIndexes ?? []) { index.indexStatus = "ACTIVE"; delete index.backfilling; } }); return { TableDescription: tableDescription(target, this.store) };
   }
 
   async RestoreTableFromBackup(input: any): Promise<any> {
@@ -1778,7 +1793,7 @@ export class DynamoDbService {
   async ListTables(input: any): Promise<any> {
     if (input.Limit !== undefined && (!Number.isInteger(input.Limit) || input.Limit < 1 || input.Limit > 100)) throw new AwsError("ValidationException", `1 validation error detected: Value '${String(input.Limit)}' at 'limit' failed to satisfy constraint: Member must have value between 1 and 100`);
     let names = Object.keys(this.tables).sort();
-    if (input.ExclusiveStartTableName) names = names.slice(names.indexOf(input.ExclusiveStartTableName) + 1);
+    if (input.ExclusiveStartTableName) names = names.filter(name => name > String(input.ExclusiveStartTableName));
     const limit = input.Limit ?? 100;
     return { TableNames: names.slice(0, limit), ...(names.length > limit ? { LastEvaluatedTableName: names[limit - 1] } : {}) };
   }
@@ -1863,6 +1878,7 @@ export class DynamoDbService {
     const condition = parseConditionExpression(input.ConditionExpression, expressionContext(input));
     if (!evaluateCondition(condition, existing ?? {}, expressionContext(input))) throw conditionFailure(input, existing);
     // The key seeds the working item so a creating update starts from the key attributes; AWS accepts an update with no UpdateExpression as a key-only upsert.
+    if (input.UpdateExpression !== undefined) for (const target of updateExpressionTargets(String(input.UpdateExpression), expressionContext(input))) if (table.keySchema.some(key => key.AttributeName === target)) throw new AwsError("ValidationException", `One or more parameter values were invalid: Cannot update attribute ${target}. This attribute is part of the key`);
     const seed = clone(existing ?? input.Key);
     const update = input.UpdateExpression === undefined ? { item: seed, oldValues: {}, newValues: {} } : applyUpdateExpression(seed, String(input.UpdateExpression), expressionContext(input));
     validateItem(table, update.item);
@@ -1924,7 +1940,7 @@ export class DynamoDbService {
       if (index) {
         const required = new Set([...table.keySchema, ...index.keySchema].map(key => key.AttributeName));
         if (Object.keys(input.ExclusiveStartKey).length !== required.size || [...required].some(name => !input.ExclusiveStartKey[name])) throw new AwsError("ValidationException", "The provided starting key is invalid");
-      } else validateKey(table, input.ExclusiveStartKey);
+      } else { try { validateKey(table, input.ExclusiveStartKey); } catch (error) { throw new AwsError("ValidationException", `The provided starting key is invalid: ${error instanceof Error ? error.message : String(error)}`); } }
       const keyNames = [...new Set([...(index?.keySchema ?? []), ...table.keySchema].map(key => key.AttributeName))];
       const start = items.findIndex(item => keyNames.every(name => equalAttributeValues(item[name], input.ExclusiveStartKey[name])));
       if (start >= 0) items = items.slice(start + 1);
@@ -2054,11 +2070,11 @@ export class DynamoDbService {
     }
   }
 
-  async ExecuteStatement(input: any): Promise<any> { return this.withRequestMetrics("ExecuteStatement", () => this.executeExecuteStatement(input)); }
+  async ExecuteStatement(input: any): Promise<any> { return this.partiqlRequest.run(true, () => this.withRequestMetrics("ExecuteStatement", () => this.executeExecuteStatement(input))); }
 
   private async executeExecuteStatement(input: any): Promise<any> { const plan = parsePartiql(input.Statement, input.Parameters); return this.executePartiqlPlan(plan, input); }
 
-  async BatchExecuteStatement(input: any): Promise<any> { return this.withRequestMetrics("BatchExecuteStatement", () => this.executeBatchExecuteStatement(input)); }
+  async BatchExecuteStatement(input: any): Promise<any> { return this.partiqlRequest.run(true, () => this.withRequestMetrics("BatchExecuteStatement", () => this.executeBatchExecuteStatement(input))); }
 
   private async executeBatchExecuteStatement(input: any): Promise<any> {
     if (!Array.isArray(input.Statements) || input.Statements.length < 1 || input.Statements.length > 25) throw new AwsError("ValidationException", "Statements must contain between 1 and 25 entries"); this.validatePartiqlOptions(input);
@@ -2080,12 +2096,12 @@ export class DynamoDbService {
         if (plan.kind === "select") { if (!this.partiqlKeyOnly(plan, table)) throw new AwsError("ValidationException", "Batch SELECT statements must specify equality conditions on every key attribute"); const read = await this.GetItem({ TableName: table.name, Key: this.partiqlKey(plan, table), ConsistentRead: entry.ConsistentRead, ReturnConsumedCapacity: input.ReturnConsumedCapacity }); output = { ...(read.Item ? { Item: projectPartiqlItem(read.Item, plan) } : {}), ...(read.ConsumedCapacity ? { ConsumedCapacity: read.ConsumedCapacity } : {}) }; }
         else output = await this.executePartiqlPlan(plan, { ...entry, ReturnConsumedCapacity: input.ReturnConsumedCapacity });
         Responses.push({ TableName: plan.tableName, ...(output.Item ? { Item: output.Item } : output.Items?.[0] ? { Item: output.Items[0] } : {}) }); if (output.ConsumedCapacity) ConsumedCapacity.push(output.ConsumedCapacity);
-      } catch (error) { const aws = error instanceof AwsError ? error : new AwsError("InternalServerError", error instanceof Error ? error.message : String(error), 500); Responses.push({ Error: { Code: aws.code, Message: aws.message, ...(aws.details?.Item ? { Item: aws.details.Item } : {}) } }); }
+      } catch (error) { const aws = error instanceof AwsError ? error : new AwsError("InternalServerError", error instanceof Error ? error.message : String(error), 500); Responses.push({ Error: { Code: batchStatementErrorCode(aws.code), Message: aws.message, ...(aws.details?.Item ? { Item: aws.details.Item } : {}) } }); }
     }
     return { Responses, ...(input.ReturnConsumedCapacity && input.ReturnConsumedCapacity !== "NONE" ? { ConsumedCapacity } : {}) };
   }
 
-  async ExecuteTransaction(input: any): Promise<any> { return this.withRequestMetrics("ExecuteTransaction", () => this.executeExecuteTransaction(input)); }
+  async ExecuteTransaction(input: any): Promise<any> { return this.partiqlRequest.run(true, () => this.withRequestMetrics("ExecuteTransaction", () => this.executeExecuteTransaction(input))); }
 
   private async executeExecuteTransaction(input: any): Promise<any> {
     if (!Array.isArray(input.TransactStatements) || input.TransactStatements.length < 1 || input.TransactStatements.length > 100) throw new AwsError("ValidationException", "TransactStatements must contain between 1 and 100 entries"); this.validatePartiqlOptions(input);

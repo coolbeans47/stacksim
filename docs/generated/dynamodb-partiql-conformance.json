@@ -15,18 +15,97 @@
     "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ql-iam.html",
     "https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_ExecuteStatement.html",
     "https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_BatchExecuteStatement.html",
-    "https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_ExecuteTransaction.html"
+    "https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_ExecuteTransaction.html",
+    "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ql-functions.exists.html",
+    "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ql-reference.multiplestatements.transactions.html",
+    "https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_BatchStatementError.html",
+    "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/contributorinsights_HowItWorks.html"
   ],
   "grammar": {
-    "statements": ["SELECT", "INSERT", "UPDATE", "DELETE", "transactional EXISTS"],
-    "functions": ["size", "attribute_type", "begins_with", "contains", "list_append", "set_add", "set_delete"],
-    "operators": ["+", "-", "=", "<>", "!=", ">", "<", ">=", "<=", "AND", "OR", "NOT", "BETWEEN", "IN", "IS NULL", "IS MISSING"],
-    "rejected": ["JOIN", "subquery", "multiple statements", "aggregate COUNT", "DDL", "identifier parameter", "unlisted function", "statement LIMIT"],
-    "statementLimitControl": "ExecuteStatement.Limit request field; LIMIT is not in the documented DynamoDB SELECT grammar"
+    "statements": [
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE",
+      "transactional EXISTS"
+    ],
+    "functions": [
+      "size",
+      "attribute_type",
+      "begins_with",
+      "contains",
+      "list_append",
+      "set_add",
+      "set_delete"
+    ],
+    "operators": [
+      "+",
+      "-",
+      "=",
+      "<>",
+      "!=",
+      ">",
+      "<",
+      ">=",
+      "<=",
+      "AND",
+      "OR",
+      "NOT",
+      "BETWEEN",
+      "IN",
+      "IS NULL",
+      "IS MISSING"
+    ],
+    "rejected": [
+      "JOIN",
+      "subquery",
+      "multiple statements",
+      "aggregate COUNT",
+      "DDL",
+      "identifier parameter",
+      "unlisted function",
+      "statement LIMIT"
+    ],
+    "statementLimitControl": "ExecuteStatement.Limit request field; LIMIT is not in the documented DynamoDB SELECT grammar",
+    "orderBy": {
+      "syntax": "ORDER BY key [ASC|DESC] [, key [ASC|DESC] ...]",
+      "keys": "Hash (partition) or sort key attributes of the table or the queried index",
+      "defaultDirection": "ASC",
+      "source": "ql-reference.select.html",
+      "undocumented": [
+        "error text for a non-key ORDER BY attribute",
+        "whether a partition-key equality or IN predicate is required"
+      ],
+      "local": "Accepted only on key attributes of the selected table or index; StackSim does not sort on non-key attributes."
+    },
+    "exists": {
+      "syntax": "EXISTS ( SELECT * FROM table WHERE <full primary key equality> [AND condition] )",
+      "allowedIn": [
+        "ExecuteTransaction (write transactions, alongside INSERT/UPDATE/DELETE)"
+      ],
+      "failure": "Behaves like a TransactWriteItems ConditionCheck: a false condition cancels the transaction with reason code ConditionalCheckFailed",
+      "source": [
+        "ql-functions.exists.html",
+        "ql-reference.multiplestatements.transactions.html"
+      ],
+      "note": "The function page says the SELECT must specify a full primary key and one other condition, but its own example has no extra condition; StackSim requires the full key and allows zero or more extra conditions."
+    }
   },
   "types": {
-    "literal": ["S", "N", "BOOL", "NULL", "M", "L", "SS", "NS"],
-    "parameterOnly": ["B", "BS"],
+    "literal": [
+      "S",
+      "N",
+      "BOOL",
+      "NULL",
+      "M",
+      "L",
+      "SS",
+      "NS"
+    ],
+    "parameterOnly": [
+      "B",
+      "BS"
+    ],
     "numberPrecisionDigits": 38,
     "documentPathDereferences": 32
   },
@@ -42,21 +121,105 @@
     "transactionClientTokenSeconds": 600
   },
   "requestFields": {
-    "ExecuteStatement": ["Statement", "Parameters", "ConsistentRead", "Limit", "NextToken", "ReturnConsumedCapacity", "ReturnValuesOnConditionCheckFailure"],
-    "BatchExecuteStatement": ["Statements", "ReturnConsumedCapacity"],
-    "BatchStatementRequest": ["Statement", "Parameters", "ConsistentRead", "ReturnValuesOnConditionCheckFailure"],
-    "ExecuteTransaction": ["TransactStatements", "ClientRequestToken", "ReturnConsumedCapacity"],
-    "ParameterizedStatement": ["Statement", "Parameters", "ReturnValuesOnConditionCheckFailure"]
+    "ExecuteStatement": [
+      "Statement",
+      "Parameters",
+      "ConsistentRead",
+      "Limit",
+      "NextToken",
+      "ReturnConsumedCapacity",
+      "ReturnValuesOnConditionCheckFailure"
+    ],
+    "BatchExecuteStatement": [
+      "Statements",
+      "ReturnConsumedCapacity"
+    ],
+    "BatchStatementRequest": [
+      "Statement",
+      "Parameters",
+      "ConsistentRead",
+      "ReturnValuesOnConditionCheckFailure"
+    ],
+    "ExecuteTransaction": [
+      "TransactStatements",
+      "ClientRequestToken",
+      "ReturnConsumedCapacity"
+    ],
+    "ParameterizedStatement": [
+      "Statement",
+      "Parameters",
+      "ReturnValuesOnConditionCheckFailure"
+    ]
   },
   "responseFields": {
-    "ExecuteStatement": ["Items", "LastEvaluatedKey", "NextToken", "ConsumedCapacity"],
-    "BatchExecuteStatement": ["Responses", "ConsumedCapacity"],
-    "ExecuteTransaction": ["Responses", "ConsumedCapacity"]
+    "ExecuteStatement": [
+      "Items",
+      "LastEvaluatedKey",
+      "NextToken",
+      "ConsumedCapacity"
+    ],
+    "BatchExecuteStatement": [
+      "Responses",
+      "ConsumedCapacity"
+    ],
+    "ExecuteTransaction": [
+      "Responses",
+      "ConsumedCapacity"
+    ]
   },
-  "iamContext": ["dynamodb:EnclosingOperation", "dynamodb:FullTableScan", "dynamodb:LeadingKeys", "dynamodb:Attributes", "dynamodb:Select", "aws:ResourceTag/*"],
-  "errors": ["ValidationException", "DuplicateItemException", "ConditionalCheckFailedException", "ResourceNotFoundException", "ProvisionedThroughputExceededException", "TransactionCanceledException", "TransactionConflictException", "IdempotentParameterMismatchException", "InternalServerError"],
+  "iamContext": [
+    "dynamodb:EnclosingOperation",
+    "dynamodb:FullTableScan",
+    "dynamodb:LeadingKeys",
+    "dynamodb:Attributes",
+    "dynamodb:Select",
+    "aws:ResourceTag/*"
+  ],
+  "errors": {
+    "exceptions": [
+      "ValidationException",
+      "DuplicateItemException",
+      "ConditionalCheckFailedException",
+      "ResourceNotFoundException",
+      "ProvisionedThroughputExceededException",
+      "TransactionCanceledException",
+      "TransactionConflictException",
+      "IdempotentParameterMismatchException",
+      "InternalServerError"
+    ],
+    "batchStatementErrorCodes": [
+      "ConditionalCheckFailed",
+      "ItemCollectionSizeLimitExceeded",
+      "RequestLimitExceeded",
+      "ValidationError",
+      "ProvisionedThroughputExceeded",
+      "TransactionConflict",
+      "ThrottlingError",
+      "InternalServerError",
+      "ResourceNotFound",
+      "AccessDenied",
+      "DuplicateItem"
+    ],
+    "batchStatementErrorSource": "API_BatchStatementError.html"
+  },
   "localDifferences": [
     "Computed projection fields without a path name use deterministic ordinal names (_1, _2, ...); current DynamoDB documentation confirms computed projections but does not specify their response-map field names, and no credentialed AWS observation was authorized for this phase.",
     "Access-plan diagnostics and scan warnings are console-only and are not returned by DynamoDB APIs."
+  ],
+  "contributorInsights": {
+    "supportsPartiql": false,
+    "source": "contributorinsights_HowItWorks.html: \"DynamoDB CloudWatch Contributor Insights does not support PartiQL requests.\""
+  },
+  "amendments": [
+    {
+      "date": "2026-10-23",
+      "phase": "DDB-18",
+      "rows": [
+        "grammar.orderBy",
+        "grammar.exists",
+        "errors.batchStatementErrorCodes",
+        "contributorInsights"
+      ]
+    }
   ]
 }

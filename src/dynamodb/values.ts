@@ -16,8 +16,12 @@ function validateNumber(value: unknown): asserts value is string {
   if (typeof value !== "string" || !NUMBER.test(value)) throw new AwsError("ValidationException", `The parameter cannot be converted to a numeric value: ${String(value)}`);
   const unsigned = value.replace(/^[-+]/, ""); const [mantissa, exponentText = "0"] = unsigned.toLowerCase().split("e"); const [whole, fraction = ""] = mantissa.split("."); const digits = `${whole}${fraction}`; const first = digits.search(/[1-9]/);
   if (first < 0) return;
-  const significant = digits.slice(first).length; const exponent = Number(exponentText); const adjustedExponent = exponent + whole.length - first - 1;
+  const significant = digits.slice(first).replace(/0+$/, "").length || 1; const exponent = Number(exponentText); const adjustedExponent = exponent + whole.length - first - 1;
   if (!Number.isSafeInteger(exponent) || significant > 38 || adjustedExponent > 125 || adjustedExponent < -130) throw new AwsError("ValidationException", "Number overflow. Attempting to store a number with magnitude larger than supported range");
+}
+
+function validateBase64(value: string): void {
+  if (value.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) throw new AwsError("SerializationException", "Base64 encoded binary value is not valid", 400);
 }
 
 const MAX_NESTING_DEPTH = 32;
@@ -32,6 +36,7 @@ export function validateAttributeValue(value: unknown, path = "attribute", depth
   // Numbers are stored in AWS's canonical form (leading and trailing zeros trimmed), so GetItem returns "1.1" for "1.10".
   if (type === "N") { validateNumber(content); (value as any).N = canonicalNumber(content); }
   if (type === "B" && typeof content !== "string") throw new AwsError("ValidationException", `Expected base64 binary string at ${path}`);
+  if (type === "B") validateBase64(content);
   if (type === "BOOL" && typeof content !== "boolean") throw new AwsError("ValidationException", `Expected boolean at ${path}`);
   if (type === "NULL" && content !== true) throw new AwsError("ValidationException", `NULL must be true at ${path}`);
   if (type === "L") {
@@ -46,6 +51,7 @@ export function validateAttributeValue(value: unknown, path = "attribute", depth
     if (!Array.isArray(content) || content.length === 0) throw new AwsError("ValidationException", "An AttributeValue may not contain an empty set");
     if (type === "NS") { content.forEach(validateNumber); (value as any).NS = content.map((item: string) => canonicalNumber(item)); }
     else if (content.some(item => typeof item !== "string")) throw new AwsError("ValidationException", `Expected string values in ${type}`);
+    if (type === "BS") content.forEach(validateBase64);
     if (new Set((value as any)[type]).size !== content.length) throw new AwsError("ValidationException", "Input collection contains duplicates");
   }
 }
@@ -90,7 +96,7 @@ export function validateKey(table: TableState, key: Item, exact = true): void {
     validateAttributeValue(value, schema.AttributeName);
     const expected = table.attributeDefinitions.find(definition => definition.AttributeName === schema.AttributeName)?.AttributeType;
     const actual = attributeType(value);
-    if (actual !== expected || !["S", "N", "B"].includes(actual)) throw new AwsError("ValidationException", "The provided key element does not match the schema");
+    if (actual !== expected || !["S", "N", "B"].includes(actual)) throw new AwsError("ValidationException", exact ? "The provided key element does not match the schema" : `One or more parameter values were invalid: Type mismatch for key ${schema.AttributeName} expected: ${expected} actual: ${actual}`);
     const content = (value as any)[actual];
     if ((actual === "S" || actual === "B") && content.length === 0) throw new AwsError("ValidationException", "One or more parameter values were invalid: An AttributeValue may not contain an empty string for a key attribute");
   }

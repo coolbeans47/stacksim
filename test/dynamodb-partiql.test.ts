@@ -97,13 +97,13 @@ test("DynamoDB PartiQL batches preserve ordered item errors and transactions reu
       { Statement: `SELECT * FROM "PartiqlAccounts" WHERE id=?`, Parameters: [{ S: "missing" }] },
       { Statement: `SELECT * FROM "PartiqlAccounts" WHERE balance>?`, Parameters: [{ N: "1" }] },
     ] }));
-    assert.equal(reads.Responses?.[0].Item?.id?.S, "b"); assert.deepEqual(reads.Responses?.[1], { TableName: "PartiqlAccounts" }); assert.equal(reads.Responses?.[2].Error?.Code, "ValidationException");
+    assert.equal(reads.Responses?.[0].Item?.id?.S, "b"); assert.deepEqual(reads.Responses?.[1], { TableName: "PartiqlAccounts" }); assert.equal(reads.Responses?.[2].Error?.Code, "ValidationError");
     const writes = await client.send(new BatchExecuteStatementCommand({ Statements: [
       { Statement: `INSERT INTO "PartiqlAccounts" VALUE {'id':?,'balance':?}`, Parameters: [{ S: "c" }, { N: "30" }] },
       { Statement: `INSERT INTO "PartiqlAccounts" VALUE {'id':'a','balance':99}` },
       { Statement: `UPDATE "PartiqlAccounts" SET balance=? WHERE id=?`, Parameters: [{ N: "25" }, { S: "b" }] },
     ] }));
-    assert.equal(writes.Responses?.[0].TableName, "PartiqlAccounts"); assert.equal(writes.Responses?.[1].Error?.Code, "DuplicateItemException"); assert.equal((await client.send(new GetItemCommand({ TableName: "PartiqlAccounts", Key: { id: { S: "b" } } }))).Item?.balance?.N, "25");
+    assert.equal(writes.Responses?.[0].TableName, "PartiqlAccounts"); assert.equal(writes.Responses?.[1].Error?.Code, "DuplicateItem"); assert.equal((await client.send(new GetItemCommand({ TableName: "PartiqlAccounts", Key: { id: { S: "b" } } }))).Item?.balance?.N, "25");
     await validation(client.send(new BatchExecuteStatementCommand({ Statements: [{ Statement: `SELECT * FROM "PartiqlAccounts" WHERE id='a'` }, { Statement: `DELETE FROM "PartiqlAccounts" WHERE id='b'` }] })));
 
     const transaction = new ExecuteTransactionCommand({ ClientRequestToken: "partiql-transaction", TransactStatements: [
