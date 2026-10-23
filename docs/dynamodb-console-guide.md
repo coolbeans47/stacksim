@@ -139,43 +139,76 @@ Quick health check after deploys — confirm the table is `ACTIVE`, keys match y
 
 ### Explore table items
 
+Open it with **Explore table items** on a table page, or choose **Explore items** in the navigation and pick a table. The page has two panels, **Scan or query items** and **Items returned**, as in the AWS console.
+
 #### Scan or query items
 
 ##### What it is
 
-Interactive item explorer supporting:
-
-- **Scan** — read across the table or index (with optional parallel segments)
-- **Query** — efficient read of one partition key value with optional sort-key conditions
-- **Filters** — refine results after read (do not reduce consumed capacity in AWS)
-- **Projections** — choose returned attributes
-- **Consistent read** — strongly consistent reads where supported
-- **Create item**, **Edit**, **Duplicate**, **Delete**
+- **Scan** or **Query**, chosen with the switch at the top of the panel.
+- **Select a table or index** — the base table or one of its local or global secondary indexes.
+- **Select attribute projection** — **All attributes**, **Only projected attributes** (indexes only; sends `Select: ALL_PROJECTED_ATTRIBUTES`), or **Specific attributes** (sends a `ProjectionExpression` for the names you list).
+- **Partition key** and **Sort key** (Query) — the sort key takes a condition (Equal to, Less than or equal to, Less than, Greater than or equal to, Greater than, Between, Begins with) and is optional; **Sort descending** reverses the order.
+- **Filters** — expanded by default. Each row has **Attribute name**, **Condition**, **Type**, and **Value**; **Add filter** adds a row and rows combine with AND. Conditions: Equal to, Not equal to, Less than or equal to, Less than, Greater than or equal to, Greater than, Between, Exists, Not exists, Contains, Not contains, Begins with. Types: String, Number, Binary, Boolean (True/False), and Null (no value box). Boolean and Null offer only Equal to, Not equal to, Exists, and Not exists; Number omits Begins with.
+- **Run** and **Reset**.
+- **Additional settings (local)** — options the AWS page does not show, each mapped to a documented parameter: page size (`Limit`), results view (table, plain JSON, DynamoDB JSON), strongly consistent read, count only (`Select: COUNT`), a switch that runs a scan when the page opens, parallel scan segments, and a raw filter expression with its own names and values.
 
 ##### Why use it
 
 **Query** is the primary access pattern in DynamoDB — it reads one partition efficiently. **Scan** reads every partition and should be used sparingly in production (migrations, admin tools, small tables).
 
-Filters apply after data is read, so they still consume capacity for scanned items even when filtered out.
+Filters apply after data is read, so they still consume capacity for scanned items even when filtered out. The Scan warning under the results shows how many items were evaluated to return the page.
 
 ##### How it works in StackSim
 
-Bounded scan and query pages, key conditions, filters, projections, consistent reads, parallel scans, pagination, and item CRUD are active.
+Every request is a real `Scan` or `Query` with `ReturnConsumedCapacity: TOTAL`; the service validates it and its errors appear in place of the results. The query settings, filters, and page are kept for the browser session, so returning from an item page, editing a cell, or deleting items re-runs the same request instead of resetting the page.
+
+#### Items returned
+
+##### What it is
+
+- The heading shows the item count, and a green summary reads **Completed. Read capacity units consumed: N**.
+- Columns list the table's partition and sort keys first (then the index keys), followed by the other attributes. Values show without type badges.
+- The first key value links to **Edit item**. A pencil button on a String, Number, Binary, or Boolean cell opens **Edit String** (or Number, Binary, Boolean) and saves that one attribute.
+- Checkboxes select items (the header box selects the page). **Actions**: **Edit item** and **Duplicate item** (one item), **Query for selected item** (one item; switches to Query on its key), **Export to CSV** (the selected items, or the whole page when nothing is selected), and **Delete items** (one or more; confirmed with a **Delete** button).
+- **Create item** opens the Create item page. **Previous** and **Next** page through results.
+
+##### How it works in StackSim
+
+Edit, duplicate, and delete always use the base-table key, so they work from index results too; when a projection drops a key attribute, the item actions stay disabled. Inline edits use `UpdateItem` with `SET` and a condition that the item still exists; deletes send one `DeleteItem` per selected item.
+
+#### Create item, Edit item, and Duplicate item
+
+##### What it is
+
+Full pages, as in AWS, with a **Form** / **JSON view** switch (**View DynamoDB JSON** toggles typed and plain JSON).
+
+- The form lists **Attribute name**, **Value**, and **Type**, with the key attributes first and marked Partition key or Sort key.
+- **Add new attribute** offers String, Number, Binary, Boolean, Null, String set, Number set, Binary set, List, and Map.
+- Boolean values use a True/False selector; Null has no value box; each set member has its own box (**Add value**), so members can contain commas.
+- Map and List attributes expand into nested rows with **Add attribute to map** or **Add element to list**, and collapse with the arrow beside the name.
+- **Create item** (create and duplicate) or **Save and close** (edit) writes the item; **Cancel** returns to the results.
+
+##### How it works in StackSim
+
+Create and duplicate send `PutItem` with `attribute_not_exists` on the partition key, so an existing key is reported instead of overwritten. Edit sends `PutItem` with the unchanged key; key values are read-only while editing, so use **Duplicate item** to give an item a new key. **Duplicate item** starts with every attribute of the source item, including its key values, ready to change.
 
 ##### Common AWS use cases
 
 - Query `PK = USER#123` and `SK begins_with ORDER#` in a single-table design.
-- Scan a dev table to inspect seed data.
-- Create test items from the console before wiring an application.
+- Scan a dev table to inspect seed data, then filter on a Boolean flag such as `active = True`.
+- Create test items, including nested maps and lists, before wiring an application.
+- Select several stale test items and delete them in one action.
 
 ##### Example
 
 Query the `Orders` table:
 
-- Partition key condition: `customerId = "C-1001"`
-- Sort key condition: `orderDate BETWEEN "2026-01-01" AND "2026-12-31"`
+- Partition key: `C-1001` (`customerId`)
+- Sort key: Between `2026-01-01` and `2026-12-31` (`orderDate`)
+- Filter: `status` · Not equal to · String · `CANCELLED`
 
-Returns all orders for that customer in 2026 without scanning other customers' partitions.
+Returns the customer's 2026 orders that are not cancelled without scanning other customers' partitions; the filter still reads the cancelled orders, which the capacity summary reflects.
 
 ---
 
@@ -185,7 +218,12 @@ Returns all orders for that customer in 2026 without scanning other customers' p
 
 ##### What it is
 
-Lists **local secondary indexes (LSI)** and **global secondary indexes (GSI)** with key schema, projection type, and status. You can create GSIs and delete GSIs from this panel.
+The tab has two tables, as in AWS:
+
+- **Global secondary indexes** — Name, Status (Active, Creating, Updating, Deleting, Backfilling), Partition key, Sort key, Read capacity, Write capacity, Attribute projections (All, Keys only, or Include with the listed attributes), Size, and Item count. Select an index and choose **Delete**, then type **confirm**.
+- **Local secondary indexes** — Name, Partition key, Sort key, Attribute projections, Size, and Item count.
+
+**Create index** opens the **Create global secondary index** page: Partition key and Sort key with data types, an Index name suggested from the keys (`pk-sk-index`), Attribute projections (All, Only keys, Include with projected attributes), and, for provisioned tables, read and write capacity units.
 
 ##### Why use it
 
@@ -200,7 +238,7 @@ The table primary key supports one access pattern. Secondary indexes add alterna
 
 ##### How it works in StackSim
 
-Index creation, projection, queries, and GSI deletion are active. LSIs can only be created with the table.
+Creation sends `UpdateTable` with `GlobalSecondaryIndexUpdates: Create` and the key attribute definitions (never an empty list). Size and item count are exact and current locally; AWS updates them about every six hours. LSIs can only be created with the table. The AWS developer guide does not document the Indexes tab columns or the delete confirmation, so those follow the 2026-10-22 console review.
 
 ##### Common AWS use cases
 
@@ -227,9 +265,18 @@ Application looks up users by email without scanning the full table.
 
 ##### What it is
 
-Charts and controls for DynamoDB CloudWatch metrics: consumed capacity, throttled requests, errors, latency, and related series. Scope can be the table or a specific GSI.
+One graph per CloudWatch metric, with time-range chips (1h, 3h, 12h, 1d, 3d, 1w) and a **Table or index** selector:
 
-Consumed read/write capacity uses execution accounting, including item size, read consistency, evaluated rows before filters, index work and transaction factors. Table series include LSIs; GSIs have separate series. Native and PartiQL batch/transaction work contributes once per outer request across all affected tables, even with `ReturnConsumedCapacity` omitted or `NONE`. Request latency and its sample count remain separate from capacity units. Metrics use the existing local JSON-byte capacity model, not AWS billing; publication is best effort and cannot turn a committed write into a reported failure. Cached idempotent responses do not charge again.
+- Read usage and Write usage (average units per second, with provisioned capacity on provisioned tables)
+- Read and Write throttled events
+- Throttled requests, by operation
+- Get and query latency, and put, update, and delete latency (average milliseconds, by operation)
+- Returned item count (Query and Scan)
+- Conditional check failed requests, System errors (by operation), User errors (account and Region), and Time to Live deleted items
+
+Index scope shows the four capacity and throttle graphs for that GSI. Below the graphs, **Alarms** lists CloudWatch alarms on this table's metrics, and Contributor Insights follows.
+
+Consumed read/write capacity uses execution accounting, including item size, read consistency, evaluated rows before filters, index work and transaction factors. Table series include LSIs; GSIs have separate series. Native and PartiQL batch/transaction work contributes once per outer request across all affected tables. Metrics use the local JSON-byte capacity model, not AWS billing; publication is best effort and cannot turn a committed write into a reported failure.
 
 ##### Why use it
 
@@ -237,7 +284,7 @@ In AWS, metrics reveal hot partitions, throttling, error spikes, and capacity he
 
 ##### How it works in StackSim
 
-Metrics publish to local CloudWatch after DynamoDB requests. Charts describe local activity only.
+Metrics publish to local CloudWatch with the AWS dimensions from the DynamoDB metrics reference: `SuccessfulRequestLatency` and `ReturnedItemCount` by `TableName` and `Operation` (a request spanning several tables keeps one `Operation`-only latency sample), `ConditionalCheckFailedRequests` by `TableName`, `SystemErrors` and `ThrottledRequests` by `TableName` and `Operation`, `UserErrors` without dimensions, and `ReadThrottleEvents`/`WriteThrottleEvents` by table or GSI when `STACKSIM_DDB_ENFORCE_CAPACITY=true` rejects a request. Throttled requests are not counted as user errors. Graphs describe local activity only. The AWS guide documents only Contributor Insights on this tab; the graph set follows the 2026-10-22 console review.
 
 ##### Common AWS use cases
 
@@ -322,11 +369,9 @@ Prevents accidental deletion of production tables through console mistakes, bad 
 
 ##### How it works in StackSim
 
-The setting actively rejects local table deletion until disabled.
+**Edit** opens a dialog with **Enable delete protection**, the wording in the AWS developer guide. While it is on, `DeleteTable` is rejected and the console's Delete action is unavailable.
 
----
-
-#### Encryption at rest
+#### Encryption
 
 ##### What it is
 
@@ -338,9 +383,7 @@ In AWS, all DynamoDB data is encrypted at rest. Customer-managed KMS keys add ac
 
 ##### How it works in StackSim
 
-SSE descriptors and KMS key references persist for compatibility. KMS is unavailable locally; KMS selections remain dependency-blocked.
-
----
+**Manage encryption** offers the three AWS key types: **Owned by Amazon DynamoDB** (the default), **AWS managed key** (alias `aws/dynamodb`), and **Stored in your account, and owned and managed by you** (a customer managed key, entered as a key ID, ARN, or alias). **Save** sends `UpdateTable` with `SSESpecification`. The card and Overview show the key management type. No KMS service runs locally, so KMS selections are stored as configuration and shown as dependency blocked, never as active encryption.
 
 #### Time to Live (TTL)
 
@@ -356,7 +399,7 @@ In AWS, expired items are deleted within a few days of their expiration time (th
 
 ##### How it works in StackSim
 
-TTL configuration, background expiry, streams, replication, and metrics are active. StackSim uses a shorter deterministic sweep interval than AWS.
+**Turn on** opens **Turn on Time to Live (TTL)** with the TTL attribute name and an optional **Preview**: choose a simulated date and time and **Run preview** to see how many items (of the first 100 evaluated) would be expired then. The preview is an ordinary bounded `Scan`. **Turn off** stops expiration. To use another attribute, turn TTL off and on again with the new name, as DynamoDB requires; DynamoDB also allows one TTL change per hour per table. Expired items are deleted by a configurable short local sweep instead of within days.
 
 ##### Common AWS use cases
 
@@ -394,7 +437,7 @@ PITR protects against accidental writes, bad deployments, and operator errors be
 
 ##### How it works in StackSim
 
-Retention configuration, mutation journaling, and restore to latest or specific time are active. Local restore points are available through the latest completed second.
+**Edit** opens **Edit point-in-time recovery settings**: **Turn on point-in-time recovery** and a **Backup recovery period** of any whole number of days from 1 to 35; clearing the checkbox turns PITR off and resets the restore history. **Restore** asks for a new table name and a restore point (**Latest**, **Earliest**, or a specific date and time), then the shared restore options: Same Region (cross-Region restores are not available locally), all or no secondary indexes, and the encryption key type. Restores use the Standard table class. Restore points are available through the latest completed local second.
 
 ##### Common AWS use cases
 
@@ -402,7 +445,7 @@ Retention configuration, mutation journaling, and restore to latest or specific 
 - Restore to five minutes before a bad batch job ran.
 - Complement on-demand backups with continuous protection.
 
-#### On-demand backups
+#### Backups
 
 ##### What it is
 
@@ -414,7 +457,7 @@ Named recovery points before schema changes, major releases, or compliance check
 
 ##### How it works in StackSim
 
-Backup creation, inspection, deletion, and restore of items, keys, indexes, billing, capacity, and encryption descriptors are active. Tags, TTL, streams, auto scaling, and policies must be reconfigured after restore.
+The list shows user and system backups with Backup name, Status, Backup type (User, System, AWS Backup), Table name, Creation time, Expiration date, and Size. **Restore** uses the same options as a PITR restore and **Restore table**. **Delete** asks you to type **delete**, as in AWS; AWS Backup backups can't be deleted from the console. Snapshots are stored locally and restore through the normal table creation lifecycle.
 
 ##### Common AWS use cases
 
@@ -449,7 +492,7 @@ In AWS the view type cannot be edited in place: turn the stream off, then on aga
 
 ##### How it works in StackSim
 
-One deterministic shard, signed iterators, retention, item/transaction/TTL records, and Lambda event source mappings are active.
+**Turn on** opens **Turn on DynamoDB stream** with the AWS view types (**Key attributes only**, **New image**, **Old image**, **New and old images**) and **Turn on stream**. There is no in-place view-type change: turn the stream off, then on with another view type, which creates a new stream ARN. One deterministic local shard preserves successful single-item, batch, transaction, PartiQL, and TTL mutations; iterators expire after 15 minutes and records default to 24-hour retention.
 
 ##### Common AWS use cases
 
@@ -463,7 +506,7 @@ Enable stream with `NEW_AND_OLD_IMAGES` on `Orders`. A Lambda consumer receives 
 
 ---
 
-#### Kinesis data stream destination
+#### Amazon Kinesis data stream details
 
 ##### What it is
 
@@ -475,9 +518,7 @@ In AWS, Kinesis offers longer retention and additional consumers (analytics, mul
 
 ##### How it works in StackSim
 
-ARN, precision, and lifecycle states persist locally. No Kinesis service runs; table records are not delivered.
-
----
+**Turn on** stores one same-account, same-Region destination ARN with the record timestamp precision (Microsecond, the console default, or Millisecond); **Change precision** and **Turn off** manage it. No Kinesis service runs locally, so the stream ARN is typed rather than chosen from a list and no records are delivered.
 
 #### Lambda triggers
 
@@ -500,7 +541,7 @@ Batching, filters, retries, partial failures, bisecting, destinations, checkpoin
 
 ---
 
-#### Point-in-time exports (table)
+#### Exports to S3 (table)
 
 ##### What it is
 
@@ -512,9 +553,7 @@ In AWS, exports to S3 do not consume table read capacity — useful for analytic
 
 ##### How it works in StackSim
 
-Full exports write DynamoDB JSON/GZIP objects and manifests into a same-Region local S3 bucket through DynamoDB's service principal and an S3-owned transfer port. Authorize the bucket with a policy that allows `dynamodb.amazonaws.com` for `s3:PutObject` (and usually `aws:SourceAccount` / `aws:SourceArn` conditions). Jobs are admitted before any object write, checkpointed per stage, and resumed on restart. Absolute `file://` destinations remain available only when `STACKSIM_ALLOW_LOCAL_FILES=true`. Ion, incremental export, and KMS SSE remain unavailable.
-
----
+**Export to S3** opens the export page with this table selected; see Exports to S3 below. The list shows the export ID, source table, status (In progress, Completed, Failed), export type, export time, item count, and destination.
 
 ### Global tables (table tab)
 
@@ -637,7 +676,7 @@ Organize tables by environment, owner, cost center, and application. When **ABAC
 
 ##### How it works in StackSim
 
-Tag CRUD and supported `aws:ResourceTag/` authorization conditions are active.
+**Manage tags** edits tags as Key and Value rows with **Add new tag** and **Remove**, counting the remaining tags out of 50. Duplicate or empty keys are rejected before any request; changes are sent as `UntagResource` and `TagResource`. The AWS developer guide places table tags in a Tags section of Additional settings; StackSim keeps the separate Tags tab chosen in DDB-16A.
 
 ##### Common AWS use cases
 
@@ -684,9 +723,9 @@ Transfer credits between two accounts in one transaction — both balance update
 
 Run SQL-like statements against DynamoDB:
 
-- **Single statement** — `ExecuteStatement`
-- **Batch statements** — `BatchExecuteStatement`
-- **Transaction statements** — `ExecuteTransaction`
+- **Tables** panel — each table has an actions menu that writes a statement into the editor: **Scan table**, **Query table** (with `partitionKeyValue` and `sortKeyValue` placeholders, as the AWS guide shows), **Insert item**, **Update item**, and **Delete item**. Only Query table is named in the AWS developer guide; the other labels follow the 2026-10-22 console review.
+- **Single statement** — `ExecuteStatement`, with **Download results to CSV** when a statement returns items.
+- **Batch statements (local)** — `BatchExecuteStatement`; **Transaction statements (local)** — `ExecuteTransaction`. The AWS editor runs one statement at a time, so these modes, the **Key query builder (local)**, and the **Access path (local estimate)** note are StackSim learning aids.
 
 Supports parameterized queries with `?` placeholders and DynamoDB JSON parameter types.
 
@@ -726,9 +765,9 @@ Regional list of global tables with replica Regions. Manage replicas from each t
 
 ---
 
-### Exports and streams (account)
+### Exports to S3 (account)
 
-Account-level export job list plus links to per-table stream and Kinesis configuration.
+The export job list (export ID, source table, status, export type, export time, items, destination) plus links to per-table stream and Kinesis configuration. **Export to S3** opens a page with the documented fields: Source table, **Destination S3 bucket** (`s3://bucket-name/prefix`), **S3 bucket owner** (This AWS account or A different AWS account with its ID), **Export type** (Full export; Incremental export is shown but not available locally), **Export time** (Current time or a point in time within the PITR window), and **Exported file format** (DynamoDB JSON; Amazon Ion not available locally). An absolute `file://` URL with an export prefix uses the opted-in local files extension.
 
 ---
 
@@ -738,7 +777,7 @@ Account-level export job list plus links to per-table stream and Kinesis configu
 
 ##### What it is
 
-Create a **new** table from local DynamoDB JSON Lines files (optionally GZIP-compressed). Specify source path, target table name, and primary key schema.
+Create a **new** table from DynamoDB JSON data. **Import from S3** opens a page with **Source S3 URL** (`s3://bucket-name/prefix`), **S3 bucket owner**, **Import file compression** (No compression, GZIP; ZSTD not available locally), **Import file format** (DynamoDB JSON; Amazon Ion and CSV not available locally), and the destination table: name, partition and sort keys, and on-demand or provisioned capacity. AWS spreads these over three wizard steps; StackSim shows them on one page.
 
 ##### Why use it
 
@@ -767,7 +806,7 @@ Regional list of all tables and GSIs with contributor insights enabled. Same con
 
 ### Backups (account)
 
-Account-wide list of user-created on-demand backups with create, inspect, restore, and delete actions. Links to per-table PITR on each table's **Backups** tab.
+Account-wide list of user and system backups (Backup type and Expiration date columns) with create, inspect, restore, and delete actions; delete asks you to type **delete**. Links to per-table PITR on each table's **Backups** tab.
 
 ---
 

@@ -73,6 +73,19 @@ test("DynamoDB SDK capacity, canonical charges and CloudWatch agree across nativ
     await assert.rejects(db.send(new PutItemCommand({ TableName: "capacity-limited", Item: item("too-large") })), { name: "ProvisionedThroughputExceededException" });
     assert.deepEqual(scopes(events.slice(rejectedStart)), {}, "rejected capacity admission emits no consumed units");
     assert.equal(events.slice(rejectedStart).filter(event => event.metricName === "SuccessfulRequestLatency").length, 0);
+    // DDB-16C: request metrics carry the AWS dimensions from metrics-dimensions.html.
+    const rejected = events.slice(rejectedStart);
+    assert.deepEqual(rejected.find(event => event.metricName === "WriteThrottleEvents")?.dimensions, { TableName: "capacity-limited" });
+    assert.deepEqual(rejected.find(event => event.metricName === "ThrottledRequests")?.dimensions, { TableName: "capacity-limited", Operation: "PutItem" });
+    assert.equal(rejected.filter(event => event.metricName === "UserErrors").length, 0, "throttled requests are not user errors");
+    const dimensionStart = events.length;
+    await db.send(new QueryCommand({ TableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": { S: "partition" } } }));
+    const queried = events.slice(dimensionStart);
+    assert.deepEqual(queried.find(event => event.metricName === "SuccessfulRequestLatency")?.dimensions, { TableName, Operation: "Query" });
+    const returned = queried.find(event => event.metricName === "ReturnedItemCount"); assert.deepEqual(returned?.dimensions, { TableName, Operation: "Query" }); assert.ok((returned?.value ?? 0) > 0);
+    const conditionStart = events.length;
+    await assert.rejects(db.send(new PutItemCommand({ TableName, Item: item("1"), ConditionExpression: "attribute_not_exists(pk)" })), { name: "ConditionalCheckFailedException" });
+    assert.deepEqual(events.slice(conditionStart).find(event => event.metricName === "ConditionalCheckFailedRequests")?.dimensions, { TableName });
     const fail = bus.subscribe(() => { throw new Error("telemetry unavailable"); });
     try { await db.send(new PutItemCommand({ TableName, Item: item("committed") })); assert.ok((await db.send(new GetItemCommand({ TableName, Key: key("committed") }))).Item); } finally { fail(); }
   } finally { unsubscribe?.(); db?.destroy(); cw?.destroy(); await sim.stop(); await rm(root, { recursive: true, force: true }); }

@@ -312,7 +312,7 @@ test.describe("FND-02 console foundation", () => {
     await expect(help).toBeFocused();
 
     const dynamoNavigation = page.getByRole("navigation", { name: "DynamoDB navigation" });
-    const overview = dynamoNavigation.getByRole("link", { name: "Overview", exact: true });
+    const overview = dynamoNavigation.getByRole("link", { name: "Dashboard", exact: true });
     await overview.focus();
     await overview.press("Enter");
     await expect(page).toHaveURL(/#\/dynamodb$/);
@@ -341,18 +341,24 @@ test.describe("FND-02 console foundation", () => {
     await expect(page).toHaveURL(/#\/dynamodb\/tables\/KeyboardNotes\/overview$/);
     await expect(main.locator("h1")).toHaveText("KeyboardNotes");
     await expect(main).toBeFocused();
-    const itemsTab = page.getByRole("link", { name: "Explore table items", exact: true });
+    const itemsTab = page.getByRole("button", { name: "Explore table items", exact: true }).first();
     await itemsTab.focus();
     await itemsTab.press("Enter");
     await expect(page).toHaveURL(/#\/dynamodb\/tables\/KeyboardNotes\/items$/);
     await expect(page.getByRole("heading", { name: "Scan or query items" })).toBeVisible();
     await expect(main).toBeFocused();
 
-    const operation = page.getByLabel("Operation");
-    const partitionKey = page.getByLabel("Partition key value");
-    await operation.focus();
-    await operation.press("KeyQ");
-    await expect(operation).toHaveValue("query");
+    const scan = page.locator('input[name="item-operation"][value="scan"]');
+    const query = page.locator('input[name="item-operation"][value="query"]');
+    const partitionKey = page.getByLabel("Partition key", { exact: true });
+    await scan.focus();
+    await scan.press("ArrowRight");
+    await expect(query).toBeChecked();
+    await expect(query).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(page.getByLabel("Select a table or index")).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(page.getByLabel("Select attribute projection")).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(partitionKey).toBeFocused();
     await page.keyboard.type("fixture");

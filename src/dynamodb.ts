@@ -539,7 +539,7 @@ export class DynamoDbService {
   private takeCapacity(table: TableState, kind: "read" | "write", units: number, suffix = "table", contributors: Item[] = []): void {
     if (!this.enforceCapacity || units <= 0) return; const index = suffix === "table" ? undefined : table.globalSecondaryIndexes?.find(candidate => candidate.indexName === suffix); const provisioned = kind === "read" ? index?.provisionedThroughput?.ReadCapacityUnits ?? table.provisionedThroughput?.ReadCapacityUnits : index?.provisionedThroughput?.WriteCapacityUnits ?? table.provisionedThroughput?.WriteCapacityUnits; const onDemand = kind === "read" ? index?.onDemandThroughput?.MaxReadRequestUnits ?? table.onDemandThroughput?.MaxReadRequestUnits : index?.onDemandThroughput?.MaxWriteRequestUnits ?? table.onDemandThroughput?.MaxWriteRequestUnits; const rate = table.billingMode === "PROVISIONED" ? provisioned : onDemand; if (rate === undefined || rate <= 0) return;
     const key = `${table.name}\0${suffix}\0${kind}`; const now = this.clock.now(); let bucket = this.capacityBuckets.get(key); if (!bucket || bucket.rate !== rate) bucket = { tokens: rate, at: now, rate }; else { bucket.tokens = Math.min(rate, bucket.tokens + (Math.max(0, now - bucket.at) / 1000) * rate); bucket.at = now; }
-    if (bucket.tokens + Number.EPSILON < units) { this.capacityBuckets.set(key, bucket); void this.publishContributorMetrics(table, contributors, "ThrottleFrequency", index?.indexName, true); const scope = index ? "Index" : "Table"; const operation = kind === "read" ? "Read" : "Write"; throw new AwsError("ProvisionedThroughputExceededException", "The level of configured provisioned throughput for the table was exceeded. Consider increasing your provisioning level.", 400, { ThrottlingReasons: [{ reason: `${scope}${operation}ProvisionedThroughputExceeded`, resource: index ? `${table.arn}/index/${index.indexName}` : table.arn }] }); }
+    if (bucket.tokens + Number.EPSILON < units) { this.capacityBuckets.set(key, bucket); void this.publishContributorMetrics(table, contributors, "ThrottleFrequency", index?.indexName, true); void this.telemetry?.publish({ namespace: "AWS/DynamoDB", metricName: kind === "read" ? "ReadThrottleEvents" : "WriteThrottleEvents", dimensions: { TableName: table.name, ...(index ? { GlobalSecondaryIndexName: index.indexName } : {}) }, value: 1, unit: "Count", timestamp: this.clock.now() }).catch(() => undefined); const scope = index ? "Index" : "Table"; const operation = kind === "read" ? "Read" : "Write"; throw new AwsError("ProvisionedThroughputExceededException", "The level of configured provisioned throughput for the table was exceeded. Consider increasing your provisioning level.", 400, { ThrottlingReasons: [{ reason: `${scope}${operation}ProvisionedThroughputExceeded`, resource: index ? `${table.arn}/index/${index.indexName}` : table.arn }] }); }
     bucket.tokens -= units; this.capacityBuckets.set(key, bucket);
   }
 
@@ -832,31 +832,36 @@ export class DynamoDbService {
       if (input === null || typeof input !== "object" || Array.isArray(input)) throw new AwsError("SerializationException", "Request body must be a JSON object", 400);
       const output = await (this as any)[operation](input, (req as any).awsPrincipal);
       json(res, output, 200, "application/x-amz-json-1.0");
-    } catch (error) { if (this.telemetry && operation) { const metricName = error instanceof AwsError && error.status < 500 ? error.code === "ConditionalCheckFailedException" ? "ConditionalCheckFailedRequests" : "UserErrors" : "SystemErrors"; await this.telemetry.publish({ namespace: "AWS/DynamoDB", metricName, dimensions: {}, value: 1, unit: "Count", timestamp: this.clock.now() }).catch(() => undefined); } sendAwsError(res, error); }
+    } catch (error) { if (this.telemetry && operation) { const code = error instanceof AwsError ? error.code : undefined; const tableName = typeof input?.TableName === "string" ? input.TableName : undefined; const metricName = error instanceof AwsError && error.status < 500 ? code === "ConditionalCheckFailedException" ? "ConditionalCheckFailedRequests" : code === "ProvisionedThroughputExceededException" ? "ThrottledRequests" : "UserErrors" : "SystemErrors"; const dimensions: Record<string, string> = metricName === "UserErrors" ? {} : metricName === "ConditionalCheckFailedRequests" ? (tableName ? { TableName: tableName } : {}) : { ...(tableName ? { TableName: tableName } : {}), Operation: operation }; await this.telemetry.publish({ namespace: "AWS/DynamoDB", metricName, dimensions, value: 1, unit: "Count", timestamp: this.clock.now() }).catch(() => undefined); } sendAwsError(res, error); }
   }
 
   private async withRequestMetrics(operation: string, execute: () => Promise<any>): Promise<any> {
     const parent = this.requestCapacity.getStore();
     const charges: CapacityCharge[] = [];
     const started = performance.now();
-    let succeeded = false;
-    try { const output = await this.requestCapacity.run(charges, execute); succeeded = true; return output; }
+    let succeeded = false; let result: any;
+    try { const output = await this.requestCapacity.run(charges, execute); succeeded = true; result = output; return output; }
     finally {
       // Charges describe accepted execution accounting, even if a later step
       // fails. Failed admission adds no charge (takeCapacityCharge rolls back).
       // Nested native/PartiQL calls contribute only to their owning request.
       if (parent) parent.push(...charges);
-      else await this.publishRequestMetrics(operation, charges, performance.now() - started, succeeded).catch(() => undefined);
+      else await this.publishRequestMetrics(operation, charges, performance.now() - started, succeeded, result).catch(() => undefined);
     }
   }
 
-  private async publishRequestMetrics(operation: string, charges: CapacityCharge[], latency: number, succeeded: boolean): Promise<void> {
+  private async publishRequestMetrics(operation: string, charges: CapacityCharge[], latency: number, succeeded: boolean, output?: any): Promise<void> {
     if (!this.telemetry) return;
     const timestamp = this.clock.now();
     const publish = async (metricName: string, dimensions: Record<string, string>, value: number, unit = "Count") => {
       try { await this.telemetry!.publish({ namespace: "AWS/DynamoDB", metricName, dimensions, value, unit, timestamp }); } catch { /* Telemetry cannot undo execution. */ }
     };
-    if (succeeded) await publish("SuccessfulRequestLatency", { Operation: operation }, latency, "Milliseconds");
+    // SuccessfulRequestLatency and ReturnedItemCount use the AWS TableName+Operation dimensions; a request that spans
+    // several tables keeps one Operation-only latency sample.
+    const tableNames = [...new Set(charges.map(charge => charge.tableName))];
+    const tableDimension: Record<string, string> = tableNames.length === 1 ? { TableName: tableNames[0] } : {};
+    if (succeeded) await publish("SuccessfulRequestLatency", { ...tableDimension, Operation: operation }, latency, "Milliseconds");
+    if (succeeded && tableNames.length === 1 && (operation === "Query" || operation === "Scan" || (operation === "ExecuteStatement" && Array.isArray(output?.Items)))) await publish("ReturnedItemCount", { ...tableDimension, Operation: operation }, Number(output?.Count ?? output?.Items?.length ?? 0));
     const scopes = new Map<string, { tableName: string; indexName?: string; read: number; write: number }>();
     for (const charge of charges) {
       // LSIs consume their table's throughput; GSIs have independent series.
