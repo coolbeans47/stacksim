@@ -131,6 +131,8 @@ test("S3-17 lifecycle configurations reject the shapes AWS rejects", async () =>
       assert.equal(result.status, 400, label); assert.equal(result.code, "MalformedXML", label);
     }
     assert.equal((await put("<Prefix>legacy/</Prefix><Status>Enabled</Status><Expiration><Days>1</Days></Expiration>")).status, 200, "a top-level Prefix satisfies the filter requirement");
+    assert.equal((await put("<Filter/><Status>Enabled</Status><Expiration><Days>1</Days></Expiration>")).status, 200, "a self-closing empty Filter is an explicit bucket-wide filter");
+    assert.equal((await put("<Filter></Filter><Status>Enabled</Status><Expiration><Days>1</Days></Expiration>")).status, 200, "a paired empty Filter is accepted too");
     assert.equal((await put("<Filter><Prefix></Prefix></Filter><Status>Enabled</Status><Expiration><ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker></Expiration><NoncurrentVersionTransition><NoncurrentDays>30</NoncurrentDays><StorageClass>GLACIER</StorageClass></NoncurrentVersionTransition>")).status, 200);
   } finally { await close(); }
 });
@@ -246,7 +248,7 @@ test("S3-09 CORS rules evaluate in stored order on preflight and actual requests
 });
 
 test("S3-09 website endpoint supports redirect-all, redirection rules, object redirects, and HTML error pages", async () => {
-  const { s3, endpoint, disablePublicAccessBlock, close } = await fixture();
+  const { s3, endpoint, simulator, raw, disablePublicAccessBlock, close } = await fixture();
   try {
     const bucket = "site"; const base = `${endpoint}/_stacksim/s3-website/${bucket}/`;
     await s3.send(new CreateBucketCommand({ Bucket: bucket, CreateBucketConfiguration: { LocationConstraint: region } }));
@@ -280,5 +282,22 @@ test("S3-09 website endpoint supports redirect-all, redirection rules, object re
     assert.match(page, /<h1>404 Not Found<\/h1>/); assert.match(page, /<li>Code: NoSuchKey<\/li>/); assert.match(page, /<li>Key: nope\.html<\/li>/);
     const head = await fetch(`${base}nope.html`, { method: "HEAD" });
     assert.equal(head.status, 404); assert.equal((await head.text()).length, 0);
+
+    // A redirect with only a Protocol keeps the website endpoint but changes the scheme.
+    await s3.send(new PutBucketWebsiteCommand({ Bucket: bucket, WebsiteConfiguration: { IndexDocument: { Suffix: "index.html" }, ErrorDocument: { Key: "error.html" }, RoutingRules: [{ Condition: { KeyPrefixEquals: "secure/" }, Redirect: { Protocol: "https" } }] } }));
+    const upgraded = await fetch(`${base}secure/page.html`, { redirect: "manual" });
+    assert.equal(upgraded.status, 301); assert.equal(upgraded.headers.get("location"), `${base.replace(/^http:/, "https:")}secure/page.html`);
+
+    // Account-level RestrictPublicBuckets denies the custom error document as well as the requested key.
+    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: "error.html", Body: "<h1>custom error</h1>", ContentType: "text/html" }));
+    const customError = await fetch(`${base}missing.html`);
+    assert.equal(customError.status, 404); assert.match(await customError.text(), /custom error/);
+    const accountBlock = await raw("/v20180820/configuration/publicAccessBlock", { method: "PUT", headers: { "x-amz-account-id": simulator.store.accountId, "content-type": "application/xml" }, body: `<PublicAccessBlockConfiguration xmlns="http://awss3control.amazonaws.com/doc/2018-08-20/"><BlockPublicAcls>false</BlockPublicAcls><IgnorePublicAcls>false</IgnorePublicAcls><BlockPublicPolicy>false</BlockPublicPolicy><RestrictPublicBuckets>true</RestrictPublicBuckets></PublicAccessBlockConfiguration>` });
+    assert.equal(accountBlock.status, 200);
+    const restricted = await fetch(`${base}missing.html`);
+    assert.equal(restricted.status, 403);
+    const restrictedPage = await restricted.text();
+    assert.doesNotMatch(restrictedPage, /custom error/, "the error document is not served while public buckets are restricted");
+    assert.match(restrictedPage, /<li>Code: AccessDenied<\/li>/);
   } finally { await close(); }
 });

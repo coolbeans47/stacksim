@@ -1497,7 +1497,8 @@ export class S3Service {
       const applyRule = (rule: S3BucketWebsiteRoutingRule, requestKey: string) => {
         const redirect = rule.redirect; const prefix = rule.condition?.keyPrefixEquals ?? "";
         const targetKey = redirect.replaceKeyWith !== undefined ? redirect.replaceKeyWith : redirect.replaceKeyPrefixWith !== undefined ? `${redirect.replaceKeyPrefixWith}${requestKey.slice(prefix.length)}` : requestKey;
-        const location = redirect.hostName ? `${redirect.protocol ?? "http"}://${redirect.hostName}/${encodePath(targetKey)}` : `${base}${encodePath(targetKey)}`;
+        // Without a HostName the redirect stays on this website endpoint, but a requested Protocol still replaces the scheme.
+        const location = redirect.hostName ? `${redirect.protocol ?? "http"}://${redirect.hostName}/${encodePath(targetKey)}` : `${redirect.protocol ? base.replace(/^https?:/i, `${redirect.protocol}:`) : base}${encodePath(targetKey)}`;
         redirectTo(location, Number(redirect.httpRedirectCode ?? 301));
       };
       const rules = website.routingRules ?? [];
@@ -1505,7 +1506,8 @@ export class S3Service {
       const prefixRule = rules.find(rule => rule.condition === undefined || (rule.condition.httpErrorCodeReturnedEquals === undefined && key.startsWith(rule.condition.keyPrefixEquals ?? "")));
       if (prefixRule) return applyRule(prefixRule, key);
       let lookupKey = key; if (!lookupKey || lookupKey.endsWith("/")) lookupKey += website.indexDocument ?? "";
-      const denied = this.effectiveBlock(located).restrictPublicBuckets || !publicGetAllowed(located.bucket, lookupKey);
+      const restricted = this.effectiveBlock(located).restrictPublicBuckets;
+      const denied = restricted || !publicGetAllowed(located.bucket, lookupKey);
       const index = await this.bucketIndex(located);
       let object = denied ? undefined : currentObject(index, lookupKey);
       if (object?.deleteMarker) object = undefined;
@@ -1515,7 +1517,8 @@ export class S3Service {
         const errorRule = rules.find(rule => rule.condition?.httpErrorCodeReturnedEquals === code && key.startsWith(rule.condition.keyPrefixEquals ?? ""));
         if (errorRule) return applyRule(errorRule, key);
         const error = denied ? new AwsError("AccessDenied", "Access Denied", 403) : new AwsError("NoSuchKey", "The specified key does not exist.", 404);
-        if (!website.errorDocument || !publicGetAllowed(located.bucket, website.errorDocument)) throw error;
+        // The custom error document is itself an anonymous read: account or bucket RestrictPublicBuckets blocks it too.
+        if (restricted || !website.errorDocument || !publicGetAllowed(located.bucket, website.errorDocument)) throw error;
         const errorObject = currentObject(index, website.errorDocument);
         if (!errorObject || errorObject.deleteMarker) throw error;
         object = errorObject; status = error.status;
@@ -2105,7 +2108,7 @@ export class S3Service {
     const rules = blocks.map(body => {
       const id = xmlValue(body, "ID"); if (id !== undefined && (!id || Buffer.byteLength(id) > 255 || ids.has(id))) throw new AwsError("InvalidArgument", "Lifecycle rule IDs must be unique and at most 255 bytes", 400); if (id) ids.add(id);
       const status = xmlValue(body, "Status"); if (!["Enabled", "Disabled"].includes(status ?? "")) throw new AwsError("MalformedXML", "Lifecycle rule Status must be Enabled or Disabled", 400);
-      const filterMatch = body.match(/<Filter(?:\s[^>]*)?>([\s\S]*?)<\/Filter>/i); const filterBody = filterMatch?.[1]; const hasExplicitFilter = Boolean(filterMatch);
+      const filterMatch = body.match(/<Filter(?:\s[^>]*)?>([\s\S]*?)<\/Filter>/i); const selfClosingFilter = !filterMatch && /<Filter(?:\s[^>]*)?\/>/i.test(body); const filterBody = filterMatch?.[1] ?? (selfClosingFilter ? "" : undefined); const hasExplicitFilter = Boolean(filterMatch) || selfClosingFilter;
       const topLevelPrefix = hasExplicitFilter ? undefined : xmlValue(body, "Prefix");
       if (!hasExplicitFilter && topLevelPrefix === undefined) throw new AwsError("MalformedXML", "Filter element is required when a Lifecycle rule does not contain a Prefix element", 400);
       const prefix = (hasExplicitFilter ? xmlValue(filterBody!, "Prefix") : topLevelPrefix) ?? "";
