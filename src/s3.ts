@@ -51,16 +51,33 @@ export interface S3BucketPublicAccessBlock {
   restrictPublicBuckets: boolean;
 }
 
-export interface S3BucketWebsiteConfiguration {
-  indexDocument: string;
-  errorDocument?: string;
+export interface S3BucketWebsiteRoutingRule {
+  condition?: { keyPrefixEquals?: string; httpErrorCodeReturnedEquals?: string };
+  redirect: { hostName?: string; protocol?: "http" | "https"; replaceKeyPrefixWith?: string; replaceKeyWith?: string; httpRedirectCode?: string };
 }
 
-export interface S3BucketCorsRule {
-  allowedHeaders: string[];
-  allowedMethods: Array<"GET" | "HEAD">;
-  allowedOrigins: string[];
+export interface S3BucketWebsiteConfiguration {
+  indexDocument?: string;
+  errorDocument?: string;
+  redirectAllRequestsTo?: { hostName: string; protocol?: "http" | "https" };
+  routingRules?: S3BucketWebsiteRoutingRule[];
 }
+
+export type S3CorsMethod = "GET" | "PUT" | "POST" | "DELETE" | "HEAD";
+
+export interface S3BucketCorsRule {
+  id?: string;
+  allowedHeaders: string[];
+  allowedMethods: S3CorsMethod[];
+  allowedOrigins: string[];
+  exposeHeaders?: string[];
+  maxAgeSeconds?: number;
+}
+
+/** Real S3 bucket subresources that StackSim does not implement. They must never fall through to bucket CRUD or listing. */
+const UNIMPLEMENTED_BUCKET_SUBRESOURCES = ["replication", "logging", "accelerate", "inventory", "metrics", "analytics", "intelligent-tiering", "metadataTable", "metadataConfiguration"] as const;
+const CORS_METHODS = new Set<string>(["GET", "PUT", "POST", "DELETE", "HEAD"]);
+const HTTP_STATUS_TEXT: Record<number, string> = { 301: "Moved Permanently", 302: "Found", 307: "Temporary Redirect", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 500: "Internal Server Error" };
 
 export interface S3BucketConfigurationInput {
   name: string;
@@ -157,6 +174,14 @@ function canonicalPublicAccessBlock(value?: Partial<S3BucketPublicAccessBlock>):
   };
 }
 
+/** AWS enables all four Block Public Access settings on every new general-purpose bucket (since April 2023). */
+function defaultPublicAccessBlock(): S3BucketPublicAccessBlock {
+  return { blockPublicAcls: true, ignorePublicAcls: true, blockPublicPolicy: true, restrictPublicBuckets: true };
+}
+
+function xmlBlock(xml: string, name: string): string | undefined { return xml.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, "i"))?.[1]; }
+function xmlBlocks(xml: string, name: string): string[] { return [...xml.matchAll(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, "gi"))].map(match => match[1]); }
+
 function validateTags(value: Record<string, string> | undefined): Record<string, string> {
   const tags: Record<string, string> = {};
   for (const key of Object.keys(value ?? {}).sort(utf8Compare)) {
@@ -208,8 +233,9 @@ function eventBridgeS3Event(eventName: string): { detailType: string; reason: st
     "ObjectTagging:Put": { detailType: "Object Tags Added", reason: "PutObjectTagging" },
     "ObjectTagging:Delete": { detailType: "Object Tags Deleted", reason: "DeleteObjectTagging" },
     "ObjectAcl:Put": { detailType: "Object ACL Updated", reason: "PutObjectAcl" },
-    "ObjectAnnotation:Put": { detailType: "Object Annotation Added", reason: "PutObjectAnnotation" },
-    "ObjectAnnotation:Delete": { detailType: "Object Annotation Deleted", reason: "DeleteObjectAnnotation" },
+    "ObjectAnnotation:Put": { detailType: "Object Annotation Created", reason: "PutObjectAnnotation" },
+    "ObjectAnnotation:Delete": { detailType: "Object Annotation Removed", reason: "DeleteObjectAnnotation" },
+    "ObjectRetention:Put": { detailType: "Object Retention Updated", reason: "PutObjectRetention" },
   };
   return exact[name] ?? { detailType: name.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/:/g, " "), reason: name };
 }
@@ -233,24 +259,107 @@ function taggingXml(tags: Record<string, string>): string {
 
 function validateWebsiteConfiguration(value: S3BucketWebsiteConfiguration | undefined): S3BucketWebsiteConfiguration | undefined {
   if (value === undefined) return undefined;
-  const indexDocument = value.indexDocument;
-  const errorDocument = value.errorDocument;
-  if (typeof indexDocument !== "string" || !indexDocument || indexDocument.startsWith("/") || Buffer.byteLength(indexDocument) > 1_024 || /[\u0000-\u001f\u007f]/.test(indexDocument)) throw new AwsError("InvalidArgument", "Website IndexDocument must be a nonempty relative key suffix no longer than 1024 bytes", 400);
-  if (errorDocument !== undefined && (typeof errorDocument !== "string" || !errorDocument || errorDocument.startsWith("/") || Buffer.byteLength(errorDocument) > 1_024 || /[\u0000-\u001f\u007f]/.test(errorDocument))) throw new AwsError("InvalidArgument", "Website ErrorDocument must be a nonempty relative key no longer than 1024 bytes", 400);
-  return { indexDocument, ...(errorDocument === undefined ? {} : { errorDocument }) };
+  const malformed = (message: string) => new AwsError("MalformedXML", message, 400);
+  const validKey = (candidate: unknown, label: string): string => {
+    if (typeof candidate !== "string" || !candidate || candidate.startsWith("/") || Buffer.byteLength(candidate) > 1_024 || /[\u0000-\u001f\u007f]/.test(candidate)) throw new AwsError("InvalidArgument", `Website ${label} must be a nonempty relative key no longer than 1024 bytes`, 400);
+    return candidate;
+  };
+  const protocolOf = (candidate: unknown, label: string): "http" | "https" | undefined => {
+    if (candidate === undefined) return undefined;
+    if (candidate !== "http" && candidate !== "https") throw malformed(`${label} Protocol must be http or https`);
+    return candidate;
+  };
+  if (value.redirectAllRequestsTo) {
+    if (value.indexDocument !== undefined || value.errorDocument !== undefined || value.routingRules !== undefined) throw new AwsError("InvalidRequest", "RedirectAllRequestsTo cannot be provided in conjunction with other Routing rules.", 400);
+    const hostName = value.redirectAllRequestsTo.hostName;
+    if (typeof hostName !== "string" || !hostName.trim() || Buffer.byteLength(hostName) > 1_024 || /[\s/]/.test(hostName)) throw malformed("RedirectAllRequestsTo requires a HostName");
+    const protocol = protocolOf(value.redirectAllRequestsTo.protocol, "RedirectAllRequestsTo");
+    return { redirectAllRequestsTo: { hostName, ...(protocol ? { protocol } : {}) } };
+  }
+  const indexDocument = validKey(value.indexDocument, "IndexDocument");
+  const errorDocument = value.errorDocument === undefined ? undefined : validKey(value.errorDocument, "ErrorDocument");
+  let routingRules: S3BucketWebsiteRoutingRule[] | undefined;
+  if (value.routingRules !== undefined) {
+    if (!Array.isArray(value.routingRules) || value.routingRules.length > 50) throw malformed("RoutingRules may contain at most 50 rules");
+    routingRules = value.routingRules.map(rule => {
+      if (!rule || typeof rule !== "object" || !rule.redirect || typeof rule.redirect !== "object") throw malformed("Each RoutingRule requires a Redirect element");
+      const condition = rule.condition;
+      if (condition !== undefined) {
+        if (!condition || typeof condition !== "object" || (condition.keyPrefixEquals === undefined && condition.httpErrorCodeReturnedEquals === undefined)) throw malformed("A RoutingRule Condition requires KeyPrefixEquals or HttpErrorCodeReturnedEquals");
+        if (condition.httpErrorCodeReturnedEquals !== undefined && !/^[45]\d\d$/.test(String(condition.httpErrorCodeReturnedEquals))) throw malformed("HttpErrorCodeReturnedEquals must be a 4xx or 5xx status code");
+      }
+      const redirect = rule.redirect;
+      if (redirect.replaceKeyWith !== undefined && redirect.replaceKeyPrefixWith !== undefined) throw malformed("ReplaceKeyWith and ReplaceKeyPrefixWith cannot both be specified in a Redirect");
+      if (redirect.httpRedirectCode !== undefined && !/^3\d\d$/.test(String(redirect.httpRedirectCode))) throw malformed("HttpRedirectCode must be a 3xx status code");
+      if (redirect.hostName !== undefined && (typeof redirect.hostName !== "string" || !redirect.hostName.trim() || /[\s/]/.test(redirect.hostName))) throw malformed("Redirect HostName is invalid");
+      const protocol = protocolOf(redirect.protocol, "Redirect");
+      if ([redirect.hostName, protocol, redirect.replaceKeyPrefixWith, redirect.replaceKeyWith, redirect.httpRedirectCode].every(item => item === undefined)) throw malformed("A Redirect requires at least one of HostName, Protocol, ReplaceKeyPrefixWith, ReplaceKeyWith, or HttpRedirectCode");
+      return {
+        ...(condition ? { condition: { ...(condition.keyPrefixEquals !== undefined ? { keyPrefixEquals: String(condition.keyPrefixEquals) } : {}), ...(condition.httpErrorCodeReturnedEquals !== undefined ? { httpErrorCodeReturnedEquals: String(condition.httpErrorCodeReturnedEquals) } : {}) } } : {}),
+        redirect: {
+          ...(redirect.hostName !== undefined ? { hostName: String(redirect.hostName) } : {}),
+          ...(protocol ? { protocol } : {}),
+          ...(redirect.replaceKeyPrefixWith !== undefined ? { replaceKeyPrefixWith: String(redirect.replaceKeyPrefixWith) } : {}),
+          ...(redirect.replaceKeyWith !== undefined ? { replaceKeyWith: String(redirect.replaceKeyWith) } : {}),
+          ...(redirect.httpRedirectCode !== undefined ? { httpRedirectCode: String(redirect.httpRedirectCode) } : {}),
+        },
+      };
+    });
+  }
+  return { indexDocument, ...(errorDocument === undefined ? {} : { errorDocument }), ...(routingRules?.length ? { routingRules } : {}) };
+}
+
+function parseWebsiteConfigurationXml(xml: string): S3BucketWebsiteConfiguration {
+  const configuration: S3BucketWebsiteConfiguration = {};
+  const redirectAll = xmlBlock(xml, "RedirectAllRequestsTo");
+  if (redirectAll !== undefined) configuration.redirectAllRequestsTo = { hostName: xmlValue(redirectAll, "HostName") ?? "", ...(xmlValue(redirectAll, "Protocol") !== undefined ? { protocol: xmlValue(redirectAll, "Protocol") as "http" | "https" } : {}) };
+  const indexBody = xmlBlock(xml, "IndexDocument"); if (indexBody !== undefined) configuration.indexDocument = xmlValue(indexBody, "Suffix") ?? "";
+  const errorBody = xmlBlock(xml, "ErrorDocument"); if (errorBody !== undefined) configuration.errorDocument = xmlValue(errorBody, "Key") ?? "";
+  const rulesBody = xmlBlock(xml, "RoutingRules");
+  if (rulesBody !== undefined) configuration.routingRules = xmlBlocks(rulesBody, "RoutingRule").map(rule => {
+    const condition = xmlBlock(rule, "Condition"); const redirect = xmlBlock(rule, "Redirect") ?? "";
+    const field = (body: string | undefined, name: string, key: string): Record<string, string> => { const value = body === undefined ? undefined : xmlValue(body, name); return value === undefined ? {} : { [key]: value }; };
+    return {
+      ...(condition !== undefined ? { condition: { ...field(condition, "KeyPrefixEquals", "keyPrefixEquals"), ...field(condition, "HttpErrorCodeReturnedEquals", "httpErrorCodeReturnedEquals") } } : {}),
+      redirect: { ...field(redirect, "HostName", "hostName"), ...field(redirect, "Protocol", "protocol"), ...field(redirect, "ReplaceKeyPrefixWith", "replaceKeyPrefixWith"), ...field(redirect, "ReplaceKeyWith", "replaceKeyWith"), ...field(redirect, "HttpRedirectCode", "httpRedirectCode") } as S3BucketWebsiteRoutingRule["redirect"],
+    };
+  });
+  return configuration;
+}
+
+function websiteConfigurationXml(website: S3BucketWebsiteConfiguration): string {
+  if (website.redirectAllRequestsTo) return `<RedirectAllRequestsTo><HostName>${xmlEscape(website.redirectAllRequestsTo.hostName)}</HostName>${website.redirectAllRequestsTo.protocol ? `<Protocol>${website.redirectAllRequestsTo.protocol}</Protocol>` : ""}</RedirectAllRequestsTo>`;
+  const element = (name: string, value: string | undefined) => value === undefined ? "" : `<${name}>${xmlEscape(value)}</${name}>`;
+  const rules = (website.routingRules ?? []).map(rule => `<RoutingRule>${rule.condition ? `<Condition>${element("KeyPrefixEquals", rule.condition.keyPrefixEquals)}${element("HttpErrorCodeReturnedEquals", rule.condition.httpErrorCodeReturnedEquals)}</Condition>` : ""}<Redirect>${element("HostName", rule.redirect.hostName)}${element("Protocol", rule.redirect.protocol)}${element("ReplaceKeyPrefixWith", rule.redirect.replaceKeyPrefixWith)}${element("ReplaceKeyWith", rule.redirect.replaceKeyWith)}${element("HttpRedirectCode", rule.redirect.httpRedirectCode)}</Redirect></RoutingRule>`).join("");
+  return `<IndexDocument><Suffix>${xmlEscape(website.indexDocument ?? "")}</Suffix></IndexDocument>${website.errorDocument ? `<ErrorDocument><Key>${xmlEscape(website.errorDocument)}</Key></ErrorDocument>` : ""}${rules ? `<RoutingRules>${rules}</RoutingRules>` : ""}`;
 }
 
 function validateCorsConfiguration(value: S3BucketCorsRule[] | undefined): S3BucketCorsRule[] | undefined {
   if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.length !== 1) throw new AwsError("InvalidRequest", "AMX-04 requires exactly one generated CORS rule", 400);
+  const malformed = () => new AwsError("MalformedXML", "The XML you provided was not well-formed or did not validate against our published schema", 400);
+  if (!Array.isArray(value) || !value.length || value.length > 100) throw malformed();
+  const strings = (items: unknown, allowWildcard: boolean): string[] => {
+    if (!Array.isArray(items) || items.some(item => typeof item !== "string" || !item || /[\u0000-\u001f\u007f]/.test(item))) throw malformed();
+    for (const item of items as string[]) if ((item.match(/\*/g) ?? []).length > (allowWildcard ? 1 : 0)) throw new AwsError("InvalidRequest", `Found invalid CORS value ${item}: at most one wildcard is allowed`, 400);
+    return items as string[];
+  };
   return value.map(rule => {
-    if (!rule || !Array.isArray(rule.allowedHeaders) || !Array.isArray(rule.allowedMethods) || !Array.isArray(rule.allowedOrigins)
-      || rule.allowedHeaders.length !== 1 || rule.allowedHeaders[0] !== "*"
-      || JSON.stringify(rule.allowedMethods) !== JSON.stringify(["GET", "HEAD"])
-      || rule.allowedOrigins.length !== 1 || typeof rule.allowedOrigins[0] !== "string" || !/^https:\/\/[a-z0-9-]+\.console\.aws\.amazon\.com\/amplify$/.test(rule.allowedOrigins[0])) {
-      throw new AwsError("InvalidRequest", "The CORS rule is outside the frozen AMX-04 generated shape", 400);
-    }
-    return { allowedHeaders: ["*"], allowedMethods: ["GET", "HEAD"] as Array<"GET" | "HEAD">, allowedOrigins: [rule.allowedOrigins[0]] };
+    if (!rule || typeof rule !== "object") throw malformed();
+    const allowedOrigins = strings(rule.allowedOrigins, true); if (!allowedOrigins.length) throw malformed();
+    if (!Array.isArray(rule.allowedMethods) || !rule.allowedMethods.length) throw malformed();
+    for (const method of rule.allowedMethods) if (typeof method !== "string" || !CORS_METHODS.has(method)) throw new AwsError("InvalidRequest", `Found unsupported HTTP method in CORS config. Unsupported method is ${String(method)}`, 400);
+    const allowedHeaders = rule.allowedHeaders === undefined ? [] : strings(rule.allowedHeaders, true);
+    const exposeHeaders = rule.exposeHeaders === undefined ? [] : strings(rule.exposeHeaders, false);
+    if (rule.maxAgeSeconds !== undefined && (!Number.isInteger(rule.maxAgeSeconds) || rule.maxAgeSeconds < 0)) throw malformed();
+    if (rule.id !== undefined && (typeof rule.id !== "string" || Buffer.byteLength(rule.id) > 255)) throw malformed();
+    return {
+      ...(rule.id !== undefined ? { id: rule.id } : {}),
+      allowedHeaders,
+      allowedMethods: [...rule.allowedMethods] as S3CorsMethod[],
+      allowedOrigins,
+      ...(exposeHeaders.length ? { exposeHeaders } : {}),
+      ...(rule.maxAgeSeconds !== undefined ? { maxAgeSeconds: rule.maxAgeSeconds } : {}),
+    };
   });
 }
 
@@ -329,7 +438,7 @@ function canonicalBucketConfiguration(input: S3BucketConfigurationUpdate, manage
       publicAccessBlock: input.publicAccessBlock !== undefined,
     },
     tags: validateTags(input.tags),
-    publicAccessBlock: canonicalPublicAccessBlock(input.publicAccessBlock),
+    publicAccessBlock: input.publicAccessBlock === undefined ? defaultPublicAccessBlock() : canonicalPublicAccessBlock(input.publicAccessBlock),
     website: validateWebsiteConfiguration(input.website),
     corsConfiguration: validateCorsConfiguration(input.cors),
   };
@@ -609,8 +718,17 @@ function enforceReadConditions(req: IncomingMessage, object: S3ObjectVersionStat
 }
 
 function enforceWriteConditions(req: IncomingMessage, existing?: S3ObjectVersionState): void {
-  const ifMatch = req.headers["if-match"]; if (ifMatch !== undefined && (!existing || existing.deleteMarker || !etagMatches(ifMatch, existing.etag))) throw new AwsError("PreconditionFailed", "At least one of the pre-conditions you specified did not hold", 412);
-  const ifNone = req.headers["if-none-match"]; if (ifNone !== undefined && existing && !existing.deleteMarker && etagMatches(ifNone, existing.etag)) throw new AwsError("PreconditionFailed", "At least one of the pre-conditions you specified did not hold", 412);
+  const ifMatch = req.headers["if-match"];
+  if (ifMatch !== undefined) {
+    if (!existing || existing.deleteMarker) throw new AwsError("NoSuchKey", "The specified key does not exist.", 404);
+    if (!etagMatches(ifMatch, existing.etag)) throw new AwsError("PreconditionFailed", "At least one of the pre-conditions you specified did not hold", 412);
+  }
+  const ifNone = req.headers["if-none-match"];
+  if (ifNone !== undefined) {
+    // Conditional writes accept only the asterisk form of If-None-Match.
+    if (String(Array.isArray(ifNone) ? ifNone[0] : ifNone).trim() !== "*") throw new AwsError("NotImplemented", "A header you provided implies functionality that is not implemented", 501);
+    if (existing && !existing.deleteMarker) throw new AwsError("PreconditionFailed", "At least one of the pre-conditions you specified did not hold", 412);
+  }
 }
 
 function setObjectHeaders(res: ServerResponse, object: S3ObjectVersionState, checksumMode = false): void {
@@ -769,6 +887,8 @@ export class S3Service {
     await this.start();
     const located = this.requireBucket(name);
     const desired = canonicalBucketConfiguration(input, this.awsManagedKeyArn(located.bucket));
+    // A template that never declared PublicAccessBlockConfiguration leaves the bucket's current setting alone, as CloudFormation does.
+    if (!desired.cloudFormationConfiguration.publicAccessBlock) desired.publicAccessBlock = canonicalPublicAccessBlock(located.bucket.publicAccessBlock);
     if (located.bucket.managedBy) throw new AwsError("AccessDenied", "Simulator-managed bootstrap buckets cannot be configured as application buckets", 403);
     if (located.bucket.versioning !== "unversioned" && desired.versioning === "unversioned") throw new AwsError("InvalidBucketState", "Bucket versioning cannot return to the unversioned state after it has been enabled", 409);
     if (!sameBucketConfiguration(located.bucket, desired)) {
@@ -911,7 +1031,7 @@ export class S3Service {
         versioning: "enabled",
         encryption: "AES256",
         tags: {},
-        publicAccessBlock: canonicalPublicAccessBlock(),
+        publicAccessBlock: defaultPublicAccessBlock(),
         objectOwnership: "BucketOwnerEnforced",
         acl: privateAcl(this.store.accountId),
         requestPayment: "BucketOwner",
@@ -1099,10 +1219,10 @@ export class S3Service {
     if (input.method === "OPTIONS") {
       const origin = input.headers.origin ?? "";
       const requestedMethod = input.headers["access-control-request-method"] ?? "";
-      const rule = this.matchingCorsRule(located.bucket, origin, requestedMethod);
+      const requestedHeaders = String(input.headers["access-control-request-headers"] ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
+      const rule = this.matchingCorsRule(located.bucket, origin, requestedMethod, requestedHeaders);
       if (!origin || !requestedMethod || !rule) throw new AwsError("AccessForbidden", "CORSResponse: This CORS request is not allowed", 403);
-      const maxAgeSeconds = (rule as S3BucketCorsRule & { maxAgeSeconds?: number }).maxAgeSeconds;
-      return { status: 200, headers: { "access-control-allow-origin": origin, "access-control-allow-methods": rule.allowedMethods.join(", "), ...(maxAgeSeconds === undefined ? {} : { "access-control-max-age": String(maxAgeSeconds) }) }, body: Buffer.alloc(0) };
+      return { status: 200, headers: { ...this.corsResponseHeaders(rule, origin), "access-control-allow-methods": rule.allowedMethods.join(", "), ...(requestedHeaders.length ? { "access-control-allow-headers": requestedHeaders.join(", ") } : {}), ...(rule.maxAgeSeconds === undefined ? {} : { "access-control-max-age": String(rule.maxAgeSeconds) }) }, body: Buffer.alloc(0) };
     }
 
     const resource = objectArn(input.bucketName, input.key);
@@ -1127,6 +1247,10 @@ export class S3Service {
     // The AWS managed key aws/s3 has no key policy CloudFront could be granted;
     // on AWS an OAC origin needs a customer managed key for SSE-KMS objects.
     if (selected.encryption === "aws:kms") throw new AwsError("AccessDenied", "Access Denied", 403);
+    // CloudFront cannot present a customer key, and archived objects need a completed restore, exactly as for a direct GetObject.
+    if (selected.sseCustomerKeyMd5) throw new AwsError("InvalidRequest", "The object was stored using SSE-C; the correct customer key is required", 400);
+    this.refreshRestore(selected);
+    this.ensureArchiveReadable(selected);
     if (selected.size > input.maximumBytes) throw new AwsError("EntityTooLarge", "The origin object exceeds the local CloudFront response limit", 400);
     const headers: Record<string, string> = {
       etag: quotedEtag(selected.etag),
@@ -1348,9 +1472,9 @@ export class S3Service {
   /** Anonymous local S3 website endpoint. Authorization is exclusively resource-policy based. */
   async handleWebsite(req: IncomingMessage, res: ServerResponse, url: URL, requestId: string): Promise<void> {
     const route = "/_stacksim/s3-website/";
-    const resource = url.pathname;
     const hostId = createHash("sha256").update(`${this.store.state.installation.id}:${requestId}:website`).digest("base64");
     res.setHeader("x-amz-id-2", hostId);
+    let key = "";
     try {
       await this.start();
       if (req.method !== "GET" && req.method !== "HEAD") throw new AwsError("MethodNotAllowed", "The specified method is not allowed against this resource.", 405);
@@ -1364,28 +1488,63 @@ export class S3Service {
       const website = validateWebsiteConfiguration(located.bucket.website);
       if (!website) throw new AwsError("NoSuchWebsiteConfiguration", "The specified bucket does not have a website configuration", 404);
       const rawKey = separator < 0 ? "" : remainder.slice(separator + 1);
-      let key = rawKey ? decodePathComponent(rawKey) : "";
-      if (!key || key.endsWith("/")) key += website.indexDocument;
-      if (this.effectiveBlock(located).restrictPublicBuckets || !publicGetAllowed(located.bucket, key)) throw new AwsError("AccessDenied", "Access Denied", 403);
+      key = rawKey ? decodePathComponent(rawKey) : "";
+      const base = `${this.websiteBaseUrl().replace(/\/+$/, "")}${route}${encodeURIComponent(bucketName)}/`;
+      const encodePath = (value: string) => value.split("/").map(encodeURIComponent).join("/");
+      const redirectTo = (location: string, status: number) => { res.statusCode = status; res.setHeader("location", location); res.setHeader("content-length", "0"); res.end(); };
+      if (website.redirectAllRequestsTo) { const { hostName, protocol } = website.redirectAllRequestsTo; return redirectTo(`${protocol ?? "http"}://${hostName}/${encodePath(key)}`, 301); }
+      this.applyCorsHeaders(req, res, located.bucket, req.method);
+      const applyRule = (rule: S3BucketWebsiteRoutingRule, requestKey: string) => {
+        const redirect = rule.redirect; const prefix = rule.condition?.keyPrefixEquals ?? "";
+        const targetKey = redirect.replaceKeyWith !== undefined ? redirect.replaceKeyWith : redirect.replaceKeyPrefixWith !== undefined ? `${redirect.replaceKeyPrefixWith}${requestKey.slice(prefix.length)}` : requestKey;
+        // Without a HostName the redirect stays on this website endpoint, but a requested Protocol still replaces the scheme.
+        const location = redirect.hostName ? `${redirect.protocol ?? "http"}://${redirect.hostName}/${encodePath(targetKey)}` : `${redirect.protocol ? base.replace(/^https?:/i, `${redirect.protocol}:`) : base}${encodePath(targetKey)}`;
+        redirectTo(location, Number(redirect.httpRedirectCode ?? 301));
+      };
+      const rules = website.routingRules ?? [];
+      // Rules without an HTTP-error condition are evaluated before the object lookup, as on AWS.
+      const prefixRule = rules.find(rule => rule.condition === undefined || (rule.condition.httpErrorCodeReturnedEquals === undefined && key.startsWith(rule.condition.keyPrefixEquals ?? "")));
+      if (prefixRule) return applyRule(prefixRule, key);
+      let lookupKey = key; if (!lookupKey || lookupKey.endsWith("/")) lookupKey += website.indexDocument ?? "";
+      const restricted = this.effectiveBlock(located).restrictPublicBuckets;
+      const denied = restricted || !publicGetAllowed(located.bucket, lookupKey);
       const index = await this.bucketIndex(located);
-      let object = currentObject(index, key);
+      let object = denied ? undefined : currentObject(index, lookupKey);
+      if (object?.deleteMarker) object = undefined;
       let status = 200;
-      if (!object || object.deleteMarker) {
-        if (!website.errorDocument || !publicGetAllowed(located.bucket, website.errorDocument)) throw new AwsError("NoSuchKey", "The specified key does not exist.", 404);
-        object = currentObject(index, website.errorDocument);
-        if (!object || object.deleteMarker) throw new AwsError("NoSuchKey", "The specified key does not exist.", 404);
-        status = 404;
+      if (!object) {
+        const code = denied ? "403" : "404";
+        const errorRule = rules.find(rule => rule.condition?.httpErrorCodeReturnedEquals === code && key.startsWith(rule.condition.keyPrefixEquals ?? ""));
+        if (errorRule) return applyRule(errorRule, key);
+        const error = denied ? new AwsError("AccessDenied", "Access Denied", 403) : new AwsError("NoSuchKey", "The specified key does not exist.", 404);
+        // The custom error document is itself an anonymous read: account or bucket RestrictPublicBuckets blocks it too.
+        if (restricted || !website.errorDocument || !publicGetAllowed(located.bucket, website.errorDocument)) throw error;
+        const errorObject = currentObject(index, website.errorDocument);
+        if (!errorObject || errorObject.deleteMarker) throw error;
+        object = errorObject; status = error.status;
       }
       // Anonymous website requests cannot use the AWS managed key aws/s3.
       if (object.encryption === "aws:kms") throw new AwsError("AccessDenied", "Access Denied", 403);
+      if (status === 200 && object.websiteRedirectLocation) { const target = object.websiteRedirectLocation; return redirectTo(/^https?:\/\//i.test(target) ? target : `${base}${encodePath(target.replace(/^\//, ""))}`, 301); }
       setObjectHeaders(res, object);
       res.statusCode = status;
       res.setHeader("content-length", String(object.size));
       if (req.method === "HEAD" || object.size === 0) { res.end(); return; }
       await this.streamBlob(res, object.blobId!, 0, object.size - 1);
     } catch (error) {
-      return sendS3Error(res, error, resource, requestId, hostId);
+      return this.sendWebsiteError(req, res, error, key, requestId, hostId);
     }
+  }
+
+  /** The website endpoint answers errors with the S3 HTML error page, not the REST XML document. */
+  private sendWebsiteError(req: IncomingMessage, res: ServerResponse, error: unknown, key: string, requestId: string, hostId: string): void {
+    const aws = error instanceof AwsError ? error : new AwsError("InternalError", error instanceof Error ? error.message : String(error), 500);
+    const title = `${aws.status} ${HTTP_STATUS_TEXT[aws.status] ?? ""}`.trim();
+    const body = `<html>\n<head><title>${xmlEscape(title)}</title></head>\n<body>\n<h1>${xmlEscape(title)}</h1>\n<ul>\n<li>Code: ${xmlEscape(aws.code)}</li>\n<li>Message: ${xmlEscape(aws.message)}</li>\n${key ? `<li>Key: ${xmlEscape(key)}</li>\n` : ""}<li>RequestId: ${xmlEscape(requestId)}</li>\n<li>HostId: ${xmlEscape(hostId)}</li>\n</ul>\n<hr/>\n</body>\n</html>\n`;
+    res.statusCode = aws.status;
+    res.setHeader("content-type", "text/html; charset=utf-8");
+    res.setHeader("content-length", String(Buffer.byteLength(body)));
+    if (req.method === "HEAD") res.end(); else res.end(body);
   }
 
   async handleControl(req: IncomingMessage, res: ServerResponse, url: URL, requestId: string, principal: PrincipalContext): Promise<void> {
@@ -1481,14 +1640,16 @@ export class S3Service {
       const addressed = this.findBucket(address.bucket);
       const expectedOwner = req.headers["x-amz-expected-bucket-owner"];
       if (addressed && expectedOwner !== undefined && String(expectedOwner) !== addressed.accountId) throw new AwsError("AccessDenied", "The bucket is owned by a different account than x-amz-expected-bucket-owner", 403);
-      if (addressed && address.key && req.method === "OPTIONS") return this.corsPreflight(req, res, addressed.bucket);
-      if (addressed && address.key && (req.method === "GET" || req.method === "HEAD")) this.applyCorsHeaders(req, res, addressed.bucket, req.method);
+      if (addressed && req.method === "OPTIONS") return this.corsPreflight(req, res, addressed.bucket);
+      if (addressed) this.applyCorsHeaders(req, res, addressed.bucket, req.method ?? "GET");
       const bucketControl = ["acl", "abac", "cors", "encryption", "lifecycle", "location", "notification", "notification-diagnostics", "object-lock", "ownershipControls", "policy", "policyStatus", "publicAccessBlock", "requestPayment", "tagging", "versioning", "website"].some(name => queryFlag(url, name));
       if (addressed?.bucket.requestPayment === "Requester" && principal.accountId !== addressed.accountId && (address.key || !bucketControl)) {
         if (String(req.headers["x-amz-request-payer"] ?? "") !== "requester") throw new AwsError("AccessDenied", "Requester Pays buckets require x-amz-request-payer: requester", 403);
         res.setHeader("x-amz-request-charged", "requester");
       }
       if (!address.key) {
+        const unimplemented = UNIMPLEMENTED_BUCKET_SUBRESOURCES.find(name => queryFlag(url, name));
+        if (unimplemented) return await this.unimplementedBucketSubresource(req, res, url, address.bucket, unimplemented);
         if (queryFlag(url, "acl")) {
           if (req.method === "GET") return await this.getBucketAcl(res, address.bucket);
           if (req.method === "PUT") return await this.putBucketAcl(req, res, address.bucket);
@@ -1562,6 +1723,7 @@ export class S3Service {
         if (req.method === "HEAD") return await this.headBucket(res, address.bucket);
         if (req.method === "GET") return await this.listObjects(res, url, address.bucket);
       } else {
+        if (queryFlag(url, "select")) { this.requireBucket(address.bucket); throw new AwsError("NotImplemented", "A header you provided implies functionality that is not implemented. SelectObjectContent is not available in StackSim and is no longer offered to new AWS customers.", 501); }
         if (req.method === "PUT" && queryFlag(url, "encryption")) return await this.updateObjectEncryption(req, res, url, address.bucket, address.key);
         if (queryFlag(url, "tagging")) {
           if (req.method === "GET") return await this.getObjectTagging(res, url, address.bucket, address.key);
@@ -1604,6 +1766,22 @@ export class S3Service {
       if (error instanceof AwsError && error.code === "InvalidRange" && address.bucket && address.key) { const located = this.findBucket(address.bucket); if (located) { const index = await this.bucketIndex(located); const object = currentObject(index, address.key); if (object && !object.deleteMarker) res.setHeader("content-range", `bytes */${object.size}`); } }
       return sendS3Error(res, error, address.resource, requestId, hostId);
     }
+  }
+
+  /**
+   * Real S3 subresources outside the implemented surface answer with their documented
+   * "nothing configured" response for reads and NotImplemented for writes. They never
+   * reach bucket creation, deletion, or listing.
+   */
+  private async unimplementedBucketSubresource(req: IncomingMessage, res: ServerResponse, url: URL, name: string, subresource: typeof UNIMPLEMENTED_BUCKET_SUBRESOURCES[number]): Promise<void> {
+    this.requireBucket(name);
+    if (req.method === "GET") {
+      if (subresource === "logging") { res.statusCode = 200; res.setHeader("content-type", "application/xml"); res.end(restXml("", "BucketLoggingStatus")); return; }
+      if (subresource === "accelerate") { res.statusCode = 200; res.setHeader("content-type", "application/xml"); res.end(restXml("", "AccelerateConfiguration")); return; }
+      if (subresource === "replication") throw new AwsError("ReplicationConfigurationNotFoundError", "The replication configuration was not found", 404);
+      if (["inventory", "metrics", "analytics", "intelligent-tiering"].includes(subresource) && url.searchParams.get("id")) throw new AwsError("NoSuchConfiguration", "The specified configuration does not exist.", 404);
+    }
+    throw new AwsError("NotImplemented", `A header you provided implies functionality that is not implemented. The ${subresource} configuration of general purpose buckets is outside the implemented StackSim S3 surface (planned phase S3-10/S3-11/S3-14).`, 501);
   }
 
   private findBucket(name: string): LocatedBucket | undefined {
@@ -1649,10 +1827,10 @@ export class S3Service {
       const explicitlyNonPrivateAcl = req.headers["x-amz-acl"] !== undefined && String(req.headers["x-amz-acl"]) !== "private"
         || ["x-amz-grant-full-control", "x-amz-grant-read", "x-amz-grant-write", "x-amz-grant-read-acp", "x-amz-grant-write-acp"].some(header => req.headers[header] !== undefined);
       if (ownership === "BucketOwnerEnforced" && explicitlyNonPrivateAcl) throw new AwsError("InvalidBucketAclWithObjectOwnership", "Bucket cannot have ACLs set with ObjectOwnership's BucketOwnerEnforced setting", 400);
-      const accountBlock = this.store.ensureAccount().s3PublicAccessBlock;
-      if (accountBlock?.blockPublicAcls && aclIsPublic(requestedAcl)) throw new AwsError("AccessDenied", "Account Block Public Access rejects public bucket ACLs", 403);
+      // Every new bucket starts with all four Block Public Access settings enabled, so a public ACL cannot be applied at creation time.
+      if (aclIsPublic(requestedAcl)) throw new AwsError("AccessDenied", "Block Public Access rejects public bucket ACLs on a new bucket; create the bucket, disable Block Public Access, then call PutBucketAcl", 403);
       const lockRequested = String(req.headers["x-amz-bucket-object-lock-enabled"] ?? "false").toLowerCase() === "true";
-      const bucket: S3BucketState = { name, arn: bucketArn(name), region: this.region, ownerAccountId: this.store.accountId, ownerId: ownerId(this.store.accountId), createdAt: this.clock.now(), versioning: lockRequested ? "enabled" : "unversioned", encryption: "AES256", encryptionConfiguration: { algorithm: "AES256", bucketKeyEnabled: false }, ...(lockRequested ? { objectLockConfiguration: { enabled: true as const } } : {}), tags: {}, publicAccessBlock: canonicalPublicAccessBlock(), objectOwnership: ownership as S3BucketState["objectOwnership"], acl: requestedAcl, requestPayment: "BucketOwner", abacStatus: "Disabled" }; this.store.regionState(this.region).s3Buckets[name] = bucket; this.store.state.installation.s3BucketNames[name] = { accountId: this.store.accountId, region: this.region }; await Promise.all([this.store.save(), this.storage.saveBucket(this.store.accountId, this.region, name, { schemaVersion: 1, objects: {}, multipartUploads: {}, notificationDeliveries: {}, notificationDiagnostics: [] })]);
+      const bucket: S3BucketState = { name, arn: bucketArn(name), region: this.region, ownerAccountId: this.store.accountId, ownerId: ownerId(this.store.accountId), createdAt: this.clock.now(), versioning: lockRequested ? "enabled" : "unversioned", encryption: "AES256", encryptionConfiguration: { algorithm: "AES256", bucketKeyEnabled: false }, ...(lockRequested ? { objectLockConfiguration: { enabled: true as const } } : {}), tags: {}, publicAccessBlock: defaultPublicAccessBlock(), objectOwnership: ownership as S3BucketState["objectOwnership"], acl: requestedAcl, requestPayment: "BucketOwner", abacStatus: "Disabled" }; this.store.regionState(this.region).s3Buckets[name] = bucket; this.store.state.installation.s3BucketNames[name] = { accountId: this.store.accountId, region: this.region }; await Promise.all([this.store.save(), this.storage.saveBucket(this.store.accountId, this.region, name, { schemaVersion: 1, objects: {}, multipartUploads: {}, notificationDeliveries: {}, notificationDiagnostics: [] })]);
     });
     res.statusCode = 200; res.setHeader("location", `/${name}`); res.end();
   }
@@ -1711,7 +1889,7 @@ export class S3Service {
     const xml = body.toString("utf8");
     if (!/<Tagging(?:\s|>)/i.test(xml) || !/<TagSet(?:\s|>)/i.test(xml)) throw new AwsError("MalformedXML", "The XML you provided was not well-formed or did not validate against our published schema", 400);
     located.bucket.tags = parseTaggingXml(xml, 50);
-    await this.store.save(); res.statusCode = 200; res.end();
+    await this.store.save(); res.statusCode = 204; res.end();
   }
 
   private async deleteBucketTagging(res: ServerResponse, name: string): Promise<void> {
@@ -1822,6 +2000,7 @@ export class S3Service {
       if (prior?.mode === "COMPLIANCE" && (mode !== "COMPLIANCE" || date < prior.retainUntil)) throw new AwsError("AccessDenied", "COMPLIANCE retention cannot be shortened or changed", 403);
       if (prior?.mode === "GOVERNANCE" && date < prior.retainUntil && !bypass) throw new AwsError("AccessDenied", "BypassGovernanceRetention is required to shorten GOVERNANCE retention", 403);
       object.retention = { mode: mode as any, retainUntil: date }; await this.saveBucket(located, index);
+      await this.enqueueObjectEvent(located, index, key, object, "s3:ObjectRetention:Put", { retention: { mode, retainUntilDate: iso(date) } }, this.notificationCaller(req));
       if (object.versionId !== "null") res.setHeader("x-amz-version-id", object.versionId);
     });
     res.statusCode = 200; res.end();
@@ -1844,7 +2023,8 @@ export class S3Service {
   private annotationName(url: URL): string {
     const name = url.searchParams.get("annotationName");
     if (name !== null && Buffer.byteLength(name) > 512) throw new AwsError("AnnotationNameTooLong", "The annotation name exceeds 512 bytes", 400);
-    if (!name || /^(?:aws|s3):/i.test(name) || /[\u0000-\u001f\u007f]/.test(name)) throw new AwsError("InvalidAnnotationName", "The annotation name is invalid", 400);
+    // Letters in any language, digits, underscore, period, and hyphen; the aws and s3 prefixes are reserved.
+    if (!name || !name.trim() || !/^[\p{L}\p{N}_.-]+$/u.test(name) || /^(?:aws|s3)/i.test(name)) throw new AwsError("InvalidAnnotationName", "The annotation name is invalid", 400);
     return name;
   }
 
@@ -1854,12 +2034,14 @@ export class S3Service {
     try { new TextDecoder("utf-8", { fatal: true }).decode(body); } catch { throw new AwsError("UnsupportedMediaType", "Annotation payload must be valid UTF-8", 415); }
     const checksums = new S3Checksums(); await checksums.update(body); const digest = await checksums.digest(); validateProvidedChecksums(req.headers, {}, digest);
     const algorithm = requestedChecksumAlgorithm(req.headers["x-amz-checksum-algorithm"] ?? req.headers["x-amz-sdk-checksum-algorithm"]) ?? "CRC64NVME";
+    if (algorithm === "MD5" || req.headers["x-amz-checksum-md5"] !== undefined) throw new AwsError("InvalidRequest", "MD5 is not a supported annotation checksum algorithm", 400);
     const located = this.requireBucket(bucketName);
     await this.locked(located, async () => {
       const index = await this.bucketIndex(located); const object = this.selectedVersion(index, key, url);
+      if (object.sseCustomerKeyMd5) throw new AwsError("InvalidRequest", "Annotations are not supported for objects encrypted with SSE-C", 400);
       if (this.activeLock(object)) throw new AwsError("AccessDenied", "Annotations cannot be modified while the object version is retained or under legal hold", 403);
       const ifMatch = req.headers["x-amz-object-if-match"]; if (ifMatch && cleanEtag(String(ifMatch)) !== object.etag) throw new AwsError("PreconditionFailed", "The object ETag did not match", 412);
-      object.annotations ??= {}; if (!Object.hasOwn(object.annotations, name) && Object.keys(object.annotations).length >= 100) throw new AwsError("AnnotationLimitExceeded", "The request would exceed the maximum number of annotations allowed per object", 400);
+      object.annotations ??= {}; if (!Object.hasOwn(object.annotations, name) && Object.keys(object.annotations).length >= 1_000) throw new AwsError("AnnotationLimitExceeded", "The request would exceed the maximum number of annotations allowed per object", 400);
       object.annotations[name] = { payloadBase64: body.toString("base64"), size: body.length, etag: digest.etag, lastModified: this.clock.now(), checksums: digest.values, checksumAlgorithm: algorithm };
       await this.saveBucket(located, index); await this.enqueueObjectEvent(located, index, key, object, "s3:ObjectAnnotation:Put", { annotationName: name }, this.notificationCaller(req));
       res.setHeader("etag", quotedEtag(digest.etag)); res.setHeader(checksumHeaderName(algorithm), digest.values[algorithm]!); res.setHeader("x-amz-server-side-encryption", "AES256"); if (object.versionId !== "null") res.setHeader("x-amz-object-version-id", object.versionId);
@@ -1926,21 +2108,27 @@ export class S3Service {
     const rules = blocks.map(body => {
       const id = xmlValue(body, "ID"); if (id !== undefined && (!id || Buffer.byteLength(id) > 255 || ids.has(id))) throw new AwsError("InvalidArgument", "Lifecycle rule IDs must be unique and at most 255 bytes", 400); if (id) ids.add(id);
       const status = xmlValue(body, "Status"); if (!["Enabled", "Disabled"].includes(status ?? "")) throw new AwsError("MalformedXML", "Lifecycle rule Status must be Enabled or Disabled", 400);
-      const filterMatch = body.match(/<Filter(?:\s[^>]*)?>([\s\S]*?)<\/Filter>/i); const filterBody = filterMatch?.[1]; const hasExplicitFilter = Boolean(filterMatch);
-      const prefix = xmlValue(filterBody ?? body, "Prefix") ?? "";
+      const filterMatch = body.match(/<Filter(?:\s[^>]*)?>([\s\S]*?)<\/Filter>/i); const selfClosingFilter = !filterMatch && /<Filter(?:\s[^>]*)?\/>/i.test(body); const filterBody = filterMatch?.[1] ?? (selfClosingFilter ? "" : undefined); const hasExplicitFilter = Boolean(filterMatch) || selfClosingFilter;
+      const topLevelPrefix = hasExplicitFilter ? undefined : xmlValue(body, "Prefix");
+      if (!hasExplicitFilter && topLevelPrefix === undefined) throw new AwsError("MalformedXML", "Filter element is required when a Lifecycle rule does not contain a Prefix element", 400);
+      const prefix = (hasExplicitFilter ? xmlValue(filterBody!, "Prefix") : topLevelPrefix) ?? "";
       const tags: Record<string, string> = {};
       for (const match of (filterBody ?? "").matchAll(/<Tag(?:\s[^>]*)?>([\s\S]*?)<\/Tag>/gi)) { const key = xmlValue(match[1], "Key"); const value = xmlValue(match[1], "Value"); if (!key || value === undefined || Object.hasOwn(tags, key)) throw new AwsError("InvalidArgument", "Lifecycle tag filters must have unique keys", 400); tags[key] = value; }
       const greater = positive(xmlValue(filterBody ?? "", "ObjectSizeGreaterThan"), "ObjectSizeGreaterThan", true); const less = positive(xmlValue(filterBody ?? "", "ObjectSizeLessThan"), "ObjectSizeLessThan", true);
       if (greater !== undefined && less !== undefined && greater >= less) throw new AwsError("InvalidArgument", "ObjectSizeGreaterThan must be less than ObjectSizeLessThan", 400);
       const expirationBody = body.match(/<Expiration(?:\s[^>]*)?>([\s\S]*?)<\/Expiration>/i)?.[1]; const expirationDays = positive(xmlValue(expirationBody ?? "", "Days"), "Expiration Days"); const dateText = xmlValue(expirationBody ?? "", "Date"); const expirationDate = dateText === undefined ? undefined : Date.parse(dateText); if (dateText !== undefined && !Number.isFinite(expirationDate)) throw new AwsError("InvalidArgument", "Lifecycle expiration Date is invalid", 400);
       const markerText = xmlValue(expirationBody ?? "", "ExpiredObjectDeleteMarker"); const expiredObjectDeleteMarker = markerText === undefined ? undefined : markerText.toLowerCase() === "true"; if (markerText !== undefined && !["true", "false"].includes(markerText.toLowerCase())) throw new AwsError("MalformedXML", "ExpiredObjectDeleteMarker must be a boolean", 400);
+      if (expirationDays !== undefined && expirationDate !== undefined) throw new AwsError("MalformedXML", "Days and Date cannot both be specified in a Lifecycle Expiration Policy", 400);
+      if (expiredObjectDeleteMarker !== undefined && (expirationDays !== undefined || expirationDate !== undefined)) throw new AwsError("MalformedXML", "ExpiredObjectDeleteMarker cannot be specified with Days or Date in a Lifecycle Expiration Policy", 400);
       const transitions = [...body.matchAll(/<Transition(?:\s[^>]*)?>([\s\S]*?)<\/Transition>/gi)].map(match => { const days = positive(xmlValue(match[1], "Days"), "Transition Days", true); const date = xmlValue(match[1], "Date"); const parsed = date === undefined ? undefined : Date.parse(date); if ((days === undefined) === (parsed === undefined) || parsed !== undefined && !Number.isFinite(parsed)) throw new AwsError("InvalidArgument", "A transition requires exactly one valid Days or Date value", 400); return { ...(days !== undefined ? { days } : { date: parsed }), storageClass: storage(xmlValue(match[1], "StorageClass")) }; });
       validateTransitionSpacing(transitions, "Transition");
       const noncurrentExpiration = body.match(/<NoncurrentVersionExpiration(?:\s[^>]*)?>([\s\S]*?)<\/NoncurrentVersionExpiration>/i)?.[1];
       const noncurrentExpirationNewer = newerNoncurrent(xmlValue(noncurrentExpiration ?? "", "NewerNoncurrentVersions"));
       const noncurrentTransitions = [...body.matchAll(/<NoncurrentVersionTransition(?:\s[^>]*)?>([\s\S]*?)<\/NoncurrentVersionTransition>/gi)].map(match => {
         const newer = newerNoncurrent(xmlValue(match[1], "NewerNoncurrentVersions"));
-        return { days: positive(xmlValue(match[1], "NoncurrentDays"), "NoncurrentDays")!, storageClass: storage(xmlValue(match[1], "StorageClass")), ...(newer !== undefined ? { newerNoncurrentVersions: newer } : {}) };
+        const days = positive(xmlValue(match[1], "NoncurrentDays"), "NoncurrentDays");
+        if (days === undefined) throw new AwsError("MalformedXML", "NoncurrentVersionTransition requires NoncurrentDays", 400);
+        return { days, storageClass: storage(xmlValue(match[1], "StorageClass")), ...(newer !== undefined ? { newerNoncurrentVersions: newer } : {}) };
       });
       validateTransitionSpacing(noncurrentTransitions.map(item => ({ days: item.days, storageClass: item.storageClass })), "NoncurrentVersionTransition");
       if ((noncurrentExpirationNewer !== undefined || noncurrentTransitions.some(item => item.newerNoncurrentVersions !== undefined)) && !hasExplicitFilter) {
@@ -2056,7 +2244,7 @@ export class S3Service {
 
   private parseNotification(xml: string, bucket: S3BucketState): NonNullable<S3BucketState["notificationConfiguration"]> {
     if (!/<NotificationConfiguration(?:\s|>)/i.test(xml)) throw new AwsError("MalformedXML", "NotificationConfiguration is required", 400);
-    const supported = /^(?:s3:)?(?:(?:ObjectCreated|ObjectRemoved):(?:\*|Put|Copy|CompleteMultipartUpload|Delete|DeleteMarkerCreated)|ObjectRestore:(?:\*|Post|Completed|Delete)|ObjectTagging:(?:\*|Put|Delete)|ObjectAcl:Put|ObjectAnnotation:(?:\*|Put|Delete)|LifecycleExpiration:(?:\*|Delete|DeleteMarkerCreated|DeleteMarkerDeleted)|LifecycleTransition)$/;
+    const supported = /^(?:s3:)?(?:(?:ObjectCreated|ObjectRemoved):(?:\*|Put|Copy|CompleteMultipartUpload|Delete|DeleteMarkerCreated)|ObjectRestore:(?:\*|Post|Completed|Delete)|ObjectTagging:(?:\*|Put|Delete)|ObjectAcl:Put|ObjectRetention:Put|ObjectAnnotation:(?:\*|Put|Delete)|LifecycleExpiration:(?:\*|Delete|DeleteMarkerCreated|DeleteMarkerDeleted)|LifecycleTransition)$/;
     const parse = (tag: "LambdaFunctionConfiguration" | "QueueConfiguration", destinationTag: "LambdaFunctionArn" | "Queue", acceptedTags: string[] = [tag], acceptedDestinationTags: string[] = [destinationTag]) => [...xml.matchAll(new RegExp(`<(${acceptedTags.join("|")})(?:\\s[^>]*)?>([\\s\\S]*?)<\\/\\1>`, "gi"))].map((match, position) => {
       const body = match[2]; const arn = acceptedDestinationTags.map(candidate => xmlValue(body, candidate)).find(Boolean); const id = xmlValue(body, "Id") ?? `${tag}-${position + 1}`; const events = [...body.matchAll(/<Event(?:\s[^>]*)?>([\s\S]*?)<\/Event>/gi)].map(candidate => xmlDecode(candidate[1].trim()));
       if (!arn || !id || Buffer.byteLength(id) > 255 || !events.length || events.some(event => !supported.test(event))) throw new AwsError("InvalidArgument", "Notification configuration contains an invalid ID, destination, or event name", 400);
@@ -2154,6 +2342,7 @@ export class S3Service {
       s3: { s3SchemaVersion: "1.0", configurationId: "", bucket: { name: located.bucket.name, ownerIdentity: { principalId: located.bucket.ownerId }, arn: located.bucket.arn }, object: { key: encodedKey, size: object?.size ?? 0, eTag: object?.etag || undefined, versionId: object?.versionId === "null" ? undefined : object?.versionId, sequencer, ...(object?.deleteMarker ? { deleteMarker: true } : {}), ...extra } },
     };
     delete record.s3.object.restore;
+    if (eventName === "s3:ObjectRetention:Put" && extra.retention) { record.objectRetentionEventData = extra.retention; delete record.s3.object.retention; }
     if (eventName.startsWith("s3:ObjectRestore:") && restore) record.glacierEventData = { restoreEventData: { lifecycleRestorationExpiryTime: iso(restore.expiryAt), lifecycleRestoreStorageClass: "STANDARD" } };
     const candidates = [
       ...config.lambda.map(value => ({ ...value, type: "lambda" as const })),
@@ -2339,8 +2528,7 @@ export class S3Service {
   private async getBucketWebsite(res: ServerResponse, name: string): Promise<void> {
     const located = this.requireBucket(name); const website = validateWebsiteConfiguration(located.bucket.website);
     if (!website) throw new AwsError("NoSuchWebsiteConfiguration", "The specified bucket does not have a website configuration", 404);
-    const body = `<IndexDocument><Suffix>${xmlEscape(website.indexDocument)}</Suffix></IndexDocument>${website.errorDocument ? `<ErrorDocument><Key>${xmlEscape(website.errorDocument)}</Key></ErrorDocument>` : ""}`;
-    res.statusCode = 200; res.setHeader("content-type", "application/xml"); res.end(restXml(body, "WebsiteConfiguration"));
+    res.statusCode = 200; res.setHeader("content-type", "application/xml"); res.end(restXml(websiteConfigurationXml(website), "WebsiteConfiguration"));
   }
 
   private async putBucketWebsite(req: IncomingMessage, res: ServerResponse, name: string): Promise<void> {
@@ -2348,10 +2536,9 @@ export class S3Service {
     if (located.bucket.managedBy) throw new AwsError("AccessDenied", "Simulator-managed bootstrap buckets cannot be configured as public application buckets", 403);
     const body = await readBody(req);
     if (body.length > 64 * 1024) throw new AwsError("MalformedXML", "The XML document exceeds the maximum allowed size", 400);
-    const xml = body.toString("utf8"); const indexBody = xml.match(/<IndexDocument(?:\s[^>]*)?>([\s\S]*?)<\/IndexDocument>/i)?.[1]; const errorBody = xml.match(/<ErrorDocument(?:\s[^>]*)?>([\s\S]*?)<\/ErrorDocument>/i)?.[1];
-    if (!/<WebsiteConfiguration(?:\s|>)/i.test(xml) || !indexBody) throw new AwsError("MalformedXML", "Only IndexDocument and optional ErrorDocument website configuration are supported", 400);
-    const website = validateWebsiteConfiguration({ indexDocument: xmlValue(indexBody, "Suffix") ?? "", ...(errorBody ? { errorDocument: xmlValue(errorBody, "Key") ?? "" } : {}) });
-    located.bucket.website = website; await this.store.save(); res.statusCode = 200; res.end();
+    const xml = body.toString("utf8");
+    if (!/<WebsiteConfiguration(?:\s|>)/i.test(xml)) throw new AwsError("MalformedXML", "The XML you provided was not well-formed or did not validate against our published schema", 400);
+    located.bucket.website = validateWebsiteConfiguration(parseWebsiteConfigurationXml(xml)); await this.store.save(); res.statusCode = 200; res.end();
   }
 
   private async deleteBucketWebsite(res: ServerResponse, name: string): Promise<void> {
@@ -2363,15 +2550,21 @@ export class S3Service {
   private async getBucketCors(res: ServerResponse, name: string): Promise<void> {
     const located = this.requireBucket(name); const rules = validateCorsConfiguration(located.bucket.corsConfiguration);
     if (!rules) throw new AwsError("NoSuchCORSConfiguration", "The CORS configuration does not exist", 404);
-    const body = rules.map(rule => `<CORSRule>${rule.allowedOrigins.map(value => `<AllowedOrigin>${xmlEscape(value)}</AllowedOrigin>`).join("")}${rule.allowedMethods.map(value => `<AllowedMethod>${value}</AllowedMethod>`).join("")}${rule.allowedHeaders.map(value => `<AllowedHeader>${xmlEscape(value)}</AllowedHeader>`).join("")}</CORSRule>`).join("");
+    const list = (tag: string, values: string[] | undefined) => (values ?? []).map(value => `<${tag}>${xmlEscape(value)}</${tag}>`).join("");
+    const body = rules.map(rule => `<CORSRule>${rule.id ? `<ID>${xmlEscape(rule.id)}</ID>` : ""}${list("AllowedOrigin", rule.allowedOrigins)}${list("AllowedMethod", rule.allowedMethods)}${list("AllowedHeader", rule.allowedHeaders)}${list("ExposeHeader", rule.exposeHeaders)}${rule.maxAgeSeconds === undefined ? "" : `<MaxAgeSeconds>${rule.maxAgeSeconds}</MaxAgeSeconds>`}</CORSRule>`).join("");
     res.statusCode = 200; res.setHeader("content-type", "application/xml"); res.end(restXml(body, "CORSConfiguration"));
   }
 
   private async putBucketCors(req: IncomingMessage, res: ServerResponse, name: string): Promise<void> {
-    const located = this.requireBucket(name); const xml = (await readBody(req)).toString("utf8");
-    const blocks = [...xml.matchAll(/<CORSRule(?:\s[^>]*)?>([\s\S]*?)<\/CORSRule>/gi)].map(match => match[1]);
-    const values = (body: string, key: string) => [...body.matchAll(new RegExp(`<${key}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${key}>`, "gi"))].map(match => xmlDecode(match[1]));
-    const rules = blocks.map(body => ({ allowedHeaders: values(body, "AllowedHeader"), allowedMethods: values(body, "AllowedMethod") as Array<"GET" | "HEAD">, allowedOrigins: values(body, "AllowedOrigin") }));
+    const located = this.requireBucket(name); const body = await readBody(req);
+    if (body.length > 64 * 1024) throw new AwsError("MalformedXML", "The XML document exceeds the maximum allowed size", 400);
+    const xml = body.toString("utf8");
+    if (!/<CORSConfiguration(?:\s|>)/i.test(xml)) throw new AwsError("MalformedXML", "The XML you provided was not well-formed or did not validate against our published schema", 400);
+    const values = (block: string, key: string) => xmlBlocks(block, key).map(value => xmlDecode(value.trim()));
+    const rules = xmlBlocks(xml, "CORSRule").map(block => {
+      const id = xmlValue(block, "ID"); const maxAge = xmlValue(block, "MaxAgeSeconds");
+      return { ...(id !== undefined ? { id } : {}), allowedHeaders: values(block, "AllowedHeader"), allowedMethods: values(block, "AllowedMethod") as S3CorsMethod[], allowedOrigins: values(block, "AllowedOrigin"), exposeHeaders: values(block, "ExposeHeader"), ...(maxAge !== undefined ? { maxAgeSeconds: /^\d+$/.test(maxAge) ? Number(maxAge) : Number.NaN } : {}) };
+    });
     located.bucket.corsConfiguration = validateCorsConfiguration(rules); await this.store.save(); res.statusCode = 200; res.end();
   }
 
@@ -2379,27 +2572,45 @@ export class S3Service {
     const located = this.requireBucket(name); delete located.bucket.corsConfiguration; await this.store.save(); res.statusCode = 204; res.end();
   }
 
-  private matchingCorsRule(bucket: S3BucketState, origin: string, method: string): S3BucketCorsRule | undefined {
-    return bucket.corsConfiguration?.find(rule => rule.allowedOrigins.includes(origin) && rule.allowedMethods.includes(method as "GET" | "HEAD"));
+  /** First rule, in stored order, whose origin, method, and (for preflight) requested headers all match. */
+  private matchingCorsRule(bucket: S3BucketState, origin: string, method: string, requestedHeaders: string[] = []): S3BucketCorsRule | undefined {
+    if (!origin) return undefined;
+    const wildcard = (pattern: string, value: string): boolean => {
+      const parts = pattern.split("*"); if (parts.length > 2) return false; if (parts.length === 1) return pattern === value;
+      return value.length >= pattern.length - 1 && value.startsWith(parts[0]) && value.endsWith(parts[1]);
+    };
+    return bucket.corsConfiguration?.find(rule => rule.allowedOrigins.some(candidate => wildcard(candidate, origin))
+      && rule.allowedMethods.includes(method as S3CorsMethod)
+      && requestedHeaders.every(header => rule.allowedHeaders.some(candidate => wildcard(candidate.toLowerCase(), header))));
+  }
+
+  private corsResponseHeaders(rule: S3BucketCorsRule, origin: string): Record<string, string> {
+    const anyOrigin = rule.allowedOrigins.includes("*");
+    const headers: Record<string, string> = { "access-control-allow-origin": anyOrigin ? "*" : origin, vary: "Origin, Access-Control-Request-Headers, Access-Control-Request-Method" };
+    if (!anyOrigin) headers["access-control-allow-credentials"] = "true";
+    if (rule.exposeHeaders?.length) headers["access-control-expose-headers"] = rule.exposeHeaders.join(", ");
+    return headers;
   }
 
   private applyCorsHeaders(req: IncomingMessage, res: ServerResponse, bucket: S3BucketState, method: string): void {
-    const origin = typeof req.headers.origin === "string" ? req.headers.origin : undefined;
-    if (!origin || !this.matchingCorsRule(bucket, origin, method)) return;
-    res.setHeader("access-control-allow-origin", origin);
-    res.setHeader("vary", "Origin");
+    const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+    const rule = this.matchingCorsRule(bucket, origin, method.toUpperCase());
+    if (!rule) return;
+    for (const [name, value] of Object.entries(this.corsResponseHeaders(rule, origin))) res.setHeader(name, value);
   }
 
   private corsPreflight(req: IncomingMessage, res: ServerResponse, bucket: S3BucketState): void {
     const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
     const method = typeof req.headers["access-control-request-method"] === "string" ? req.headers["access-control-request-method"].toUpperCase() : "";
-    const rule = this.matchingCorsRule(bucket, origin, method);
-    if (!rule) throw new AwsError("AccessForbidden", "CORSResponse: This CORS request is not allowed.", 403);
+    const requestedRaw = String(req.headers["access-control-request-headers"] ?? "").split(",").map(value => value.trim()).filter(Boolean);
+    const rule = this.matchingCorsRule(bucket, origin, method, requestedRaw.map(value => value.toLowerCase()));
+    if (!rule) throw new AwsError("AccessForbidden", "CORSResponse: This CORS request is not allowed. This is usually because the evalution of Origin, request method / Access-Control-Request-Method or Access-Control-Request-Headers are not whitelisted by the resource's CORS spec.", 403);
     res.statusCode = 200;
-    res.setHeader("access-control-allow-origin", origin);
+    for (const [name, value] of Object.entries(this.corsResponseHeaders(rule, origin))) res.setHeader(name, value);
     res.setHeader("access-control-allow-methods", rule.allowedMethods.join(", "));
-    res.setHeader("access-control-allow-headers", rule.allowedHeaders.join(", "));
-    res.setHeader("vary", "Origin, Access-Control-Request-Headers, Access-Control-Request-Method");
+    if (requestedRaw.length) res.setHeader("access-control-allow-headers", requestedRaw.join(", "));
+    if (rule.maxAgeSeconds !== undefined) res.setHeader("access-control-max-age", String(rule.maxAgeSeconds));
+    res.setHeader("content-length", "0");
     res.end();
   }
 
@@ -2459,7 +2670,9 @@ export class S3Service {
   }
 
   private async getBucketPolicyStatus(res: ServerResponse, name: string): Promise<void> {
-    const located = this.requireBucket(name); res.statusCode = 200; res.setHeader("content-type", "application/xml");
+    const located = this.requireBucket(name);
+    if (!located.bucket.policyDocument) throw new AwsError("NoSuchBucketPolicy", "The bucket policy does not exist", 404);
+    res.statusCode = 200; res.setHeader("content-type", "application/xml");
     res.end(restXml(`<IsPublic>${policyIsPublic(located.bucket.policyDocument)}</IsPublic>`, "PolicyStatus"));
   }
 
@@ -2469,10 +2682,7 @@ export class S3Service {
     const filtered = this.allOwnedBuckets().filter(item => item.bucket.name.startsWith(prefix) && (!region || item.region === region)); let offset = 0; const suppliedToken = url.searchParams.get("continuation-token");
     if (suppliedToken) { try { const cursor = this.pagination.decode<{ prefix: string; region: string | null; offset: number }>("s3:ListBuckets", suppliedToken); if (cursor.prefix !== prefix || cursor.region !== region) throw new Error(); offset = cursor.offset; } catch { throw new AwsError("InvalidArgument", "The continuation token provided is incorrect", 400); } }
     const page = filtered.slice(offset, offset + maximum); const nextOffset = offset + page.length; const next = nextOffset < filtered.length ? this.pagination.encode("s3:ListBuckets", { prefix, region, offset: nextOffset }) : undefined;
-    const buckets = page.map(item => {
-      const tags = Object.entries(item.bucket.tags ?? {}).map(([key, value]) => `<Tag><Key>${xmlEscape(key)}</Key><Value>${xmlEscape(value)}</Value></Tag>`).join("");
-      return `<Bucket><Name>${xmlEscape(item.bucket.name)}</Name><CreationDate>${iso(item.bucket.createdAt)}</CreationDate><BucketRegion>${xmlEscape(item.region)}</BucketRegion><BucketArn>${xmlEscape(item.bucket.arn)}</BucketArn><ObjectLockEnabled>${item.bucket.objectLockConfiguration ? "Enabled" : "Disabled"}</ObjectLockEnabled><LifecycleConfigured>${Boolean(item.bucket.lifecycleConfiguration)}</LifecycleConfigured><BucketTags>${tags}</BucketTags></Bucket>`;
-    }).join("");
+    const buckets = page.map(item => `<Bucket><Name>${xmlEscape(item.bucket.name)}</Name><CreationDate>${iso(item.bucket.createdAt)}</CreationDate><BucketRegion>${xmlEscape(item.region)}</BucketRegion><BucketArn>${xmlEscape(item.bucket.arn)}</BucketArn></Bucket>`).join("");
     const body = `<Owner><ID>${ownerId(this.store.accountId)}</ID><DisplayName>${LOCAL_OWNER_DISPLAY_NAME}</DisplayName></Owner><Buckets>${buckets}</Buckets><Prefix>${xmlEscape(prefix)}</Prefix>${next ? `<ContinuationToken>${xmlEscape(next)}</ContinuationToken>` : ""}`;
     res.statusCode = 200; res.setHeader("content-type", "application/xml"); res.end(restXml(body, "ListAllMyBucketsResult"));
   }
@@ -2582,7 +2792,11 @@ export class S3Service {
     const source = this.parseCopySource(req); const sourceIndex = await this.bucketIndex(source.located); const selected = selectObject(sourceIndex, source.key, source.versionId); this.enforceCopyConditions(req, selected.version); requireCustomerKey(req, selected.version, true); requireManagedKeyAccess(req, selected.version, source.located.accountId); this.ensureArchiveReadable(selected.version);
     if (!source.versionId && source.located.bucket.name === destination.bucket.name && source.key === destinationKey && String(req.headers["x-amz-metadata-directive"] ?? "COPY").toUpperCase() !== "REPLACE" && String(req.headers["x-amz-tagging-directive"] ?? "COPY").toUpperCase() !== "REPLACE" && !req.headers["x-amz-storage-class"] && !req.headers["x-amz-checksum-algorithm"]) throw new AwsError("InvalidRequest", "This copy request is illegal because it is trying to copy an object to itself without changing metadata, tags, storage class, or encryption attributes.", 400);
     const staged = await this.storage.stageFromBlobs([selected.version.blobId!], this.maximumObjectBytes);
-    try { await this.ensureCapacity(destination, destinationIndex, destinationKey, staged.size); const blobId = await this.storage.publish(staged); const object = this.objectState(req, destination.bucket, staged, blobId, selected.version); publishVersion(destination.bucket, destinationIndex, destinationKey, object); await this.saveBucket(destination, destinationIndex); await this.enqueueObjectEvent(destination, destinationIndex, destinationKey, object, "s3:ObjectCreated:Copy", {}, this.notificationCaller(req)); res.statusCode = 200; res.setHeader("content-type", "application/xml"); setObjectHeaders(res, object); if (selected.version.versionId !== "null") res.setHeader("x-amz-copy-source-version-id", selected.version.versionId); if (object.versionId !== "null") res.setHeader("x-amz-version-id", object.versionId); const algorithm = activeChecksum(object)!; res.end(restXml(`<LastModified>${iso(object.lastModified)}</LastModified><ETag>${xmlEscape(quotedEtag(object.etag))}</ETag><Checksum${algorithm}>${xmlEscape(object.checksums[algorithm]!)}</Checksum${algorithm}><ChecksumType>FULL_OBJECT</ChecksumType>`, "CopyObjectResult")); }
+    try { await this.ensureCapacity(destination, destinationIndex, destinationKey, staged.size); const blobId = await this.storage.publish(staged); const object = this.objectState(req, destination.bucket, staged, blobId, selected.version);
+      const annotationDirective = String(req.headers["x-amz-annotation-directive"] ?? req.headers["x-amz-object-annotation-directive"] ?? _url.searchParams.get("x-amz-annotation-directive") ?? "COPY").toUpperCase();
+      if (!["COPY", "EXCLUDE"].includes(annotationDirective)) throw new AwsError("InvalidArgument", "Unknown annotation directive.", 400);
+      if (annotationDirective === "COPY" && selected.version.annotations && Object.keys(selected.version.annotations).length) object.annotations = structuredClone(selected.version.annotations);
+      publishVersion(destination.bucket, destinationIndex, destinationKey, object); await this.saveBucket(destination, destinationIndex); await this.enqueueObjectEvent(destination, destinationIndex, destinationKey, object, "s3:ObjectCreated:Copy", object.annotations && Object.keys(object.annotations).length ? { hasObjectAnnotation: true } : {}, this.notificationCaller(req)); res.statusCode = 200; res.setHeader("content-type", "application/xml"); setObjectHeaders(res, object); if (selected.version.versionId !== "null") res.setHeader("x-amz-copy-source-version-id", selected.version.versionId); if (object.versionId !== "null") res.setHeader("x-amz-version-id", object.versionId); const algorithm = activeChecksum(object)!; res.end(restXml(`<LastModified>${iso(object.lastModified)}</LastModified><ETag>${xmlEscape(quotedEtag(object.etag))}</ETag><Checksum${algorithm}>${xmlEscape(object.checksums[algorithm]!)}</Checksum${algorithm}><ChecksumType>FULL_OBJECT</ChecksumType>`, "CopyObjectResult")); }
     catch (error) { await this.storage.discardStaged(staged); throw error; }
   }
 
@@ -2608,7 +2822,7 @@ export class S3Service {
 
   private async deleteObject(req: IncomingMessage, res: ServerResponse, url: URL, bucketName: string, key: string): Promise<void> {
     const located = this.requireBucket(bucketName); await this.locked(located, async () => { const index = await this.bucketIndex(located); const versionId = url.searchParams.get("versionId"); const versions = index.objects[key] ?? [];
-      const conditionalTarget = versionId === null ? versions[0] : versions.find(version => version.versionId === versionId); if (req.headers["if-match"] !== undefined) enforceWriteConditions(req, conditionalTarget);
+      const conditionalTarget = versionId === null ? versions[0] : versions.find(version => version.versionId === versionId); if (req.headers["if-match"] !== undefined) { if (conditionalTarget?.deleteMarker) throw new AwsError("PreconditionFailed", "At least one of the pre-conditions you specified did not hold", 412); enforceWriteConditions(req, conditionalTarget); }
       let eventObject: S3ObjectVersionState | undefined;
       if (versionId !== null) { const position = versions.findIndex(version => version.versionId === versionId); if (position < 0) throw new AwsError("NoSuchVersion", "The specified version does not exist.", 404); const target = versions[position]; this.enforceDeletionLock(req, target); const [removed] = versions.splice(position, 1); eventObject = removed; if (!versions.length) delete index.objects[key]; if (removed.deleteMarker) res.setHeader("x-amz-delete-marker", "true"); res.setHeader("x-amz-version-id", removed.versionId); }
       else if (located.bucket.versioning === "enabled") { const now = this.clock.now(); if (versions[0]) versions[0].noncurrentSince ??= now; const marker: S3ObjectVersionState = { versionId: randomUUID(), deleteMarker: true, size: 0, etag: "", lastModified: now, metadata: {}, checksums: {}, storageClass: "STANDARD", encryption: "AES256", ownerAccountId: located.accountId, ownerId: ownerId(located.accountId), acl: privateAcl(located.accountId) }; eventObject = marker; index.objects[key] = [marker, ...versions]; res.setHeader("x-amz-delete-marker", "true"); res.setHeader("x-amz-version-id", marker.versionId); }
@@ -2665,7 +2879,11 @@ export class S3Service {
   }
 
   private async createMultipartUpload(req: IncomingMessage, res: ServerResponse, bucketName: string, key: string): Promise<void> {
-    const located = this.requireBucket(bucketName); await this.locked(located, async () => { const index = await this.bucketIndex(located); const details = requestDetails(req); const access = this.writeAccess(req, located.bucket); const encryption = objectEncryption(req, located.bucket, this.awsManagedKeyArn(located.bucket)); const lock = this.writeLock(req, located.bucket); const uploadId = randomUUID(); const requestedAlgorithm = requestedChecksumAlgorithm(req.headers["x-amz-checksum-algorithm"] ?? req.headers["x-amz-sdk-checksum-algorithm"]); const algorithm = requestedAlgorithm ?? "CRC32"; const checksumType = String(req.headers["x-amz-checksum-type"] ?? (!requestedAlgorithm || algorithm === "CRC64NVME" ? "FULL_OBJECT" : "COMPOSITE")).toUpperCase(); if (!["COMPOSITE", "FULL_OBJECT"].includes(checksumType)) throw new AwsError("InvalidRequest", "Invalid checksum type", 400); if (checksumType === "FULL_OBJECT" && !["CRC32", "CRC32C", "CRC64NVME"].includes(algorithm)) throw new AwsError("InvalidRequest", `${algorithm} does not support full-object multipart checksums`, 400); if (checksumType === "COMPOSITE" && algorithm === "CRC64NVME") throw new AwsError("InvalidRequest", "CRC64NVME does not support composite multipart checksums", 400); index.multipartUploads[uploadId] = { uploadId, key, initiatedAt: this.clock.now(), ...details, ...access, ...encryption, ...lock, checksumAlgorithm: algorithm, checksumType: checksumType as "COMPOSITE" | "FULL_OBJECT", parts: {} }; await this.saveBucket(located, index); res.statusCode = 200; res.setHeader("content-type", "application/xml"); res.setHeader("x-amz-server-side-encryption", encryption.encryption); if (encryption.kmsKeyId) res.setHeader("x-amz-server-side-encryption-aws-kms-key-id", encryption.kmsKeyId); res.end(restXml(`<Bucket>${xmlEscape(bucketName)}</Bucket><Key>${xmlEscape(key)}</Key><UploadId>${xmlEscape(uploadId)}</UploadId><ChecksumAlgorithm>${algorithm}</ChecksumAlgorithm><ChecksumType>${checksumType}</ChecksumType>`, "InitiateMultipartUploadResult")); });
+    const located = this.requireBucket(bucketName); await this.locked(located, async () => { const index = await this.bucketIndex(located); const details = requestDetails(req); const access = this.writeAccess(req, located.bucket); const encryption = objectEncryption(req, located.bucket, this.awsManagedKeyArn(located.bucket)); const lock = this.writeLock(req, located.bucket); const uploadId = randomUUID(); const requestedAlgorithm = requestedChecksumAlgorithm(req.headers["x-amz-checksum-algorithm"] ?? req.headers["x-amz-sdk-checksum-algorithm"]); const requestedType = req.headers["x-amz-checksum-type"]?.toString().toUpperCase(); if (requestedType !== undefined && !["COMPOSITE", "FULL_OBJECT"].includes(requestedType)) throw new AwsError("InvalidRequest", "Invalid checksum type", 400); if (requestedType !== undefined && !requestedAlgorithm) throw new AwsError("InvalidRequest", "x-amz-checksum-type requires x-amz-checksum-algorithm", 400);
+      // Without a declared algorithm the upload adopts the algorithm of its first checksummed part, or CRC64NVME full-object at completion when no part carries one.
+      const algorithm = requestedAlgorithm; const checksumType = requestedAlgorithm ? (requestedType ?? (algorithm === "CRC64NVME" ? "FULL_OBJECT" : "COMPOSITE")) as "COMPOSITE" | "FULL_OBJECT" : undefined;
+      if (algorithm && checksumType === "FULL_OBJECT" && !["CRC32", "CRC32C", "CRC64NVME"].includes(algorithm)) throw new AwsError("InvalidRequest", `${algorithm} does not support full-object multipart checksums`, 400); if (algorithm && checksumType === "COMPOSITE" && algorithm === "CRC64NVME") throw new AwsError("InvalidRequest", "CRC64NVME does not support composite multipart checksums", 400);
+      index.multipartUploads[uploadId] = { uploadId, key, initiatedAt: this.clock.now(), ...details, ...access, ...encryption, ...lock, ...(algorithm ? { checksumAlgorithm: algorithm, checksumType } : {}), parts: {} }; await this.saveBucket(located, index); res.statusCode = 200; res.setHeader("content-type", "application/xml"); res.setHeader("x-amz-server-side-encryption", encryption.encryption); if (encryption.kmsKeyId) res.setHeader("x-amz-server-side-encryption-aws-kms-key-id", encryption.kmsKeyId); if (algorithm) { res.setHeader("x-amz-checksum-algorithm", algorithm); res.setHeader("x-amz-checksum-type", checksumType!); } res.end(restXml(`<Bucket>${xmlEscape(bucketName)}</Bucket><Key>${xmlEscape(key)}</Key><UploadId>${xmlEscape(uploadId)}</UploadId>`, "InitiateMultipartUploadResult")); });
   }
 
   private async *blobSlice(blobId: string, start: number, end: number): AsyncGenerator<Buffer> {
@@ -2678,7 +2896,7 @@ export class S3Service {
       this.requireUploadCustomerKey(req, upload);
       if (req.headers["x-amz-copy-source"]) { const source = this.parseCopySource(req); const sourceIndex = await this.bucketIndex(source.located); copySource = selectObject(sourceIndex, source.key, source.versionId); this.enforceCopyConditions(req, copySource.version); requireCustomerKey(req, copySource.version, true); this.ensureArchiveReadable(copySource.version); const range = rangeFor(req.headers["x-amz-copy-source-range"], copySource.version.size) ?? { start: 0, end: Math.max(0, copySource.version.size - 1) }; copySourceMetadata = { bucket: source.located.bucket.name, key: source.key, versionId: copySource.version.versionId, range: req.headers["x-amz-copy-source-range"]?.toString() }; staged = await this.storage.stageIterable(this.blobSlice(copySource.version.blobId!, range.start, range.end), Math.min(this.maximumObjectBytes, 5 * 1024 * 1024 * 1024)); }
       else staged = await this.storage.stageRequest(req, Math.min(this.maximumObjectBytes, 5 * 1024 * 1024 * 1024));
-      try { const declared = requestedChecksumAlgorithm(req.headers["x-amz-checksum-algorithm"] ?? req.headers["x-amz-sdk-checksum-algorithm"]); const provided = providedChecksumAlgorithms(req.headers, staged.trailers); if (declared && declared !== upload.checksumAlgorithm || provided.some(algorithm => algorithm !== upload.checksumAlgorithm)) throw new AwsError("InvalidRequest", "The checksum algorithm must match the algorithm specified when the multipart upload was initiated", 400); if (!copySource && upload.checksumType === "COMPOSITE" && !provided.includes(upload.checksumAlgorithm!)) throw new AwsError("InvalidRequest", `A ${upload.checksumAlgorithm} part checksum is required for this multipart upload`, 400); const blobId = await this.storage.publish(staged); const part: S3ObjectPartState = { partNumber, size: staged.size, etag: staged.digest.etag, blobId, lastModified: this.clock.now(), checksums: staged.digest.values, copySource: copySourceMetadata }; upload.parts[String(partNumber)] = part; await this.saveBucket(located, index); res.statusCode = 200; res.setHeader("etag", quotedEtag(part.etag)); if (upload.checksumAlgorithm) res.setHeader(checksumHeaderName(upload.checksumAlgorithm), part.checksums[upload.checksumAlgorithm]!); if (copySource) { if (copySource.version.versionId !== "null") res.setHeader("x-amz-copy-source-version-id", copySource.version.versionId); res.setHeader("content-type", "application/xml"); res.end(restXml(`<LastModified>${iso(part.lastModified)}</LastModified><ETag>${xmlEscape(quotedEtag(part.etag))}</ETag>${upload.checksumAlgorithm ? `<Checksum${upload.checksumAlgorithm}>${xmlEscape(part.checksums[upload.checksumAlgorithm])}</Checksum${upload.checksumAlgorithm}>` : ""}`, "CopyPartResult")); } else res.end(); }
+      try { const declared = requestedChecksumAlgorithm(req.headers["x-amz-checksum-algorithm"] ?? req.headers["x-amz-sdk-checksum-algorithm"]); const provided = providedChecksumAlgorithms(req.headers, staged.trailers); if (!upload.checksumAlgorithm && (declared ?? provided[0])) { const adopted = declared ?? provided[0]; upload.checksumAlgorithm = adopted; upload.checksumType = adopted === "CRC64NVME" ? "FULL_OBJECT" : "COMPOSITE"; } if (declared && declared !== upload.checksumAlgorithm || provided.some(algorithm => algorithm !== upload.checksumAlgorithm)) throw new AwsError("InvalidRequest", "The checksum algorithm must match the algorithm specified when the multipart upload was initiated", 400); if (!copySource && upload.checksumType === "COMPOSITE" && !provided.includes(upload.checksumAlgorithm!)) throw new AwsError("InvalidRequest", `A ${upload.checksumAlgorithm} part checksum is required for this multipart upload`, 400); const blobId = await this.storage.publish(staged); const part: S3ObjectPartState = { partNumber, size: staged.size, etag: staged.digest.etag, blobId, lastModified: this.clock.now(), checksums: staged.digest.values, copySource: copySourceMetadata }; upload.parts[String(partNumber)] = part; await this.saveBucket(located, index); res.statusCode = 200; res.setHeader("etag", quotedEtag(part.etag)); if (upload.checksumAlgorithm) res.setHeader(checksumHeaderName(upload.checksumAlgorithm), part.checksums[upload.checksumAlgorithm]!); if (copySource) { if (copySource.version.versionId !== "null") res.setHeader("x-amz-copy-source-version-id", copySource.version.versionId); res.setHeader("content-type", "application/xml"); res.end(restXml(`<LastModified>${iso(part.lastModified)}</LastModified><ETag>${xmlEscape(quotedEtag(part.etag))}</ETag>${upload.checksumAlgorithm ? `<Checksum${upload.checksumAlgorithm}>${xmlEscape(part.checksums[upload.checksumAlgorithm])}</Checksum${upload.checksumAlgorithm}>` : ""}`, "CopyPartResult")); } else res.end(); }
       catch (error) { await this.storage.discardStaged(staged); throw error; }
     });
   }
@@ -2700,8 +2918,8 @@ export class S3Service {
   }
 
   private async completeMultipartUpload(req: IncomingMessage, res: ServerResponse, bucketName: string, key: string, uploadId: string): Promise<void> {
-    const located = this.requireBucket(bucketName); await this.locked(located, async () => { const index = await this.bucketIndex(located); const upload = this.requireUpload(index, key, uploadId); this.requireUploadCustomerKey(req, upload); const xml = (await readBody(req)).toString("utf8"); const requested = [...xml.matchAll(/<Part(?:\s[^>]*)?>([\s\S]*?)<\/Part>/gi)].map(match => ({ partNumber: Number(xmlValue(match[1], "PartNumber")), etag: cleanEtag(xmlValue(match[1], "ETag") ?? ""), body: match[1] })); if (!requested.length || requested.length > 10_000 || requested.some((part, index) => !Number.isInteger(part.partNumber) || part.partNumber !== index + 1)) throw new AwsError("InvalidPartOrder", "The list of parts was not in ascending order. Parts must be ordered by part number.", 400); const parts = requested.map(requestedPart => { const stored = upload.parts[String(requestedPart.partNumber)]; if (!stored || stored.etag !== requestedPart.etag) throw new AwsError("InvalidPart", "One or more of the specified parts could not be found.", 400); if (upload.checksumAlgorithm) { const supplied = xmlValue(requestedPart.body, `Checksum${upload.checksumAlgorithm}`); if (upload.checksumType === "COMPOSITE" && !supplied) throw new AwsError("InvalidPart", `Part ${requestedPart.partNumber} is missing its ${upload.checksumAlgorithm} checksum`, 400); if (supplied && supplied !== stored.checksums[upload.checksumAlgorithm]) throw new AwsError("BadDigest", "A multipart part checksum did not match the uploaded part.", 400); } return stored; }); if (parts.slice(0, -1).some(part => part.size < MIN_MULTIPART_PART_SIZE)) throw new AwsError("EntityTooSmall", "Your proposed upload is smaller than the minimum allowed object size.", 400);
-      const suppliedType = req.headers["x-amz-checksum-type"]?.toString().toUpperCase(); if (suppliedType && suppliedType !== upload.checksumType) throw new AwsError("BadDigest", "The checksum type does not match the multipart upload", 400); const suppliedAlgorithm = requestedChecksumAlgorithm(req.headers["x-amz-checksum-algorithm"]); if (suppliedAlgorithm && suppliedAlgorithm !== upload.checksumAlgorithm) throw new AwsError("BadDigest", "The checksum algorithm does not match the multipart upload", 400); const expectedSize = req.headers["x-amz-mp-object-size"] === undefined ? undefined : Number(req.headers["x-amz-mp-object-size"]); const actualSize = parts.reduce((sum, part) => sum + part.size, 0); if (expectedSize !== undefined && (!Number.isSafeInteger(expectedSize) || expectedSize !== actualSize)) throw new AwsError("InvalidRequest", "The expected multipart object size does not match the completed object", 400);
+    const located = this.requireBucket(bucketName); await this.locked(located, async () => { const index = await this.bucketIndex(located); const upload = this.requireUpload(index, key, uploadId); this.requireUploadCustomerKey(req, upload); enforceWriteConditions(req, currentObject(index, key)); const xml = (await readBody(req)).toString("utf8"); const requested = [...xml.matchAll(/<Part(?:\s[^>]*)?>([\s\S]*?)<\/Part>/gi)].map(match => ({ partNumber: Number(xmlValue(match[1], "PartNumber")), etag: cleanEtag(xmlValue(match[1], "ETag") ?? ""), body: match[1] })); if (!requested.length || requested.length > 10_000 || requested.some((part, index) => !Number.isInteger(part.partNumber) || part.partNumber !== index + 1)) throw new AwsError("InvalidPartOrder", "The list of parts was not in ascending order. Parts must be ordered by part number.", 400); const parts = requested.map(requestedPart => { const stored = upload.parts[String(requestedPart.partNumber)]; if (!stored || stored.etag !== requestedPart.etag) throw new AwsError("InvalidPart", "One or more of the specified parts could not be found.", 400); if (upload.checksumAlgorithm) { const supplied = xmlValue(requestedPart.body, `Checksum${upload.checksumAlgorithm}`); if (upload.checksumType === "COMPOSITE" && !supplied) throw new AwsError("InvalidPart", `Part ${requestedPart.partNumber} is missing its ${upload.checksumAlgorithm} checksum`, 400); if (supplied && supplied !== stored.checksums[upload.checksumAlgorithm]) throw new AwsError("BadDigest", "A multipart part checksum did not match the uploaded part.", 400); } return stored; }); if (parts.slice(0, -1).some(part => part.size < MIN_MULTIPART_PART_SIZE)) throw new AwsError("EntityTooSmall", "Your proposed upload is smaller than the minimum allowed object size.", 400);
+      if (!upload.checksumAlgorithm) { upload.checksumAlgorithm = "CRC64NVME"; upload.checksumType = "FULL_OBJECT"; } const suppliedType = req.headers["x-amz-checksum-type"]?.toString().toUpperCase(); if (suppliedType && suppliedType !== upload.checksumType) throw new AwsError("BadDigest", "The checksum type does not match the multipart upload", 400); const suppliedAlgorithm = requestedChecksumAlgorithm(req.headers["x-amz-checksum-algorithm"]); if (suppliedAlgorithm && suppliedAlgorithm !== upload.checksumAlgorithm) throw new AwsError("BadDigest", "The checksum algorithm does not match the multipart upload", 400); const expectedSize = req.headers["x-amz-mp-object-size"] === undefined ? undefined : Number(req.headers["x-amz-mp-object-size"]); const actualSize = parts.reduce((sum, part) => sum + part.size, 0); if (expectedSize !== undefined && (!Number.isSafeInteger(expectedSize) || expectedSize !== actualSize)) throw new AwsError("InvalidRequest", "The expected multipart object size does not match the completed object", 400);
       const staged = await this.storage.stageFromBlobs(parts.map(part => part.blobId), this.maximumObjectBytes); try { const algorithm = upload.checksumAlgorithm!; const checksum = upload.checksumType === "COMPOSITE" ? await compositeChecksum(algorithm, parts) : staged.digest.values[algorithm]!; const suppliedObjectChecksum = req.headers[checksumHeaderName(algorithm)]?.toString(); if (suppliedObjectChecksum && suppliedObjectChecksum !== checksum) throw new AwsError("BadDigest", `The ${algorithm} checksum you specified did not match the completed object`, 400); const released = Object.values(upload.parts).reduce((sum, part) => sum + part.size, 0); await this.ensureCapacity(located, index, key, staged.size, released); const blobId = await this.storage.publish(staged); const multipartEtag = `${createHash("md5").update(Buffer.concat(parts.map(part => Buffer.from(part.etag, "hex")))).digest("hex")}-${parts.length}`; const object: S3ObjectVersionState = { versionId: versionIdForWrite(located.bucket), blobId, size: staged.size, etag: multipartEtag, lastModified: this.clock.now(), metadata: structuredClone(upload.metadata), tags: structuredClone(upload.tags ?? {}), contentType: upload.contentType, contentEncoding: upload.contentEncoding, contentDisposition: upload.contentDisposition, contentLanguage: upload.contentLanguage, cacheControl: upload.cacheControl, expires: upload.expires, websiteRedirectLocation: upload.websiteRedirectLocation, checksums: { [algorithm]: checksum }, checksumAlgorithm: algorithm, checksumType: upload.checksumType ?? "COMPOSITE", storageClass: upload.storageClass, encryption: upload.encryption ?? "AES256", kmsKeyId: upload.kmsKeyId, bucketKeyEnabled: upload.bucketKeyEnabled, sseCustomerKeyMd5: upload.sseCustomerKeyMd5, retention: upload.retention, legalHold: upload.legalHold, ownerAccountId: upload.ownerAccountId ?? located.accountId, ownerId: upload.ownerId ?? ownerId(located.accountId), acl: upload.acl ?? privateAcl(upload.ownerAccountId ?? located.accountId), parts }; publishVersion(located.bucket, index, key, object); delete index.multipartUploads[uploadId]; await this.saveBucket(located, index); await this.enqueueObjectEvent(located, index, key, object, "s3:ObjectCreated:CompleteMultipartUpload", {}, this.notificationCaller(req)); res.statusCode = 200; res.setHeader("content-type", "application/xml"); setObjectHeaders(res, object); if (object.versionId !== "null") res.setHeader("x-amz-version-id", object.versionId); res.setHeader(checksumHeaderName(algorithm), checksum); res.end(restXml(`<Location>http://localhost/${xmlEscape(bucketName)}/${xmlEscape(key)}</Location><Bucket>${xmlEscape(bucketName)}</Bucket><Key>${xmlEscape(key)}</Key><ETag>${xmlEscape(quotedEtag(object.etag))}</ETag><Checksum${algorithm}>${xmlEscape(object.checksums[algorithm]!)}</Checksum${algorithm}><ChecksumType>${object.checksumType}</ChecksumType>`, "CompleteMultipartUploadResult")); }
       catch (error) { await this.storage.discardStaged(staged); throw error; }
     });

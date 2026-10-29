@@ -288,7 +288,12 @@ test("AMX-07 runs the unmodified Amplify 6.20 client through exact generated Tod
     const listed = await client.models.Todo.list({ filter: { title: { beginsWith: "client-" } }, limit: 1 });
     assert.deepEqual(listed.errors, undefined);
     assert.deepEqual(listed.data.map((item: any) => item.id), [created.id]);
-    assert.equal(listed.nextToken, null);
+    // DynamoDB stops at Limit and returns LastEvaluatedKey even when nothing follows (DDB-15B), so the generated resolver hands the client a nextToken; the follow-up page closes the cursor.
+    assert.ok(listed.nextToken, "a page that stopped at the limit carries a nextToken, as on AWS");
+    const followUp = await client.models.Todo.list({ filter: { title: { beginsWith: "client-" } }, limit: 1, nextToken: listed.nextToken });
+    assert.deepEqual(followUp.errors, undefined);
+    assert.deepEqual(followUp.data, []);
+    assert.equal(followUp.nextToken, null);
     assert.equal((await harness.dynamodb.send(new ScanCommand({ TableName: harness.tableName }))).Items?.length, 1);
 
     assert.equal((await client.models.Todo.delete({ id: created.id })).data.id, created.id);

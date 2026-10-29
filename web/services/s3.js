@@ -7,7 +7,7 @@ export const metadata = {
   name: "S3",
   icon: "S3",
   cls: "s3",
-  links: [["Overview", "#/s3"], ["General purpose buckets", "#/s3/buckets"]],
+  links: [["Overview", "#/s3"], ["General purpose buckets", "#/s3/buckets"], ["Account and organization settings", "#/s3/account-settings"]],
   search: ["s3", "bucket", "object", "upload", "download", "multipart", "version", "delete marker", "storage", "static website hosting", "website endpoint"],
 };
 
@@ -44,12 +44,27 @@ const s3PanelHelp = {
   staticWebsite: {
     level: "Supported locally",
     description: "Static website hosting serves bucket objects as web pages. The index document is used for directory-style requests, and the optional error document is returned when a requested page is missing. Public visitors still need permission to read the underlying objects.",
-    support: "Website configuration, index and error resolution, redirects, and policy-based public access are active on a local endpoint. StackSim does not provide AWS DNS names, TLS certificates, CloudFront, or internet hosting.",
+    support: "Index and error documents, redirect-all hosting, redirection rules (key prefix and HTTP error conditions), object redirect locations, the S3 HTML error pages, CORS, and policy-based public access are active on a local website endpoint. StackSim does not provide AWS DNS names, TLS certificates, CloudFront, or internet hosting.",
   },
-  dataGovernance: {
+  bucketTags: {
+    level: "Supported locally",
+    description: "Bucket tags are key-value labels for organizing buckets, allocating cost, and, when bucket ABAC is enabled, authorizing access by attribute instead of by bucket name.",
+    support: "Up to 50 tags per bucket are stored durably and exposed to IAM conditions when ABAC is enabled. Cost allocation reports are not simulated.",
+  },
+  defaultEncryption: {
     level: "Partial",
-    description: "Data governance groups settings that protect and classify bucket data. Default encryption determines how new objects are described as protected, Object Lock can prevent version deletion for a retention period, and bucket tags provide labels for organization and access-control conditions.",
-    support: "SSE-S3, SSE-KMS with the AWS managed key aws/s3, tags, Object Lock retention, and legal enforcement are active. StackSim has no KMS service: the aws/s3 key is an encryption descriptor, customer managed keys and dual-layer KMS remain stored descriptors, and writes that need them fail.",
+    description: "Default encryption applies to every new object that is written without its own encryption headers. SSE-S3 uses keys that S3 manages; SSE-KMS and DSSE-KMS use AWS KMS keys and can be combined with an S3 Bucket Key to reduce KMS requests.",
+    support: "SSE-S3 and SSE-KMS with the AWS managed key aws/s3 are active. StackSim has no KMS service: the aws/s3 key is an encryption descriptor, customer managed keys and dual-layer KMS remain stored descriptors, and writes that need them fail.",
+  },
+  objectLock: {
+    level: "Supported locally",
+    description: "Object Lock stores objects using a write-once-read-many (WORM) model. Once enabled on a bucket it cannot be disabled, and it requires Bucket Versioning. Default retention applies a Governance or Compliance retention period to every new object version.",
+    support: "Enabling Object Lock, default retention, per-version retention, legal holds, bypass permission checks, and deletion protection are enforced for local versions.",
+  },
+  accountPublicAccess: {
+    level: "Supported locally",
+    description: "Account-level Block Public Access settings apply to every bucket in the account and are combined with each bucket's own settings using the most restrictive value. AWS enables all four settings on every new bucket.",
+    support: "The four account controls are stored through the S3 Control API and participate in every policy and ACL evaluation. StackSim does not expose buckets to the public internet.",
   },
   eventNotifications: {
     level: "Supported integrations",
@@ -64,7 +79,7 @@ const s3PanelHelp = {
   lifecycle: {
     level: "Supported locally",
     description: "Lifecycle rules automatically manage objects as they age. A rule can transition current or previous versions to another storage class, expire data or delete markers, and abort incomplete multipart uploads. Filters limit the rule to particular keys, tags, or object sizes.",
-    support: "Rule scheduling, filters, transitions, expiration, NewerNoncurrentVersions, noncurrent versions, and multipart cleanup are active. Day-0 STANDARD_IA/ONEZONE_IA transitions are allowed; chained transitions enforce each class minimum storage duration. Archive access restrictions are modeled, but physical blobs remain in the local encrypted store and no AWS storage cost or external archive service is simulated.",
+    support: "The rule wizard, rule scheduling, prefix/tag/size filters, transitions, expiration, NewerNoncurrentVersions, noncurrent versions, delete-marker cleanup, and multipart cleanup are active. Day-0 STANDARD_IA/ONEZONE_IA transitions are allowed; chained transitions enforce each class minimum storage duration. Archive access restrictions are modeled, but physical blobs remain in the local encrypted store and no AWS storage cost or external archive service is simulated.",
   },
   publicAccess: {
     level: "Supported locally",
@@ -112,9 +127,9 @@ const s3PanelHelp = {
     support: "Per-version legal-hold state and deletion protection are actively enforced and persist locally.",
   },
   annotations: {
-    level: "StackSim extension",
-    description: "Annotations attach named structured or text payloads to an object version without replacing its content. They are useful for local workflows that need review notes, extracted results, or application-specific records alongside an object.",
-    support: "Version-scoped annotation creation, replacement, checksums, ETags, listing, and Object Lock protection are active. Object annotations are a StackSim extension and are not part of the standard AWS S3 API.",
+    level: "Supported locally",
+    description: "Annotations attach named data payloads (1 byte to 1 MiB each, up to 1,000 per object version) to an object version without modifying the object. AWS uses them for AI-generated labels, processing results, lineage, and compliance records that are read through dedicated annotation API operations.",
+    support: "The PutObjectAnnotation, GetObjectAnnotation, ListObjectAnnotations, and DeleteObjectAnnotation operations, version scoping, checksums, ETags, conditional writes, CopyObject annotation copying, and Object Lock protection are active. S3 Metadata annotation tables are not simulated.",
   },
   archiveRestore: {
     level: "Partial",
@@ -133,7 +148,10 @@ const s3PanelHelpTargets = [
   [".card", "Objects", "objects"],
   ['.card:has([data-versioning])', "Bucket Versioning", "bucketVersioning"],
   [".s3-static-website-hosting", "Static website hosting", "staticWebsite"],
-  [".s3-governance", "Data governance", "dataGovernance"],
+  [".s3-bucket-tags", "Tags", "bucketTags"],
+  [".s3-default-encryption-card", "Default encryption", "defaultEncryption"],
+  [".s3-object-lock", "Object Lock", "objectLock"],
+  [".s3-account-public-access", "Block Public Access settings for this account", "accountPublicAccess"],
   [".s3-event-notifications", "Event notifications", "eventNotifications"],
   [".s3-eventbridge-notifications", "Amazon EventBridge", "eventBridge"],
   [".s3-lifecycle-rules", "Lifecycle rules", "lifecycle"],
@@ -182,11 +200,29 @@ async function inlineAction(context, action) {
   catch (error) { context.toast(error instanceof Error ? error.message : String(error), "error"); }
 }
 
+/** Key/value tag rows shared by the create-bucket, bucket-tag, and lifecycle editors. */
+function tagRowsEditor(tags = [], { addLabel = "Add tag", attribute = "data-tag-rows" } = {}) {
+  const row = ([name, value] = ["", ""]) => `<div class="s3-object-tag-row"><input name="tagKey" aria-label="Tag key" value="${escapeHtml(name)}" placeholder="Key"><input name="tagValue" aria-label="Tag value" value="${escapeHtml(value)}" placeholder="Value"><button class="button link danger" type="button" data-remove-tag-row>Remove</button></div>`;
+  return `<div ${attribute}>${tags.map(row).join("")}</div><button class="button" type="button" data-add-tag-row="${attribute}">${escapeHtml(addLabel)}</button>`;
+}
+function tagsFromRows(data) {
+  const keys = data.getAll("tagKey").map(value => String(value).trim()); const values = data.getAll("tagValue").map(String);
+  const rows = keys.map((name, index) => [name, values[index]]).filter(([name, value]) => name || value);
+  if (rows.some(([name]) => !name)) throw new Error("Every tag value requires a key");
+  if (new Set(rows.map(([name]) => name)).size !== rows.length) throw new Error("Tag keys must be unique");
+  return rows;
+}
+document.addEventListener("click", event => {
+  const add = event.target.closest("[data-add-tag-row]");
+  if (add) { add.previousElementSibling?.insertAdjacentHTML("beforeend", `<div class="s3-object-tag-row"><input name="tagKey" aria-label="Tag key" placeholder="Key"><input name="tagValue" aria-label="Tag value" placeholder="Value"><button class="button link danger" type="button" data-remove-tag-row>Remove</button></div>`); return; }
+  if (event.target.closest("[data-remove-tag-row]")) event.target.closest(".s3-object-tag-row")?.remove();
+});
+
 export const S3_NOTIFICATION_EVENTS = [
   "s3:ObjectCreated:*", "s3:ObjectCreated:Put", "s3:ObjectCreated:Copy", "s3:ObjectCreated:CompleteMultipartUpload",
   "s3:ObjectRemoved:*", "s3:ObjectRemoved:Delete", "s3:ObjectRemoved:DeleteMarkerCreated",
   "s3:ObjectRestore:*", "s3:ObjectRestore:Post", "s3:ObjectRestore:Completed", "s3:ObjectRestore:Delete",
-  "s3:ObjectTagging:*", "s3:ObjectTagging:Put", "s3:ObjectTagging:Delete", "s3:ObjectAcl:Put",
+  "s3:ObjectTagging:*", "s3:ObjectTagging:Put", "s3:ObjectTagging:Delete", "s3:ObjectAcl:Put", "s3:ObjectRetention:Put",
   "s3:ObjectAnnotation:*", "s3:ObjectAnnotation:Put", "s3:ObjectAnnotation:Delete",
   "s3:LifecycleExpiration:*", "s3:LifecycleExpiration:Delete", "s3:LifecycleExpiration:DeleteMarkerCreated", "s3:LifecycleExpiration:DeleteMarkerDeleted", "s3:LifecycleTransition",
 ];
@@ -227,13 +263,111 @@ function bucketTabs(bucket, active) {
 }
 
 async function listBuckets() {
-  const result = await s3Request("/"); return [...result.xml.getElementsByTagName("Bucket")].map(node => ({ name: first(node, "Name"), createdAt: first(node, "CreationDate"), region: first(node, "BucketRegion") || session.region, arn: first(node, "BucketArn"), objectLockEnabled: first(node, "ObjectLockEnabled") === "Enabled", lifecycleConfigured: first(node, "LifecycleConfigured") === "true", tags: [...(direct(node, "BucketTags")[0]?.getElementsByTagName("Tag") ?? [])].map(tag => [first(tag, "Key"), first(tag, "Value")]) }));
+  const result = await s3Request("/"); return [...result.xml.getElementsByTagName("Bucket")].map(node => ({ name: first(node, "Name"), createdAt: first(node, "CreationDate"), region: first(node, "BucketRegion") || session.region, arn: first(node, "BucketArn") || `arn:aws:s3:::${first(node, "Name")}` }));
+}
+
+/** Per-bucket facts read through the real configuration APIs (ListBuckets carries only name, date, Region, and ARN). */
+async function bucketFacts(bucket) {
+  const [lock, lifecycle, tagging] = await Promise.all([
+    optionalBucketConfiguration(bucket, "object-lock", ["ObjectLockConfigurationNotFoundError"]),
+    optionalBucketConfiguration(bucket, "lifecycle", ["NoSuchLifecycleConfiguration"]),
+    optionalBucketConfiguration(bucket, "tagging", ["NoSuchTagSet"]),
+  ]);
+  return {
+    objectLockEnabled: first(lock?.xml, "ObjectLockEnabled") === "Enabled",
+    defaultRetention: lock && first(lock.xml, "Mode") ? { mode: first(lock.xml, "Mode"), days: first(lock.xml, "Days"), years: first(lock.xml, "Years") } : undefined,
+    lifecycle,
+    tags: [...(tagging?.xml?.getElementsByTagName("Tag") ?? [])].map(tag => [first(tag, "Key"), first(tag, "Value")]),
+  };
+}
+
+const BLOCK_PUBLIC_ACCESS_SETTINGS = [
+  ["BlockPublicAcls", "Block public access to buckets and objects granted through new access control lists (ACLs)"],
+  ["IgnorePublicAcls", "Block public access to buckets and objects granted through any access control lists (ACLs)"],
+  ["BlockPublicPolicy", "Block public access to buckets and objects granted through new public bucket or access point policies"],
+  ["RestrictPublicBuckets", "Block public and cross-account access to buckets and objects through any public bucket or access point policies"],
+];
+
+function blockPublicAccessFields(values, { acknowledgementText = "I acknowledge that the current settings might result in this bucket and the objects within becoming public." } = {}) {
+  const allOn = BLOCK_PUBLIC_ACCESS_SETTINGS.every(([name]) => values[name]);
+  return `<label class="setting-option"><input type="checkbox" name="BlockAll" ${allOn ? "checked" : ""} data-block-all><span><strong>Block <em>all</em> public access</strong><small>Turning this setting on is the same as turning on all four settings below. Each of the following settings is independent of the others.</small></span></label><div class="s3-block-public-access-settings">${BLOCK_PUBLIC_ACCESS_SETTINGS.map(([name, text]) => `<label class="setting-option"><input type="checkbox" name="${name}" ${values[name] ? "checked" : ""} data-block-setting><span><strong>${name}</strong><small>${escapeHtml(text)}</small></span></label>`).join("")}</div><div class="alert warning" data-block-acknowledgement ${allOn ? "hidden" : ""}><label class="setting-option"><input type="checkbox" name="blockAck"><span><strong>${escapeHtml(acknowledgementText)}</strong></span></label></div>`;
+}
+
+function bindBlockPublicAccessFields(root) {
+  const all = root.querySelector("[data-block-all]"); const settings = [...root.querySelectorAll("[data-block-setting]")]; const acknowledgement = root.querySelector("[data-block-acknowledgement]");
+  const sync = () => { const every = settings.every(input => input.checked); if (all) all.checked = every; if (acknowledgement) acknowledgement.hidden = every; };
+  all?.addEventListener("change", () => { settings.forEach(input => { input.checked = all.checked; }); sync(); });
+  settings.forEach(input => input.addEventListener("change", sync));
+  sync();
+}
+
+function blockPublicAccessFromForm(data) {
+  const values = Object.fromEntries(BLOCK_PUBLIC_ACCESS_SETTINGS.map(([name]) => [name, data.get(name) === "on"]));
+  if (Object.values(values).some(value => !value) && data.get("blockAck") !== "on") throw new Error("Acknowledge that the current settings might make data public, or turn Block all public access back on");
+  return values;
+}
+
+function publicAccessBlockXml(values) {
+  return `<PublicAccessBlockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">${BLOCK_PUBLIC_ACCESS_SETTINGS.map(([name]) => `<${name}>${values[name] === true}</${name}>`).join("")}</PublicAccessBlockConfiguration>`;
 }
 
 function bindCreateBucket(context) {
-  document.querySelectorAll('[data-action="create-s3-bucket"]').forEach(button => button.addEventListener("click", () => context.showModal("Create bucket", `<div class="field"><label>Bucket name</label><input name="name" required pattern="[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]" placeholder="learning-assets"><span class="hint">Bucket names are installation-wide and use current general-purpose naming rules.</span></div><div class="field"><label>Region</label><input value="${escapeHtml(session.region)}" disabled></div><div class="alert info"><strong>Object Ownership and encryption</strong><br>Objects are locally owned by this account and encrypted at rest with simulator-managed SSE-S3.</div>`, "Create bucket", async data => {
-    const name = String(data.get("name")); const body = `<?xml version="1.0" encoding="UTF-8"?><CreateBucketConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><LocationConstraint>${xmlEscape(session.region)}</LocationConstraint></CreateBucketConfiguration>`; await s3Request(`/${encodeURIComponent(name)}`, { method: "PUT", headers: { "content-type": "application/xml" }, body }); context.toast("Bucket created"); location.hash = `#/s3/buckets/${encodeURIComponent(name)}/objects`;
-  })));
+  document.querySelectorAll('[data-action="create-s3-bucket"]').forEach(button => button.addEventListener("click", () => {
+    context.showModal("Create bucket", `
+      <h3>General configuration</h3>
+      <div class="field"><label>Bucket name</label><input name="name" required pattern="[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]" placeholder="amzn-s3-demo-bucket"><span class="hint">Bucket names must be 3–63 characters of lowercase letters, numbers, periods, and hyphens, and unique within this StackSim installation.</span></div>
+      <div class="field"><label>AWS Region</label><input value="${escapeHtml(session.region)}" disabled></div>
+      <h3>Object Ownership</h3>
+      <fieldset class="setting-options"><legend class="sr-only">Object Ownership</legend>
+        <label class="setting-option"><input type="radio" name="ownership" value="BucketOwnerEnforced" checked><span><strong>ACLs disabled (recommended)</strong><small>Bucket owner enforced. All objects are owned by this account and access is specified only through policies.</small></span></label>
+        <label class="setting-option"><input type="radio" name="ownership" value="BucketOwnerPreferred"><span><strong>ACLs enabled – Bucket owner preferred</strong><small>Objects written with the bucket-owner-full-control canned ACL become owned by the bucket owner.</small></span></label>
+        <label class="setting-option"><input type="radio" name="ownership" value="ObjectWriter"><span><strong>ACLs enabled – Object writer</strong><small>The account that uploads an object owns it and can grant access through ACLs.</small></span></label>
+      </fieldset>
+      <h3>Block Public Access settings for this bucket</h3>
+      <p class="hint">Public access is granted through access control lists (ACLs), bucket policies, access point policies, or all. AWS recommends keeping all four settings on unless the bucket must be public.</p>
+      ${blockPublicAccessFields({ BlockPublicAcls: true, IgnorePublicAcls: true, BlockPublicPolicy: true, RestrictPublicBuckets: true })}
+      <h3>Bucket Versioning</h3>
+      <fieldset class="setting-options"><legend class="sr-only">Bucket Versioning</legend><label class="setting-option"><input type="radio" name="versioning" value="Disabled" checked><span><strong>Disable</strong></span></label><label class="setting-option"><input type="radio" name="versioning" value="Enabled"><span><strong>Enable</strong><small>Keep every version of every object; required for Object Lock.</small></span></label></fieldset>
+      <h3>Tags <span class="muted small">– optional</span></h3>
+      ${tagRowsEditor([])}
+      <h3>Default encryption</h3>
+      <fieldset class="setting-options"><legend class="sr-only">Encryption type</legend>
+        <label class="setting-option"><input type="radio" name="encryption" value="AES256" checked><span><strong>Server-side encryption with Amazon S3 managed keys (SSE-S3)</strong></span></label>
+        <label class="setting-option"><input type="radio" name="encryption" value="aws:kms"><span><strong>Server-side encryption with AWS Key Management Service keys (SSE-KMS)</strong><small>StackSim provides only the AWS managed key aws/s3.</small></span></label>
+        <label class="setting-option"><input type="radio" name="encryption" value="aws:kms:dsse"><span><strong>Dual-layer server-side encryption with AWS KMS keys (DSSE-KMS)</strong><small>Stored as a descriptor; object writes that need it fail locally.</small></span></label>
+      </fieldset>
+      <div class="field" data-kms-key hidden><label>AWS KMS key</label><input name="kmsKey" placeholder="alias/aws/s3"><span class="hint">Leave empty for the AWS managed key aws/s3.</span></div>
+      <label class="setting-option" data-bucket-key hidden><input type="checkbox" name="bucketKey" checked><span><strong>Bucket Key</strong><small>Enabled by default for SSE-KMS; reduces KMS requests.</small></span></label>
+      <details><summary>Advanced settings</summary>
+        <h3>Object Lock</h3>
+        <fieldset class="setting-options"><legend class="sr-only">Object Lock</legend><label class="setting-option"><input type="radio" name="objectLock" value="Disabled" checked><span><strong>Disable</strong></span></label><label class="setting-option"><input type="radio" name="objectLock" value="Enabled"><span><strong>Enable</strong><small>Permanently allows objects in this bucket to be locked. Enabling Object Lock also enables Bucket Versioning.</small></span></label></fieldset>
+        <div class="alert warning" data-lock-acknowledgement hidden><label class="setting-option"><input type="checkbox" name="lockAck"><span><strong>I acknowledge that enabling Object Lock will permanently allow objects in this bucket to be locked.</strong></span></label></div>
+      </details>`, "Create bucket", async data => {
+      const name = String(data.get("name"));
+      const block = blockPublicAccessFromForm(data);
+      const lock = data.get("objectLock") === "Enabled";
+      if (lock && data.get("lockAck") !== "on") throw new Error("Acknowledge that Object Lock is permanent");
+      const tags = tagsFromRows(data);
+      const encryption = String(data.get("encryption") || "AES256"); const kmsKey = String(data.get("kmsKey") || "").trim();
+      const headers = { "content-type": "application/xml", "x-amz-object-ownership": String(data.get("ownership") || "BucketOwnerEnforced") };
+      if (lock) headers["x-amz-bucket-object-lock-enabled"] = "true";
+      const body = `<?xml version="1.0" encoding="UTF-8"?><CreateBucketConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><LocationConstraint>${xmlEscape(session.region)}</LocationConstraint></CreateBucketConfiguration>`;
+      await s3Request(`/${encodeURIComponent(name)}`, { method: "PUT", headers, body });
+      if (Object.values(block).some(value => !value)) await s3Request(`${objectPath(name)}?publicAccessBlock`, { method: "PUT", headers: { "content-type": "application/xml" }, body: publicAccessBlockXml(block) });
+      if (data.get("versioning") === "Enabled" && !lock) await s3Request(`${objectPath(name)}?versioning`, { method: "PUT", headers: { "content-type": "application/xml" }, body: `<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>` });
+      if (tags.length) await s3Request(`${objectPath(name)}?tagging`, { method: "PUT", headers: { "content-type": "application/xml" }, body: `<Tagging xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><TagSet>${tags.map(([key, value]) => `<Tag><Key>${xmlEscape(key)}</Key><Value>${xmlEscape(value)}</Value></Tag>`).join("")}</TagSet></Tagging>` });
+      if (encryption !== "AES256") await s3Request(`${objectPath(name)}?encryption`, { method: "PUT", headers: { "content-type": "application/xml" }, body: `<ServerSideEncryptionConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>${xmlEscape(encryption)}</SSEAlgorithm>${kmsKey ? `<KMSMasterKeyID>${xmlEscape(kmsKey)}</KMSMasterKeyID>` : ""}</ApplyServerSideEncryptionByDefault><BucketKeyEnabled>${encryption === "aws:kms" && data.get("bucketKey") === "on"}</BucketKeyEnabled></Rule></ServerSideEncryptionConfiguration>` });
+      context.toast("Bucket created"); location.hash = `#/s3/buckets/${encodeURIComponent(name)}/objects`;
+    });
+    const dialog = document.querySelector("dialog[open]") ?? document;
+    bindBlockPublicAccessFields(dialog);
+    const encryptionInputs = [...dialog.querySelectorAll('[name="encryption"]')]; const kmsField = dialog.querySelector("[data-kms-key]"); const bucketKey = dialog.querySelector("[data-bucket-key]");
+    const syncEncryption = () => { const selected = encryptionInputs.find(input => input.checked)?.value ?? "AES256"; if (kmsField) kmsField.hidden = selected === "AES256"; if (bucketKey) bucketKey.hidden = selected !== "aws:kms"; };
+    encryptionInputs.forEach(input => input.addEventListener("change", syncEncryption)); syncEncryption();
+    const lockInputs = [...dialog.querySelectorAll('[name="objectLock"]')]; const lockAck = dialog.querySelector("[data-lock-acknowledgement]");
+    const syncLock = () => { if (lockAck) lockAck.hidden = !lockInputs.some(input => input.checked && input.value === "Enabled"); };
+    lockInputs.forEach(input => input.addEventListener("change", syncLock)); syncLock();
+  }));
 }
 
 async function overview(context) {
@@ -333,7 +467,7 @@ function objectPageHeader(bucket, key, versionId, { downloadable = true } = {}) 
 
 async function objectsPage(context, bucket, prefix = "") {
   const result = await s3Request(`${objectPath(bucket)}?list-type=2&delimiter=%2F&prefix=${encodeURIComponent(prefix)}&fetch-owner=true`); const root = result.xml.documentElement; const objects = direct(root, "Contents").map(node => ({ key: first(node, "Key"), size: Number(first(node, "Size")), modified: first(node, "LastModified"), etag: first(node, "ETag"), storageClass: first(node, "StorageClass") || "STANDARD" })); const prefixes = direct(root, "CommonPrefixes").map(node => first(node, "Prefix")); context.setChrome("s3", ["S3", "General purpose buckets", bucket]);
-  const parent = prefix ? prefix.replace(/[^/]+\/$/, "") : ""; context.main.innerHTML = `<div class="page-width">${pageHeader(bucket, `s3://${escapeHtml(bucket)}/${escapeHtml(prefix)}`, `<button class="button" data-action="create-folder">Create folder</button><button class="button primary" data-action="upload-object">Upload</button>`)}${bucketTabs(bucket, "objects")}<div class="toolbar"><div class="actions">${prefix ? `<a class="button" href="#/s3/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(parent)}">← Parent</a>` : ""}<a class="button" href="#/s3/buckets/${encodeURIComponent(bucket)}/versions">Show versions</a><button class="button danger" data-action="delete-selected" disabled>Delete selected</button></div><span id="s3-upload-progress" class="muted" hidden></span></div><section class="card"><div class="card-header"><h2>Objects <span class="muted">(${objects.length + prefixes.length})</span></h2></div><div class="table-wrap">${objects.length || prefixes.length ? `<table><thead><tr><th><input type="checkbox" data-select-all aria-label="Select all objects"></th><th>Name</th><th>Type</th><th>Last modified</th><th>Size</th><th>Actions</th></tr></thead><tbody>${prefixes.map(value => `<tr><td></td><td><a href="#/s3/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(value)}">📁 ${escapeHtml(value.slice(prefix.length))}</a></td><td>Folder</td><td>–</td><td>–</td><td></td></tr>`).join("")}${objects.map(object => `<tr><td><input type="checkbox" data-object-select value="${escapeHtml(object.key)}" aria-label="Select ${escapeHtml(object.key)}"></td><td><a href="${objectPageHref(bucket, object.key)}">${escapeHtml(object.key.slice(prefix.length))}</a></td><td>Object</td><td>${escapeHtml(new Date(object.modified).toLocaleString())}</td><td>${humanBytes(object.size)}</td><td class="no-wrap"><button class="button link" data-object-preview="${escapeHtml(object.key)}">Preview</button><button class="button link" data-object-copy="${escapeHtml(object.key)}">Copy</button><button class="button link" data-object-download="${escapeHtml(object.key)}">Download</button></td></tr>`).join("")}</tbody></table>` : emptyState("◇", "No objects", prefix ? "This prefix is empty." : "Upload an object or create a folder marker.", '<button class="button primary" data-action="upload-object">Upload</button>')}</div></section></div>`;
+  const parent = prefix ? prefix.replace(/[^/]+\/$/, "") : ""; context.main.innerHTML = `<div class="page-width">${pageHeader(bucket, `s3://${escapeHtml(bucket)}/${escapeHtml(prefix)}`, `<button class="button" data-action="create-folder">Create folder</button><button class="button primary" data-action="upload-object">Upload</button>`)}${bucketTabs(bucket, "objects")}<div class="toolbar"><div class="actions">${prefix ? `<a class="button" href="#/s3/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(parent)}">← Parent</a>` : ""}<a class="button" href="#/s3/buckets/${encodeURIComponent(bucket)}/versions">Show versions</a><button class="button danger" data-action="delete-selected" disabled>Delete</button></div><span id="s3-upload-progress" class="muted" hidden></span></div><section class="card"><div class="card-header"><h2>Objects <span class="muted">(${objects.length + prefixes.length})</span></h2></div><div class="table-wrap">${objects.length || prefixes.length ? `<table><thead><tr><th><input type="checkbox" data-select-all aria-label="Select all objects"></th><th>Name</th><th>Type</th><th>Last modified</th><th>Size</th><th>Actions</th></tr></thead><tbody>${prefixes.map(value => `<tr><td></td><td><a href="#/s3/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(value)}">📁 ${escapeHtml(value.slice(prefix.length))}</a></td><td>Folder</td><td>–</td><td>–</td><td></td></tr>`).join("")}${objects.map(object => `<tr><td><input type="checkbox" data-object-select value="${escapeHtml(object.key)}" aria-label="Select ${escapeHtml(object.key)}"></td><td><a href="${objectPageHref(bucket, object.key)}">${escapeHtml(object.key.slice(prefix.length))}</a></td><td>Object</td><td>${escapeHtml(new Date(object.modified).toLocaleString())}</td><td>${humanBytes(object.size)}</td><td class="no-wrap"><button class="button link" data-object-preview="${escapeHtml(object.key)}">Preview</button><button class="button link" data-object-copy="${escapeHtml(object.key)}">Copy</button><button class="button link" data-object-download="${escapeHtml(object.key)}">Download</button></td></tr>`).join("")}</tbody></table>` : emptyState("◇", "No objects", prefix ? "This prefix is empty." : "Upload an object or create a folder marker.", '<button class="button primary" data-action="upload-object">Upload</button>')}</div></section></div>`;
   context.main.querySelector("thead th:last-child")?.insertAdjacentHTML("beforebegin", "<th>Storage class</th>");
   for (const row of context.main.querySelectorAll("tbody tr")) {
     const objectLink = row.querySelector(`a[href*="/object/"]`); const key = objectLink ? objects.find(object => objectPageHref(bucket, object.key) === objectLink.getAttribute("href"))?.key : undefined;
@@ -378,7 +512,7 @@ async function objectPropertiesPage(context, bucket, key, versionId) {
     s3Request(objectRequestPath(bucket, key, "tagging", versionId)),
     s3Request(objectRequestPath(bucket, key, "annotation", versionId)),
     s3Request(objectRequestPath(bucket, key, "acl", versionId)),
-    listBuckets().then(values => values.find(value => value.name === bucket)),
+    bucketFacts(bucket),
   ]);
   const headers = Object.fromEntries(head.response.headers); const storageClass = headers["x-amz-storage-class"] || "STANDARD"; const restore = parseRestoreHeader(headers["x-amz-restore"]); const archived = ["GLACIER", "DEEP_ARCHIVE"].includes(storageClass); const downloadable = !archived || restore.state === "Temporarily restored";
   const checksum = Object.entries(headers).find(([name]) => name.startsWith("x-amz-checksum-") && name !== "x-amz-checksum-type");
@@ -458,8 +592,12 @@ async function objectVersionsPage(context, bucket, key, selectedVersionId) {
 
 async function getWebsite(bucket) {
   try {
-    const result = await s3Request(`${objectPath(bucket)}?website`);
-    return { indexDocument: first(result.xml, "Suffix"), errorDocument: first(result.xml, "Key") };
+    const result = await s3Request(`${objectPath(bucket)}?website`); const root = result.xml.documentElement;
+    const redirectAll = direct(root, "RedirectAllRequestsTo")[0];
+    if (redirectAll) return { redirectAllRequestsTo: { hostName: childText(redirectAll, "HostName"), protocol: childText(redirectAll, "Protocol") || undefined }, routingRules: [] };
+    const pick = (node, names) => Object.fromEntries(names.flatMap(name => { const child = [...(node?.children ?? [])].find(candidate => candidate.localName === name); return child ? [[name, child.textContent ?? ""]] : []; }));
+    const routingRules = [...result.xml.getElementsByTagName("RoutingRule")].map(rule => { const condition = direct(rule, "Condition")[0]; const redirect = direct(rule, "Redirect")[0]; return { ...(condition ? { Condition: pick(condition, ["KeyPrefixEquals", "HttpErrorCodeReturnedEquals"]) } : {}), Redirect: pick(redirect, ["HostName", "Protocol", "ReplaceKeyPrefixWith", "ReplaceKeyWith", "HttpRedirectCode"]) }; });
+    return { indexDocument: childText(direct(root, "IndexDocument")[0], "Suffix"), errorDocument: childText(direct(root, "ErrorDocument")[0], "Key"), routingRules };
   } catch (error) {
     if (error?.code === "NoSuchWebsiteConfiguration") return undefined;
     throw error;
@@ -470,29 +608,43 @@ function websiteEndpoint(bucket, controlPlaneEndpoint) {
   return `${controlPlaneEndpoint.replace(/\/+$/, "")}/_stacksim/s3-website/${encodeURIComponent(bucket)}/`;
 }
 
+function routingRulesXml(rules) {
+  const element = (name, value) => value === undefined ? "" : `<${name}>${xmlEscape(value)}</${name}>`;
+  return rules.map(rule => `<RoutingRule>${rule.Condition ? `<Condition>${element("KeyPrefixEquals", rule.Condition.KeyPrefixEquals)}${element("HttpErrorCodeReturnedEquals", rule.Condition.HttpErrorCodeReturnedEquals)}</Condition>` : ""}<Redirect>${element("HostName", rule.Redirect?.HostName)}${element("Protocol", rule.Redirect?.Protocol)}${element("ReplaceKeyPrefixWith", rule.Redirect?.ReplaceKeyPrefixWith)}${element("ReplaceKeyWith", rule.Redirect?.ReplaceKeyWith)}${element("HttpRedirectCode", rule.Redirect?.HttpRedirectCode)}</Redirect></RoutingRule>`).join("");
+}
+
 function editWebsite(context, bucket, website) {
-  const enabled = Boolean(website);
-  context.showModal("Edit static website hosting", `<fieldset class="setting-options"><legend class="field-label">Static website hosting</legend><label class="setting-option"><input type="radio" name="websiteStatus" value="enabled" ${enabled ? "checked" : ""}><span><strong>Enable</strong><small>Use this bucket to host a website.</small></span></label><label class="setting-option"><input type="radio" name="websiteStatus" value="disabled" ${enabled ? "" : "checked"}><span><strong>Disable</strong><small>Turn off the bucket website endpoint.</small></span></label></fieldset><div data-website-fields ${enabled ? "" : "hidden"}><div class="field"><label>Hosting type</label><input value="Host a static website" disabled></div><div class="field"><label>Index document</label><input name="indexDocument" required maxlength="1024" value="${escapeHtml(website?.indexDocument ?? "index.html")}" placeholder="index.html"><span class="hint">The object returned for requests to the website root and folder paths.</span></div><div class="field"><label>Error document <span class="muted small">– optional</span></label><input name="errorDocument" maxlength="1024" value="${escapeHtml(website?.errorDocument ?? "")}" placeholder="error.html"></div></div>`, "Save changes", async data => {
+  const enabled = Boolean(website); const redirectMode = Boolean(website?.redirectAllRequestsTo);
+  const rulesJson = website?.routingRules?.length ? JSON.stringify(website.routingRules, null, 2) : "";
+  context.showModal("Edit static website hosting", `<fieldset class="setting-options"><legend class="field-label">Static website hosting</legend><label class="setting-option"><input type="radio" name="websiteStatus" value="disabled" ${enabled ? "" : "checked"}><span><strong>Disable</strong></span></label><label class="setting-option"><input type="radio" name="websiteStatus" value="enabled" ${enabled ? "checked" : ""}><span><strong>Enable</strong></span></label></fieldset><div data-website-fields ${enabled ? "" : "hidden"}><fieldset class="setting-options"><legend class="field-label">Hosting type</legend><label class="setting-option"><input type="radio" name="hostingType" value="host" ${redirectMode ? "" : "checked"}><span><strong>Host a static website</strong><small>Use the bucket endpoint as the web address.</small></span></label><label class="setting-option"><input type="radio" name="hostingType" value="redirect" ${redirectMode ? "checked" : ""}><span><strong>Redirect requests for an object</strong><small>Redirect requests to another bucket or domain.</small></span></label></fieldset><div data-website-host-fields ${redirectMode ? "hidden" : ""}><div class="field"><label>Index document</label><input name="indexDocument" maxlength="1024" value="${escapeHtml(website?.indexDocument ?? "index.html")}" placeholder="index.html"><span class="hint">Specify the home or default page of the website.</span></div><div class="field"><label>Error document <span class="muted small">– optional</span></label><input name="errorDocument" maxlength="1024" value="${escapeHtml(website?.errorDocument ?? "")}" placeholder="error.html"></div><div class="field"><label>Redirection rules <span class="muted small">– optional</span></label><textarea name="routingRules" rows="8" placeholder='[{"Condition":{"KeyPrefixEquals":"docs/"},"Redirect":{"ReplaceKeyPrefixWith":"documents/"}}]'>${escapeHtml(rulesJson)}</textarea><span class="hint">JSON array of up to 50 rules with Condition (KeyPrefixEquals, HttpErrorCodeReturnedEquals) and Redirect (HostName, Protocol, ReplaceKeyPrefixWith, ReplaceKeyWith, HttpRedirectCode), as in the AWS console.</span></div></div><div data-website-redirect-fields ${redirectMode ? "" : "hidden"}><div class="field"><label>Host name</label><input name="redirectHost" value="${escapeHtml(website?.redirectAllRequestsTo?.hostName ?? "")}" placeholder="example.com"></div><div class="field"><label>Protocol <span class="muted small">– optional</span></label><select name="redirectProtocol"><option value="">none</option><option value="http" ${website?.redirectAllRequestsTo?.protocol === "http" ? "selected" : ""}>http</option><option value="https" ${website?.redirectAllRequestsTo?.protocol === "https" ? "selected" : ""}>https</option></select></div></div></div>`, "Save changes", async data => {
     if (data.get("websiteStatus") === "disabled") {
       await s3Request(`${objectPath(bucket)}?website`, { method: "DELETE" });
       context.toast("Static website hosting disabled");
       return;
     }
-    const indexDocument = String(data.get("indexDocument") ?? "").trim();
-    const errorDocument = String(data.get("errorDocument") ?? "").trim();
-    if (!indexDocument) throw new Error("Index document is required when static website hosting is enabled");
-    const body = `<WebsiteConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IndexDocument><Suffix>${xmlEscape(indexDocument)}</Suffix></IndexDocument>${errorDocument ? `<ErrorDocument><Key>${xmlEscape(errorDocument)}</Key></ErrorDocument>` : ""}</WebsiteConfiguration>`;
+    let body;
+    if (data.get("hostingType") === "redirect") {
+      const hostName = String(data.get("redirectHost") ?? "").trim(); const protocol = String(data.get("redirectProtocol") ?? "");
+      if (!hostName) throw new Error("Host name is required when redirecting requests");
+      body = `<WebsiteConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><RedirectAllRequestsTo><HostName>${xmlEscape(hostName)}</HostName>${protocol ? `<Protocol>${xmlEscape(protocol)}</Protocol>` : ""}</RedirectAllRequestsTo></WebsiteConfiguration>`;
+    } else {
+      const indexDocument = String(data.get("indexDocument") ?? "").trim(); const errorDocument = String(data.get("errorDocument") ?? "").trim(); const rulesText = String(data.get("routingRules") ?? "").trim();
+      if (!indexDocument) throw new Error("Index document is required when static website hosting is enabled");
+      let rules = [];
+      if (rulesText) { try { rules = JSON.parse(rulesText); } catch { throw new Error("Redirection rules must be a JSON array"); } if (!Array.isArray(rules)) throw new Error("Redirection rules must be a JSON array"); }
+      body = `<WebsiteConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IndexDocument><Suffix>${xmlEscape(indexDocument)}</Suffix></IndexDocument>${errorDocument ? `<ErrorDocument><Key>${xmlEscape(errorDocument)}</Key></ErrorDocument>` : ""}${rules.length ? `<RoutingRules>${routingRulesXml(rules)}</RoutingRules>` : ""}</WebsiteConfiguration>`;
+    }
     await s3Request(`${objectPath(bucket)}?website`, { method: "PUT", headers: { "content-type": "application/xml" }, body });
     context.toast("Static website hosting enabled");
   });
-  const fields = document.querySelector("[data-website-fields]");
+  const fields = document.querySelector("[data-website-fields]"); const hostFields = document.querySelector("[data-website-host-fields]"); const redirectFields = document.querySelector("[data-website-redirect-fields]");
   const index = fields?.querySelector('[name="indexDocument"]');
   const update = () => {
-    const active = document.querySelector('[name="websiteStatus"]:checked')?.value === "enabled";
-    if (fields) fields.hidden = !active;
-    if (index) index.required = active;
+    const active = document.querySelector('[name="websiteStatus"]:checked')?.value === "enabled"; const redirect = document.querySelector('[name="hostingType"]:checked')?.value === "redirect";
+    if (fields) fields.hidden = !active; if (hostFields) hostFields.hidden = redirect; if (redirectFields) redirectFields.hidden = !redirect;
+    if (index) index.required = active && !redirect;
   };
-  document.querySelectorAll('[name="websiteStatus"]').forEach(input => input.addEventListener("change", update));
+  document.querySelectorAll('[name="websiteStatus"], [name="hostingType"]').forEach(input => input.addEventListener("change", update));
   update();
 }
 
@@ -554,49 +706,210 @@ function bindNotificationActions(context, bucket, model) {
   }));
 }
 
+function bucketTagsModal(context, bucket, tags) {
+  context.showModal("Edit bucket tags", `<p class="hint">Tags are key-value pairs. A bucket can have up to 50 tags.</p>${tagRowsEditor(tags.length ? tags : [["", ""]])}`, "Save changes", async data => {
+    const rows = tagsFromRows(data);
+    if (rows.length > 50) throw new Error("A bucket can have at most 50 tags");
+    if (!rows.length) { await s3Request(`${objectPath(bucket)}?tagging`, { method: "DELETE" }); context.toast("Bucket tags removed"); return; }
+    const body = `<Tagging xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><TagSet>${rows.map(([key, value]) => `<Tag><Key>${xmlEscape(key)}</Key><Value>${xmlEscape(value)}</Value></Tag>`).join("")}</TagSet></Tagging>`;
+    await s3Request(`${objectPath(bucket)}?tagging`, { method: "PUT", headers: { "content-type": "application/xml" }, body }); context.toast("Bucket tags updated");
+  });
+}
+
 async function propertiesPage(context, bucket) {
-  const [locationResult, versionResult, website, environment, bucketSummary] = await Promise.all([s3Request(`${objectPath(bucket)}?location`), s3Request(`${objectPath(bucket)}?versioning`), getWebsite(bucket), rest("/_stacksim/api/summary"), listBuckets().then(values => values.find(value => value.name === bucket))]); const region = first(locationResult.xml, "LocationConstraint") || "us-east-1"; const status = first(versionResult.xml, "Status") || "Not enabled"; const endpoint = websiteEndpoint(bucket, environment.endpoint); context.setChrome("s3", ["S3", "General purpose buckets", bucket]); context.main.innerHTML = `<div class="page-width">${pageHeader(bucket, `Bucket properties in ${escapeHtml(region)}`, `<button class="button danger" data-delete-bucket>Delete bucket</button>`)}${bucketTabs(bucket, "properties")}<section class="card"><div class="card-header"><h2>Bucket Versioning</h2><span class="status">${escapeHtml(status)}</span></div><div class="card-body"><p>Preserve every object version and use delete markers for recoverable deletion.</p><div class="actions"><button class="button primary" data-versioning="Enabled">Enable</button><button class="button" data-versioning="Suspended">Suspend</button></div></div></section><section class="card"><div class="card-header"><h2>Default encryption</h2></div><div class="card-body s3-default-encryption"><p class="muted">Loading encryption…</p></div></section><section class="card s3-static-website-hosting"><div class="card-header"><h2>Static website hosting</h2><button class="button" data-edit-website>Edit</button></div><div class="card-body"><dl class="key-value"><dt>Static website hosting</dt><dd><span class="status ${website ? "" : "inactive"}">${website ? "Enabled" : "Disabled"}</span></dd>${website ? `<dt>Hosting type</dt><dd>Bucket hosting</dd><dt>Bucket website endpoint</dt><dd><a class="mono s3-website-endpoint" href="${escapeHtml(endpoint)}" target="_blank" rel="noopener noreferrer">${escapeHtml(endpoint)}</a></dd><dt>Index document</dt><dd class="mono">${escapeHtml(website.indexDocument)}</dd><dt>Error document</dt><dd class="mono">${escapeHtml(website.errorDocument || "–")}</dd>` : `<dt>Website endpoint</dt><dd class="muted">Enable static website hosting to create a bucket website endpoint.</dd>`}</dl></div></section></div>`; document.querySelectorAll("[data-versioning]").forEach(button => button.addEventListener("click", async () => { const body = `<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>${button.dataset.versioning}</Status></VersioningConfiguration>`; await s3Request(`${objectPath(bucket)}?versioning`, { method: "PUT", headers: { "content-type": "application/xml" }, body }); context.toast(`Versioning ${button.dataset.versioning.toLowerCase()}`); await context.route(); })); document.querySelector("[data-delete-bucket]")?.addEventListener("click", () => deleteBucketAction(context, bucket)); document.querySelector("[data-edit-website]")?.addEventListener("click", () => editWebsite(context, bucket, website));
-  const [encryptionResult, notificationResult] = await Promise.all([
-    s3Request(`${objectPath(bucket)}?encryption`),
-    s3Request(`${objectPath(bucket)}?notification`),
+  const [locationResult, versionResult, website, environment, facts, encryptionResult, notificationResult, payerResult, buckets] = await Promise.all([
+    s3Request(`${objectPath(bucket)}?location`), s3Request(`${objectPath(bucket)}?versioning`), getWebsite(bucket), rest("/_stacksim/api/summary"), bucketFacts(bucket),
+    s3Request(`${objectPath(bucket)}?encryption`), s3Request(`${objectPath(bucket)}?notification`), optionalBucketConfiguration(bucket, "requestPayment"), listBuckets(),
   ]);
-  const algorithm = first(encryptionResult.xml, "SSEAlgorithm") || "AES256";
-  const kmsKeyId = first(encryptionResult.xml, "KMSMasterKeyID");
+  const summary = buckets.find(value => value.name === bucket);
+  const region = first(locationResult.xml, "LocationConstraint") || "us-east-1"; const status = first(versionResult.xml, "Status") || "Disabled"; const endpoint = websiteEndpoint(bucket, environment.endpoint);
+  const algorithm = first(encryptionResult.xml, "SSEAlgorithm") || "AES256"; const kmsKeyId = first(encryptionResult.xml, "KMSMasterKeyID"); const bucketKeyEnabled = first(encryptionResult.xml, "BucketKeyEnabled") === "true";
   const awsManagedKey = algorithm === "aws:kms" && (!kmsKeyId || kmsKeyId === "alias/aws/s3" || /:alias\/aws\/s3$/.test(kmsKeyId) || kmsKeyId === environment.s3AwsManagedKeyArn || kmsKeyId === String(environment.s3AwsManagedKeyArn || "").split("/").pop());
-  const defaultEncryption = context.main.querySelector(".s3-default-encryption");
-  if (defaultEncryption) defaultEncryption.innerHTML = algorithm === "AES256"
-    ? `<p><strong>Server-side encryption with Amazon S3 managed keys (SSE-S3)</strong></p><p class="muted">Object payloads are encrypted in the private local blob store.</p>`
-    : algorithm === "aws:kms" && awsManagedKey
-      ? `<p><strong>Server-side encryption with AWS Key Management Service keys (SSE-KMS)</strong></p><dl class="key-value"><dt>AWS KMS key</dt><dd>AWS managed key (aws/s3)</dd><dt>Key ARN</dt><dd class="mono">${escapeHtml(environment.s3AwsManagedKeyArn || "–")}</dd></dl><div class="alert info"><strong>Local difference</strong><br>StackSim has no KMS service. The AWS managed key aws/s3 is an encryption descriptor that objects record and report; decryption is implicit for callers in this account, and object payloads are encrypted in the private local blob store with an installation key.</div>`
-      : `<p><strong>${escapeHtml(algorithm)} descriptor</strong></p><dl class="key-value"><dt>KMS key</dt><dd class="mono">${escapeHtml(kmsKeyId || "aws/s3")}</dd></dl><div class="alert warning">StackSim provides only the AWS managed key aws/s3 for SSE-KMS. Object writes that use this default fail until it is changed.</div>`;
-  const lockEnabled = Boolean(bucketSummary?.objectLockEnabled);
   const notifications = parseS3NotificationConfiguration(notificationResult.xml);
-  const tags = (bucketSummary?.tags ?? []).map(([key, value]) => `${key}=${value}`);
-  context.main.querySelector(".page-width")?.insertAdjacentHTML("beforeend", `<section class="card s3-governance"><div class="card-header"><h2>Data governance</h2><div class="actions"><button class="button" data-edit-s3-encryption>Edit encryption</button><button class="button" data-edit-s3-lock>${lockEnabled ? "Edit Object Lock" : "Configure Object Lock"}</button><button class="button" data-edit-s3-tags>Edit tags</button></div></div><div class="card-body"><dl class="key-value"><dt>Default encryption</dt><dd>${escapeHtml(algorithm)}</dd><dt>Object Lock</dt><dd><span class="status ${lockEnabled ? "" : "inactive"}">${lockEnabled ? "Enabled" : "Disabled"}</span></dd><dt>Bucket tags</dt><dd>${tags.length ? tags.map(escapeHtml).join("<br>") : "–"}</dd></dl><p class="muted">SSE-KMS uses the AWS managed key aws/s3, modeled locally as an encryption descriptor; object data remains protected by the authenticated local blob tier.</p></div></section><section class="card s3-event-notifications"><div class="card-header"><div><h2>Event notifications <span class="muted">(${notifications.configurations.length})</span></h2><p class="muted small">Direct Lambda and SQS destinations</p></div><button class="button primary" data-create-s3-notification>Create event notification</button></div><div class="table-wrap">${notificationInventory(notifications)}</div><div class="card-body s3-notification-guidance"><p class="muted">Delivery is durable and at least once. Destination failures never roll back object mutations. Saving validates the complete configuration and sends the S3 test event to each destination. Destination policies must allow <span class="mono">s3.amazonaws.com</span> for this bucket.</p><div class="actions"><a href="#/lambda/functions">View Lambda functions</a><a href="#/sqs/queues">View SQS queues</a><a href="#/s3/buckets/${encodeURIComponent(bucket)}/metrics">View delivery health</a></div></div></section><section class="card s3-eventbridge-notifications"><div class="card-header"><h2>Amazon EventBridge</h2><button class="button" data-edit-s3-eventbridge>Edit</button></div><div class="card-body"><dl class="key-value"><dt>Publishing</dt><dd><span class="status ${notifications.eventBridge ? "" : "inactive"}">${notifications.eventBridge ? "Enabled" : "Disabled"}</span></dd><dt>Event selection</dt><dd>All supported S3 events</dd><dt>Filtering</dt><dd>EventBridge rules on the default event bus</dd></dl><p class="muted">This is one bucket-wide opt-in. Prefix and suffix filters apply only to direct notification configurations.</p><a href="#/eventbridge/event-buses/default/rules">View rules on the default event bus</a></div></section>`);
-  document.querySelector("[data-edit-s3-encryption]")?.addEventListener("click", () => context.showModal("Default encryption", `<div class="field"><label>Algorithm</label><select name="algorithm"><option value="AES256">SSE-S3</option><option value="aws:kms">SSE-KMS descriptor</option><option value="aws:kms:dsse">DSSE-KMS descriptor</option></select></div><div class="field"><label>KMS key ID or alias</label><input name="key" placeholder="alias/example"></div><label class="setting-option"><input type="checkbox" name="bucketKey"><span>Enable S3 Bucket Key</span></label><div class="alert info">SSE-KMS works with the AWS managed key aws/s3: leave the key empty or enter alias/aws/s3. Customer managed keys and DSSE-KMS are stored as descriptors, and object writes that need them fail.</div>`, "Save", async data => { const selected = String(data.get("algorithm")); const key = String(data.get("key") || ""); const body = `<ServerSideEncryptionConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>${xmlEscape(selected)}</SSEAlgorithm>${key ? `<KMSMasterKeyID>${xmlEscape(key)}</KMSMasterKeyID>` : ""}</ApplyServerSideEncryptionByDefault><BucketKeyEnabled>${data.get("bucketKey") === "on"}</BucketKeyEnabled></Rule></ServerSideEncryptionConfiguration>`; await s3Request(`${objectPath(bucket)}?encryption`, { method: "PUT", headers: { "content-type": "application/xml" }, body }); context.toast("Default encryption updated"); }));
-  document.querySelector("[data-edit-s3-lock]")?.addEventListener("click", () => context.showModal("Object Lock", `<div class="alert warning"><strong>Object Lock cannot be disabled after it is enabled.</strong><br>Versioning must be enabled.</div><div class="field"><label>Default mode</label><select name="mode"><option value="">No default retention</option><option>GOVERNANCE</option><option>COMPLIANCE</option></select></div><div class="field"><label>Days</label><input name="days" type="number" min="1"></div>`, lockEnabled ? "Save" : "Enable", async data => { const mode = String(data.get("mode") || ""); const days = String(data.get("days") || ""); const body = `<ObjectLockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ObjectLockEnabled>Enabled</ObjectLockEnabled>${mode ? `<Rule><DefaultRetention><Mode>${mode}</Mode><Days>${xmlEscape(days)}</Days></DefaultRetention></Rule>` : ""}</ObjectLockConfiguration>`; await s3Request(`${objectPath(bucket)}?object-lock`, { method: "PUT", headers: { "content-type": "application/xml" }, body }); context.toast("Object Lock updated"); }, false, { danger: !lockEnabled }));
-  document.querySelector("[data-edit-s3-tags]")?.addEventListener("click", () => context.showModal("Bucket tags", `<div class="field"><label>One key=value per line</label><textarea name="tags" rows="8">${escapeHtml(tags.join("\n"))}</textarea></div>`, "Save", async data => { const rows = String(data.get("tags") || "").split(/\r?\n/).filter(Boolean).map(line => { const split = line.indexOf("="); if (split < 1) throw new Error(`Invalid tag: ${line}`); return [line.slice(0, split), line.slice(split + 1)]; }); const body = `<Tagging xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><TagSet>${rows.map(([key, value]) => `<Tag><Key>${xmlEscape(key)}</Key><Value>${xmlEscape(value)}</Value></Tag>`).join("")}</TagSet></Tagging>`; await s3Request(`${objectPath(bucket)}?tagging`, { method: "PUT", headers: { "content-type": "application/xml" }, body }); context.toast("Bucket tags updated"); }));
+  const payer = first(payerResult?.xml, "Payer") || "BucketOwner";
+  const lockEnabled = facts.objectLockEnabled; const retention = facts.defaultRetention;
+  const encryptionCard = algorithm === "AES256"
+    ? `<dl class="key-value"><dt>Encryption type</dt><dd>Server-side encryption with Amazon S3 managed keys (SSE-S3)</dd></dl><p class="muted">Object payloads are encrypted in the private local blob store.</p>`
+    : algorithm === "aws:kms" && awsManagedKey
+      ? `<dl class="key-value"><dt>Encryption type</dt><dd>Server-side encryption with AWS Key Management Service keys (SSE-KMS)</dd><dt>AWS KMS key</dt><dd>AWS managed key (aws/s3)</dd><dt>Key ARN</dt><dd class="mono">${escapeHtml(environment.s3AwsManagedKeyArn || "–")}</dd><dt>Bucket Key</dt><dd>${bucketKeyEnabled ? "Enabled" : "Disabled"}</dd></dl><div class="alert info"><strong>Local difference</strong><br>StackSim has no KMS service. The AWS managed key aws/s3 is an encryption descriptor that objects record and report; decryption is implicit for callers in this account, and object payloads are encrypted in the private local blob store with an installation key.</div>`
+      : `<dl class="key-value"><dt>Encryption type</dt><dd>${escapeHtml(algorithm)} descriptor</dd><dt>KMS key</dt><dd class="mono">${escapeHtml(kmsKeyId || "aws/s3")}</dd><dt>Bucket Key</dt><dd>${bucketKeyEnabled ? "Enabled" : "Disabled"}</dd></dl><div class="alert warning">StackSim provides only the AWS managed key aws/s3 for SSE-KMS. Object writes that use this default fail until it is changed.</div>`;
+  const websiteRows = !website
+    ? `<dt>Static website hosting</dt><dd><span class="status inactive">Disabled</span></dd><dt>Website endpoint</dt><dd class="muted">Enable static website hosting to create a bucket website endpoint.</dd>`
+    : website.redirectAllRequestsTo
+      ? `<dt>Static website hosting</dt><dd><span class="status">Enabled</span></dd><dt>Hosting type</dt><dd>Redirect requests for an object</dd><dt>Bucket website endpoint</dt><dd><a class="mono s3-website-endpoint" href="${escapeHtml(endpoint)}" target="_blank" rel="noopener noreferrer">${escapeHtml(endpoint)}</a></dd><dt>Redirect to</dt><dd class="mono">${escapeHtml(`${website.redirectAllRequestsTo.protocol || "http"}://${website.redirectAllRequestsTo.hostName}`)}</dd>`
+      : `<dt>Static website hosting</dt><dd><span class="status">Enabled</span></dd><dt>Hosting type</dt><dd>Bucket hosting</dd><dt>Bucket website endpoint</dt><dd><a class="mono s3-website-endpoint" href="${escapeHtml(endpoint)}" target="_blank" rel="noopener noreferrer">${escapeHtml(endpoint)}</a></dd><dt>Index document</dt><dd class="mono">${escapeHtml(website.indexDocument)}</dd><dt>Error document</dt><dd class="mono">${escapeHtml(website.errorDocument || "–")}</dd><dt>Redirection rules</dt><dd>${website.routingRules.length ? `${website.routingRules.length} rule${website.routingRules.length === 1 ? "" : "s"}` : "–"}</dd>`;
+  context.setChrome("s3", ["S3", "General purpose buckets", bucket]);
+  context.main.innerHTML = `<div class="page-width">${pageHeader(bucket, `Bucket properties in ${escapeHtml(region)}`, `<button class="button danger" data-delete-bucket>Delete bucket</button>`)}${bucketTabs(bucket, "properties")}
+    <section class="card s3-bucket-overview"><div class="card-header"><h2>Bucket overview</h2></div><div class="card-body"><dl class="key-value"><dt>AWS Region</dt><dd>${escapeHtml(region)}</dd><dt>Amazon Resource Name (ARN)</dt><dd class="mono">${escapeHtml(summary?.arn || `arn:aws:s3:::${bucket}`)}</dd><dt>Creation date</dt><dd>${summary ? escapeHtml(new Date(summary.createdAt).toLocaleString()) : "–"}</dd></dl></div></section>
+    <section class="card"><div class="card-header"><h2>Bucket Versioning</h2><span class="status ${status === "Enabled" ? "" : "inactive"}">${escapeHtml(status)}</span></div><div class="card-body"><p>Versioning keeps multiple versions of an object in the same bucket so you can recover from unintended user actions and application failures. Once enabled, versioning can be suspended but not disabled.</p><div class="actions"><button class="button primary" data-versioning="Enabled" ${status === "Enabled" ? "disabled" : ""}>Enable</button><button class="button" data-versioning="Suspended" ${status === "Enabled" ? "" : "disabled"}>Suspend</button></div></div></section>
+    <section class="card s3-bucket-tags"><div class="card-header"><h2>Tags <span class="muted">(${facts.tags.length})</span></h2><button class="button" data-edit-s3-tags>Edit</button></div><div class="table-wrap">${facts.tags.length ? `<table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>${facts.tags.map(([key, value]) => `<tr><td class="mono">${escapeHtml(key)}</td><td>${escapeHtml(value)}</td></tr>`).join("")}</tbody></table>` : '<div class="card-body"><p class="muted">No tags associated with this bucket.</p></div>'}</div></section>
+    <section class="card s3-default-encryption-card"><div class="card-header"><h2>Default encryption</h2><button class="button" data-edit-s3-encryption>Edit</button></div><div class="card-body s3-default-encryption">${encryptionCard}</div></section>
+    <section class="card s3-event-notifications"><div class="card-header"><div><h2>Event notifications <span class="muted">(${notifications.configurations.length})</span></h2><p class="muted small">Direct Lambda and SQS destinations</p></div><button class="button primary" data-create-s3-notification>Create event notification</button></div><div class="table-wrap">${notificationInventory(notifications)}</div><div class="card-body s3-notification-guidance"><p class="muted">Delivery is durable and at least once. Destination failures never roll back object mutations. Saving validates the complete configuration and sends the S3 test event to each destination. Destination policies must allow <span class="mono">s3.amazonaws.com</span> for this bucket.</p><div class="actions"><a href="#/lambda/functions">View Lambda functions</a><a href="#/sqs/queues">View SQS queues</a><a href="#/s3/buckets/${encodeURIComponent(bucket)}/metrics">View delivery health</a></div></div></section>
+    <section class="card s3-eventbridge-notifications"><div class="card-header"><h2>Amazon EventBridge</h2><button class="button" data-edit-s3-eventbridge>Edit</button></div><div class="card-body"><dl class="key-value"><dt>Send notifications to Amazon EventBridge for all events in this bucket</dt><dd><span class="status ${notifications.eventBridge ? "" : "inactive"}">${notifications.eventBridge ? "On" : "Off"}</span></dd></dl><p class="muted">This is one bucket-wide opt-in. Prefix and suffix filters apply only to direct notification configurations; EventBridge rules on the default event bus do the filtering.</p><a href="#/eventbridge/event-buses/default/rules">View rules on the default event bus</a></div></section>
+    <section class="card s3-object-lock"><div class="card-header"><h2>Object Lock</h2><button class="button" data-edit-s3-lock>Edit</button></div><div class="card-body"><dl class="key-value"><dt>Object Lock</dt><dd><span class="status ${lockEnabled ? "" : "inactive"}">${lockEnabled ? "Enabled" : "Disabled"}</span></dd>${lockEnabled ? `<dt>Default retention</dt><dd>${retention ? `${escapeHtml(retention.mode)} · ${escapeHtml(retention.days ? `${retention.days} day${retention.days === "1" ? "" : "s"}` : `${retention.years} year${retention.years === "1" ? "" : "s"}`)}` : "Disabled"}</dd>` : ""}</dl><p class="muted">Store objects using a write-once-read-many (WORM) model to prevent objects from being deleted or overwritten for a fixed amount of time or indefinitely. Object Lock cannot be disabled once enabled and requires Bucket Versioning.</p></div></section>
+    <section class="card s3-requester-pays"><div class="card-header"><h2>Requester Pays</h2><button class="button" data-edit-requester-pays>Edit</button></div><div class="card-body"><dl class="key-value"><dt>Requester Pays</dt><dd><span class="status ${payer === "Requester" ? "" : "inactive"}">${payer === "Requester" ? "Enabled" : "Disabled"}</span></dd></dl><p class="muted">When enabled, the requester pays for requests and data transfer costs and must send the <span class="mono">x-amz-request-payer</span> header. StackSim enforces the header and authorization context; no billing is simulated.</p></div></section>
+    <section class="card s3-static-website-hosting"><div class="card-header"><h2>Static website hosting</h2><button class="button" data-edit-website>Edit</button></div><div class="card-body"><dl class="key-value">${websiteRows}</dl></div></section>
+  </div>`;
+  document.querySelectorAll("[data-versioning]").forEach(button => button.addEventListener("click", async () => { const body = `<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>${button.dataset.versioning}</Status></VersioningConfiguration>`; await s3Request(`${objectPath(bucket)}?versioning`, { method: "PUT", headers: { "content-type": "application/xml" }, body }); context.toast(`Versioning ${button.dataset.versioning.toLowerCase()}`); await context.route(); }));
+  document.querySelector("[data-delete-bucket]")?.addEventListener("click", () => deleteBucketAction(context, bucket));
+  document.querySelector("[data-edit-website]")?.addEventListener("click", () => editWebsite(context, bucket, website));
+  document.querySelector("[data-edit-s3-tags]")?.addEventListener("click", () => bucketTagsModal(context, bucket, facts.tags));
+  document.querySelector("[data-edit-s3-encryption]")?.addEventListener("click", () => context.showModal("Edit default encryption", `<fieldset class="setting-options"><legend class="sr-only">Encryption type</legend><label class="setting-option"><input type="radio" name="algorithm" value="AES256" ${algorithm === "AES256" ? "checked" : ""}><span><strong>Server-side encryption with Amazon S3 managed keys (SSE-S3)</strong></span></label><label class="setting-option"><input type="radio" name="algorithm" value="aws:kms" ${algorithm === "aws:kms" ? "checked" : ""}><span><strong>Server-side encryption with AWS Key Management Service keys (SSE-KMS)</strong></span></label><label class="setting-option"><input type="radio" name="algorithm" value="aws:kms:dsse" ${algorithm === "aws:kms:dsse" ? "checked" : ""}><span><strong>Dual-layer server-side encryption with AWS KMS keys (DSSE-KMS)</strong></span></label></fieldset><div class="field"><label>AWS KMS key</label><input name="key" value="${escapeHtml(kmsKeyId)}" placeholder="alias/aws/s3"><span class="hint">Leave empty or enter alias/aws/s3 for the AWS managed key.</span></div><label class="setting-option"><input type="checkbox" name="bucketKey" ${bucketKeyEnabled ? "checked" : ""}><span><strong>Bucket Key</strong><small>Reduces KMS requests for SSE-KMS objects.</small></span></label><div class="alert info">SSE-KMS works with the AWS managed key aws/s3. Customer managed keys and DSSE-KMS are stored as descriptors, and object writes that need them fail.</div>`, "Save changes", async data => { const selected = String(data.get("algorithm") || "AES256"); const key = String(data.get("key") || "").trim(); const body = `<ServerSideEncryptionConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>${xmlEscape(selected)}</SSEAlgorithm>${key && selected !== "AES256" ? `<KMSMasterKeyID>${xmlEscape(key)}</KMSMasterKeyID>` : ""}</ApplyServerSideEncryptionByDefault><BucketKeyEnabled>${selected === "aws:kms" && data.get("bucketKey") === "on"}</BucketKeyEnabled></Rule></ServerSideEncryptionConfiguration>`; await s3Request(`${objectPath(bucket)}?encryption`, { method: "PUT", headers: { "content-type": "application/xml" }, body }); context.toast("Default encryption updated"); }));
+  document.querySelector("[data-edit-s3-lock]")?.addEventListener("click", () => context.showModal("Edit Object Lock", `${lockEnabled ? '<div class="alert info">Object Lock is enabled for this bucket and cannot be disabled.</div>' : '<div class="alert warning"><strong>Object Lock cannot be disabled after it is enabled.</strong><br>Enabling Object Lock requires Bucket Versioning, which StackSim enables automatically.</div><label class="setting-option"><input type="checkbox" name="enable" required><span><strong>Enable Object Lock</strong><small>I acknowledge that enabling Object Lock will permanently allow objects in this bucket to be locked.</small></span></label>'}<h3>Default retention</h3><fieldset class="setting-options"><legend class="sr-only">Default retention</legend><label class="setting-option"><input type="radio" name="retention" value="Disabled" ${retention ? "" : "checked"}><span><strong>Disable</strong></span></label><label class="setting-option"><input type="radio" name="retention" value="Enabled" ${retention ? "checked" : ""}><span><strong>Enable</strong><small>Apply a retention period to every new object version.</small></span></label></fieldset><div class="field"><label>Default retention mode</label><select name="mode"><option ${retention?.mode === "GOVERNANCE" ? "selected" : ""}>GOVERNANCE</option><option ${retention?.mode === "COMPLIANCE" ? "selected" : ""}>COMPLIANCE</option></select></div><div class="field-row"><div class="field"><label>Default retention period</label><input name="period" type="number" min="1" value="${escapeHtml(retention?.days || retention?.years || "")}"></div><div class="field"><label>Unit</label><select name="unit"><option value="Days" ${retention?.years ? "" : "selected"}>Days</option><option value="Years" ${retention?.years ? "selected" : ""}>Years</option></select></div></div>`, lockEnabled ? "Save changes" : "Enable", async data => { if (!lockEnabled && data.get("enable") !== "on") throw new Error("Acknowledge that Object Lock is permanent"); const enabled = data.get("retention") === "Enabled"; const period = String(data.get("period") || ""); if (enabled && !/^[1-9]\d*$/.test(period)) throw new Error("Default retention requires a positive period"); const unit = String(data.get("unit") || "Days"); const rule = enabled ? `<Rule><DefaultRetention><Mode>${xmlEscape(String(data.get("mode")))}</Mode><${unit}>${xmlEscape(period)}</${unit}></DefaultRetention></Rule>` : ""; if (!lockEnabled && status !== "Enabled") await s3Request(`${objectPath(bucket)}?versioning`, { method: "PUT", headers: { "content-type": "application/xml" }, body: `<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>` }); await s3Request(`${objectPath(bucket)}?object-lock`, { method: "PUT", headers: { "content-type": "application/xml" }, body: `<ObjectLockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ObjectLockEnabled>Enabled</ObjectLockEnabled>${rule}</ObjectLockConfiguration>` }); context.toast("Object Lock updated"); }, false, { danger: !lockEnabled }));
+  document.querySelector("[data-edit-requester-pays]")?.addEventListener("click", () => context.showModal("Edit Requester Pays", `<fieldset class="setting-options"><legend class="sr-only">Requester Pays</legend><label class="setting-option"><input type="radio" name="payer" value="BucketOwner" ${payer === "BucketOwner" ? "checked" : ""}><span><strong>Disable</strong><small>The bucket owner pays for requests and data transfer.</small></span></label><label class="setting-option"><input type="radio" name="payer" value="Requester" ${payer === "Requester" ? "checked" : ""}><span><strong>Enable</strong><small>Requesters pay and must send x-amz-request-payer: requester.</small></span></label></fieldset>`, "Save changes", async data => {
+    const body = `<RequestPaymentConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Payer>${xmlEscape(data.get("payer"))}</Payer></RequestPaymentConfiguration>`; await s3Request(`${objectPath(bucket)}?requestPayment`, { method: "PUT", headers: { "content-type": "application/xml" }, body }); context.toast("Requester Pays updated");
+  }));
   bindNotificationActions(context, bucket, notifications);
 }
 
 async function versionsPage(context, bucket) {
-  const output = await s3Request(`${objectPath(bucket)}?versions`); const root = output.xml.documentElement; const rows = [...root.children].filter(node => ["Version", "DeleteMarker"].includes(node.localName)).map(node => ({ marker: node.localName === "DeleteMarker", key: first(node, "Key"), versionId: first(node, "VersionId"), latest: first(node, "IsLatest") === "true", modified: first(node, "LastModified"), size: first(node, "Size") })); context.setChrome("s3", ["S3", "General purpose buckets", bucket, "Versions"]); context.main.innerHTML = `<div class="page-width">${pageHeader("Object versions", `Version history and delete markers for ${escapeHtml(bucket)}.`, `<a class="button" href="#/s3/buckets/${encodeURIComponent(bucket)}/objects">Hide versions</a>`)}${bucketTabs(bucket, "objects")}<section class="card"><div class="table-wrap">${rows.length ? `<table><thead><tr><th>Key</th><th>Version ID</th><th>Type</th><th>Latest</th><th>Modified</th><th>Size</th><th>Actions</th></tr></thead><tbody>${rows.map(row => `<tr><td>${escapeHtml(row.key)}</td><td class="mono">${escapeHtml(row.versionId)}</td><td>${row.marker ? "Delete marker" : "Version"}</td><td>${row.latest ? "Yes" : "No"}</td><td>${escapeHtml(new Date(row.modified).toLocaleString())}</td><td>${row.marker ? "–" : humanBytes(row.size)}</td><td><button class="button link" data-version-delete="${escapeHtml(row.versionId)}" data-key="${escapeHtml(row.key)}">Delete permanently</button>${row.marker ? "" : `<button class="button link" data-version-download="${escapeHtml(row.versionId)}" data-key="${escapeHtml(row.key)}">Download</button><button class="button link" data-version-restore="${escapeHtml(row.versionId)}" data-key="${escapeHtml(row.key)}">Restore</button>`}</td></tr>`).join("")}</tbody></table>` : emptyState("◇", "No versions", "Upload an object after enabling versioning.")}</div></section></div>`;
-  document.querySelectorAll("[data-version-delete]").forEach(button => button.addEventListener("click", () => context.confirmDeletion(button.dataset.versionDelete, `Permanently delete version ${button.dataset.versionDelete}?`, async () => { await s3Request(`${objectPath(bucket, button.dataset.key)}?versionId=${encodeURIComponent(button.dataset.versionDelete)}`, { method: "DELETE" }); context.toast("Version permanently deleted"); await context.route(); })));
-  document.querySelectorAll("[data-version-download]").forEach(button => button.addEventListener("click", async () => { const result = await s3Request(`${objectPath(bucket, button.dataset.key)}?versionId=${encodeURIComponent(button.dataset.versionDownload)}`); const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([result.body])); link.download = button.dataset.key.split("/").at(-1); link.click(); }));
-  document.querySelectorAll("[data-version-restore]").forEach(button => button.addEventListener("click", () => context.showModal("Restore object version", `<div class="field"><label>Source version</label><input value="${escapeHtml(button.dataset.versionRestore)}" disabled></div><div class="field"><label>Destination key</label><input name="key" required value="${escapeHtml(button.dataset.key)}"></div><p class="hint">Restore creates a new current version by copying this historical version.</p>`, "Restore", async data => { const destination = String(data.get("key")); await s3Request(objectPath(bucket, destination), { method: "PUT", headers: { "x-amz-copy-source": copySource(bucket, button.dataset.key, button.dataset.versionRestore), "x-amz-metadata-directive": "COPY" } }); context.toast("Version restored as the current object"); })));
+  const rows = []; let cursor = {};
+  const loadPage = async () => {
+    const markers = cursor.keyMarker ? `&key-marker=${encodeURIComponent(cursor.keyMarker)}${cursor.versionMarker ? `&version-id-marker=${encodeURIComponent(cursor.versionMarker)}` : ""}` : "";
+    const output = await s3Request(`${objectPath(bucket)}?versions&max-keys=1000${markers}`); const root = output.xml.documentElement;
+    rows.push(...[...root.children].filter(node => ["Version", "DeleteMarker"].includes(node.localName)).map(node => ({ marker: node.localName === "DeleteMarker", key: first(node, "Key"), versionId: first(node, "VersionId"), latest: first(node, "IsLatest") === "true", modified: first(node, "LastModified"), size: first(node, "Size"), storageClass: first(node, "StorageClass") })));
+    cursor = first(root, "IsTruncated") === "true" ? { keyMarker: first(root, "NextKeyMarker"), versionMarker: first(root, "NextVersionIdMarker") } : undefined;
+  };
+  await loadPage();
+  const render = () => {
+    context.setChrome("s3", ["S3", "General purpose buckets", bucket, "Versions"]);
+    context.main.innerHTML = `<div class="page-width">${pageHeader(bucket, `Object versions and delete markers in s3://${escapeHtml(bucket)}/`, `<a class="button" href="#/s3/buckets/${encodeURIComponent(bucket)}/objects">Hide versions</a>`)}${bucketTabs(bucket, "objects")}<section class="card"><div class="card-header"><h2>Objects <span class="muted">(${rows.length}${cursor ? "+" : ""})</span></h2><span class="muted">Show versions is on</span></div><div class="table-wrap">${rows.length ? `<table><thead><tr><th>Name</th><th>Version ID</th><th>Type</th><th>Latest version</th><th>Last modified</th><th>Size</th><th>Storage class</th><th>Actions</th></tr></thead><tbody>${rows.map(row => `<tr><td>${row.marker ? escapeHtml(row.key) : `<a href="${objectPageHref(bucket, row.key, "properties", row.latest ? undefined : row.versionId)}">${escapeHtml(row.key)}</a>`}</td><td class="mono">${escapeHtml(row.versionId)}</td><td>${row.marker ? "Delete marker" : "Object version"}</td><td>${row.latest ? "Yes" : "No"}</td><td>${escapeHtml(new Date(row.modified).toLocaleString())}</td><td>${row.marker ? "–" : humanBytes(row.size)}</td><td>${row.marker ? "–" : escapeHtml(row.storageClass || "STANDARD")}</td><td><button class="button link" data-version-delete="${escapeHtml(row.versionId)}" data-key="${escapeHtml(row.key)}">Delete permanently</button>${row.marker ? "" : `<button class="button link" data-version-download="${escapeHtml(row.versionId)}" data-key="${escapeHtml(row.key)}">Download</button><button class="button link" data-version-restore="${escapeHtml(row.versionId)}" data-key="${escapeHtml(row.key)}">Restore</button>`}</td></tr>`).join("")}</tbody></table>` : emptyState("◇", "No versions", "Upload an object after enabling versioning.")}</div>${cursor ? '<div class="card-body"><button class="button" data-load-more-versions>Load more versions</button></div>' : ""}</section></div>`;
+    document.querySelector("[data-load-more-versions]")?.addEventListener("click", () => inlineAction(context, async () => { await loadPage(); render(); }));
+    document.querySelectorAll("[data-version-delete]").forEach(button => button.addEventListener("click", () => context.confirmDeletion(button.dataset.versionDelete, `Permanently delete version ${button.dataset.versionDelete}?`, async () => { await s3Request(`${objectPath(bucket, button.dataset.key)}?versionId=${encodeURIComponent(button.dataset.versionDelete)}`, { method: "DELETE" }); context.toast("Version permanently deleted"); await context.route(); })));
+    document.querySelectorAll("[data-version-download]").forEach(button => button.addEventListener("click", () => inlineAction(context, () => downloadObject(bucket, button.dataset.key, button.dataset.versionDownload))));
+    document.querySelectorAll("[data-version-restore]").forEach(button => button.addEventListener("click", () => context.showModal("Restore object version", `<div class="field"><label>Source version</label><input value="${escapeHtml(button.dataset.versionRestore)}" disabled></div><div class="field"><label>Destination key</label><input name="key" required value="${escapeHtml(button.dataset.key)}"></div><p class="hint">Restore creates a new current version by copying this historical version.</p>`, "Restore", async data => { const destination = String(data.get("key")); await s3Request(objectPath(bucket, destination), { method: "PUT", headers: { "x-amz-copy-source": copySource(bucket, button.dataset.key, button.dataset.versionRestore), "x-amz-metadata-directive": "COPY" } }); context.toast("Version restored as the current object"); })));
+  };
+  render();
+}
+
+const LIFECYCLE_STORAGE_CLASSES = ["STANDARD_IA", "INTELLIGENT_TIERING", "ONEZONE_IA", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE"];
+
+function parseLifecycleRules(xml) {
+  const present = (node, name) => Boolean(node && [...node.children].some(child => child.localName === name));
+  const text = (node, name) => (node && present(node, name) ? childText(node, name) : "");
+  return [...(xml?.getElementsByTagName("Rule") ?? [])].map(rule => {
+    const filter = direct(rule, "Filter")[0]; const scope = filter ? (direct(filter, "And")[0] ?? filter) : undefined;
+    const expiration = direct(rule, "Expiration")[0]; const noncurrentExpiration = direct(rule, "NoncurrentVersionExpiration")[0]; const abort = direct(rule, "AbortIncompleteMultipartUpload")[0];
+    return {
+      id: text(rule, "ID"), status: text(rule, "Status") || "Enabled",
+      prefix: scope ? text(scope, "Prefix") : text(rule, "Prefix"),
+      tags: scope ? direct(scope, "Tag").map(tag => [childText(tag, "Key"), childText(tag, "Value")]) : [],
+      sizeGreaterThan: text(scope, "ObjectSizeGreaterThan"), sizeLessThan: text(scope, "ObjectSizeLessThan"),
+      transitions: direct(rule, "Transition").map(node => ({ days: text(node, "Days"), date: text(node, "Date"), storageClass: text(node, "StorageClass") })),
+      expirationDays: text(expiration, "Days"), expirationDate: text(expiration, "Date"), expiredObjectDeleteMarker: text(expiration, "ExpiredObjectDeleteMarker") === "true",
+      noncurrentTransitions: direct(rule, "NoncurrentVersionTransition").map(node => ({ days: text(node, "NoncurrentDays"), storageClass: text(node, "StorageClass"), newer: text(node, "NewerNoncurrentVersions") })),
+      noncurrentExpirationDays: text(noncurrentExpiration, "NoncurrentDays"), newerNoncurrentVersions: text(noncurrentExpiration, "NewerNoncurrentVersions"),
+      abortDays: text(abort, "DaysAfterInitiation"),
+    };
+  });
+}
+
+function lifecycleRulesXml(rules) {
+  const element = (name, value) => value === undefined || value === "" ? "" : `<${name}>${xmlEscape(value)}</${name}>`;
+  return `<LifecycleConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">${rules.map(rule => {
+    const predicates = [`<Prefix>${xmlEscape(rule.prefix || "")}</Prefix>`, ...rule.tags.map(([key, value]) => `<Tag><Key>${xmlEscape(key)}</Key><Value>${xmlEscape(value)}</Value></Tag>`), element("ObjectSizeGreaterThan", rule.sizeGreaterThan), element("ObjectSizeLessThan", rule.sizeLessThan)].filter(Boolean);
+    const filter = predicates.length > 1 ? `<Filter><And>${predicates.join("")}</And></Filter>` : `<Filter>${predicates[0]}</Filter>`;
+    const transitions = rule.transitions.map(item => `<Transition>${element("Days", item.days)}${element("Date", item.date)}<StorageClass>${xmlEscape(item.storageClass)}</StorageClass></Transition>`).join("");
+    const expiration = rule.expirationDays || rule.expirationDate ? `<Expiration>${element("Days", rule.expirationDays)}${element("Date", rule.expirationDate)}</Expiration>` : rule.expiredObjectDeleteMarker ? "<Expiration><ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker></Expiration>" : "";
+    const noncurrentTransitions = rule.noncurrentTransitions.map(item => `<NoncurrentVersionTransition>${element("NoncurrentDays", item.days)}${element("NewerNoncurrentVersions", item.newer)}<StorageClass>${xmlEscape(item.storageClass)}</StorageClass></NoncurrentVersionTransition>`).join("");
+    const noncurrentExpiration = rule.noncurrentExpirationDays || rule.newerNoncurrentVersions ? `<NoncurrentVersionExpiration>${element("NoncurrentDays", rule.noncurrentExpirationDays)}${element("NewerNoncurrentVersions", rule.newerNoncurrentVersions)}</NoncurrentVersionExpiration>` : "";
+    const abort = rule.abortDays ? `<AbortIncompleteMultipartUpload><DaysAfterInitiation>${xmlEscape(rule.abortDays)}</DaysAfterInitiation></AbortIncompleteMultipartUpload>` : "";
+    return `<Rule>${element("ID", rule.id)}${filter}<Status>${xmlEscape(rule.status)}</Status>${transitions}${expiration}${noncurrentTransitions}${noncurrentExpiration}${abort}</Rule>`;
+  }).join("")}</LifecycleConfiguration>`;
+}
+
+function describeLifecycleScope(rule) {
+  const parts = [];
+  if (rule.prefix) parts.push(`Prefix: ${rule.prefix}`); rule.tags.forEach(([key, value]) => parts.push(`Tag: ${key}=${value}`));
+  if (rule.sizeGreaterThan) parts.push(`Size > ${humanBytes(rule.sizeGreaterThan)}`); if (rule.sizeLessThan) parts.push(`Size < ${humanBytes(rule.sizeLessThan)}`);
+  return parts.length ? parts.join(", ") : "Entire bucket";
+}
+
+function lifecycleRuleForm(rule) {
+  const filtered = Boolean(rule.prefix || rule.tags.length || rule.sizeGreaterThan || rule.sizeLessThan);
+  const transitionRow = (item = { days: "", storageClass: "GLACIER" }) => `<div class="s3-object-tag-row s3-lifecycle-transition-row"><select name="tcClass" aria-label="Storage class transition">${LIFECYCLE_STORAGE_CLASSES.map(value => `<option ${item.storageClass === value ? "selected" : ""}>${value}</option>`).join("")}</select><input name="tcDays" type="number" min="0" aria-label="Days after object creation" value="${escapeHtml(item.days)}" placeholder="Days after object creation"><button class="button link danger" type="button" data-remove-tag-row>Remove</button></div>`;
+  const noncurrentRow = (item = { days: "", storageClass: "GLACIER", newer: "" }) => `<div class="s3-object-tag-row s3-lifecycle-transition-row"><select name="tnClass" aria-label="Noncurrent storage class transition">${LIFECYCLE_STORAGE_CLASSES.map(value => `<option ${item.storageClass === value ? "selected" : ""}>${value}</option>`).join("")}</select><input name="tnDays" type="number" min="1" aria-label="Days after objects become noncurrent" value="${escapeHtml(item.days)}" placeholder="Days after objects become noncurrent"><input name="tnNewer" type="number" min="1" max="100" aria-label="Number of newer versions to retain" value="${escapeHtml(item.newer)}" placeholder="Newer versions to retain (optional)"><button class="button link danger" type="button" data-remove-tag-row>Remove</button></div>`;
+  const action = (name, label, checked, body) => `<label class="checkbox-label"><input type="checkbox" name="actions" value="${name}" ${checked ? "checked" : ""} data-lifecycle-action="${name}"> <strong>${escapeHtml(label)}</strong></label><div class="s3-lifecycle-action" data-lifecycle-section="${name}" ${checked ? "" : "hidden"}>${body}</div>`;
+  return `<h3>Lifecycle rule configuration</h3>
+    <div class="field"><label>Lifecycle rule name</label><input name="id" required maxlength="255" value="${escapeHtml(rule.id)}" placeholder="archive-old-reports"></div>
+    <fieldset class="setting-options"><legend class="field-label">Choose a rule scope</legend><label class="setting-option"><input type="radio" name="scope" value="filtered" ${filtered ? "checked" : ""}><span><strong>Limit the scope of this rule using one or more filters</strong></span></label><label class="setting-option"><input type="radio" name="scope" value="all" ${filtered ? "" : "checked"}><span><strong>Apply to all objects in the bucket</strong></span></label></fieldset>
+    <div data-lifecycle-filters ${filtered ? "" : "hidden"}><h3>Filter type</h3><div class="field"><label>Prefix</label><input name="prefix" value="${escapeHtml(rule.prefix)}" placeholder="logs/"></div><p class="field-label">Object tags</p>${tagRowsEditor(rule.tags)}<div class="field-row"><div class="field"><label>Minimum object size (bytes)</label><input name="sizeGreaterThan" type="number" min="0" value="${escapeHtml(rule.sizeGreaterThan)}"></div><div class="field"><label>Maximum object size (bytes)</label><input name="sizeLessThan" type="number" min="1" value="${escapeHtml(rule.sizeLessThan)}"></div></div></div>
+    <h3>Lifecycle rule actions</h3><p class="hint">Choose the actions you want this rule to perform.</p>
+    ${action("transition-current", "Transition current versions of objects between storage classes", rule.transitions.length > 0, `<div data-transition-rows>${rule.transitions.map(transitionRow).join("") || transitionRow()}</div><button class="button" type="button" data-add-transition-row="current">Add transition</button>`)}
+    ${action("transition-noncurrent", "Transition noncurrent versions of objects between storage classes", rule.noncurrentTransitions.length > 0, `<div data-noncurrent-transition-rows>${rule.noncurrentTransitions.map(noncurrentRow).join("") || noncurrentRow()}</div><button class="button" type="button" data-add-transition-row="noncurrent">Add transition</button>`)}
+    ${action("expire-current", "Expire current versions of objects", Boolean(rule.expirationDays || rule.expirationDate), `<div class="field"><label>Days after object creation</label><input name="expirationDays" type="number" min="1" value="${escapeHtml(rule.expirationDays)}"></div>`)}
+    ${action("expire-noncurrent", "Permanently delete noncurrent versions of objects", Boolean(rule.noncurrentExpirationDays || rule.newerNoncurrentVersions), `<div class="field-row"><div class="field"><label>Days after objects become noncurrent</label><input name="noncurrentExpirationDays" type="number" min="1" value="${escapeHtml(rule.noncurrentExpirationDays)}"></div><div class="field"><label>Number of newer versions to retain <span class="muted small">– optional</span></label><input name="newerNoncurrentVersions" type="number" min="1" max="100" value="${escapeHtml(rule.newerNoncurrentVersions)}"></div></div>`)}
+    ${action("delete-markers", "Delete expired object delete markers", rule.expiredObjectDeleteMarker, '<p class="hint">Removes delete markers with no noncurrent versions. Cannot be combined with expiring current versions in the same rule.</p>')}
+    ${action("abort-uploads", "Delete incomplete multipart uploads", Boolean(rule.abortDays), `<div class="field"><label>Number of days</label><input name="abortDays" type="number" min="1" value="${escapeHtml(rule.abortDays)}"></div>`)}
+    <h3>Status</h3><fieldset class="setting-options"><legend class="sr-only">Status</legend><label class="setting-option"><input type="radio" name="status" value="Enabled" ${rule.status === "Disabled" ? "" : "checked"}><span><strong>Enabled</strong></span></label><label class="setting-option"><input type="radio" name="status" value="Disabled" ${rule.status === "Disabled" ? "checked" : ""}><span><strong>Disabled</strong></span></label></fieldset>
+    <div class="alert info"><strong>Local storage model</strong><br>Day-0 transitions into STANDARD_IA and ONEZONE_IA are allowed and chained transitions must respect each class minimum storage duration. Storage-class metadata and archive access restrictions are real; physical blobs stay in the local encrypted tier and no cost is simulated.</div>`;
+}
+
+function bindLifecycleRuleForm(root) {
+  const scopeInputs = [...root.querySelectorAll('[name="scope"]')]; const filters = root.querySelector("[data-lifecycle-filters]");
+  const syncScope = () => { if (filters) filters.hidden = !scopeInputs.some(input => input.checked && input.value === "filtered"); };
+  scopeInputs.forEach(input => input.addEventListener("change", syncScope)); syncScope();
+  root.querySelectorAll("[data-lifecycle-action]").forEach(input => input.addEventListener("change", () => { const section = root.querySelector(`[data-lifecycle-section="${input.dataset.lifecycleAction}"]`); if (section) section.hidden = !input.checked; }));
+  root.querySelectorAll("[data-add-transition-row]").forEach(button => button.addEventListener("click", () => {
+    const current = button.dataset.addTransitionRow === "current";
+    const rows = root.querySelector(current ? "[data-transition-rows]" : "[data-noncurrent-transition-rows]");
+    rows?.insertAdjacentHTML("beforeend", current
+      ? `<div class="s3-object-tag-row s3-lifecycle-transition-row"><select name="tcClass" aria-label="Storage class transition">${LIFECYCLE_STORAGE_CLASSES.map(value => `<option>${value}</option>`).join("")}</select><input name="tcDays" type="number" min="0" aria-label="Days after object creation" placeholder="Days after object creation"><button class="button link danger" type="button" data-remove-tag-row>Remove</button></div>`
+      : `<div class="s3-object-tag-row s3-lifecycle-transition-row"><select name="tnClass" aria-label="Noncurrent storage class transition">${LIFECYCLE_STORAGE_CLASSES.map(value => `<option>${value}</option>`).join("")}</select><input name="tnDays" type="number" min="1" aria-label="Days after objects become noncurrent" placeholder="Days after objects become noncurrent"><input name="tnNewer" type="number" min="1" max="100" aria-label="Number of newer versions to retain" placeholder="Newer versions to retain (optional)"><button class="button link danger" type="button" data-remove-tag-row>Remove</button></div>`);
+  }));
+}
+
+function lifecycleRuleFromForm(data) {
+  const actions = data.getAll("actions").map(String); const filtered = data.get("scope") === "filtered";
+  const rule = { id: String(data.get("id") || "").trim(), status: String(data.get("status") || "Enabled"), prefix: filtered ? String(data.get("prefix") || "") : "", tags: filtered ? tagsFromRows(data) : [], sizeGreaterThan: filtered ? String(data.get("sizeGreaterThan") || "") : "", sizeLessThan: filtered ? String(data.get("sizeLessThan") || "") : "", transitions: [], expirationDays: "", expirationDate: "", expiredObjectDeleteMarker: false, noncurrentTransitions: [], noncurrentExpirationDays: "", newerNoncurrentVersions: "", abortDays: "" };
+  if (!rule.id) throw new Error("Lifecycle rule name is required");
+  if (!actions.length) throw new Error("Choose at least one lifecycle rule action");
+  if (actions.includes("transition-current")) { const classes = data.getAll("tcClass").map(String); const days = data.getAll("tcDays").map(String); rule.transitions = classes.map((storageClass, index) => ({ storageClass, days: days[index] ?? "" })).filter(item => item.days !== ""); if (!rule.transitions.length) throw new Error("Enter the number of days for each current-version transition"); }
+  if (actions.includes("transition-noncurrent")) { const classes = data.getAll("tnClass").map(String); const days = data.getAll("tnDays").map(String); const newer = data.getAll("tnNewer").map(String); rule.noncurrentTransitions = classes.map((storageClass, index) => ({ storageClass, days: days[index] ?? "", newer: newer[index] ?? "" })).filter(item => item.days !== ""); if (!rule.noncurrentTransitions.length) throw new Error("Enter the number of days for each noncurrent-version transition"); }
+  if (actions.includes("expire-current")) { rule.expirationDays = String(data.get("expirationDays") || ""); if (!rule.expirationDays) throw new Error("Enter the number of days after which current versions expire"); }
+  if (actions.includes("expire-noncurrent")) { rule.noncurrentExpirationDays = String(data.get("noncurrentExpirationDays") || ""); rule.newerNoncurrentVersions = String(data.get("newerNoncurrentVersions") || ""); if (!rule.noncurrentExpirationDays) throw new Error("Enter the number of days after which noncurrent versions are deleted"); }
+  if (actions.includes("delete-markers")) { if (actions.includes("expire-current")) throw new Error("Deleting expired delete markers cannot be combined with expiring current versions in the same rule"); rule.expiredObjectDeleteMarker = true; }
+  if (actions.includes("abort-uploads")) { rule.abortDays = String(data.get("abortDays") || ""); if (!rule.abortDays) throw new Error("Enter the number of days after which incomplete uploads are deleted"); }
+  return rule;
+}
+
+async function saveLifecycleRules(bucket, rules) {
+  if (!rules.length) { await s3Request(`${objectPath(bucket)}?lifecycle`, { method: "DELETE" }); return; }
+  await s3Request(`${objectPath(bucket)}?lifecycle`, { method: "PUT", headers: { "content-type": "application/xml" }, body: lifecycleRulesXml(rules) });
+}
+
+function editLifecycleRule(context, bucket, rules, index) {
+  const existing = index === undefined ? undefined : rules[index];
+  const rule = existing ?? { id: "", status: "Enabled", prefix: "", tags: [], sizeGreaterThan: "", sizeLessThan: "", transitions: [], expirationDays: "", expirationDate: "", expiredObjectDeleteMarker: false, noncurrentTransitions: [], noncurrentExpirationDays: "", newerNoncurrentVersions: "", abortDays: "" };
+  context.showModal(existing ? `Edit lifecycle rule ${existing.id}` : "Create lifecycle rule", lifecycleRuleForm(rule), existing ? "Save changes" : "Create rule", async data => {
+    const updated = lifecycleRuleFromForm(data);
+    if (rules.some((candidate, position) => position !== index && candidate.id === updated.id)) throw new Error(`A lifecycle rule named ${updated.id} already exists`);
+    const next = [...rules]; if (index === undefined) next.push(updated); else next[index] = updated;
+    await saveLifecycleRules(bucket, next); context.toast(existing ? `Lifecycle rule ${updated.id} updated` : `Lifecycle rule ${updated.id} created`);
+  }, true);
+  bindLifecycleRuleForm(document.querySelector("dialog[open]") ?? document);
 }
 
 async function managementPage(context, bucket) {
-  const output = await s3Request(`${objectPath(bucket)}?uploads`); const pending = [...output.xml.getElementsByTagName("Upload")].map(node => ({ key: first(node, "Key"), uploadId: first(node, "UploadId"), initiated: first(node, "Initiated") })); const uploads = await Promise.all(pending.map(async upload => { const listed = await s3Request(`${objectPath(bucket, upload.key)}?uploadId=${encodeURIComponent(upload.uploadId)}`); const parts = [...listed.xml.getElementsByTagName("Part")]; return { ...upload, parts: parts.length, bytes: parts.reduce((sum, part) => sum + Number(first(part, "Size")), 0) }; })); context.setChrome("s3", ["S3", "General purpose buckets", bucket]); context.main.innerHTML = `<div class="page-width">${pageHeader(bucket, "Storage management and incomplete upload state.")}${bucketTabs(bucket, "management")}<section class="card"><div class="card-header"><h2>Incomplete multipart uploads <span class="muted">(${uploads.length})</span></h2></div><div class="table-wrap">${uploads.length ? `<table><thead><tr><th>Key</th><th>Upload ID</th><th>Age</th><th>Parts</th><th>Uploaded</th><th>Action</th></tr></thead><tbody>${uploads.map(upload => `<tr><td>${escapeHtml(upload.key)}</td><td class="mono">${escapeHtml(upload.uploadId)}</td><td>${humanAge(upload.initiated)}</td><td>${upload.parts}</td><td>${humanBytes(upload.bytes)}</td><td><button class="button link" data-abort-upload="${escapeHtml(upload.uploadId)}" data-key="${escapeHtml(upload.key)}">Abort</button></td></tr>`).join("")}</tbody></table>` : emptyState("✓", "No incomplete uploads", "Multipart uploads will appear here until completed or aborted.")}</div></section></div>`; document.querySelectorAll("[data-abort-upload]").forEach(button => button.addEventListener("click", async () => { await s3Request(`${objectPath(bucket, button.dataset.key)}?uploadId=${encodeURIComponent(button.dataset.abortUpload)}`, { method: "DELETE" }); context.toast("Multipart upload aborted"); await context.route(); }));
-}
-
-async function lifecycleManagement(context, bucket) {
-  const summary = (await listBuckets()).find(value => value.name === bucket);
-  const lifecycle = summary?.lifecycleConfigured ? await s3Request(`${objectPath(bucket)}?lifecycle`) : undefined;
-  const rules = lifecycle ? [...lifecycle.xml.getElementsByTagName("Rule")] : [];
-  context.main.querySelector(".page-width")?.insertAdjacentHTML("afterbegin", `<section class="card s3-lifecycle-rules"><div class="card-header"><h2>Lifecycle rules <span class="muted">(${rules.length})</span></h2><div class="actions">${lifecycle ? '<button class="button danger" data-delete-lifecycle>Delete all</button>' : ""}<button class="button" data-edit-lifecycle>${lifecycle ? "Edit XML" : "Create rule"}</button></div></div><div class="card-body">${rules.length ? `<div class="table-wrap"><table><thead><tr><th>ID</th><th>Status</th><th>Prefix</th><th>Actions</th></tr></thead><tbody>${rules.map(rule => `<tr><td>${escapeHtml(first(rule, "ID") || "–")}</td><td>${escapeHtml(first(rule, "Status"))}</td><td class="mono">${escapeHtml(first(rule, "Prefix") || "(all objects)")}</td><td>${[...rule.children].filter(node => ["Expiration", "Transition", "NoncurrentVersionExpiration", "NoncurrentVersionTransition", "AbortIncompleteMultipartUpload"].includes(node.localName)).map(node => escapeHtml(node.localName)).join(", ")}</td></tr>`).join("")}</tbody></table></div>` : "<p class=\"muted\">No lifecycle rules. Rules can expire versions, transition storage classes, clean delete markers, and abort incomplete multipart uploads.</p>"}<div class="alert info"><strong>Local storage model</strong><br>Storage-class metadata and archive access restrictions are real. Physical blobs stay in the local encrypted tier; no billing savings or external archive infrastructure are claimed.</div></div></section>`);
-  document.querySelector("[data-edit-lifecycle]")?.addEventListener("click", () => context.showModal("Lifecycle configuration", `<div class="field"><label>Lifecycle XML</label><textarea name="xml" rows="18">${escapeHtml(lifecycle?.text || `<LifecycleConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">\n  <Rule><ID>archive</ID><Filter><Prefix>archive/</Prefix></Filter><Status>Enabled</Status><Transition><Days>30</Days><StorageClass>GLACIER</StorageClass></Transition></Rule>\n</LifecycleConfiguration>`)}</textarea></div><p class="hint">Supports prefix/tag/size/AND filters, current/noncurrent transitions and expiration, NewerNoncurrentVersions, expired delete markers, and incomplete multipart abort. Day-0 transitions into STANDARD_IA and ONEZONE_IA are allowed; chained transitions must still respect each class minimum storage duration. Local transitions update metadata only and do not charge early-deletion fees.</p>`, "Save rules", async data => { await s3Request(`${objectPath(bucket)}?lifecycle`, { method: "PUT", headers: { "content-type": "application/xml" }, body: String(data.get("xml")) }); context.toast("Lifecycle rules saved"); }));
-  document.querySelector("[data-delete-lifecycle]")?.addEventListener("click", () => context.confirmDeletion(bucket, `Delete every lifecycle rule from ${bucket}?`, async () => { await s3Request(`${objectPath(bucket)}?lifecycle`, { method: "DELETE" }); context.toast("Lifecycle rules deleted"); }));
+  const [output, facts] = await Promise.all([s3Request(`${objectPath(bucket)}?uploads`), bucketFacts(bucket)]);
+  const pending = [...output.xml.getElementsByTagName("Upload")].map(node => ({ key: first(node, "Key"), uploadId: first(node, "UploadId"), initiated: first(node, "Initiated") }));
+  const uploads = await Promise.all(pending.map(async upload => { const listed = await s3Request(`${objectPath(bucket, upload.key)}?uploadId=${encodeURIComponent(upload.uploadId)}`); const parts = [...listed.xml.getElementsByTagName("Part")]; return { ...upload, parts: parts.length, bytes: parts.reduce((sum, part) => sum + Number(first(part, "Size")), 0) }; }));
+  const rules = parseLifecycleRules(facts.lifecycle?.xml);
+  const describeActions = rule => ({
+    current: [...rule.transitions.map(item => `Transition to ${item.storageClass} after ${item.days !== "" ? `${item.days} days` : item.date}`), ...(rule.expirationDays ? [`Expire after ${rule.expirationDays} days`] : []), ...(rule.expirationDate ? [`Expire on ${rule.expirationDate}`] : [])],
+    noncurrent: [...rule.noncurrentTransitions.map(item => `Transition to ${item.storageClass} after ${item.days} days${item.newer ? ` (keep ${item.newer} newer)` : ""}`), ...(rule.noncurrentExpirationDays ? [`Permanently delete after ${rule.noncurrentExpirationDays} days${rule.newerNoncurrentVersions ? ` (keep ${rule.newerNoncurrentVersions} newer)` : ""}`] : [])],
+    cleanup: [...(rule.expiredObjectDeleteMarker ? ["Delete expired object delete markers"] : []), ...(rule.abortDays ? [`Delete incomplete multipart uploads after ${rule.abortDays} days`] : [])],
+  });
+  context.setChrome("s3", ["S3", "General purpose buckets", bucket]);
+  context.main.innerHTML = `<div class="page-width">${pageHeader(bucket, "Lifecycle rules and incomplete multipart uploads.")}${bucketTabs(bucket, "management")}
+    <section class="card s3-lifecycle-rules"><div class="card-header"><h2>Lifecycle rules <span class="muted">(${rules.length})</span></h2><div class="actions"><button class="button" data-edit-lifecycle-xml>Edit XML</button><button class="button primary" data-create-lifecycle-rule>Create lifecycle rule</button></div></div><div class="table-wrap">${rules.length ? `<table><thead><tr><th>Lifecycle rule name</th><th>Status</th><th>Scope</th><th>Current version actions</th><th>Noncurrent version actions</th><th>Delete markers and incomplete uploads</th><th>Actions</th></tr></thead><tbody>${rules.map((rule, index) => { const actions = describeActions(rule); const list = items => items.length ? `<ul class="s3-notification-event-list">${items.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : "–"; return `<tr><td><strong>${escapeHtml(rule.id || "–")}</strong></td><td><span class="status ${rule.status === "Enabled" ? "" : "inactive"}">${escapeHtml(rule.status)}</span></td><td>${escapeHtml(describeLifecycleScope(rule))}</td><td>${list(actions.current)}</td><td>${list(actions.noncurrent)}</td><td>${list(actions.cleanup)}</td><td><div class="actions"><button class="button" data-edit-lifecycle-rule="${index}" aria-label="Edit ${escapeHtml(rule.id)}">Edit</button><button class="button" data-toggle-lifecycle-rule="${index}" aria-label="${rule.status === "Enabled" ? "Disable" : "Enable"} ${escapeHtml(rule.id)}">${rule.status === "Enabled" ? "Disable" : "Enable"}</button><button class="button danger" data-delete-lifecycle-rule="${index}" aria-label="Delete ${escapeHtml(rule.id)}">Delete</button></div></td></tr>`; }).join("")}</tbody></table>` : emptyState("◇", "No lifecycle rules", "Create a rule to transition objects between storage classes, expire objects or noncurrent versions, remove expired delete markers, or abort incomplete multipart uploads.")}</div><div class="card-body"><div class="alert info"><strong>Local storage model</strong><br>Storage-class metadata and archive access restrictions are real. Physical blobs stay in the local encrypted tier; no billing savings or external archive infrastructure are claimed.</div></div></section>
+    <section class="card"><div class="card-header"><h2>Incomplete multipart uploads <span class="muted">(${uploads.length})</span></h2></div><div class="table-wrap">${uploads.length ? `<table><thead><tr><th>Key</th><th>Upload ID</th><th>Age</th><th>Parts</th><th>Uploaded</th><th>Action</th></tr></thead><tbody>${uploads.map(upload => `<tr><td>${escapeHtml(upload.key)}</td><td class="mono">${escapeHtml(upload.uploadId)}</td><td>${humanAge(upload.initiated)}</td><td>${upload.parts}</td><td>${humanBytes(upload.bytes)}</td><td><button class="button link" data-abort-upload="${escapeHtml(upload.uploadId)}" data-key="${escapeHtml(upload.key)}">Abort</button></td></tr>`).join("")}</tbody></table>` : emptyState("✓", "No incomplete uploads", "Multipart uploads will appear here until completed or aborted.")}</div></section></div>`;
+  document.querySelectorAll("[data-abort-upload]").forEach(button => button.addEventListener("click", async () => { await s3Request(`${objectPath(bucket, button.dataset.key)}?uploadId=${encodeURIComponent(button.dataset.abortUpload)}`, { method: "DELETE" }); context.toast("Multipart upload aborted"); await context.route(); }));
+  document.querySelector("[data-create-lifecycle-rule]")?.addEventListener("click", () => editLifecycleRule(context, bucket, rules));
+  document.querySelectorAll("[data-edit-lifecycle-rule]").forEach(button => button.addEventListener("click", () => editLifecycleRule(context, bucket, rules, Number(button.dataset.editLifecycleRule))));
+  document.querySelectorAll("[data-toggle-lifecycle-rule]").forEach(button => button.addEventListener("click", () => inlineAction(context, async () => { const index = Number(button.dataset.toggleLifecycleRule); const next = rules.map((rule, position) => position === index ? { ...rule, status: rule.status === "Enabled" ? "Disabled" : "Enabled" } : rule); await saveLifecycleRules(bucket, next); context.toast(`Lifecycle rule ${rules[index].id} ${next[index].status.toLowerCase()}`); await context.route(); })));
+  document.querySelectorAll("[data-delete-lifecycle-rule]").forEach(button => button.addEventListener("click", () => { const index = Number(button.dataset.deleteLifecycleRule); context.confirmDeletion(rules[index].id, `Delete lifecycle rule ${rules[index].id}?`, async () => { await saveLifecycleRules(bucket, rules.filter((_, position) => position !== index)); context.toast(`Lifecycle rule ${rules[index].id} deleted`); }); }));
+  document.querySelector("[data-edit-lifecycle-xml]")?.addEventListener("click", () => context.showModal("Edit lifecycle configuration XML", `<div class="field"><label>Lifecycle XML</label><textarea name="xml" rows="18">${escapeHtml(facts.lifecycle?.text || lifecycleRulesXml([{ id: "archive", status: "Enabled", prefix: "archive/", tags: [], sizeGreaterThan: "", sizeLessThan: "", transitions: [{ days: "30", storageClass: "GLACIER" }], expirationDays: "", expirationDate: "", expiredObjectDeleteMarker: false, noncurrentTransitions: [], noncurrentExpirationDays: "", newerNoncurrentVersions: "", abortDays: "" }]))}</textarea></div><p class="hint">The complete configuration replaces the current rules. An empty document removes every rule.</p>`, "Save rules", async data => { const xml = String(data.get("xml") || "").trim(); if (!xml) { await s3Request(`${objectPath(bucket)}?lifecycle`, { method: "DELETE" }); context.toast("Lifecycle rules deleted"); return; } await s3Request(`${objectPath(bucket)}?lifecycle`, { method: "PUT", headers: { "content-type": "application/xml" }, body: xml }); context.toast("Lifecycle rules saved"); }));
 }
 
 async function metricsPage(context, bucket) {
@@ -621,7 +934,7 @@ async function permissionsPage(context, bucket) {
     optionalBucketConfiguration(bucket, "publicAccessBlock", ["NoSuchPublicAccessBlockConfiguration"]),
     s3Request("/v20180820/configuration/publicAccessBlock", { headers: { "x-amz-account-id": accountId } }).catch(error => error?.code === "NoSuchPublicAccessBlockConfiguration" ? undefined : Promise.reject(error)),
     optionalBucketConfiguration(bucket, "policy", ["NoSuchBucketPolicy"]),
-    optionalBucketConfiguration(bucket, "policyStatus"),
+    optionalBucketConfiguration(bucket, "policyStatus", ["NoSuchBucketPolicy"]),
     optionalBucketConfiguration(bucket, "ownershipControls", ["OwnershipControlsNotFoundError"]),
     optionalBucketConfiguration(bucket, "acl"),
     optionalBucketConfiguration(bucket, "requestPayment"),
@@ -646,19 +959,20 @@ async function permissionsPage(context, bucket) {
   ];
   context.setChrome("s3", ["S3", "General purpose buckets", bucket]);
   context.main.innerHTML = `<div class="page-width">${pageHeader(bucket, "Bucket permissions and effective access controls.")}${bucketTabs(bucket, "permissions")}
-    <section class="card"><div class="card-header"><h2>Block public access (bucket settings)</h2><button class="button" data-edit-public-block>Edit</button></div><div class="card-body"><div class="alert ${effectivePublicBlock ? "info" : "warning"}"><strong>${effectivePublicBlock ? "All effective protections are enabled" : "Some effective protections are disabled"}</strong><br>Bucket and account settings are combined using the most restrictive value.</div><div class="table-wrap"><table><thead><tr><th>Setting</th><th>Bucket</th><th>Account</th><th>Effective</th><th>Effective source</th></tr></thead><tbody>${Object.keys(block).map(name => `<tr><td>${escapeHtml(name)}</td><td>${block[name] ? "On" : "Off"}</td><td>${accountBlock[name] ? "On" : "Off"}</td><td><strong>${effectiveBlock[name] ? "On" : "Off"}</strong></td><td>${block[name] && accountBlock[name] ? "Bucket and account" : block[name] ? "Bucket" : accountBlock[name] ? "Account" : "Neither"}</td></tr>`).join("")}</tbody></table></div></div></section>
+    <section class="card"><div class="card-header"><h2>Block public access (bucket settings)</h2><button class="button" data-edit-public-block>Edit</button></div><div class="card-body"><div class="alert ${effectivePublicBlock ? "info" : "warning"}"><strong>${effectivePublicBlock ? "All effective protections are enabled" : "Some effective protections are disabled"}</strong><br>Bucket and account settings are combined using the most restrictive value. <a href="#/s3/account-settings">Edit the account settings</a>.</div><div class="table-wrap"><table><thead><tr><th>Setting</th><th>Bucket</th><th>Account</th><th>Effective</th><th>Effective source</th></tr></thead><tbody>${Object.keys(block).map(name => `<tr><td>${escapeHtml(name)}</td><td>${block[name] ? "On" : "Off"}</td><td>${accountBlock[name] ? "On" : "Off"}</td><td><strong>${effectiveBlock[name] ? "On" : "Off"}</strong></td><td>${block[name] && accountBlock[name] ? "Bucket and account" : block[name] ? "Bucket" : accountBlock[name] ? "Account" : "Neither"}</td></tr>`).join("")}</tbody></table></div></div></section>
     <section class="card"><div class="card-header"><h2>Bucket policy</h2><div class="actions"><span class="status ${isPublic ? "warning" : ""}">${isPublic ? "Public" : policy ? "Not public" : "No policy"}</span>${policy ? '<button class="button danger" data-delete-policy>Delete</button>' : ""}<button class="button" data-edit-policy>Edit</button></div></div><div class="card-body">${policy ? `<pre class="code-box">${escapeHtml(policy)}</pre>` : `<p class="muted">No bucket policy is configured.</p>`}</div></section>
     <section class="card"><div class="card-header"><h2>Access findings</h2><span class="status ${isPublic || aclPublic ? "warning" : ""}">${isPublic || aclPublic ? "Review" : "No public finding"}</span></div><div class="card-body"><ul>${findings.map(finding => `<li>${escapeHtml(finding)}</li>`).join("")}</ul><div class="alert info"><strong>Effective access explanation</strong><br>Identity policies, this bucket policy, enabled ACLs, session policy, permissions boundary, and explicit denies are evaluated together. Block Public Access may reject or suppress otherwise-public grants. These are simulator findings, not IAM Access Analyzer results.</div></div></section>
     <section class="card"><div class="card-header"><h2>Object Ownership</h2><button class="button" data-edit-ownership>Edit</button></div><div class="card-body"><p><strong>${escapeHtml(ownership)}</strong></p><p class="muted">${ownership === "BucketOwnerEnforced" ? "ACLs are disabled and the bucket owner owns every new object." : "ACL grants participate in authorization and object ownership follows the selected mode."}</p></div></section>
     <section class="card"><div class="card-header"><h2>Access control list (ACL)</h2>${ownership === "BucketOwnerEnforced" ? '<span class="status inactive">Disabled</span>' : '<button class="button" data-edit-acl>Edit</button>'}</div><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Grantee</th><th>Permission</th></tr></thead><tbody>${grants.map(grant => `<tr><td class="mono">${escapeHtml(grant.grantee)}</td><td>${escapeHtml(grant.permission)}</td></tr>`).join("")}</tbody></table></div></div></section>
-    <section class="card"><div class="card-header"><h2>Requester Pays</h2><button class="button" data-edit-requester-pays>Edit</button></div><div class="card-body"><p><strong>${escapeHtml(payer)}</strong></p><p class="muted">Requester mode enforces the request-payer header and authorization context locally; no billing is simulated.</p></div></section>
     <section class="card"><div class="card-header"><h2>Attribute-based access control (ABAC)</h2><button class="button" data-edit-abac>Edit</button></div><div class="card-body"><p><strong>${escapeHtml(abac)}</strong></p><p class="muted">When enabled, bucket tags are exposed to IAM conditions as resource tags.</p></div></section>
   </div>`;
-  document.querySelector("[data-edit-public-block]")?.addEventListener("click", () => context.showModal("Edit Block Public Access", `<div class="alert warning"><strong>Public access can expose object data.</strong><br>Account settings may still keep a disabled bucket setting effectively enabled.</div>${Object.entries(block).map(([name, enabled]) => `<label class="setting-option"><input type="checkbox" name="${name}" ${enabled ? "checked" : ""}><span><strong>${escapeHtml(name)}</strong></span></label>`).join("")}<label class="setting-option"><input type="checkbox" name="ack" required><span>I acknowledge that disabling protections can make data public.</span></label><div class="field"><label>Type the bucket name to confirm</label><input name="confirm" required></div>`, "Save changes", async data => {
-    if (data.get("confirm") !== bucket) throw new Error("Bucket name confirmation did not match");
-    const body = `<PublicAccessBlockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">${Object.keys(block).map(name => `<${name}>${data.get(name) === "on"}</${name}>`).join("")}</PublicAccessBlockConfiguration>`;
-    await s3Request(`${objectPath(bucket)}?publicAccessBlock`, { method: "PUT", headers: { "content-type": "application/xml" }, body }); context.toast("Block Public Access updated");
-  }));
+  document.querySelector("[data-edit-public-block]")?.addEventListener("click", () => {
+    context.showModal("Edit Block public access (bucket settings)", `<div class="alert warning"><strong>Public access can expose object data.</strong><br>Account settings may still keep a disabled bucket setting effectively enabled.</div>${blockPublicAccessFields(block, { acknowledgementText: "I acknowledge that the current settings might result in this bucket and the objects within becoming public." })}<div class="field"><label>Type the bucket name to confirm</label><input name="confirm" required></div>`, "Save changes", async data => {
+      if (data.get("confirm") !== bucket) throw new Error("Bucket name confirmation did not match");
+      await s3Request(`${objectPath(bucket)}?publicAccessBlock`, { method: "PUT", headers: { "content-type": "application/xml" }, body: publicAccessBlockXml(blockPublicAccessFromForm(data)) }); context.toast("Block Public Access updated");
+    });
+    bindBlockPublicAccessFields(document.querySelector("dialog[open]") ?? document);
+  });
   document.querySelector("[data-edit-policy]")?.addEventListener("click", () => context.showModal("Edit bucket policy", `<div class="field"><label>Policy JSON</label><textarea name="policy" rows="16" required>${escapeHtml(policy || JSON.stringify({ Version: "2012-10-17", Statement: [] }, null, 2))}</textarea></div><label class="setting-option"><input type="checkbox" name="ack" required><span>I acknowledge that this policy can grant public or cross-account access.</span></label><div class="field"><label>Type the bucket name to confirm</label><input name="confirm" required></div>`, "Save policy", async data => {
     if (data.get("confirm") !== bucket) throw new Error("Bucket name confirmation did not match");
     const parsed = JSON.parse(String(data.get("policy"))); await s3Request(`${objectPath(bucket)}?policy`, { method: "PUT", headers: { "content-type": "application/json", "x-amz-confirm-remove-self-bucket-access": "true" }, body: JSON.stringify(parsed) }); context.toast("Bucket policy saved");
@@ -673,12 +987,26 @@ async function permissionsPage(context, bucket) {
     if (data.get("confirm") !== bucket) throw new Error("Bucket name confirmation did not match");
     await s3Request(`${objectPath(bucket)}?acl`, { method: "PUT", headers: { "x-amz-acl": String(data.get("acl")) } }); context.toast("Bucket ACL updated");
   }));
-  document.querySelector("[data-edit-requester-pays]")?.addEventListener("click", () => context.showModal("Edit Requester Pays", `<div class="field"><label>Payer</label><select name="payer"><option ${payer === "BucketOwner" ? "selected" : ""}>BucketOwner</option><option ${payer === "Requester" ? "selected" : ""}>Requester</option></select></div>`, "Save changes", async data => {
-    const body = `<RequestPaymentConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Payer>${xmlEscape(data.get("payer"))}</Payer></RequestPaymentConfiguration>`; await s3Request(`${objectPath(bucket)}?requestPayment`, { method: "PUT", headers: { "content-type": "application/xml" }, body }); context.toast("Requester Pays updated");
-  }));
   document.querySelector("[data-edit-abac]")?.addEventListener("click", () => context.showModal("Edit bucket ABAC", `<div class="field"><label>Status</label><select name="status"><option ${abac === "Disabled" ? "selected" : ""}>Disabled</option><option ${abac === "Enabled" ? "selected" : ""}>Enabled</option></select></div>`, "Save changes", async data => {
     const body = `<AbacStatus xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>${xmlEscape(data.get("status"))}</Status></AbacStatus>`; await s3Request(`${objectPath(bucket)}?abac`, { method: "PUT", headers: { "content-type": "application/xml" }, body }); context.toast("Bucket ABAC updated");
   }));
+}
+
+async function accountSettingsPage(context) {
+  const accountId = session.summary?.accountId ?? "000000000000";
+  const result = await s3Request("/v20180820/configuration/publicAccessBlock", { headers: { "x-amz-account-id": accountId } }).catch(error => error?.code === "NoSuchPublicAccessBlockConfiguration" ? undefined : Promise.reject(error));
+  const values = Object.fromEntries(BLOCK_PUBLIC_ACCESS_SETTINGS.map(([name]) => [name, xmlBool(result?.xml, name)]));
+  const allOn = Object.values(values).every(Boolean);
+  context.setChrome("s3", ["S3", "Account and organization settings"]);
+  context.main.innerHTML = `<div class="page-width">${pageHeader("Account and organization settings", "Settings that apply to every bucket in this account.")}
+    <section class="card s3-account-public-access"><div class="card-header"><h2>Block Public Access settings for this account</h2><button class="button" data-edit-account-public-block>Edit</button></div><div class="card-body"><div class="alert ${allOn ? "info" : "warning"}"><strong>${allOn ? "All four account-level settings are on" : result ? "Some account-level settings are off" : "No account-level configuration is stored; bucket settings apply alone"}</strong><br>Account settings are combined with each bucket's own Block Public Access settings using the most restrictive value.</div><div class="table-wrap"><table><thead><tr><th>Setting</th><th>Status</th></tr></thead><tbody>${BLOCK_PUBLIC_ACCESS_SETTINGS.map(([name, text]) => `<tr><td><strong>${name}</strong><br><span class="muted small">${escapeHtml(text)}</span></td><td>${values[name] ? "On" : "Off"}</td></tr>`).join("")}</tbody></table></div></div></section></div>`;
+  document.querySelector("[data-edit-account-public-block]")?.addEventListener("click", () => {
+    context.showModal("Edit Block Public Access settings for this account", `<div class="alert warning"><strong>These settings apply to every bucket in this account.</strong></div>${blockPublicAccessFields(values, { acknowledgementText: "I acknowledge that the current settings might result in buckets and the objects within becoming public." })}<div class="field"><label>Type confirm to save</label><input name="confirm" required placeholder="confirm"></div>`, "Save changes", async data => {
+      if (data.get("confirm") !== "confirm") throw new Error('Type "confirm" to save the account settings');
+      await s3Request("/v20180820/configuration/publicAccessBlock", { method: "PUT", headers: { "x-amz-account-id": accountId, "content-type": "application/xml" }, body: publicAccessBlockXml(blockPublicAccessFromForm(data)).replace('xmlns="http://s3.amazonaws.com/doc/2006-03-01/"', 'xmlns="http://awss3control.amazonaws.com/doc/2018-08-20/"') }); context.toast("Account Block Public Access updated");
+    });
+    bindBlockPublicAccessFields(document.querySelector("dialog[open]") ?? document);
+  });
 }
 
 async function placeholderTab(context, bucket, active) {
@@ -707,6 +1035,7 @@ export async function routeS3(parts, context) {
   };
   if (parts.length === 1) return withPanelHelp(() => overview(context));
   if (parts[1] === "buckets" && parts.length === 2) return withPanelHelp(() => bucketsPage(context));
+  if (parts[1] === "account-settings") return withPanelHelp(() => accountSettingsPage(context));
   if (parts[1] !== "buckets" || !parts[2]) return context.notFound(parts);
   const bucket = parts[2];
   const tab = parts[3] ?? "objects";
@@ -723,7 +1052,7 @@ export async function routeS3(parts, context) {
   if (tab === "versions") return withPanelHelp(() => versionsPage(context, bucket));
   if (tab === "properties") return withPanelHelp(() => propertiesPage(context, bucket));
   if (tab === "permissions") return withPanelHelp(() => permissionsPage(context, bucket));
-  if (tab === "management") return withPanelHelp(async () => { await managementPage(context, bucket); return lifecycleManagement(context, bucket); });
+  if (tab === "management") return withPanelHelp(() => managementPage(context, bucket));
   if (tab === "metrics") return withPanelHelp(() => metricsPage(context, bucket));
   if (tab === "delete") return deleteBucketAction(context, bucket);
   return context.notFound(parts);

@@ -55,9 +55,9 @@ export interface S3WebsiteConfigurationModel {
 export interface S3CorsConfigurationModel {
   readonly CorsRules: readonly [{
     readonly AllowedHeaders: readonly string[];
-    readonly AllowedMethods: readonly ("GET" | "HEAD")[];
+    readonly AllowedMethods: readonly ("GET" | "PUT" | "POST" | "DELETE" | "HEAD")[];
     readonly AllowedOrigins: readonly string[];
-  }] | readonly { readonly AllowedHeaders: readonly string[]; readonly AllowedMethods: readonly ("GET" | "HEAD")[]; readonly AllowedOrigins: readonly string[] }[];
+  }] | readonly { readonly AllowedHeaders: readonly string[]; readonly AllowedMethods: readonly ("GET" | "PUT" | "POST" | "DELETE" | "HEAD")[]; readonly AllowedOrigins: readonly string[] }[];
 }
 
 export interface S3NotificationFilterModel {
@@ -497,7 +497,7 @@ function canonicalBucket(properties: Record<string, unknown>, context: ProviderC
 
 function lifecycleXml(model: S3LifecycleConfigurationModel): string {
   const rule = model.Rules[0];
-  return `<LifecycleConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><Status>${rule.Status}</Status><AbortIncompleteMultipartUpload><DaysAfterInitiation>${rule.AbortIncompleteMultipartUpload.DaysAfterInitiation}</DaysAfterInitiation></AbortIncompleteMultipartUpload></Rule></LifecycleConfiguration>`;
+  return `<LifecycleConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><Filter></Filter><Status>${rule.Status}</Status><AbortIncompleteMultipartUpload><DaysAfterInitiation>${rule.AbortIncompleteMultipartUpload.DaysAfterInitiation}</DaysAfterInitiation></AbortIncompleteMultipartUpload></Rule></LifecycleConfiguration>`;
 }
 
 async function applyLifecycle(s3: S3Service, bucketName: string, model: S3LifecycleConfigurationModel | undefined): Promise<S3BucketState> {

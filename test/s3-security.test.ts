@@ -68,6 +68,7 @@ test("S3-05 exposes ownership, ACL, policy status, ABAC, Requester Pays, and acc
     await assert.rejects(active.s3.send(new PutBucketAclCommand({ Bucket: bucket, ACL: "public-read" })), (error: any) => error.name === "AccessControlListNotSupported");
 
     await active.s3.send(new PutBucketOwnershipControlsCommand({ Bucket: bucket, OwnershipControls: { Rules: [{ ObjectOwnership: "ObjectWriter" }] } }));
+    await active.s3.send(new PutPublicAccessBlockCommand({ Bucket: bucket, PublicAccessBlockConfiguration: { BlockPublicAcls: false, IgnorePublicAcls: false, BlockPublicPolicy: false, RestrictPublicBuckets: false } })); // new buckets block public access by default
     await active.s3.send(new PutBucketAclCommand({ Bucket: bucket, ACL: "public-read" }));
     const bucketAcl = await active.s3.send(new GetBucketAclCommand({ Bucket: bucket }));
     assert.ok(bucketAcl.Grants?.some(grant => grant.Grantee?.URI?.endsWith("/AllUsers") && grant.Permission === "READ"));
@@ -96,6 +97,7 @@ test("S3-05 exposes ownership, ACL, policy status, ABAC, Requester Pays, and acc
     assert.equal(xmlAcl.status, 200);
     assert.ok((await active.s3.send(new GetObjectAclCommand({ Bucket: bucket, Key: "private.txt" }))).Grants?.some(grant => grant.Grantee?.URI?.endsWith("/AllUsers")));
 
+    await active.s3.send(new PutPublicAccessBlockCommand({ Bucket: bucket, PublicAccessBlockConfiguration: { BlockPublicAcls: false, IgnorePublicAcls: false, BlockPublicPolicy: false, RestrictPublicBuckets: false } })); // new buckets block public access by default
     await active.s3.send(new PutBucketPolicyCommand({ Bucket: bucket, Policy: publicReadPolicy(bucket) }));
     assert.equal((await active.s3.send(new GetBucketPolicyStatusCommand({ Bucket: bucket }))).PolicyStatus?.IsPublic, true);
     await active.s3.send(new PutPublicAccessBlockCommand({ Bucket: bucket, PublicAccessBlockConfiguration: { BlockPublicAcls: false, IgnorePublicAcls: false, BlockPublicPolicy: true, RestrictPublicBuckets: false } }));
@@ -249,6 +251,7 @@ test("S3-05 enforces anonymous, presigned, ACL, Requester Pays, public-access-bl
   try {
     await root.send(new CreateBucketCommand({ Bucket: bucket }));
     await root.send(new PutObjectCommand({ Bucket: bucket, Key: "public.txt", Body: "public" }));
+    await root.send(new PutPublicAccessBlockCommand({ Bucket: bucket, PublicAccessBlockConfiguration: { BlockPublicAcls: false, IgnorePublicAcls: false, BlockPublicPolicy: false, RestrictPublicBuckets: false } })); // new buckets block public access by default
     await root.send(new PutBucketPolicyCommand({ Bucket: bucket, Policy: publicReadPolicy(bucket) }));
     let response = await fetch(anonymousUrl, { headers: anonymousHeaders });
     assert.equal(response.status, 200); assert.equal(await response.text(), "public");
