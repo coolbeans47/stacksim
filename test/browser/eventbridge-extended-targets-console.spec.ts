@@ -143,7 +143,7 @@ test.describe("EVB-02 extended-target console", () => {
     const apiTargetArn = `arn:aws:execute-api:${region}:${account}:${api.id}/dev/POST/orders/*`;
 
     await page.goto(`${consoleUrl}#/eventbridge/rules/default/${ruleName}/targets`);
-    await expect(page.getByRole("heading", { name: "Targets", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /^Targets \(/ })).toBeVisible();
 
     await page.getByRole("button", { name: "Add target" }).first().click();
     let dialog = page.getByRole("dialog");
@@ -161,14 +161,14 @@ test.describe("EVB-02 extended-target console", () => {
     await dialog.getByLabel("Target ID").fill("queue-target");
     await fillArnCombobox(dialog.getByLabel("Queue ARN", { exact: true }), queueArn);
     await dialog.getByLabel("Message group ID").fill("tenant-a");
-    await dialog.getByLabel("Target input").selectOption("transformer");
+    await dialog.getByLabel("Configure target input").selectOption("transformer");
     await dialog.getByLabel("Input paths map (JSON object)").fill('{"id":"$.detail.id"}');
     await dialog.getByLabel("Input template").fill('{"orderId":<id>}');
     await dialog.getByLabel("Preview sample event").fill('{"detail":{"id":"order-1"}}');
     await fillArnCombobox(dialog.getByLabel("Execution role ARN (optional)"), targetRole.Role!.Arn!);
     await fillArnCombobox(dialog.getByLabel("Dead-letter queue ARN (optional)"), dlqArn);
-    await dialog.getByLabel("Maximum event age (seconds)").fill("300");
-    await dialog.getByLabel("Maximum retry attempts").fill("4");
+    await dialog.getByLabel("Maximum age of event (seconds)").fill("300");
+    await dialog.getByLabel("Retry attempts").fill("4");
     await expect(dialog.getByText("Queue permission required")).toBeVisible();
     await dialog.getByRole("button", { name: "Preview target input" }).click();
     await expect(dialog.getByRole("status")).toContainText("order-1");
@@ -181,7 +181,7 @@ test.describe("EVB-02 extended-target console", () => {
     await dialog.getByLabel("Target type").selectOption("logs");
     await dialog.getByLabel("Target ID").fill("logs-target");
     await fillArnCombobox(dialog.getByLabel("Log group ARN"), logGroupArn);
-    await dialog.getByLabel("Target input").selectOption("transformer");
+    await dialog.getByLabel("Configure target input").selectOption("transformer");
     await dialog.getByLabel("Input paths map (JSON object)").fill('{"timestamp":"$.detail.timestamp","message":"$.detail.message"}');
     await dialog.getByLabel("Input template").fill('{"timestamp":<timestamp>,"message":<message>}');
     await dialog.getByLabel("Preview sample event").fill('{"detail":{"timestamp":1784548800000,"message":"log order-1"}}');
@@ -201,8 +201,8 @@ test.describe("EVB-02 extended-target console", () => {
     await dialog.getByLabel("Path parameter values (JSON array)").fill('["$.detail.customer"]');
     await dialog.getByLabel("Query string parameters (JSON object)").fill('{"kind":"$.detail.kind","fixed":"yes"}');
     await dialog.getByLabel("Header parameters (JSON object)").fill('{"X-Order":"$.detail.id"}');
-    await dialog.getByLabel("Target input").selectOption("path");
-    await dialog.getByLabel("Input path", { exact: true }).fill("$.detail");
+    await dialog.getByLabel("Configure target input").selectOption("path");
+    await dialog.getByLabel("Specify the part of the matched event").fill("$.detail");
     await expect(dialog.getByText("API authorization required")).toBeVisible();
     await dialog.getByRole("button", { name: "Add target" }).click();
     await expect(dialog).not.toBeVisible();
@@ -317,7 +317,7 @@ test.describe("EVB-02 extended-target console", () => {
 
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
-    await page.getByRole("tab", { name: "Monitoring" }).click();
+    await page.getByRole("tab", { name: "Metrics" }).click();
     await expect(page.getByRole("heading", { name: "EventBridge metrics" })).toBeVisible();
     await expect(page.locator("main")).toContainText("InvocationsSentToDlq");
     await expect(page.locator("main")).toContainText("InvocationsFailedToBeSentToDlq");
@@ -381,9 +381,10 @@ test.describe("EVB-02 extended-target console", () => {
     await page.goto(`${consoleUrl}#/s3/buckets/console-eventbridge-source/properties`);
     const s3EventsCard = page.locator(".s3-eventbridge-notifications");
     await expect(s3EventsCard.getByRole("heading", { name: "Amazon EventBridge" })).toBeVisible();
-    await expect(s3EventsCard.getByText("Disabled", { exact: true })).toBeVisible();
-    await expect(s3EventsCard).toContainText("All supported S3 events");
+    await expect(s3EventsCard.getByText("Off", { exact: true })).toBeVisible();
+    await expect(s3EventsCard).toContainText("one bucket-wide opt-in");
     await expect(s3EventsCard.getByRole("button", { name: "Edit", exact: true })).toBeVisible();
-    expect(errors).toEqual([]);
+    // S3-16: the bucket properties page reads unconfigured subresources, which answer the documented 404s (NoSuchTagSet, ObjectLockConfigurationNotFoundError, NoSuchLifecycleConfiguration).
+    expect(errors.filter(error => !/console-eventbridge-source\?(tagging|object-lock|lifecycle)$/.test(error))).toEqual([]);
   });
 });
