@@ -2721,6 +2721,10 @@ export interface EventBridgeScheduleDeliveryState {
 export interface EventBridgeScheduleOccurrenceState {
   occurrenceId: string;
   eventId: string;
+  /** Scheduler execution id (16 hex characters) exposed through <aws.scheduler.execution-id> and the DLQ EXECUTION_ID attribute. */
+  executionId?: string;
+  /** Present only when a retryable failure exhausted the retry policy; drives the DLQ EXHAUSTED_RETRY_CONDITION attribute. */
+  exhaustedRetryCondition?: "MaximumRetryAttempts" | "MaximumEventAgeInSeconds";
   scheduleArn: string;
   scheduleName: string;
   groupName: string;

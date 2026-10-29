@@ -137,7 +137,10 @@ test("lossless JSON matching keeps exact number lexemes distinct while numeric o
   assert.equal(testEventPattern('{"detail":{"amount":[300]}}', '{"detail":{"amount":300.0}}'), false);
   assert.equal(testEventPattern('{"detail":{"amount":[300]}}', '{"detail":{"amount":3e2}}'), false);
   assert.equal(testEventPattern('{"detail":{"amount":[{"numeric":["=",300]}]}}', '{"detail":{"amount":300.0}}'), true);
-  assert.throws(() => parseEventPattern('{"detail":{"amount":[{"numeric":["=",0.0000001]}]}}'), /six fractional digits/);
+  assert.equal(testEventPattern('{"detail":{"amount":[{"numeric":["=",0.0000001]}]}}', '{"detail":{"amount":0.0000001}}'), true);
+  assert.equal(testEventPattern('{"detail":{"at":[{"numeric":[">",1700000000000]}]}}', '{"detail":{"at":1761735600000}}'), true, "epoch milliseconds compare as doubles");
+  assert.equal(testEventPattern('{"detail":{"n":[{"numeric":["=",9007199254740992]}]}}', '{"detail":{"n":9007199254740992}}'), true, "2^53 is the last exact integer");
+  assert.throws(() => parseEventPattern('{"detail":{"n":[{"numeric":["=",9007199254740993]}]}}'), /between -9007199254740992 and 9007199254740992/);
 });
 
 test("validation rejects malformed grammar and excessive $or combinations", () => {
@@ -153,7 +156,7 @@ test("validation rejects malformed grammar and excessive $or combinations", () =
     { source: [{ exists: "true" }] },
     { source: [{ numeric: [">", 0, "<"] }] },
     { source: [{ numeric: ["!=", 0] }] },
-    { source: [{ numeric: [">", 5_000_000_001] }] },
+    { source: [{ numeric: [">", Number.POSITIVE_INFINITY] }] },
     { source: [{ cidr: "10.0.0.0/33" }] },
     { source: [{ wildcard: "a**b" }] },
     { source: [{ wildcard: "a\\qb" }] },

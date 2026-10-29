@@ -94,7 +94,6 @@ export class EventPatternValidationError extends Error {
 
 const MAX_DEPTH = 100;
 const MAX_OR_COMBINATIONS = 1_000;
-const NUMERIC_LIMIT = 5_000_000_000;
 const OPERATOR_NAMES = new Set([
   "anything-but",
   "cidr",
@@ -232,6 +231,9 @@ function validateAnythingBut(value: unknown, path: string): void {
   else if (typeof operand !== "string") fail(`${path}.equals-ignore-case`, "equals-ignore-case must be a string");
 }
 
+// Numeric operands compare as IEEE-754 doubles; integers are exact only inside ±2^53, and larger ones are rejected at creation.
+// https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-create-pattern-operators.html
+const EXACT_INTEGER_LIMIT = 9_007_199_254_740_992n;
 function validateNumeric(value: unknown, path: string): void {
   if (!Array.isArray(value) || (value.length !== 2 && value.length !== 4)) {
     fail(path, "numeric must contain one or two operator/value pairs");
@@ -240,11 +242,9 @@ function validateNumeric(value: unknown, path: string): void {
     const operator = value[index];
     const operand = value[index + 1];
     if (!["=", ">", ">=", "<", "<="].includes(operator as string)) fail(`${path}[${index}]`, "unsupported numeric operator");
-    if (!isNumber(operand) || !Number.isFinite(numberValue(operand)) || Math.abs(numberValue(operand)) > NUMERIC_LIMIT) {
-      fail(`${path}[${index + 1}]`, `numeric operand must be finite and between -${NUMERIC_LIMIT} and ${NUMERIC_LIMIT}`);
-    }
-    const raw = numberLexeme(operand as number | RawNumber).replace(/^-/, ""); const [coefficient, exponentText = "0"] = raw.toLowerCase().split("e"); const exponent = Number(exponentText); const [whole, fraction = ""] = coefficient.split("."); const significant = `${whole}${fraction}`.replace(/^0+/, "").length || 1; const fractionalDigits = Math.max(0, fraction.length - exponent);
-    if (significant > 15 || fractionalDigits > 6) fail(`${path}[${index + 1}]`, "numeric operand supports at most 15 significant digits and six fractional digits");
+    if (!isNumber(operand) || !Number.isFinite(numberValue(operand))) fail(`${path}[${index + 1}]`, "numeric operand must be a finite number");
+    const raw = numberLexeme(operand as number | RawNumber);
+    if (/^-?\d+$/.test(raw)) { const integer = BigInt(raw); if (integer > EXACT_INTEGER_LIMIT || integer < -EXACT_INTEGER_LIMIT) fail(`${path}[${index + 1}]`, "numeric integer operands must be between -9007199254740992 and 9007199254740992"); }
   }
 }
 

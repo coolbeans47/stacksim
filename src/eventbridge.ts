@@ -20,7 +20,7 @@ import { EventPatternValidationError, isEventJsonNumber, matchesEventPattern, pa
 import { EventBridgeDeliveryStore, type EventBridgeDelivery, type EventBridgeDeliveryDiagnostic } from "./eventbridge/delivery-store.js";
 import { EventBridgeArchiveStore, type EventBridgeArchiveMetadata, type EventBridgeReplayMetadata } from "./eventbridge/archive-store.js";
 import { nextScheduleOccurrence, parseScheduleExpression } from "./eventbridge/schedule-expression.js";
-import { EVENTBRIDGE_EVB01_ACTIONS, EVENTBRIDGE_EVB04_ACTIONS } from "./eventbridge/action-inventory.js";
+import { EVENTBRIDGE_ACTION_INVENTORY, EVENTBRIDGE_EVB01_ACTIONS, EVENTBRIDGE_EVB04_ACTIONS } from "./eventbridge/action-inventory.js";
 import { evaluateRoleAuthorization, evaluateTrust, roleSessionAuthorizationContext, type AuthorizationResult } from "./iam/evaluator.js";
 import type { SqsService } from "./sqs.js";
 import type { CloudWatchLogsService } from "./cloudwatch-logs.js";
@@ -30,6 +30,11 @@ import type { StepFunctionsService } from "./step-functions.js";
 import { acceptedIntegrationAttempt, assertMatchingIntegrationAttempt, integrationInputDigest, type ServiceIntegrationAttempt } from "./step-functions/integration-attempt.js";
 
 const ACTIONS = new Set<string>([...EVENTBRIDGE_EVB01_ACTIONS, ...EVENTBRIDGE_EVB04_ACTIONS]);
+const INVENTORY_PHASES = new Map<string, string>(EVENTBRIDGE_ACTION_INVENTORY.map(entry => [entry.action, entry.phase]));
+// Observed AWS behavior (not in the API reference): the managed rule an archive creates on its source bus.
+const ARCHIVE_MANAGED_RULE_PRINCIPAL = "prs.events.amazonaws.com";
+const ARCHIVE_MANAGED_RULE_PATTERN = JSON.stringify({ "replay-name": [{ exists: false }] });
+function archiveManagedRuleName(archiveName: string): string { return `Events-Archive-${archiveName}`; }
 const MAX_PUT_EVENTS_BYTES = 1024 * 1024;
 
 function deterministicEventId(value: string): string {
@@ -507,7 +512,8 @@ export class EventBridgeService {
     const target = String(req.headers["x-amz-target"] ?? "");
     const action = target.startsWith("AWSEvents.") ? target.slice("AWSEvents.".length) : "";
     try {
-      if (req.method !== "POST" || !ACTIONS.has(action)) throw new AwsError("UnknownOperationException", `The operation ${action || "(empty)"} is not supported.`);
+      if (req.method === "POST" && !ACTIONS.has(action) && INVENTORY_PHASES.has(action)) dependency(`The EventBridge operation ${action}`, INVENTORY_PHASES.get(action)!);
+      if (req.method !== "POST" || !ACTIONS.has(action)) throw new AwsError("UnknownOperationException", `The operation ${action || "(empty)"} is not supported.`, 404);
       const input = await parseAwsJson(req);
       const operation = (this as unknown as Record<string, (value: any, request?: IncomingMessage) => Promise<unknown>>)[action];
       const output = await operation.call(this, input, req);
@@ -636,8 +642,8 @@ export class EventBridgeService {
     await this.ensureControl(); const name = this.resolveBusIdentifier(input.Name, false);
     if (name === "default") throw new AwsError("ValidationException", "The default event bus cannot be deleted.");
     if (!Object.hasOwn(this.buses, name)) return {};
-    if (Object.values(this.rules).some(rule => rule.eventBusName === name)) throw new AwsError("ValidationException", `Event bus ${name} still has rules.`);
     if (this.archiveStore.archives().some(archive => archive.eventBusName === name)) throw new AwsError("ValidationException", `Event bus ${name} still has archives.`);
+    if (Object.values(this.rules).some(rule => rule.eventBusName === name)) throw new AwsError("ValidationException", `Event bus ${name} still has rules.`);
     delete this.buses[name]; await this.store.save(); return {};
   }
 
@@ -656,10 +662,26 @@ export class EventBridgeService {
     const eventPattern = input.EventPattern === undefined ? undefined : text(input.EventPattern, "EventPattern", 1, MAX_EVENT_PATTERN_BYTES); if (eventPattern !== undefined) compiledPattern(eventPattern);
     const retentionDays = input.RetentionDays === undefined ? 0 : positiveInteger(input.RetentionDays, "RetentionDays", 0, Number.MAX_SAFE_INTEGER);
     const now = this.clock.now();
+    const managedKey = this.key(bus.name, archiveManagedRuleName(name)); const existingRule = this.rules[managedKey];
+    if (existingRule && existingRule.managedBy !== ARCHIVE_MANAGED_RULE_PRINCIPAL) throw new AwsError("ResourceAlreadyExistsException", `Rule ${archiveManagedRuleName(name)} already exists on event bus ${bus.name}.`);
     try {
       const archive = await this.archiveStore.createArchive({ name, arn: this.archiveArn(name), eventSourceArn, eventBusName: bus.name, ...(description !== undefined ? { description } : {}), ...(eventPattern !== undefined ? { eventPattern } : {}), retentionDays, state: "ENABLED", createdAt: now, lastModified: now });
+      await this.putArchiveManagedRule(bus.name, name, now);
       return { ArchiveArn: archive.arn, State: archive.state, CreationTime: archive.createdAt / 1_000 };
     } catch (error) { if (errorMessage(error) === "ArchiveAlreadyExists") throw new AwsError("ResourceAlreadyExistsException", `Archive ${name} already exists.`); throw error; }
+  }
+
+  /** AWS creates a managed rule for every archive that keeps replayed events (which carry replay-name) out of the archive. */
+  private async putArchiveManagedRule(busName: string, archiveName: string, now: number): Promise<void> {
+    const name = archiveManagedRuleName(archiveName); const key = this.key(busName, name);
+    this.rules[key] = { name, arn: this.ruleArn(busName, name), eventBusName: busName, eventPattern: ARCHIVE_MANAGED_RULE_PATTERN, state: "ENABLED", managedBy: ARCHIVE_MANAGED_RULE_PRINCIPAL, createdAt: this.rules[key]?.createdAt ?? now, lastModified: now, tags: {} };
+    this.targets[key] ??= {}; await this.store.save();
+  }
+
+  private async deleteArchiveManagedRule(archive: EventBridgeArchiveMetadata): Promise<void> {
+    const key = this.key(archive.eventBusName, archiveManagedRuleName(archive.name)); const rule = this.rules[key];
+    if (!rule || rule.managedBy !== ARCHIVE_MANAGED_RULE_PRINCIPAL) return;
+    delete this.rules[key]; delete this.targets[key]; await this.store.save();
   }
 
   async DescribeArchive(input: any): Promise<any> {
@@ -687,7 +709,8 @@ export class EventBridgeService {
 
   async DeleteArchive(input: any): Promise<any> {
     await this.ensureStarted(); const name = archiveName(input.ArchiveName);
-    try { if (!await this.archiveStore.deleteArchive(name)) throw new AwsError("ResourceNotFoundException", `Archive ${name} does not exist.`); return {}; }
+    const archive = this.archiveStore.archive(name);
+    try { if (!archive || !await this.archiveStore.deleteArchive(name)) throw new AwsError("ResourceNotFoundException", `Archive ${name} does not exist.`); await this.deleteArchiveManagedRule(archive); return {}; }
     catch (error) { if (errorMessage(error) === "ArchiveReplayConflict") throw new AwsError("ConcurrentModificationException", `Archive ${name} has an active replay.`); throw error; }
   }
 
@@ -768,7 +791,7 @@ export class EventBridgeService {
     return { Name: rule.name, Arn: rule.arn, EventBusName: rule.eventBusName, ...(rule.eventPattern !== undefined ? { EventPattern: rule.eventPattern } : {}), ...(rule.scheduleExpression ? { ScheduleExpression: rule.scheduleExpression } : {}), State: rule.state, ...(rule.description !== undefined ? { Description: rule.description } : {}), ...(rule.roleArn ? { RoleArn: rule.roleArn } : {}), ...(rule.managedBy ? { ManagedBy: rule.managedBy } : {}) };
   }
 
-  async DescribeRule(input: any): Promise<any> { await this.ensureControl(); return this.ruleView(this.requireRule(input.Name, input.EventBusName).rule); }
+  async DescribeRule(input: any): Promise<any> { await this.ensureControl(); return { ...this.ruleView(this.requireRule(input.Name, input.EventBusName).rule), CreatedBy: this.store.accountId }; }
 
   async ListRules(input: any): Promise<any> {
     await this.ensureControl(); const bus = this.resolveBusIdentifier(input.EventBusName); const prefix = input.NamePrefix === undefined ? undefined : text(input.NamePrefix, "NamePrefix", 1, 64);
@@ -1015,6 +1038,7 @@ export class EventBridgeService {
         deliveries.push({ id: deliveryId, eventId: id, eventBusName: bus, eventSourceName: source, ruleName: rule.name, ruleArn: rule.arn, targetId: target.id, targetArn: target.arn, targetType, ...(target.roleArn ? { roleArn: target.roleArn } : {}), ...(target.deadLetterArn ? { deadLetterArn: target.deadLetterArn } : {}), ...(sqsMessageGroupId ? { sqsMessageGroupId } : {}), ...(httpParameters ? { httpParameters } : {}), transformed, eventTime: Number.isFinite(sourceEventTime) ? sourceEventTime : acceptedAt, originalEvent, deliveryLineage, payload, ...(preflightErrorCode ? { preflightErrorCode, preflightErrorMessage } : {}), ...(traceHeader ? { traceHeader } : {}), enqueuedAt: acceptedAt, nextAttemptAt: acceptedAt, attempts: 0, maximumEventAgeSeconds: target.retryPolicy?.maximumEventAgeInSeconds ?? DEFAULT_EVENT_AGE_SECONDS, maximumRetryAttempts: target.retryPolicy?.maximumRetryAttempts ?? DEFAULT_RETRY_ATTEMPTS, status: "QUEUED" });
       }
     }
+    if (deliveries.length) this.metric("InvocationsCreated", {}, deliveries.length, "Count");
     const output = { EventId: id }; await this.deliveries.putMany(deliveries, terminalDiagnostics, entryAttempt ? acceptedIntegrationAttempt(entryAttempt, output, acceptedAt) : undefined); for (const diagnostic of terminalDiagnostics) { const rule = this.rules[this.key(bus, diagnostic.ruleName)]; if (rule) this.ruleMetric("FailedInvocations", rule, 1, "Count"); } this.scheduleNext(); return output;
   }
 

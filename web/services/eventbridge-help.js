@@ -29,7 +29,7 @@ const help = {
   targets: {
     level: "Supported integrations",
     description: "A target receives every event that matches a rule. Its input mode can pass the original event, select a JSON path, use constant JSON, or transform fields; retry age, attempt count, authorization, and a DLQ define failure handling per target.",
-    support: "Lambda, same-Region Standard SQS, CloudWatch Logs, API Gateway, and Standard Step Functions targets, input transformations, target parameters, execution roles or resource policies, independent durable retries, and Standard SQS DLQs are active. Step Functions success means durable StartExecution admission. Other target types and cross-account delivery are unavailable.",
+    support: "Lambda, same-Region Standard/FIFO SQS, SNS, CloudWatch Logs, API Gateway, and Standard Step Functions targets, input transformations, target parameters, execution roles or resource policies, independent durable retries, and Standard SQS DLQs are active. Step Functions success means durable StartExecution admission. Other target types and cross-account delivery are unavailable.",
   },
   tags: {
     level: "Supported locally",
@@ -43,8 +43,18 @@ const help = {
   },
   sendEvents: {
     level: "Supported locally",
-    description: "Send events publishes up to ten custom entries to selected buses. Each entry supplies a source, detail type, JSON detail, and optional resources; use it to exercise rules and targets without first building an event-producing application.",
+    description: "Send events (default event bus › Actions) publishes up to ten custom events to the selected bus. Each entry supplies a source, detail type, JSON detail, and optional resources; use it to exercise rules and targets without first building an event-producing application.",
     support: "Ordered per-entry validation and results, generated event IDs, archive-before-ack capture, enabled-rule evaluation, durable target handoff, metrics, retries, and DLQs are active. Only explicitly archived events are retained, and PutEvents does not route to remote AWS accounts.",
+  },
+  inputTransformer: {
+    level: "Supported locally",
+    description: "The target input transformer sandbox renders an input template against a sample event using JSON-path variables, the same way a rule target transforms the event it delivers.",
+    support: "Variable extraction, the predefined aws.events variables, string and JSON placeholder quoting, and missing-path omission are rendered locally; nothing is published or stored.",
+  },
+  scheduledRules: {
+    level: "Supported locally",
+    description: "Scheduled rules are the legacy way to run targets on a rate or cron schedule from the default event bus. AWS recommends EventBridge Scheduler for new schedules.",
+    support: "Default-bus rate and six-field cron rules fire in UTC with one-minute precision and share rule target delivery. Scheduler adds time zones, one-time schedules, and flexible windows.",
   },
   archives: {
     level: "Supported locally",
@@ -82,8 +92,11 @@ const targets = [
   [".eventbridge-detail .card", "Event pattern", "eventPattern"],
   [".eventbridge-detail .card", "Targets", "targets"],
   [".eventbridge-detail .card", "Tags", "tags"],
-  [".eventbridge-sandbox-grid > .card", "Test event pattern", "testPattern"],
-  [".eventbridge-sandbox-grid > .card", "Send events", "sendEvents"],
+  [".eventbridge-page .card", "Default event bus", "sendEvents"],
+  [".eventbridge-page .card", "Custom event buses", "eventBuses"],
+  [".eventbridge-page .card", "Creation method", "testPattern"],
+  [".eventbridge-page .card", "Target input transformer", "inputTransformer"],
+  [".eventbridge-page .card", "Scheduled rules", "scheduledRules"],
   [".eventbridge-page > .card", "Archives", "archives"],
   [".eventbridge-page > .card", "Archive details", "archives"],
   [".eventbridge-page > .card", "Replays", "replays"],

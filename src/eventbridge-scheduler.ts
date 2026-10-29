@@ -17,7 +17,7 @@ import { id, json, readJson } from "./util.js";
 import { nextScheduleOccurrence, parseScheduleExpression, validateScheduleTimezone } from "./eventbridge/schedule-expression.js";
 
 const NAME = /^[0-9A-Za-z_.-]{1,64}$/;
-const TOKEN = /^[!-~]{1,64}$/;
+const TOKEN = /^[a-zA-Z0-9-_]{1,64}$/;
 const DEFAULT_MAX_AGE = 86_400;
 const DEFAULT_RETRIES = 185;
 const LEASE_MS = 30_000;
@@ -40,7 +40,7 @@ function timestamp(value: unknown, name: string): number | undefined {
 }
 function token(value: unknown): string | undefined {
   if (value === undefined) return undefined;
-  const result = String(value); if (!TOKEN.test(result)) throw new AwsError("ValidationException", "ClientToken must contain 1-64 visible characters.", 400); return result;
+  const result = String(value); if (!TOKEN.test(result)) throw new AwsError("ValidationException", "ClientToken must match [a-zA-Z0-9-_]{1,64}.", 400); return result;
 }
 function hash(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 function tags(value: unknown): Record<string, string> {
@@ -57,6 +57,14 @@ function tags(value: unknown): Record<string, string> {
 function errorCode(error: unknown): string { return error instanceof AwsError ? error.code : "InternalServerException"; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function retryable(error: unknown): boolean { return error instanceof AwsError && (error.status === 429 || error.status >= 500); }
+function executionIdFor(occurrenceId: string): string { return createHash("sha256").update(occurrenceId).digest("hex").slice(0, 16); }
+function wholeSecondIso(millis: number): string { return new Date(Math.floor(millis / 1000) * 1000).toISOString().replace(/\.000Z$/, "Z"); }
+/** Replaces the documented EventBridge Scheduler context attributes inside a target input. */
+export function substituteContextAttributes(input: string, context: { scheduleArn: string; scheduledTime: string; executionId: string; attemptNumber?: number }): string {
+  let result = input.replaceAll("<aws.scheduler.schedule-arn>", context.scheduleArn).replaceAll("<aws.scheduler.scheduled-time>", context.scheduledTime).replaceAll("<aws.scheduler.execution-id>", context.executionId);
+  if (context.attemptNumber !== undefined) result = result.replaceAll("<aws.scheduler.attempt-number>", String(context.attemptNumber));
+  return result;
+}
 
 export class EventBridgeSchedulerService {
   private stopped = true;
@@ -156,6 +164,7 @@ export class EventBridgeSchedulerService {
       if (bus[1] !== this.region || bus[2] !== this.store.accountId || !this.events.hasEventBusArn(arn)) throw new AwsError("ValidationException", "EventBridge targets must identify an existing bus in this account and Region.", 400);
       const parameters = object(input.EventBridgeParameters, "Target.EventBridgeParameters"); const detailType = String(parameters.DetailType ?? ""); const source = String(parameters.Source ?? "");
       if (!detailType || detailType.length > 128 || !source || source.length > 256) throw new AwsError("ValidationException", "EventBridgeParameters requires valid DetailType and Source.", 400);
+      if (/^aws\./i.test(source)) throw new AwsError("ValidationException", "EventBridgeParameters.Source cannot begin with aws.", 400);
       if (result.input !== undefined) try { const parsed = JSON.parse(result.input); object(parsed, "EventBridge target Input"); } catch (error) { if (error instanceof AwsError) throw error; throw new AwsError("ValidationException", "EventBridge target Input must be a JSON object.", 400); }
       result.eventBridgeParameters = { detailType, source };
     } else if (states) {
@@ -187,6 +196,7 @@ export class EventBridgeSchedulerService {
       throw new AwsError("ValidationException", "Customer-managed Scheduler encryption depends on a later KMS phase; no schedule state was changed.", 400);
     }
     const expression = String(input.ScheduleExpression ?? ""); parseScheduleExpression(expression);
+    if (/^at\(/i.test(expression.trim()) && !/^at\(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\)$/.test(expression.trim())) throw new AwsError("ValidationException", "A one-time schedule must use the form at(yyyy-mm-ddThh:mm:ss).", 400);
     const timezone = validateScheduleTimezone(input.ScheduleExpressionTimezone);
     const state = String(input.State ?? "ENABLED"); if (state !== "ENABLED" && state !== "DISABLED") throw new AwsError("ValidationException", "State must be ENABLED or DISABLED.", 400);
     const startDate = timestamp(input.StartDate, "StartDate"); const endDate = timestamp(input.EndDate, "EndDate"); if (startDate !== undefined && endDate !== undefined && startDate >= endDate) throw new AwsError("ValidationException", "StartDate must be before EndDate.", 400);
@@ -292,11 +302,12 @@ export class EventBridgeSchedulerService {
   }
   private terminalOccurrence(occurrence: EventBridgeScheduleOccurrenceState): boolean { return new Set(["SUCCEEDED", "FAILED", "DLQ_SENT", "DLQ_FAILED"]).has(occurrence.status); }
   private admit(schedule: EventBridgeScheduleState, now: number): EventBridgeScheduleOccurrenceState {
-    const scheduledAt = schedule.nextScheduledAt!; const invocationAt = schedule.nextInvocationAt!; const eventId = randomUUID();
+    const scheduledAt = schedule.nextScheduledAt!; const invocationAt = schedule.nextInvocationAt!; const eventId = randomUUID(); const executionId = executionIdFor(eventId);
     const occurrence: EventBridgeScheduleOccurrenceState = {
-      occurrenceId: eventId, eventId, scheduleArn: schedule.arn, scheduleName: schedule.name, groupName: schedule.groupName,
+      occurrenceId: eventId, eventId, executionId, scheduleArn: schedule.arn, scheduleName: schedule.name, groupName: schedule.groupName,
       scheduleGeneration: schedule.generation, scheduledAt, invocationAt, admittedAt: now,
-      payload: schedule.target.input ?? this.defaultPayload(schedule.arn, scheduledAt, eventId), target: structuredClone(schedule.target),
+      // Context attributes other than the attempt number are fixed at admission; <aws.scheduler.attempt-number> is filled in per attempt.
+      payload: schedule.target.input === undefined ? this.defaultPayload(schedule.arn, scheduledAt, eventId) : substituteContextAttributes(schedule.target.input, { scheduleArn: schedule.arn, scheduledTime: wholeSecondIso(scheduledAt), executionId }), target: structuredClone(schedule.target),
       flexibleTimeWindow: structuredClone(schedule.flexibleTimeWindow), actionAfterCompletion: schedule.actionAfterCompletion,
       lineage: [schedule.arn], attempts: 0, nextAttemptAt: now, status: "QUEUED",
     };
@@ -308,7 +319,7 @@ export class EventBridgeSchedulerService {
     return occurrence;
   }
   private async dispatch(occurrence: EventBridgeScheduleOccurrenceState): Promise<void> {
-    const target = occurrence.target; this.executionRole(target.roleArn); const payload = occurrence.payload;
+    const target = occurrence.target; this.executionRole(target.roleArn); const payload = occurrence.payload.replaceAll("<aws.scheduler.attempt-number>", String(Math.max(1, occurrence.attempts)));
     if (target.arn.includes(":lambda:")) {
       this.authorize(target.roleArn, "lambda:InvokeFunction", target.arn, occurrence.scheduleArn); await this.lambda.enqueueSchedulerInvocation(target.arn, Buffer.from(payload), occurrence.scheduleArn, target.roleArn, occurrence.lineage, occurrence.eventId); return;
     }
@@ -328,10 +339,26 @@ export class EventBridgeSchedulerService {
     const delivered = await this.logs.deliverServiceEvents({ logGroupName: groupName, logStreamName: streamName, logEvents: entries.map((entry: any) => ({ timestamp: timestamp(entry.Timestamp ?? entry.timestamp, "LogEvent.Timestamp")!, message: String(entry.Message ?? entry.message ?? "") })) }, (action, resource) => evaluateRoleAuthorization(this.store.ensureAccount().iam, target.roleArn, action, resource).decision === "allowed", { deliveryLineage: occurrence.lineage });
     if (!delivered) throw new AwsError("AccessDeniedException", "Scheduler execution role cannot deliver the CloudWatch Logs event.", 403);
   }
+  /** The request EventBridge Scheduler would have sent to the target API; the DLQ body is this request, not the raw schedule input. */
+  private targetRequest(occurrence: EventBridgeScheduleOccurrenceState): { targetArn: string; body: unknown } {
+    const target = occurrence.target; const payload = occurrence.payload.replaceAll("<aws.scheduler.attempt-number>", String(Math.max(1, occurrence.attempts)));
+    if (target.arn.includes(":lambda:")) return { targetArn: "arn:aws:scheduler:::aws-sdk:lambda:invoke", body: { FunctionName: target.arn, InvocationType: "Event", Payload: payload } };
+    if (target.arn.includes(":sqs:")) { const parts = target.arn.split(":"); return { targetArn: "arn:aws:scheduler:::aws-sdk:sqs:sendMessage", body: { MessageBody: payload, QueueUrl: `https://sqs.${parts[3]}.amazonaws.com/${parts[4]}/${parts[5]}`, ...(target.sqsMessageGroupId ? { MessageGroupId: target.sqsMessageGroupId } : {}) } }; }
+    if (target.arn.includes(":events:")) return { targetArn: "arn:aws:scheduler:::aws-sdk:eventbridge:putEvents", body: { Entries: [{ EventBusName: target.arn, Source: target.eventBridgeParameters?.source, DetailType: target.eventBridgeParameters?.detailType, Detail: payload }] } };
+    if (target.arn.includes(":states:")) return { targetArn: "arn:aws:scheduler:::aws-sdk:sfn:startExecution", body: { StateMachineArn: target.arn, Input: payload, Name: `scheduler-${createHash("sha256").update(occurrence.occurrenceId).digest("hex").slice(0, 48)}` } };
+    let body: unknown = payload; try { body = JSON.parse(payload); } catch { /* universal targets validated their JSON at creation */ }
+    return { targetArn: target.arn, body };
+  }
   private async dispatchDlq(occurrence: EventBridgeScheduleOccurrenceState): Promise<void> {
-    const arn = occurrence.target.deadLetterArn!; const [code, ...message] = String(occurrence.lastError ?? "InternalServerException: Delivery failed").split(":");
+    const arn = occurrence.target.deadLetterArn!; const [code, ...message] = String(occurrence.lastError ?? "AWS.Scheduler.InternalServerError: Unexpected error occurred while processing the request").split(":");
     this.authorize(occurrence.target.roleArn, "sqs:SendMessage", arn, occurrence.scheduleArn);
-    await this.sqs.sendAuthorizedMessageToArn(arn, { MessageBody: occurrence.payload, MessageAttributes: { SCHEDULE_ARN: { DataType: "String", StringValue: occurrence.scheduleArn }, TARGET_ARN: { DataType: "String", StringValue: occurrence.target.arn }, ERROR_CODE: { DataType: "String", StringValue: code }, ERROR_MESSAGE: { DataType: "String", StringValue: message.join(":").trim().slice(0, 1024) }, RETRY_ATTEMPTS: { DataType: "Number", StringValue: String(Math.max(0, occurrence.attempts - 1)) } } }, { kind: "role", roleArn: occurrence.target.roleArn, sourceArn: occurrence.scheduleArn, sourceAccount: this.store.accountId, deliveryLineage: occurrence.lineage });
+    const request = this.targetRequest(occurrence); const text = (value: string) => ({ DataType: "String", StringValue: value });
+    // Attribute set and body per https://docs.aws.amazon.com/scheduler/latest/UserGuide/configuring-schedule-dlq.html
+    await this.sqs.sendAuthorizedMessageToArn(arn, { MessageBody: JSON.stringify(request.body), MessageAttributes: {
+      ERROR_CODE: text(code.trim()), ERROR_MESSAGE: text(message.join(":").trim().slice(0, 1024)), EXECUTION_ID: text(occurrence.executionId ?? executionIdFor(occurrence.occurrenceId)),
+      ...(occurrence.exhaustedRetryCondition ? { EXHAUSTED_RETRY_CONDITION: text(occurrence.exhaustedRetryCondition) } : {}),
+      IS_PAYLOAD_TRUNCATED: text("false"), RETRY_ATTEMPTS: text(String(Math.max(0, occurrence.attempts - 1))), SCHEDULED_TIME: text(wholeSecondIso(occurrence.scheduledAt)), SCHEDULE_ARN: text(occurrence.scheduleArn), TARGET_ARN: text(request.targetArn),
+    } }, { kind: "role", roleArn: occurrence.target.roleArn, sourceArn: occurrence.scheduleArn, sourceAccount: this.store.accountId, deliveryLineage: occurrence.lineage });
   }
   private finalize(occurrence: EventBridgeScheduleOccurrenceState, status: "SUCCEEDED" | "FAILED" | "DLQ_SENT" | "DLQ_FAILED", error?: unknown): void {
     occurrence.status = status; occurrence.completedAt = this.clock.now(); delete occurrence.leaseId; delete occurrence.leaseUntil;
@@ -353,6 +380,9 @@ export class EventBridgeSchedulerService {
       if (error === undefined) this.finalize(occurrence, "SUCCEEDED");
       else {
         occurrence.lastError = `${errorCode(error)}: ${errorMessage(error)}`; const expired = this.clock.now() - occurrence.scheduledAt >= occurrence.target.maximumEventAgeInSeconds * 1000; const exhausted = occurrence.attempts > occurrence.target.maximumRetryAttempts;
+        // EXHAUSTED_RETRY_CONDITION is only present when a retryable error ran out of age or attempts; permanent errors carry none.
+        const ageExceeded = errorCode(error) === "MaximumEventAgeExceeded";
+        occurrence.exhaustedRetryCondition = ageExceeded || (retryable(error) && expired) ? "MaximumEventAgeInSeconds" : retryable(error) && exhausted ? "MaximumRetryAttempts" : undefined;
         if (retryable(error) && !expired && !exhausted) { occurrence.status = "QUEUED"; occurrence.nextAttemptAt = this.clock.now() + Math.min(300_000, 1000 * 2 ** Math.min(8, occurrence.attempts - 1)); delete occurrence.leaseId; delete occurrence.leaseUntil; }
         else if (occurrence.target.deadLetterArn) { occurrence.status = "DLQ_QUEUED"; occurrence.nextAttemptAt = this.clock.now(); delete occurrence.leaseId; delete occurrence.leaseUntil; }
         else this.finalize(occurrence, "FAILED", error);
@@ -389,7 +419,7 @@ export class EventBridgeSchedulerService {
     try {
       const body = req.method === "GET" ? {} : await readJson(req);
       for (const [key, value] of url.searchParams) {
-        const field = ({ groupName: "GroupName", scheduleGroup: "GroupName", namePrefix: "NamePrefix", state: "State", nextToken: "NextToken", maxResults: "MaxResults", clientToken: "ClientToken", TagKeys: "TagKeys" } as Record<string, string>)[key] ?? key;
+        const field = ({ groupName: "GroupName", scheduleGroup: "GroupName", ScheduleGroup: "GroupName", namePrefix: "NamePrefix", state: "State", nextToken: "NextToken", maxResults: "MaxResults", clientToken: "ClientToken", TagKeys: "TagKeys" } as Record<string, string>)[key] ?? key;
         if (field === "TagKeys") (body.TagKeys ??= []).push(value);
         else body[field] = value;
       }

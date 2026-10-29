@@ -22,37 +22,45 @@ Each section follows the same pattern:
 
 ## Console navigation
 
-The EventBridge service in StackSim has a left navigation bar with:
+The EventBridge service in StackSim has a left navigation bar grouped like the AWS console:
 
-| Nav item | Purpose |
-|----------|---------|
-| **Overview** (landing) | Summary counts and quick links |
-| **Event buses** | Regional routers and custom buses |
-| **Rules** | Event-pattern rules across all buses |
-| **Schedules** | EventBridge Scheduler (time-driven invocations) |
-| **Schedule groups** | Organize schedules and group tags |
-| **Sandbox** | Test patterns and publish custom events |
+| Section | Nav item | Purpose |
+|---------|----------|---------|
+| (landing) | **Overview** | Summary counts and quick links (StackSim addition) |
+| **Buses** | **Event buses** | Default event bus tile and custom buses ("Custom Event Bus - Classic") |
+| **Buses** | **Rules** | Rules on one selected event bus |
+| **Buses** | **Archives** | Retained event segments |
+| **Buses** | **Replays** | Replay runs from archives |
+| **Scheduler** | **Schedules** | EventBridge Scheduler (time-driven invocations) |
+| **Scheduler** | **Schedule groups** | Organize schedules and group tags |
+| **Scheduler** | **Scheduled rule (legacy)** | Default-bus rate/cron rules (legacy) |
+| **Developer resources** | **Sandbox** | Event pattern and Target input transformer testers |
+
+The Integration section of the AWS console (Partner event sources, API destinations, Connections, Pipes, Schemas, Global endpoints) is not shown because those features are later phases.
 
 ### Event bus detail tabs
 
 `#/eventbridge/event-buses/{name}/...`
 
+Bus details (name, ARN, description, type, creation time, encryption, policy, logs) sit above the tabs.
+
 | Tab | Purpose |
 |-----|---------|
-| **Details** | Bus metadata, related rules, dependency cards |
 | **Rules** | Rules on this bus |
-| **Monitoring** | Delivery diagnostics (payload-redacted) |
+| **Archives** | Archives whose source is this bus |
+| **Monitoring** | Delivery diagnostics (payload-redacted; StackSim addition) |
 | **Tags** | Bus tags |
 
 ### Rule detail tabs
 
 `#/eventbridge/rules/{bus}/{rule}/...`
 
+Rule details (name, status, bus, rule type, description, ARN, managed by, created by) and the **Event pattern** or **Schedule** card sit above the tabs.
+
 | Tab | Purpose |
 |-----|---------|
-| **Details** | Rule state, event pattern, target summary |
 | **Targets** | Up to five independent targets per rule |
-| **Monitoring** | Per-rule delivery visibility |
+| **Metrics** | AWS/Events metric names plus per-rule delivery diagnostics |
 | **Tags** | Rule tags |
 
 ---
@@ -61,7 +69,7 @@ The EventBridge service in StackSim has a left navigation bar with:
 
 ### What it is
 
-The **Overview** landing page shows summary cards for **Event buses**, **Rules**, **Schedules**, and **Schedule groups** with counts and links. Actions: **Open Sandbox**, **Create schedule**.
+The **Overview** landing page shows summary cards for **Event buses**, **Rules**, and **Schedules** with counts and links. Actions: **Open Sandbox**, **Create schedule**.
 
 ### Why use it
 
@@ -79,9 +87,7 @@ Counts reflect the current Region. Enabled rule count is shown on the Rules card
 
 #### What it is
 
-Lists every bus with name, type (default or custom), rule count, description, and ARN. **Create event bus** opens a modal. Filter and refresh supported.
-
-An info banner distinguishes transient ordinary routing from explicit Archives, and links developers to Sandbox for publishing and pattern tests.
+A **Default event bus** tile (name, ARN, rule count) with an **Actions** menu: **Send events** (publish up to ten events), **Manage permissions** and **Start discovery** (shown disabled; later phases). Below it a **Custom event buses** table (select, name, type "Custom Event Bus - Classic", rules, description, ARN) with **Delete** and **Create event bus**.
 
 #### Why use it
 
@@ -89,9 +95,7 @@ Custom buses isolate one application's events from the shared `default` bus or o
 
 #### How it works in StackSim
 
-The **default** bus, custom-bus lifecycle, descriptions, tags, `PutEvents` ingestion, rule matching, and durable target handoff are active locally.
-
-Partner sources, resource policies, cross-account routing, customer-managed KMS, bus DLQs, and execution logging are unavailable. Installation-encrypted local archives and replay are active.
+The **default** bus, custom-bus lifecycle, descriptions, tags, `PutEvents` ingestion, rule matching, and durable target handoff are active locally. Partner sources, resource policies, cross-account routing, customer-managed KMS, bus DLQs, and execution logging are unavailable. Installation-encrypted local archives and replay are active. The newer AWS "Custom Event Bus" (eventsv2) API is not available.
 
 #### Common AWS use cases
 
@@ -100,11 +104,23 @@ Partner sources, resource policies, cross-account routing, customer-managed KMS,
 
 ---
 
+### Send events (modal)
+
+#### What it is
+
+Opened from the default event bus tile (**Actions › Send events**) or the **Send events** button on a bus. Each event has **Event bus**, **Event source**, **Detail type**, **Event detail** (JSON), and optional resources, time, and trace header. **Add another event** adds up to ten. **Send** shows per-event results with generated event IDs.
+
+#### How it works in StackSim
+
+Ordered per-event validation and results, archive-before-ack capture, enabled-rule evaluation, durable target handoff, metrics, retries, and DLQs are active. Accepted payloads are not retained for browsing.
+
+---
+
 ### Create event bus (modal)
 
 #### What it is
 
-Fields: **Name**, **Description**, **Tags (JSON object)**.
+Sections: **Name**, **Description**, **Encryption** (AWS owned key; customer managed key shown disabled), **Logs** and **Resource-based policy** (later phases, described inline), **Archives** (enable to create an archive with the bus), **Schema discovery** (later phase), and **Tags** (key/value rows).
 
 #### Why use it
 
@@ -112,7 +128,7 @@ Separate event namespaces without creating separate AWS accounts.
 
 #### How it works in StackSim
 
-The regional **default** bus already exists and cannot be deleted. Partner sources, KMS, DLQ, and logging are not available on custom buses locally.
+The regional **default** bus already exists and cannot be deleted. Enabling the archive creates it right after the bus, which also creates the archive's managed rule.
 
 ---
 
@@ -190,59 +206,47 @@ Tag creation, replacement, removal, validation, listing, and persistence are act
 
 #### What it is
 
-Account-wide list of event-pattern rules with bus name, state, description, and ARN. **Create rule** opens the rule wizard modal.
+An **Event bus** selector scopes the table to one bus. Columns: select, **Name**, **Status**, **Description**, **Type** (Standard, Scheduled (legacy), or both), **Managed by**, ARN. **Actions** offers **Enable**, **Disable**, and **Delete** for the selected rule; **Create rule** opens the builder selection page.
 
-Info banner: up to five targets per rule (Lambda, SQS, Logs, API Gateway, Standard Step Functions). Scheduled rules on this surface are legacy/default-bus only — use **Scheduler** for new time-driven work. Workflow delivery succeeds only after durable `StartExecution` admission and uses the configured target role.
+Managed rules (for example `Events-Archive-<archive>`) cannot be enabled, disabled, edited, re-targeted, or tagged; **Delete** force deletes them after you type the name.
 
 #### Why use it
 
-Find rules by name across buses after CDK or Terraform deploy.
+Find rules by name on a bus after a CDK, SAM, or Terraform deploy.
 
 #### How it works in StackSim
 
-Event-pattern rules, pattern testing, enabled/disabled state, descriptions, tags, metrics, and durable delivery are active.
-
-The console does not create scheduled-only rules without an event pattern on non-default buses.
+Event-pattern rules, pattern testing, enabled/disabled state, descriptions, tags, metrics, and durable delivery are active. Legacy scheduled rules live under **Scheduler › Scheduled rule (legacy)**.
 
 ---
 
-### Create rule (modal)
+### Create rule (builder selection and Advanced Builder)
 
 #### What it is
 
-Collects:
+**Create rule** shows the AWS builder selection page: **Enhanced Builder** (the visual canvas; labelled not available locally) and **Advanced Builder**. The Advanced Builder is a five-step wizard:
 
-- **Event bus**, **Rule name**, **Description**, **State**
-- **Event pattern (JSON)** and **Sample event (JSON)** with **Test pattern**
-- **Legacy schedule expression (optional)** — default bus only, UTC
-- **Target (optional)** — full target configuration (see Targets section)
-- **Tags (JSON object)**
-
-Creates rule via `PutRule`, optionally adds first target via `PutTargets`.
-
-#### Why use it
-
-One-step rule plus optional target for common event-driven workflows.
+1. **Define rule detail** — Name, Description, Event bus, "Enable the rule on the selected event bus", Rule type (Rule with an event pattern; Schedule redirects to Scheduled rule (legacy)).
+2. **Build event pattern** — Event source (AWS events or EventBridge partner events / Other / All events), Sample event (library of locally published AWS events or Enter my own), Creation method (**Use pattern form** with AWS service and event type, or **Custom pattern (JSON editor)**), **Prettify**, **Copy**, **Test pattern**.
+3. **Select target(s)** — Target types (EventBridge event bus and API destination are later phases; AWS service is active), Select a target (Lambda, SQS, SNS, CloudWatch Logs, API Gateway, Step Functions), execution role, **Configure target input** (Matched events / Part of the matched event / Constant (JSON text) / Input transformer with preview), **Retry policy**, **Dead-letter queue**, **Add another target** (up to five).
+4. **Configure tags** — key/value rows.
+5. **Review and create** — each section has **Edit**; **Create rule** calls `PutRule` then `PutTargets`.
 
 #### How it works in StackSim
 
-If target creation fails, the rule is still created and you are redirected to Targets to fix permissions.
-
-Legacy `rate(...)` / `cron(...)` on rules coexists with event patterns on the **default** bus only.
+If a target fails to save, the rule is still created and you land on its Targets tab with the error. Target IDs are generated like the AWS console.
 
 ---
 
 ## Rule detail
 
-### Rule details tab
+### Rule details
 
 #### What it is
 
-Summary cards: **Rule details** (state, bus, description, ARN), **Targets** count, **Tags** count. Full **Event pattern** JSON with **Test pattern**. Warning about target permissions.
+Above the tabs: **Rule details** (name, status, event bus, rule type, description, ARN, managed by, created by, target count) and the **Event pattern** card with **Test pattern** or, for legacy scheduled rules, a **Schedule** card. Managed rules show a notice and disabled Edit/Disable buttons.
 
-If the rule has a legacy schedule expression, an additional **Legacy schedule** card appears with link to Scheduler.
-
-Actions: Refresh, Test pattern, Enable/Disable, Edit, Delete.
+Actions: Refresh, Test pattern, Enable/Disable, Edit, Delete (Force delete for managed rules).
 
 #### Why use it
 
@@ -310,15 +314,15 @@ Configuration sections:
 
 **Target identity**
 
-- **Target type** — Lambda, SQS, CloudWatch Logs, API Gateway, Step Functions
+- **Target type** — Lambda function, SQS queue, SNS topic, CloudWatch log group, API Gateway, Step Functions state machine
 - **Target ID** — stable identifier (immutable after creation — remove and re-add to change)
 - Type-specific ARN or function selector
 
 **Target input**
 
-- **Matched event** — pass full event
-- **Constant JSON**
-- **JSON path** — for example `$.detail`
+- **Matched events** — pass full event
+- **Part of the matched event** — for example `$.detail`
+- **Constant (JSON text)**
 - **Input transformer** — paths map plus template; Logs targets require numeric `timestamp` and string `message`
 
 **Transformation preview** — sample event plus preview button
@@ -327,7 +331,7 @@ Configuration sections:
 
 - **Execution role ARN** (optional; not for Logs targets)
 - **Dead-letter queue ARN** (Standard SQS)
-- **Maximum event age** and **Maximum retry attempts**
+- **Maximum age of event** and **Retry attempts**
 
 Resource-policy guidance templates per target type.
 
@@ -339,6 +343,7 @@ Different targets need different input shapes and authorization models.
 
 - **Lambda** — resource policy or execution role with `lambda:InvokeFunction`
 - **SQS** — queue policy or role; optional message group ID for FIFO/fair-queue
+- **SNS** — topic policy for events.amazonaws.com or role with `sns:Publish`
 - **Logs** — log group resource policy; no target role; creates stream in existing group
 - **API Gateway** — resource policy or role; HTTP parameters for path/query/headers
 
@@ -358,11 +363,11 @@ Max age:      86400 seconds
 
 ---
 
-### Rule monitoring tab
+### Rule metrics tab
 
 #### What it is
 
-Rule state, configured target count, delivery state metrics, and payload-redacted attempt table (same shape as bus monitoring, scoped to one rule).
+The documented AWS/Events metric names for the rule, then rule state, configured target count, delivery state, and the payload-redacted attempt table (StackSim addition, scoped to one rule).
 
 #### Why use it
 
@@ -380,58 +385,27 @@ Tags with **Manage tags**. Info note: create-time tags apply at rule creation; t
 
 ## Sandbox
 
-### Test event pattern
+Two tabs, as in the AWS console: **Event pattern** and **Target input transformer**. Nothing is published from the Sandbox; use **Send events** on an event bus to publish.
+
+### Event pattern
 
 #### What it is
 
-**Event pattern (JSON)** and **Sample event (JSON)** with **Test pattern** button. Shows match / no-match result.
-
-#### Why use it
-
-Validate pattern design before enabling a rule or publishing events.
+The same builder as Step 2 of Create rule: **Event source**, **Sample event** (AWS event library or Enter my own), **Creation method** (pattern form or JSON editor), **Prettify**, **Copy**, **Test pattern**, and **Create rule with pattern**, which opens the Advanced Builder with the pattern and sample filled in.
 
 #### How it works in StackSim
 
 Uses the same matching engine as active rules. Does not store the sample or invoke targets.
 
----
-
-### Send events
+### Target input transformer
 
 #### What it is
 
-Publish up to **ten** custom entries per request. Each entry: **Event bus**, **Source**, **Detail type**, **Detail (JSON)**, optional **Resources**.
-
-**Add entry** / **Remove entry**. **Send events** calls `PutEvents` and shows per-entry results with generated event IDs.
-
-#### Why use it
-
-Exercise rules and targets without building a producer application.
+**Sample event**, **Input path** (JSON object of variables to JSON paths), **Template**, and **Generate output**, which renders the template the way a rule target would.
 
 #### How it works in StackSim
 
-Ordered per-entry validation and results, enabled-rule evaluation, durable target handoff, metrics, retries, and DLQs are active. Accepted payloads are not retained for browsing. Does not route to remote AWS accounts.
-
-#### Example entry
-
-```text
-Event bus:    default
-Source:     example.orders
-Detail type: Order state changed
-Detail:     {"state":"created","orderId":"123"}
-```
-
----
-
-### Delivery visibility
-
-#### What it is
-
-Pointer to rule Monitoring pages and CloudWatch EventBridge metrics.
-
-#### Why use it
-
-Connect publish tests to downstream delivery outcomes.
+Variable extraction, the predefined `aws.events.*` variables, string and JSON placeholder quoting, and missing-path omission are rendered locally.
 
 ---
 
@@ -516,6 +490,27 @@ Full local create, read, update, delete, enablement, next-run calculation, pendi
 
 ---
 
+## Scheduled rule (legacy)
+
+### Scheduled rules (list)
+
+#### What it is
+
+Lists default-bus rules that carry a schedule expression (name, status, expression, description) with **Create scheduled rule**. Every page carries the AWS note that scheduled rules are a legacy feature and EventBridge Scheduler is recommended.
+
+### Create scheduled rule (wizard)
+
+#### What it is
+
+1. **Define scheduled rule** — Name, Description, "Enable the scheduled rule", **Schedule pattern**: a fine-grained cron schedule (six fields with the next ten trigger dates in UTC or local time) or a rate (value and unit).
+2. **Select target(s)**, 3. **Configure tags**, 4. **Review and create** — the same steps as the Advanced Builder.
+
+#### How it works in StackSim
+
+Legacy rules fire on the default bus in UTC with one-minute precision and emit the `aws.events` / `Scheduled Event` envelope through ordinary target delivery. The cron preview cannot show dates for `L`, `W`, or `#` fields; the expression is validated when the rule is created.
+
+---
+
 ## Schedule groups
 
 ### Schedule groups (list)
@@ -558,6 +553,7 @@ Deleting a group starts asynchronous deletion of contained schedules.
 |------|---------------|
 | **Lambda** | Function resource policy or execution role |
 | **SQS** | Queue policy or execution role |
+| **SNS** | Topic policy or execution role with `sns:Publish` |
 | **CloudWatch Logs** | Log group resource policy (no role) |
 | **API Gateway** | API resource policy or execution role |
 | **Step Functions** | Required EventBridge execution role with `states:StartExecution` on the state machine |
@@ -593,10 +589,12 @@ Archive segments are installation-key encrypted and restart-safe. Counts, event-
 | KMS encrypted buses | Unavailable |
 | Customer-managed KMS for archives | Unavailable; syntax-checked dependency failure with no mutation |
 | Bus execution logging | Unavailable |
-| Rule schedule on custom bus | Unavailable (default bus legacy only) |
+| Rule schedule on custom bus | Unavailable (default bus legacy only; created from Scheduled rule (legacy)) |
+| Archive managed rules | `Events-Archive-<archive>` is created with the archive, shown as managed, and needs Force delete |
+| Enhanced Builder | Not available; the Advanced Builder covers the same configuration |
 | Scheduled rules (legacy) | Default bus, UTC, one-minute precision |
 | Max targets per rule | 5 |
-| Max PutEvents entries (Sandbox) | 10 |
+| Max PutEvents entries (Send events) | 10 |
 | Delivery diagnostics retention | ~100 recent summaries, payload-redacted |
 | Scheduler targets | Lambda, SQS, Step Functions, EventBridge bus |
 | Scheduler time zones | IANA with DST behavior |

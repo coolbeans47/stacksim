@@ -4,163 +4,37 @@ import { arnComboboxField } from "../arn-combobox.js";
 import { timezoneSelectOptions } from "../timezones.js";
 import { session as ui, setDirty } from "../state.js";
 import { decorateEventBridgePanelHelp } from "./eventbridge-help.js";
+import {
+  bindPatternBuilder, bindTagRows, bindTargetModal, busRoot, defaultPattern, defaultSample, deliveryDiagnostics, diagnosticTable, encoded, lambdaFunctions, listArchives, listBuses,
+  listReplays, listRules, listTags, listTargets, nameFromArn, parseObject, patternBuilderMarkup, placeholderInsideString, previewJsonPath, queueNameFromArn, readPatternBuilder, readTagRows,
+  roleNameFromArn, ruleRoot, sampleEventJson, sampleEventLibrary, schedulerTargetMarkup, stateMarkup, stringMap, tagRowsMarkup, tagsFromMap, tagsToMap, targetArnFromForm,
+  targetDisplayName, targetFields, targetFromForm, targetHref, targetType, targetTypeLabel,
+} from "./eventbridge-shared.js";
+import { ruleBuilderSelectionPage, ruleWizardPage, scheduledRulesPage, setRuleWizardPrefill } from "./eventbridge-rule-wizard.js";
 
 export const metadata = {
   key: "eventbridge",
   name: "EventBridge",
   icon: "E",
   cls: "eventbridge",
-  links: [["Event buses", "#/eventbridge/event-buses"], ["Rules", "#/eventbridge/rules"], ["Archives", "#/eventbridge/archives"], ["Replays", "#/eventbridge/replays"], ["Schedules", "#/eventbridge/schedules"], ["Schedule groups", "#/eventbridge/schedule-groups"], ["Sandbox", "#/eventbridge/sandbox"]],
-  search: ["eventbridge", "event bus", "events", "rules", "routing", "archive", "retention", "replay", "pattern", "schedule", "cron", "sandbox"],
+  // A third element of "section" renders a navigation heading, matching the AWS console groups.
+  links: [
+    ["Buses", "", "section"], ["Event buses", "#/eventbridge/event-buses"], ["Rules", "#/eventbridge/rules"], ["Archives", "#/eventbridge/archives"], ["Replays", "#/eventbridge/replays"],
+    ["Scheduler", "", "section"], ["Schedules", "#/eventbridge/schedules"], ["Schedule groups", "#/eventbridge/schedule-groups"], ["Scheduled rule (legacy)", "#/eventbridge/scheduled-rules"],
+    ["Developer resources", "", "section"], ["Sandbox", "#/eventbridge/sandbox"],
+  ],
+  search: ["eventbridge", "event bus", "events", "rules", "routing", "archive", "retention", "replay", "pattern", "schedule", "cron", "sandbox", "scheduled rule"],
 };
 
-const defaultPattern = JSON.stringify({ source: ["example.orders"] }, null, 2);
-const defaultSample = JSON.stringify({
-  version: "0",
-  id: "example-event-id",
-  "detail-type": "Order state changed",
-  source: "example.orders",
-  account: "000000000000",
-  time: "2026-07-20T12:00:00Z",
-  region: "eu-west-1",
-  resources: [],
-  detail: { state: "created" },
-}, null, 2);
-
-function parseObject(value, label) {
-  let parsed;
-  try { parsed = JSON.parse(String(value || "{}")); }
-  catch { throw new Error(`${label} must be valid JSON`); }
-  if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error(`${label} must be a JSON object`);
-  return parsed;
-}
-
-function parseJson(value, label) {
-  try { return JSON.parse(String(value)); }
-  catch { throw new Error(`${label} must be valid JSON`); }
-}
-
-function stringMap(value, label) {
-  const parsed = parseObject(value, label);
-  if (Object.values(parsed).some(item => typeof item !== "string")) throw new Error(`${label} values must be strings`);
-  return parsed;
-}
-
-function stringList(value, label) {
-  let parsed;
-  try { parsed = JSON.parse(String(value || "[]")); }
-  catch { throw new Error(`${label} must be valid JSON`); }
-  if (!Array.isArray(parsed) || parsed.some(item => typeof item !== "string")) throw new Error(`${label} must be a JSON array of strings`);
-  return parsed;
-}
-
-function tagsToMap(tags = []) { return Object.fromEntries(tags.map(tag => [tag.Key, tag.Value])); }
-function tagsFromMap(tags = {}) { return Object.entries(tags).map(([Key, Value]) => ({ Key, Value })); }
-function nameFromArn(arn = "") {
-  const value = String(arn);
-  for (const marker of [":event-bus/", ":archive/", ":replay/", ":rule/"]) if (value.includes(marker)) return value.split(marker)[1].split("/").at(-1) || value;
-  return value.split(":").at(-1) || value;
-}
-function functionNameFromArn(arn = "") { return String(arn).split(":function:")[1]?.split(":")[0] ?? nameFromArn(arn); }
-function roleNameFromArn(arn = "") { return String(arn).split("/").at(-1) || String(arn); }
-function schedulerTargetMarkup(arn = "") {
-  const value = String(arn);
-  if (/^arn:aws:lambda:[^:]+:\d{12}:function:[^:]+(?::[^:]+)?$/.test(value)) return `<a class="mono" href="#/lambda/functions/${encoded(functionNameFromArn(value))}">${escapeHtml(value)}</a>`;
-  return `<span class="mono">${escapeHtml(value)}</span>`;
-}
-function targetType(target = {}) {
-  const arn = String(target.Arn || "");
-  if (arn.includes(":sqs:")) return "sqs";
-  if (arn.includes(":logs:") && arn.includes(":log-group:")) return "logs";
-  if (arn.includes(":execute-api:")) return "apigateway";
-  if (arn.includes(":states:") && arn.includes(":stateMachine:")) return "states";
-  return "lambda";
-}
-function targetTypeLabel(type) { return ({ lambda: "Lambda", sqs: "SQS", logs: "CloudWatch Logs", apigateway: "API Gateway", states: "Step Functions" })[type] ?? "Target"; }
-function queueNameFromArn(arn = "") { return String(arn).split(":").at(-1) || String(arn); }
-function logGroupNameFromArn(arn = "") { return String(arn).split(":log-group:")[1]?.replace(/:\*$/, "") ?? String(arn); }
-function apiIdFromArn(arn = "") { return String(arn).split(":")[5]?.split("/")[0] ?? String(arn); }
-function targetDisplayName(target = {}) {
-  const type = targetType(target);
-  if (type === "lambda") return functionNameFromArn(target.Arn);
-  if (type === "sqs") return queueNameFromArn(target.Arn);
-  if (type === "logs") return logGroupNameFromArn(target.Arn);
-  if (type === "states") return nameFromArn(target.Arn);
-  return apiIdFromArn(target.Arn);
-}
-function targetHref(target = {}) {
-  const type = targetType(target);
-  if (type === "lambda") return `#/lambda/functions/${encoded(functionNameFromArn(target.Arn))}`;
-  if (type === "sqs") return `#/sqs/queues/${encoded(queueNameFromArn(target.Arn))}/access-policy`;
-  if (type === "logs") return `#/cloudwatch/log-groups/${encoded(logGroupNameFromArn(target.Arn))}/resource-policy`;
-  if (type === "states") return `#/step-functions/state-machines/${encoded(target.Arn)}`;
-  return `#/apigateway/apis/${encoded(apiIdFromArn(target.Arn))}/policy`;
-}
-function stateMarkup(state) { return `<span class="status ${state === "DISABLED" ? "inactive" : ""}">${escapeHtml(state === "DISABLED" ? "Disabled" : "Enabled")}</span>`; }
-function encoded(value) { return encodeURIComponent(value); }
-function busRoot(name) { return `#/eventbridge/event-buses/${encoded(name)}`; }
-function ruleRoot(bus, rule) { return `#/eventbridge/rules/${encoded(bus)}/${encoded(rule)}`; }
-
-async function listAll(operation, input, resultKey) {
-  const collected = [];
-  let NextToken;
-  do {
-    const page = await events(operation, { ...input, Limit: 100, ...(NextToken ? { NextToken } : {}) });
-    collected.push(...(page[resultKey] ?? []));
-    NextToken = page.NextToken;
-  } while (NextToken);
-  return collected;
-}
-
-async function listBuses() { return listAll("ListEventBuses", {}, "EventBuses"); }
-async function listRules(bus) { return listAll("ListRules", { EventBusName: bus }, "Rules"); }
-async function listTargets(bus, rule) { return listAll("ListTargetsByRule", { EventBusName: bus, Rule: rule }, "Targets"); }
-async function listArchives() { return listAll("ListArchives", {}, "Archives"); }
-async function listReplays() { return listAll("ListReplays", {}, "Replays"); }
-
-async function listTags(arn) {
-  if (!arn) return [];
-  return (await events("ListTagsForResource", { ResourceARN: arn })).Tags ?? [];
-}
-
-async function deliveryDiagnostics() {
-  return rest("/_stacksim/api/eventbridge/deliveries");
-}
-
-function boundedText(value, maximum = 240) {
-  const text = String(value ?? "");
-  return text.length > maximum ? `${text.slice(0, maximum)}…` : text;
-}
-
-function diagnosticTable(deliveries, diagnostics) {
-  const pending = deliveries.map(item => ({ ...item, updatedAt: item.enqueuedAt, displayStatus: item.status, errorMessage: item.lastError }));
-  const completed = diagnostics.map(item => ({ ...item, displayStatus: item.status }));
-  const rows = [...pending, ...completed].sort((left, right) => Number(right.updatedAt ?? right.enqueuedAt ?? 0) - Number(left.updatedAt ?? left.enqueuedAt ?? 0)).slice(0, 100);
-  if (!rows.length) return emptyState("◇", "No delivery attempts", "Matching events will appear here as bounded, payload-redacted diagnostics.");
-  return `<table class="eventbridge-diagnostic-table"><thead><tr><th>Updated</th><th>Event ID</th><th>Rule</th><th>Target</th><th>Status</th><th>Attempts</th><th>DLQ</th><th>Next attempt / error</th></tr></thead><tbody>${rows.map(item => {
-    const type = targetType({ Arn: item.targetArn });
-    const statusClass = ["FAILED", "DLQ_FAILED"].includes(item.displayStatus) ? "error" : ["RETRYING", "QUEUED", "LEASED"].includes(item.displayStatus) ? "pending" : "";
-    return `<tr><td class="no-wrap">${formatDate(item.updatedAt ?? item.enqueuedAt)}</td><td class="mono">${escapeHtml(item.eventId)}</td><td>${escapeHtml(item.ruleName)}</td><td>${escapeHtml(item.targetId)}${item.targetArn ? `<div class="muted small">${escapeHtml(targetTypeLabel(type))} · ${escapeHtml(targetDisplayName({ Arn: item.targetArn }))}</div>` : ""}</td><td><span class="status ${statusClass}">${escapeHtml(item.displayStatus)}</span></td><td>${Number(item.attempts ?? 0)}</td><td>${item.deadLetterArn ? `<a href="#/sqs/queues/${encoded(queueNameFromArn(item.deadLetterArn))}/messages">${escapeHtml(queueNameFromArn(item.deadLetterArn))}</a>` : "–"}</td><td>${item.nextAttemptAt ? formatDate(item.nextAttemptAt) : escapeHtml(boundedText(item.errorMessage || item.errorCode || "–"))}</td></tr>`;
-  }).join("")}</tbody></table>`;
-}
-
-async function lambdaFunctions() {
-  const functions = [];
-  let Marker;
-  do {
-    const query = new URLSearchParams({ MaxItems: "50", ...(Marker ? { Marker } : {}) });
-    const response = await rest(`/2015-03-31/functions?${query}`);
-    functions.push(...(response.Functions ?? []));
-    Marker = response.NextMarker;
-  } while (Marker);
-  return functions;
-}
+const RULES_BUS_KEY = "eventbridge.rulesBus";
+function rememberedRulesBus() { try { return sessionStorage.getItem(RULES_BUS_KEY) || "default"; } catch { return "default"; } }
+function rememberRulesBus(name) { try { sessionStorage.setItem(RULES_BUS_KEY, name); } catch { /* storage unavailable */ } }
 
 function busTabs(name, active) {
   const root = busRoot(name);
   return tabs([
-    { label: "Details", href: `${root}/details`, active: active === "details" },
     { label: "Rules", href: `${root}/rules`, active: active === "rules" },
+    { label: "Archives", href: `${root}/archives`, active: active === "archives" },
     { label: "Monitoring", href: `${root}/monitoring`, active: active === "monitoring" },
     { label: "Tags", href: `${root}/tags`, active: active === "tags" },
   ]);
@@ -169,9 +43,8 @@ function busTabs(name, active) {
 function ruleTabs(bus, rule, active) {
   const root = ruleRoot(bus, rule);
   return tabs([
-    { label: "Details", href: `${root}/details`, active: active === "details" },
     { label: "Targets", href: `${root}/targets`, active: active === "targets" },
-    { label: "Monitoring", href: `${root}/monitoring`, active: active === "monitoring" },
+    { label: "Metrics", href: `${root}/metrics`, active: active === "metrics" },
     { label: "Tags", href: `${root}/tags`, active: active === "tags" },
   ]);
 }
@@ -184,351 +57,218 @@ function setRuleChrome(context, bus, rule, section) {
   context.setChrome("eventbridge", ["EventBridge", { label: "Rules", href: "#/eventbridge/rules" }, rule, ...(section ? [section] : [])]);
 }
 
-function dependencyCards() {
-  return `<div class="eventbridge-dependency-grid"><section class="card"><div class="card-header"><h2>Permissions</h2><span class="status inactive">Unavailable</span></div><div class="card-body"><p>Event-bus resource policies and cross-account bus routing are not currently available. Target resource policies and supported execution roles are active.</p></div></section><section class="card"><div class="card-header"><h2>Encryption</h2><span class="status inactive">Unavailable</span></div><div class="card-body"><p>Customer-managed KMS keys and encrypted-bus dead-letter configuration are dependency-blocked.</p></div></section><section class="card"><div class="card-header"><h2>Logging</h2><span class="status inactive">Unavailable</span></div><div class="card-body"><p>Event-bus execution logging is not available. Rule metrics and payload-redacted local diagnostics remain separate.</p></div></section></div>`;
+function actionMenu(label, items) {
+  return `<details class="eventbridge-action-menu"><summary class="button" aria-haspopup="menu">${escapeHtml(label)} <span aria-hidden="true">▾</span></summary><div class="eventbridge-action-menu-items" role="menu">${items.map(item => `<button class="button link" type="button" role="menuitem" ${item.attributes ?? ""} ${item.disabled ? `disabled title="${escapeHtml(item.disabled)}"` : ""}>${escapeHtml(item.label)}</button>`).join("")}</div></details>`;
 }
 
+function dependencyCards() {
+  return `<div class="eventbridge-dependency-grid"><section class="card"><div class="card-header"><h2>Permissions</h2><span class="status inactive">Unavailable</span></div><div class="card-body"><p>Event-bus resource policies and cross-account bus routing are not currently available. Target resource policies and supported execution roles are active.</p></div></section><section class="card"><div class="card-header"><h2>Encryption</h2><span class="status inactive">Unavailable</span></div><div class="card-body"><p>Buses use the AWS owned key. Customer-managed KMS keys and encrypted-bus dead-letter configuration are dependency-blocked.</p></div></section><section class="card"><div class="card-header"><h2>Logging</h2><span class="status inactive">Unavailable</span></div><div class="card-body"><p>Event-bus execution logging is not available. Rule metrics and payload-redacted local diagnostics remain separate.</p></div></section></div>`;
+}
+
+// ---- Send events (default event bus tile › Actions › Send events) ----
+
+function sendEntryMarkup(index, buses, selectedBus) {
+  return `<article class="eventbridge-entry" data-event-entry><div class="eventbridge-entry-header"><h3>Event <span data-entry-number>${index + 1}</span></h3><button class="button link danger" type="button" data-remove-event-entry aria-label="Remove event ${index + 1}" ${index === 0 ? "disabled" : ""}>Remove</button></div><div class="field"><label>Event bus</label><select name="eventBus">${buses.map(bus => `<option value="${escapeHtml(bus.Name)}" ${bus.Name === selectedBus ? "selected" : ""}>${escapeHtml(bus.Name)}</option>`).join("")}</select></div><div class="field-row"><div class="field"><label>Event source</label><input name="source" value="com.mycompany.myapp" required maxlength="256"><span class="hint">Custom sources cannot begin with aws.</span></div><div class="field"><label>Detail type</label><input name="detailType" value="myDetailType" required maxlength="128"></div></div><div class="field"><label>Event detail</label><textarea name="detail" required>{
+  "key1": "value1"
+}</textarea><span class="hint">A valid JSON object.</span></div><details><summary>Additional settings</summary><div class="field"><label>Resources (one ARN per line)</label><textarea name="resources" placeholder="arn:aws:..." rows="2"></textarea></div><div class="field-row"><div class="field"><label>Time (optional)</label><input name="time" type="datetime-local"></div><div class="field"><label>Trace header (optional)</label><input name="traceHeader" maxlength="500" placeholder="Root=1-..."></div></div></details></article>`;
+}
+
+function renumberEntries(root) {
+  const entries = [...root.querySelectorAll("[data-event-entry]")];
+  entries.forEach((entry, index) => { entry.querySelector("[data-entry-number]").textContent = String(index + 1); const remove = entry.querySelector("[data-remove-event-entry]"); remove.disabled = entries.length === 1; remove.setAttribute("aria-label", `Remove event ${index + 1}`); });
+  const add = root.querySelector("[data-add-event-entry]"); if (add) add.disabled = entries.length >= 10;
+}
+
+function eventEntryInput(element) {
+  const value = name => element.querySelector(`[name="${name}"]`).value;
+  const detail = parseObject(value("detail"), "Event detail");
+  const time = value("time");
+  return { Source: value("source"), DetailType: value("detailType"), Detail: JSON.stringify(detail), EventBusName: value("eventBus"), Resources: value("resources").split(/\r?\n/).map(item => item.trim()).filter(Boolean), ...(time ? { Time: new Date(time).getTime() / 1000 } : {}), ...(value("traceHeader").trim() ? { TraceHeader: value("traceHeader").trim() } : {}) };
+}
+
+function sendResults(result) {
+  const entries = result.Entries ?? [];
+  return `<div class="alert ${result.FailedEntryCount ? "warning" : "success"}" role="status"><strong>${entries.length - (result.FailedEntryCount ?? 0)} accepted · ${result.FailedEntryCount ?? 0} failed</strong><br>Results retain request order. Accepted events are routed to matching rules and archives and cannot be browsed later.</div><div class="table-wrap"><table><thead><tr><th>Event</th><th>Status</th><th>Event ID</th><th>Error</th></tr></thead><tbody>${entries.map((entry, index) => `<tr><td>${index + 1}</td><td>${entry.ErrorCode ? '<span class="status error">Failed</span>' : '<span class="status">Accepted</span>'}</td><td class="mono">${escapeHtml(entry.EventId || "–")}</td><td>${escapeHtml(entry.ErrorMessage || entry.ErrorCode || "–")}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+async function showSendEvents(context, selectedBus = "default") {
+  const buses = await listBuses();
+  context.showModal("Send events", `<div class="alert info"><strong>EventBridge is not an event-history browser</strong><br>Only the ordered per-event results and generated event IDs are shown. Accepted events are evaluated against rules and archives and are not retained for browsing.</div><div data-event-entries>${sendEntryMarkup(0, buses, selectedBus)}</div><div class="eventbridge-inline-actions start"><button class="button" type="button" data-add-event-entry>Add another event</button><span class="hint">Up to 10 events per request.</span></div><div data-send-event-results aria-live="polite"></div>`, "Send", async () => {
+    const dialog = document.querySelector("#modal"); const output = dialog.querySelector("[data-send-event-results]");
+    const Entries = [...dialog.querySelectorAll("[data-event-entry]")].map(eventEntryInput);
+    const result = await events("PutEvents", { Entries }); output.innerHTML = sendResults(result); setDirty(false, "modal");
+  }, true, { closeAfterSubmit: false, refreshAfterSubmit: false });
+  const dialog = document.querySelector("#modal"); const entryRoot = dialog.querySelector("[data-event-entries]");
+  dialog.querySelector("[data-add-event-entry]").addEventListener("click", () => {
+    const count = entryRoot.querySelectorAll("[data-event-entry]").length; if (count >= 10) return;
+    entryRoot.insertAdjacentHTML("beforeend", sendEntryMarkup(count, buses, selectedBus)); associateFormLabels(entryRoot); renumberEntries(dialog);
+  });
+  entryRoot.addEventListener("click", event => { const button = event.target.closest?.("[data-remove-event-entry]"); if (!button || button.disabled) return; button.closest("[data-event-entry]").remove(); renumberEntries(dialog); });
+}
+
+// ---- Event buses ----
+
 function bindCreateBus(context) {
-  document.querySelectorAll("[data-create-event-bus]").forEach(button => button.addEventListener("click", () => context.showModal("Create event bus", `<div class="field"><label>Name</label><input name="name" required maxlength="256" pattern="[A-Za-z0-9_.\/-]+" placeholder="local-app-events"></div><div class="field"><label>Description</label><textarea name="description" maxlength="512" placeholder="Events emitted by the local application"></textarea></div><div class="field"><label>Tags (JSON object)</label><textarea name="tags">{}</textarea><span class="hint">Keys and values must be strings.</span></div><div class="alert info"><strong>Custom event bus</strong><br>The regional default bus already exists and cannot be deleted. Partner sources, KMS encryption, dead-letter configuration, and logging are not currently available.</div>`, "Create event bus", async data => {
-    const name = String(data.get("name"));
-    const description = String(data.get("description") || "");
-    await events("CreateEventBus", { Name: name, ...(description ? { Description: description } : {}), Tags: tagsFromMap(stringMap(data.get("tags"), "Tags")) });
-    context.toast("Event bus created");
-    location.hash = `${busRoot(name)}/details`;
-  })));
+  document.querySelectorAll("[data-create-event-bus]").forEach(button => button.addEventListener("click", () => {
+    context.showModal("Create event bus", `<div class="field"><label>Name</label><input name="name" required maxlength="256" pattern="[A-Za-z0-9_.\\-]+" placeholder="my-event-bus"><span class="hint">Maximum of 256 characters consisting of numbers, lower/upper case letters, ., -, _. Custom bus names cannot contain /.</span></div><div class="field"><label>Description <span class="muted small">– optional</span></label><textarea name="description" maxlength="512"></textarea></div>
+<div class="eventbridge-modal-section"><h3>Encryption</h3><fieldset class="setting-options eventbridge-choice-grid"><legend class="sr-only">Encryption</legend><label class="setting-option"><input type="radio" name="encryption" value="aws" checked><span><strong>Use AWS owned key</strong><small>EventBridge encrypts events with a key it owns and manages locally.</small></span></label><label class="setting-option disabled"><input type="radio" name="encryption" value="cmk" disabled><span><strong>Use customer managed key</strong><small>Customer-managed KMS keys require a local KMS service (EVB-08) and are not available.</small></span></label></fieldset></div>
+<div class="eventbridge-modal-section"><h3>Logs <span class="muted small">– optional</span></h3><p class="muted small">Event-bus execution logs (CloudWatch Logs, Firehose, S3; levels OFF, ERROR, INFO, TRACE) require EVB-08. The log level stays OFF locally.</p></div>
+<div class="eventbridge-modal-section"><h3>Resource-based policy <span class="muted small">– optional</span></h3><p class="muted small">Event-bus policies and cross-account routing require EVB-06 and cannot be attached locally.</p></div>
+<div class="eventbridge-modal-section"><h3>Archives <span class="muted small">– optional</span></h3><label class="checkbox-label"><input type="checkbox" name="archiveEnabled"> Enabled</label><div data-archive-fields hidden><div class="field"><label>Archive name</label><input name="archiveName" maxlength="48" pattern="[A-Za-z0-9_.\\-]+"></div><div class="field"><label>Archive description <span class="muted small">– optional</span></label><input name="archiveDescription" maxlength="512"></div><span class="hint">The archive keeps every event on this bus indefinitely. Set a retention period or event pattern later from Archives.</span></div></div>
+<div class="eventbridge-modal-section"><h3>Schema discovery <span class="muted small">– optional</span></h3><p class="muted small">Schema discovery requires EventBridge Schemas (EVB-07) and is not available locally.</p></div>
+<div class="eventbridge-modal-section"><h3>Tags <span class="muted small">– optional</span></h3>${tagRowsMarkup()}</div>`, "Create", async data => {
+      const name = String(data.get("name")); const description = String(data.get("description") || ""); const dialog = document.querySelector("#modal"); const tags = readTagRows(dialog);
+      await events("CreateEventBus", { Name: name, ...(description ? { Description: description } : {}), ...(Object.keys(tags).length ? { Tags: tagsFromMap(tags) } : {}) });
+      if (data.get("archiveEnabled")) {
+        const archiveName = String(data.get("archiveName") || "").trim(); if (!archiveName) throw new Error("Enter an archive name or disable the archive");
+        const archiveDescription = String(data.get("archiveDescription") || "");
+        await events("CreateArchive", { ArchiveName: archiveName, EventSourceArn: `arn:aws:events:${ui.region}:${ui.summary?.accountId ?? "000000000000"}:event-bus/${name}`, ...(archiveDescription ? { Description: archiveDescription } : {}), RetentionDays: 0 });
+      }
+      context.toast("Event bus created");
+      location.hash = `${busRoot(name)}/details`;
+    }, true);
+    const dialog = document.querySelector("#modal"); bindTagRows(dialog, () => setDirty(true, "modal"));
+    const archiveToggle = dialog.querySelector('[name="archiveEnabled"]'); const archiveFields = dialog.querySelector("[data-archive-fields]"); const archiveName = dialog.querySelector('[name="archiveName"]');
+    archiveToggle.addEventListener("change", () => { archiveFields.hidden = !archiveToggle.checked; archiveName.required = archiveToggle.checked; });
+  }));
 }
 
 async function busCatalog() {
   const buses = await listBuses();
-  return Promise.all(buses.map(async bus => {
-    const rules = await listRules(bus.Name);
-    return { ...bus, rules };
-  }));
+  return Promise.all(buses.map(async bus => ({ ...bus, rules: await listRules(bus.Name) })));
 }
 
 async function eventBusesPage(context) {
-  const buses = await busCatalog();
+  const buses = await busCatalog(); const defaultBus = buses.find(bus => bus.Name === "default"); const custom = buses.filter(bus => bus.Name !== "default");
   context.setChrome("eventbridge", ["EventBridge", "Event buses"]);
-  context.main.innerHTML = `<div class="page-width eventbridge-page">${pageHeader("Event buses", `Regional event routers in ${escapeHtml(ui.region)}.`, '<button class="button refresh" data-action="refresh" title="Refresh" aria-label="Refresh event buses">↻</button><button class="button primary" data-create-event-bus>Create event bus</button>')}<div class="alert info"><strong>Routing, not event storage</strong><br>EventBridge evaluates accepted events against enabled rules and then discards ordinary events. Use the Sandbox to publish and test patterns.</div><section class="card"><div class="card-header"><h2>Event buses <span class="muted">(${buses.length})</span></h2></div><div class="toolbar"><label class="filter"><span>⌕</span><input data-filter-table placeholder="Find event buses"></label></div><div class="table-wrap">${buses.length ? `<table class="eventbridge-resource-table"><thead><tr><th>Name</th><th>Type</th><th>Rules</th><th>Description</th><th>ARN</th></tr></thead><tbody>${buses.map(bus => `<tr data-search-row="${escapeHtml(`${bus.Name} ${bus.Description || ""} ${bus.Arn || ""}`.toLowerCase())}"><td><a href="${busRoot(bus.Name)}/details">${escapeHtml(bus.Name)}</a></td><td>${bus.Name === "default" ? "Default" : "Custom"}</td><td>${bus.rules.length}</td><td>${escapeHtml(bus.Description || "–")}</td><td><span class="mono eventbridge-arn">${escapeHtml(bus.Arn)}</span></td></tr>`).join("")}</tbody></table>` : emptyState("E", "No event buses", "The default event bus could not be found in this Region.")}</div></section>${dependencyCards()}</div>`;
-  const routingBanner = context.main.querySelector(".alert.info"); if (routingBanner) routingBanner.innerHTML = '<strong>Routing with optional archives</strong><br>Ordinary bus routing is transient. Configure an Archive explicitly when accepted events must be retained independently of rules and targets.';
+  context.main.innerHTML = `<div class="page-width eventbridge-page">${pageHeader("Event buses", `Event buses receive events and route them to rules in ${escapeHtml(ui.region)}.`, '<button class="button refresh" data-action="refresh" title="Refresh" aria-label="Refresh event buses">↻</button><button class="button primary" data-create-event-bus>Create event bus</button>')}
+<section class="card eventbridge-bus-tile"><div class="card-header"><h2>Default event bus</h2>${actionMenu("Actions", [{ label: "Send events", attributes: 'data-send-events="default"' }, { label: "Manage permissions", disabled: "Event-bus resource policies require EVB-06" }, { label: "Start discovery", disabled: "Schema discovery requires EVB-07" }])}</div><div class="card-body"><dl class="key-value"><dt>Name</dt><dd><a href="${busRoot("default")}/details">default</a></dd><dt>ARN</dt><dd class="mono">${escapeHtml(defaultBus?.Arn ?? "")}</dd><dt>Rules</dt><dd>${defaultBus?.rules.length ?? 0}</dd><dt>Type</dt><dd>Default event bus</dd></dl><p class="muted small">Ordinary routing is transient: accepted events are matched against rules and archives and then discarded. Create an archive to retain events for replay.</p></div></section>
+<section class="card"><div class="card-header"><h2>Custom event buses <span class="muted">(${custom.length})</span></h2><div class="actions"><button class="button" type="button" data-delete-selected-bus disabled>Delete</button><button class="button primary" data-create-event-bus>Create event bus</button></div></div><div class="toolbar"><label class="filter"><span>⌕</span><input data-filter-table placeholder="Find custom event buses"></label></div><div class="table-wrap">${custom.length ? `<table class="eventbridge-resource-table"><thead><tr><th class="eventbridge-select-column"><span class="sr-only">Select</span></th><th>Name</th><th>Type</th><th>Rules</th><th>Description</th><th>ARN</th></tr></thead><tbody>${custom.map(bus => `<tr data-search-row="${escapeHtml(`${bus.Name} ${bus.Description || ""} ${bus.Arn || ""}`.toLowerCase())}"><td><input type="radio" name="busSelect" value="${escapeHtml(bus.Name)}" aria-label="Select ${escapeHtml(bus.Name)}"></td><td><a href="${busRoot(bus.Name)}/details">${escapeHtml(bus.Name)}</a></td><td>Custom Event Bus - Classic</td><td>${bus.rules.length}</td><td>${escapeHtml(bus.Description || "–")}</td><td><span class="mono eventbridge-arn">${escapeHtml(bus.Arn)}</span></td></tr>`).join("")}</tbody></table>` : emptyState("E", "No custom event buses", "Create a custom event bus to isolate one application's events from the default bus.")}</div></section>${dependencyCards()}</div>`;
   context.bindTableFilter();
   bindCreateBus(context);
   document.querySelector('[data-action="refresh"]')?.addEventListener("click", context.route);
+  document.querySelector('[data-send-events="default"]')?.addEventListener("click", () => showSendEvents(context, "default").catch(context.showError));
+  const deleteButton = context.main.querySelector("[data-delete-selected-bus]"); const selected = () => context.main.querySelector('input[name="busSelect"]:checked')?.value;
+  context.main.querySelectorAll('input[name="busSelect"]').forEach(input => input.addEventListener("change", () => { deleteButton.disabled = !selected(); }));
+  deleteButton.addEventListener("click", () => { const name = selected(); if (!name) return; const bus = custom.find(item => item.Name === name); bindDeleteBusConfirmation(context, bus, bus.rules.length); });
 }
 
 async function eventBridgeOverview(context) {
   const [buses, schedules, groups] = await Promise.all([busCatalog(), allSchedules(), allScheduleGroups()]);
   const rules = buses.flatMap(bus => bus.rules);
   context.setChrome("eventbridge", ["EventBridge"]);
-  context.main.innerHTML = `<div class="page-width eventbridge-page">${pageHeader("EventBridge", "Route custom and scheduled development events to local targets.", '<a class="button" href="#/eventbridge/sandbox">Open Sandbox</a><button class="button primary" data-create-schedule>Create schedule</button>')}<div class="eventbridge-summary"><section class="card"><div class="card-header"><h2>Event buses</h2></div><div class="card-body"><div class="metric">${buses.length}</div><p class="muted">One default bus plus custom buses</p><a href="#/eventbridge/event-buses">View event buses</a></div></section><section class="card"><div class="card-header"><h2>Rules</h2></div><div class="card-body"><div class="metric">${rules.length}</div><p class="muted">${rules.filter(rule => rule.State !== "DISABLED").length} enabled</p><a href="#/eventbridge/rules">View rules</a></div></section><section class="card"><div class="card-header"><h2>Schedules</h2></div><div class="card-body"><div class="metric">${schedules.length}</div><p class="muted">${schedules.filter(schedule => schedule.State !== "DISABLED").length} enabled</p><a href="#/eventbridge/schedules">View schedules</a></div></section></div><section class="card"><div class="card-header"><h2>Development profile</h2></div><div class="card-body"><p>Custom events and legacy scheduled rules fan out to Lambda, SQS, Logs, API Gateway, and Standard Step Functions workflows. The separate Scheduler surface adds one-time, rate, and cron schedules with IANA time zones, durable retries, execution roles, flexible windows, and Standard SQS DLQs.</p><p class="muted">Pipes, API destinations, cross-account event-bus routing, partner sources, and global endpoints are not currently available. Archives and replay are active with installation-owned encryption; customer-managed KMS remains dependency-blocked.</p></div></section></div>`;
+  context.main.innerHTML = `<div class="page-width eventbridge-page">${pageHeader("EventBridge", "Route custom and scheduled development events to local targets.", '<a class="button" href="#/eventbridge/sandbox">Open Sandbox</a><button class="button primary" data-create-schedule>Create schedule</button>')}<div class="eventbridge-summary"><section class="card"><div class="card-header"><h2>Event buses</h2></div><div class="card-body"><div class="metric">${buses.length}</div><p class="muted">One default bus plus custom buses</p><a href="#/eventbridge/event-buses">View event buses</a></div></section><section class="card"><div class="card-header"><h2>Rules</h2></div><div class="card-body"><div class="metric">${rules.length}</div><p class="muted">${rules.filter(rule => rule.State !== "DISABLED").length} enabled</p><a href="#/eventbridge/rules">View rules</a></div></section><section class="card"><div class="card-header"><h2>Schedules</h2></div><div class="card-body"><div class="metric">${schedules.length}</div><p class="muted">${schedules.filter(schedule => schedule.State !== "DISABLED").length} enabled</p><a href="#/eventbridge/schedules">View schedules</a></div></section></div><section class="card"><div class="card-header"><h2>Development profile</h2></div><div class="card-body"><p>Custom events and legacy scheduled rules fan out to Lambda, SQS, SNS, CloudWatch Logs, API Gateway, and Standard Step Functions workflows. The separate Scheduler surface adds one-time, rate, and cron schedules with IANA time zones, durable retries, execution roles, flexible windows, and Standard SQS DLQs.</p><p class="muted">Pipes, API destinations, cross-account event-bus routing, partner sources, global endpoints, and the newer Custom Event Bus (eventsv2) API are not currently available. Archives and replay are active with installation-owned encryption; customer-managed KMS remains dependency-blocked.</p></div></section></div>`;
   bindCreateSchedule(context, groups, () => "#/eventbridge/schedules");
 }
 
 async function describeBus(name) { return events("DescribeEventBus", { Name: name }); }
 
-function bindDeleteBus(context, bus, ruleCount) {
-  document.querySelectorAll("[data-delete-event-bus]").forEach(button => button.addEventListener("click", () => context.confirmDeletion(bus.Name, `Delete event bus ${bus.Name}? It must have no rules. This cannot be undone.`, async () => {
+function bindDeleteBusConfirmation(context, bus, ruleCount) {
+  context.confirmDeletion(bus.Name, `Delete event bus ${bus.Name}? Its rules and archives must be removed first. This cannot be undone.`, async () => {
     if (bus.Name === "default") throw new Error("The default event bus cannot be deleted");
     if (ruleCount) throw new Error("Remove every rule from this event bus before deleting it");
     await events("DeleteEventBus", { Name: bus.Name });
     context.toast("Event bus deleted");
     location.hash = "#/eventbridge/event-buses";
-  })));
+  });
 }
 
-async function busDetailsPage(context, name) {
+function bindDeleteBus(context, bus, ruleCount) {
+  document.querySelectorAll("[data-delete-event-bus]").forEach(button => button.addEventListener("click", () => bindDeleteBusConfirmation(context, bus, ruleCount)));
+}
+
+async function busHeader(context, name, section) {
   const [bus, rules] = await Promise.all([describeBus(name), listRules(name)]);
-  setBusChrome(context, name, "Details");
-  const actions = `<button class="button" data-action="refresh">Refresh</button>${name === "default" ? '<button class="button danger" disabled title="The default event bus cannot be deleted">Delete</button>' : '<button class="button danger" data-delete-event-bus>Delete</button>'}`;
-  context.main.innerHTML = `<div class="page-width eventbridge-detail">${pageHeader(name, bus.Arn, actions)}${busTabs(name, "details")}<div class="eventbridge-summary"><section class="card"><div class="card-header"><h2>Bus details</h2></div><div class="card-body"><dl class="key-value"><dt>Type</dt><dd>${name === "default" ? "Default event bus" : "Custom event bus"}</dd><dt>Name</dt><dd>${escapeHtml(bus.Name)}</dd><dt>ARN</dt><dd class="mono">${escapeHtml(bus.Arn)}</dd><dt>Description</dt><dd>${escapeHtml(bus.Description || "–")}</dd></dl></div></section><section class="card"><div class="card-header"><h2>Related rules</h2><a href="${busRoot(name)}/rules">View rules</a></div><div class="card-body"><div class="metric">${rules.length}</div><p class="muted">${rules.filter(rule => rule.State !== "DISABLED").length} enabled · ${rules.filter(rule => rule.State === "DISABLED").length} disabled</p><button class="button primary" data-create-rule>Create rule</button></div></section><section class="card"><div class="card-header"><h2>Event ingestion</h2><a href="#/eventbridge/sandbox">Send events</a></div><div class="card-body"><p><strong>Accepted entries are not retained.</strong></p><p class="muted">Matching fan-out is durable; unmatched events are discarded after evaluation.</p></div></section></div>${dependencyCards()}</div>`;
-  const ingestionCard = [...context.main.querySelectorAll("section.card")].find(card => card.querySelector("h2")?.textContent.trim() === "Event ingestion"); if (ingestionCard) ingestionCard.querySelector(".card-body").innerHTML = '<p><strong>Ordinary routing is not retained.</strong></p><p class="muted">Create an explicit archive to retain unmatched or failed-target events for replay.</p><a href="#/eventbridge/archives">View archives</a>';
-  bindDeleteBus(context, bus, rules.length);
-  bindCreateRule(context, name);
-  document.querySelector('[data-action="refresh"]')?.addEventListener("click", context.route);
+  setBusChrome(context, name, section);
+  const actions = `<button class="button" data-action="refresh">Refresh</button><button class="button" data-send-events="${escapeHtml(name)}">Send events</button>${name === "default" ? '<button class="button danger" disabled title="The default event bus cannot be deleted">Delete</button>' : '<button class="button danger" data-delete-event-bus>Delete</button>'}`;
+  const details = `<section class="card"><div class="card-header"><h2>Bus details</h2></div><div class="card-body detail-grid"><dl class="key-value"><dt>Name</dt><dd>${escapeHtml(bus.Name)}</dd><dt>ARN</dt><dd class="mono">${escapeHtml(bus.Arn)}</dd><dt>Description</dt><dd>${escapeHtml(bus.Description || "–")}</dd></dl><dl class="key-value"><dt>Type</dt><dd>${name === "default" ? "Default event bus" : "Custom Event Bus - Classic"}</dd><dt>Creation time</dt><dd>${formatDate(bus.CreationTime)}</dd><dt>Last modified</dt><dd>${formatDate(bus.LastModifiedTime)}</dd></dl><dl class="key-value"><dt>Encryption</dt><dd>AWS owned key</dd><dt>Resource-based policy</dt><dd><span class="status inactive">Unavailable</span></dd><dt>Logs</dt><dd>OFF <span class="muted small">(logging unavailable)</span></dd></dl></div></section>`;
+  const bind = () => {
+    bindDeleteBus(context, bus, rules.length);
+    document.querySelector('[data-action="refresh"]')?.addEventListener("click", context.route);
+    document.querySelector(`[data-send-events="${CSS.escape(name)}"]`)?.addEventListener("click", () => showSendEvents(context, name).catch(context.showError));
+  };
+  return { bus, rules, header: `${pageHeader(name, bus.Arn, actions)}${details}`, bind };
 }
 
-async function busRulesPage(context, name) {
-  const rules = await listRules(name);
-  setBusChrome(context, name, "Rules");
-  context.main.innerHTML = `<div class="page-width eventbridge-page">${pageHeader("Rules", `Event-pattern rules on ${escapeHtml(name)}.`, '<button class="button refresh" data-action="refresh" title="Refresh" aria-label="Refresh rules">↻</button><button class="button primary" data-create-rule>Create rule</button>')}${busTabs(name, "rules")}${rulesTable(rules, name)}</div>`;
-  context.bindTableFilter();
-  bindCreateRule(context, name);
-  document.querySelector('[data-action="refresh"]')?.addEventListener("click", context.route);
+async function busDetailsPage(context, name, section = "rules") {
+  const { rules, header, bind } = await busHeader(context, name, "Rules");
+  context.main.innerHTML = `<div class="page-width eventbridge-detail">${header}${busTabs(name, "rules")}${rulesTable(rules, name)}${dependencyCards()}</div>`;
+  context.bindTableFilter(); bind(); bindCreateRule(context, name);
+  void section;
+}
+
+async function busArchivesPage(context, name) {
+  const { bus, header, bind } = await busHeader(context, name, "Archives");
+  const archives = (await listArchives()).filter(archive => archive.EventSourceArn === bus.Arn);
+  context.main.innerHTML = `<div class="page-width eventbridge-detail">${header}${busTabs(name, "archives")}<section class="card"><div class="card-header"><h2>Archives <span class="muted">(${archives.length})</span></h2><a class="button primary" href="#/eventbridge/archives">Create archive</a></div><div class="table-wrap">${archives.length ? `<table><thead><tr><th>Name</th><th>State</th><th>Events</th><th>Size</th><th>Retention</th></tr></thead><tbody>${archives.map(item => `<tr><td><a href="#/eventbridge/archives/${encoded(item.ArchiveName)}">${escapeHtml(item.ArchiveName)}</a></td><td><span class="status ${item.State === "ENABLED" ? "" : "error"}">${escapeHtml(item.State)}</span></td><td>${Number(item.EventCount ?? 0)}</td><td>${Number(item.SizeBytes ?? 0)} bytes</td><td>${item.RetentionDays ? `${Number(item.RetentionDays)} days` : "Indefinite"}</td></tr>`).join("")}</tbody></table>` : emptyState("◫", "No archives", "Create an archive to retain the events sent to this bus for replay.")}</div></section><p class="muted small">Every archive adds a managed rule named Events-Archive-&lt;archive&gt; to this bus; it keeps replayed events out of the archive and cannot be edited.</p></div>`;
+  bind();
 }
 
 async function manageTags(context, resource, kind) {
   const current = tagsToMap(await listTags(resource.Arn));
-  context.showModal(`Manage ${kind} tags`, `<div class="field"><label>Tags (JSON object)</label><textarea name="tags">${escapeHtml(JSON.stringify(current, null, 2))}</textarea><span class="hint">Removing a key here untags it. Keys and values must be strings.</span></div>`, "Save tags", async data => {
-    const next = stringMap(data.get("tags"), "Tags");
+  context.showModal(`Manage ${kind} tags`, `<p class="muted small">Tags are key-value pairs. Removing a row untags the resource.</p>${tagRowsMarkup(current)}`, "Update", async () => {
+    const next = readTagRows(document.querySelector("#modal"));
     const removed = Object.keys(current).filter(key => !(key in next));
     if (removed.length) await events("UntagResource", { ResourceARN: resource.Arn, TagKeys: removed });
     if (Object.keys(next).length) await events("TagResource", { ResourceARN: resource.Arn, Tags: tagsFromMap(next) });
     context.toast(`${kind} tags updated`);
   });
+  bindTagRows(document.querySelector("#modal"), () => setDirty(true, "modal"));
 }
 
 async function busTagsPage(context, name) {
-  const bus = await describeBus(name);
-  const tags = await listTags(bus.Arn);
-  setBusChrome(context, name, "Tags");
-  context.main.innerHTML = `<div class="page-width eventbridge-detail">${pageHeader("Tags", `Key-value metadata for ${escapeHtml(name)}.`, '<button class="button primary" data-manage-tags>Manage tags</button>')}${busTabs(name, "tags")}${tagsCard(tags)}</div>`;
-  document.querySelector("[data-manage-tags]")?.addEventListener("click", () => manageTags(context, bus, "event bus").catch(context.showError));
+  const { bus, header, bind } = await busHeader(context, name, "Tags");
+  const tagList = await listTags(bus.Arn);
+  context.main.innerHTML = `<div class="page-width eventbridge-detail">${header}${busTabs(name, "tags")}${tagsCard(tagList)}</div>`;
+  bind(); document.querySelector("[data-manage-tags]")?.addEventListener("click", () => manageTags(context, bus, "event bus").catch(context.showError));
 }
 
 async function busMonitoringPage(context, name) {
-  const [rules, deliveryState] = await Promise.all([listRules(name), deliveryDiagnostics()]);
+  const { rules, header, bind } = await busHeader(context, name, "Monitoring");
+  const deliveryState = await deliveryDiagnostics();
   const summaries = await Promise.all(rules.map(async rule => ({ rule, targets: await listTargets(name, rule.Name) })));
   const deliveries = (deliveryState.deliveries ?? []).filter(item => item.eventBusName === name);
   const diagnostics = (deliveryState.diagnostics ?? []).filter(item => item.eventBusName === name);
-  setBusChrome(context, name, "Monitoring");
-  context.main.innerHTML = `<div class="page-width eventbridge-detail">${pageHeader("Monitoring", `Rule and delivery visibility for ${escapeHtml(name)}.`, '<button class="button refresh" data-action="refresh" title="Refresh" aria-label="Refresh monitoring">↻</button><a class="button" href="#/cloudwatch/metrics">View EventBridge metrics</a>')}${busTabs(name, "monitoring")}<div class="alert info"><strong>Payload-redacted local diagnostics</strong><br>At most 100 recent terminal/retry summaries are retained. Event payloads are never returned here, and ordinary events cannot be browsed.</div><section class="card"><div class="card-header"><h2>Delivery configuration <span class="muted">(${summaries.length} rules)</span></h2></div><div class="table-wrap">${summaries.length ? `<table class="eventbridge-diagnostic-table"><thead><tr><th>Rule</th><th>State</th><th>Targets</th><th>Delivery contract</th></tr></thead><tbody>${summaries.map(({ rule, targets }) => `<tr><td><a href="${ruleRoot(name, rule.Name)}/monitoring">${escapeHtml(rule.Name)}</a></td><td>${stateMarkup(rule.State)}</td><td>${targets.length}</td><td>At least once · independent retries/DLQ</td></tr>`).join("")}</tbody></table>` : emptyState("◇", "No delivery configuration", "Create a rule and target to populate this view.")}</div></section><section class="card"><div class="card-header"><h2>Recent delivery attempts <span class="muted">(${deliveries.length + diagnostics.length})</span></h2></div><div class="table-wrap">${diagnosticTable(deliveries, diagnostics)}</div></section><section class="card"><div class="card-header"><h2>EventBridge metrics</h2><a href="#/cloudwatch/metrics">Open metric explorer</a></div><div class="card-body"><p class="mono">MatchedEvents · TriggeredRules · Invocations · InvocationAttempts · SuccessfulInvocationAttempts · RetryInvocationAttempts · FailedInvocations · InvocationsSentToDlq · InvocationsFailedToBeSentToDlq</p><p class="muted">Service metrics use only documented EventBusName and RuleName dimensions. Target IDs and target counters appear only in bounded simulator diagnostics.</p></div></section></div>`;
-  document.querySelector('[data-action="refresh"]')?.addEventListener("click", context.route);
+  context.main.innerHTML = `<div class="page-width eventbridge-detail">${header}${busTabs(name, "monitoring")}<div class="alert info"><strong>Payload-redacted local diagnostics</strong><br>This tab is a StackSim addition. At most 100 recent terminal/retry summaries are retained; event payloads are never shown here, and ordinary events cannot be browsed.</div><section class="card"><div class="card-header"><h2>Delivery configuration <span class="muted">(${summaries.length} rules)</span></h2></div><div class="table-wrap">${summaries.length ? `<table class="eventbridge-diagnostic-table"><thead><tr><th>Rule</th><th>Status</th><th>Targets</th><th>Delivery contract</th></tr></thead><tbody>${summaries.map(({ rule, targets }) => `<tr><td><a href="${ruleRoot(name, rule.Name)}/metrics">${escapeHtml(rule.Name)}</a></td><td>${stateMarkup(rule.State)}</td><td>${targets.length}</td><td>At least once · independent retries/DLQ</td></tr>`).join("")}</tbody></table>` : emptyState("◇", "No delivery configuration", "Create a rule and target to populate this view.")}</div></section><section class="card"><div class="card-header"><h2>Recent delivery attempts <span class="muted">(${deliveries.length + diagnostics.length})</span></h2></div><div class="table-wrap">${diagnosticTable(deliveries, diagnostics)}</div></section><section class="card"><div class="card-header"><h2>EventBridge metrics</h2><a href="#/cloudwatch/metrics">Open metric explorer</a></div><div class="card-body"><p class="mono">MatchedEvents · TriggeredRules · Invocations · InvocationsCreated · InvocationAttempts · SuccessfulInvocationAttempts · RetryInvocationAttempts · FailedInvocations · InvocationsSentToDlq · InvocationsFailedToBeSentToDlq</p><p class="muted">Service metrics use only documented EventBusName and RuleName dimensions. Target IDs and target counters appear only in bounded simulator diagnostics.</p></div></section></div>`;
+  bind();
 }
 
-function tagsCard(tags) {
-  return `<section class="card"><div class="card-header"><h2>Tags <span class="muted">(${tags.length})</span></h2></div><div class="table-wrap">${tags.length ? `<table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>${tags.map(tag => `<tr><td>${escapeHtml(tag.Key)}</td><td>${escapeHtml(tag.Value)}</td></tr>`).join("")}</tbody></table>` : emptyState("◇", "No tags", "Add tags to organize and authorize this resource.")}</div></section>`;
+function tagsCard(tagList) {
+  return `<section class="card"><div class="card-header"><h2>Tags <span class="muted">(${tagList.length})</span></h2><button class="button" data-manage-tags>Manage tags</button></div><div class="table-wrap">${tagList.length ? `<table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>${tagList.map(tag => `<tr><td>${escapeHtml(tag.Key)}</td><td>${escapeHtml(tag.Value)}</td></tr>`).join("")}</tbody></table>` : emptyState("◇", "No tags", "Add tags to organize and authorize this resource.")}</div></section>`;
 }
 
-function rulesTable(rules, fixedBus) {
-  return `<section class="card"><div class="card-header"><h2>Rules <span class="muted">(${rules.length})</span></h2></div><div class="toolbar"><label class="filter"><span>⌕</span><input data-filter-table placeholder="Find rules"></label></div><div class="table-wrap">${rules.length ? `<table class="eventbridge-rule-table"><thead><tr><th>Name</th>${fixedBus ? "" : "<th>Event bus</th>"}<th>State</th><th>Description</th><th>Trigger</th><th>ARN</th></tr></thead><tbody>${rules.map(rule => { const bus = fixedBus || rule.EventBusName || "default"; const trigger = [rule.EventPattern ? "JSON event pattern" : "", rule.ScheduleExpression || ""].filter(Boolean).join(" + ") || "–"; return `<tr data-search-row="${escapeHtml(`${rule.Name} ${bus} ${rule.Description || ""}`.toLowerCase())}"><td><a href="${ruleRoot(bus, rule.Name)}/details">${escapeHtml(rule.Name)}</a></td>${fixedBus ? "" : `<td><a href="${busRoot(bus)}/rules">${escapeHtml(bus)}</a></td>`}<td>${stateMarkup(rule.State)}</td><td>${escapeHtml(rule.Description || "–")}</td><td><span class="mono">${escapeHtml(trigger)}</span></td><td><span class="mono eventbridge-arn">${escapeHtml(rule.Arn)}</span></td></tr>`; }).join("")}</tbody></table>` : emptyState("◇", "No rules", "Create an event-pattern rule, a default-bus legacy scheduled rule, or both.", '<button class="button primary" data-create-rule>Create rule</button>')}</div></section>`;
+// ---- Rules ----
+
+function ruleTypeLabel(rule) { return rule.ScheduleExpression && rule.EventPattern ? "Standard + schedule" : rule.ScheduleExpression ? "Scheduled (legacy)" : "Standard"; }
+
+function rulesTable(rules, bus, { selectable = false } = {}) {
+  return `<section class="card"><div class="card-header"><h2>Rules <span class="muted">(${rules.length})</span></h2>${selectable ? `<div class="actions">${actionMenu("Actions", [{ label: "Enable", attributes: "data-rule-action=\"enable\" disabled" }, { label: "Disable", attributes: "data-rule-action=\"disable\" disabled" }, { label: "Delete", attributes: "data-rule-action=\"delete\" disabled" }])}<button class="button primary" data-create-rule>Create rule</button></div>` : '<button class="button primary" data-create-rule>Create rule</button>'}</div><div class="toolbar"><label class="filter"><span>⌕</span><input data-filter-table placeholder="Find rules"></label></div><div class="table-wrap">${rules.length ? `<table class="eventbridge-rule-table"><thead><tr>${selectable ? '<th class="eventbridge-select-column"><span class="sr-only">Select</span></th>' : ""}<th>Name</th><th>Status</th><th>Description</th><th>Type</th><th>Managed by</th><th>ARN</th></tr></thead><tbody>${rules.map(rule => `<tr data-search-row="${escapeHtml(`${rule.Name} ${bus} ${rule.Description || ""}`.toLowerCase())}">${selectable ? `<td><input type="radio" name="ruleSelect" value="${escapeHtml(rule.Name)}" aria-label="Select ${escapeHtml(rule.Name)}" data-managed="${rule.ManagedBy ? "true" : "false"}" data-state="${escapeHtml(rule.State)}"></td>` : ""}<td><a href="${ruleRoot(bus, rule.Name)}/details">${escapeHtml(rule.Name)}</a></td><td>${stateMarkup(rule.State)}</td><td>${escapeHtml(rule.Description || "–")}</td><td>${escapeHtml(ruleTypeLabel(rule))}</td><td>${escapeHtml(rule.ManagedBy || "–")}</td><td><span class="mono eventbridge-arn">${escapeHtml(rule.Arn)}</span></td></tr>`).join("")}</tbody></table>` : emptyState("◇", "No rules", "Create a rule with an event pattern, or create a legacy scheduled rule on the default bus.", '<button class="button primary" data-create-rule>Create rule</button>')}</div></section>`;
 }
 
 async function rulesPage(context) {
-  const buses = await listBuses();
-  const groups = await Promise.all(buses.map(async bus => (await listRules(bus.Name)).map(rule => ({ ...rule, EventBusName: bus.Name }))));
-  const rules = groups.flat();
+  const buses = await listBuses(); let bus = rememberedRulesBus(); if (!buses.some(item => item.Name === bus)) bus = "default";
+  const rules = await listRules(bus);
   context.setChrome("eventbridge", ["EventBridge", "Rules"]);
-  context.main.innerHTML = `<div class="page-width eventbridge-page">${pageHeader("Rules", `Event routing and legacy scheduled rules across ${escapeHtml(ui.region)}.`, '<button class="button refresh" data-action="refresh" title="Refresh" aria-label="Refresh rules">↻</button><button class="button primary" data-create-rule>Create rule</button>')}<div class="alert info"><strong>Event patterns and legacy schedules</strong><br>Rules may use an event pattern, a default-bus legacy schedule expression, or both, and can target up to five resources independently. EventBridge Scheduler is recommended for new time-driven work.</div>${rulesTable(rules)}</div>`;
-  context.bindTableFilter();
-  bindCreateRule(context);
+  context.main.innerHTML = `<div class="page-width eventbridge-page">${pageHeader("Rules", "A rule matches incoming events and sends them to targets for processing.", '<button class="button refresh" data-action="refresh" title="Refresh" aria-label="Refresh rules">↻</button><button class="button primary" data-create-rule>Create rule</button>')}<div class="alert info"><strong>Event patterns and legacy schedules</strong><br>Rules with event patterns match events on one event bus and send them to up to five targets. Default-bus legacy scheduled rules are listed under <a href="#/eventbridge/scheduled-rules">Scheduled rule (legacy)</a>; EventBridge Scheduler is recommended for new time-driven work.</div><section class="card eventbridge-bus-select"><div class="card-body"><div class="field"><label>Event bus</label><select name="rulesBus">${buses.map(item => `<option value="${escapeHtml(item.Name)}" ${item.Name === bus ? "selected" : ""}>${escapeHtml(item.Name)}</option>`).join("")}</select><span class="hint">Select the event bus whose rules you want to view.</span></div></div></section>${rulesTable(rules, bus, { selectable: true })}</div>`;
+  context.bindTableFilter(); associateFormLabels(context.main);
+  bindCreateRule(context, bus);
   document.querySelector('[data-action="refresh"]')?.addEventListener("click", context.route);
-}
-
-function targetInputFields(target = {}) {
-  const mode = target.Input !== undefined ? "input" : target.InputPath !== undefined ? "path" : target.InputTransformer ? "transformer" : "matched";
-  return `<div class="field"><label>Target input</label><select name="inputMode"><option value="matched" ${mode === "matched" ? "selected" : ""}>Matched event</option><option value="input" ${mode === "input" ? "selected" : ""}>Constant JSON</option><option value="path" ${mode === "path" ? "selected" : ""}>JSON path</option><option value="transformer" ${mode === "transformer" ? "selected" : ""}>Input transformer</option></select></div><div class="eventbridge-input-fields" data-input-fields="input" ${mode === "input" ? "" : "hidden"}><div class="field"><label>Constant JSON</label><textarea name="input">${escapeHtml(target.Input || "{}")}</textarea></div></div><div class="eventbridge-input-fields" data-input-fields="path" ${mode === "path" ? "" : "hidden"}><div class="field"><label>Input path</label><input name="inputPath" value="${escapeHtml(target.InputPath || "$.detail")}" placeholder="$.detail"></div></div><div class="eventbridge-input-fields" data-input-fields="transformer" ${mode === "transformer" ? "" : "hidden"}><div class="field"><label>Input paths map (JSON object)</label><textarea name="inputPathsMap">${escapeHtml(JSON.stringify(target.InputTransformer?.InputPathsMap ?? { detail: "$.detail" }, null, 2))}</textarea></div><div class="field"><label>Input template</label><textarea name="inputTemplate">${escapeHtml(target.InputTransformer?.InputTemplate || '{"detail":<detail>}')}</textarea><span class="hint">Use &lt;name&gt; placeholders. Transformed Logs targets require exactly a numeric timestamp and string message.</span></div></div><div class="eventbridge-modal-section"><h3>Transformation preview</h3><div class="field"><label>Preview sample event</label><textarea name="targetSampleEvent" class="code-editor">${escapeHtml(defaultSample)}</textarea></div><div class="eventbridge-inline-actions"><button class="button" type="button" data-preview-target-input>Preview target input</button></div><div class="eventbridge-test-result" data-target-input-preview aria-live="polite"></div></div>`;
-}
-
-function bindInputMode(root = document) {
-  root.querySelectorAll('select[name="inputMode"]').forEach(select => {
-    const update = () => root.querySelectorAll("[data-input-fields]").forEach(section => { section.hidden = section.dataset.inputFields !== select.value; });
-    select.addEventListener("change", update);
-    update();
-  });
-}
-
-function targetArnFromForm(data) {
-  return String(data.get("targetType") === "lambda" ? data.get("functionArn") : data.get("targetArn") || "").trim();
-}
-
-function targetFromForm(data, arn = targetArnFromForm(data)) {
-  const type = String(data.get("targetType") || "lambda");
-  const target = { Id: String(data.get("targetId") || `${type}-target`), Arn: arn, RetryPolicy: { MaximumEventAgeInSeconds: Number(data.get("maximumAge")), MaximumRetryAttempts: Number(data.get("maximumRetries")) } };
-  const mode = String(data.get("inputMode"));
-  if (mode === "input") target.Input = JSON.stringify(parseJson(data.get("input"), "Constant input"));
-  else if (mode === "path") target.InputPath = String(data.get("inputPath"));
-  else if (mode === "transformer") target.InputTransformer = { InputPathsMap: stringMap(data.get("inputPathsMap"), "Input paths map"), InputTemplate: String(data.get("inputTemplate")) };
-  const roleArn = String(data.get("roleArn") || "").trim();
-  if (roleArn) {
-    if (type === "logs") throw new Error("CloudWatch Logs targets do not accept Target.RoleArn");
-    target.RoleArn = roleArn;
-  }
-  const deadLetterArn = String(data.get("deadLetterArn") || "").trim();
-  if (deadLetterArn) target.DeadLetterConfig = { Arn: deadLetterArn };
-  if (type === "sqs") {
-    const messageGroupId = String(data.get("messageGroupId") || "").trim();
-    if (messageGroupId) target.SqsParameters = { MessageGroupId: messageGroupId };
-  }
-  if (type === "apigateway") {
-    const PathParameterValues = stringList(data.get("pathParameterValues"), "Path parameter values");
-    const QueryStringParameters = stringMap(data.get("queryStringParameters"), "Query string parameters");
-    const HeaderParameters = stringMap(data.get("headerParameters"), "Header parameters");
-    const prohibited = new Set(["authorization", "connection", "content-length", "expect", "host", "range", "transfer-encoding", "user-agent"]);
-    const invalid = Object.keys(HeaderParameters).find(name => {
-      const lower = name.toLowerCase();
-      return prohibited.has(lower) || lower.startsWith("x-amz") || lower.startsWith("x-amzn");
-    });
-    if (invalid) throw new Error(`Header ${invalid} is managed by EventBridge and cannot be configured`);
-    if (PathParameterValues.length || Object.keys(QueryStringParameters).length || Object.keys(HeaderParameters).length) target.HttpParameters = { ...(PathParameterValues.length ? { PathParameterValues } : {}), ...(Object.keys(QueryStringParameters).length ? { QueryStringParameters } : {}), ...(Object.keys(HeaderParameters).length ? { HeaderParameters } : {}) };
-  }
-  return target;
-}
-
-function targetPolicyStatement(type, sourceArn, targetArn) {
-  const source = sourceArn || "RULE_ARN";
-  const resource = targetArn || ({ lambda: "FUNCTION_ARN", sqs: "QUEUE_ARN", logs: "LOG_GROUP_ARN:*", apigateway: "EXECUTE_API_ARN", states: "STATE_MACHINE_ARN" })[type];
-  const actions = type === "sqs" ? "sqs:SendMessage" : type === "logs" ? ["logs:CreateLogStream", "logs:PutLogEvents"] : type === "apigateway" ? "execute-api:Invoke" : type === "states" ? "states:StartExecution" : "lambda:InvokeFunction";
-  return { Effect: "Allow", Principal: { Service: "events.amazonaws.com" }, Action: actions, Resource: type === "logs" && targetArn ? `${targetArn}:*` : resource, Condition: { ArnEquals: { "aws:SourceArn": source }, StringEquals: { "aws:SourceAccount": "ACCOUNT_ID" } } };
-}
-
-function targetPolicyGuidance(type, sourceArn, targetArn) {
-  const source = `<span class="mono">${escapeHtml(sourceArn || "this rule ARN")}</span>`;
-  const template = `<details><summary>Resource-policy statement template</summary><pre class="code-box eventbridge-target-preview">${escapeHtml(JSON.stringify(targetPolicyStatement(type, sourceArn, targetArn), null, 2))}</pre></details>`;
-  if (type === "sqs") return `<div class="alert warning" data-policy-guidance="sqs"><strong>Queue permission required</strong><br>Allow <span class="mono">events.amazonaws.com</span> to call <span class="mono">sqs:SendMessage</span> with ${source} and this account as source conditions, or supply a trusted execution role. Cross-account queues require both role and queue policy. <a href="#/sqs/queues">Open queues</a>.${template}</div>`;
-  if (type === "logs") return `<div class="alert warning" data-policy-guidance="logs"><strong>Logs resource policy required</strong><br>Allow <span class="mono">events.amazonaws.com</span> to call <span class="mono">logs:CreateLogStream</span> and <span class="mono">logs:PutLogEvents</span> for the group, constrained to ${source}. Logs targets do not use a target role. <a href="#/cloudwatch/log-groups">Open log groups</a>.${template}</div>`;
-  if (type === "apigateway") return `<div class="alert warning" data-policy-guidance="apigateway"><strong>API authorization required</strong><br>Allow <span class="mono">events.amazonaws.com</span> in the deployed API resource policy for ${source}, or supply an EventBridge execution role with <span class="mono">execute-api:Invoke</span>. <a href="#/apigateway/apis">Open APIs</a>.${template}</div>`;
-  if (type === "states") return `<div class="alert warning" data-policy-guidance="states"><strong>Execution role required</strong><br>Supply a role trusted by <span class="mono">events.amazonaws.com</span> with <span class="mono">states:StartExecution</span> on the target state machine. Success is checkpointed only after durable workflow admission. <a href="#/step-functions/state-machines">Open state machines</a>.${template}</div>`;
-  return `<div class="alert warning" data-policy-guidance="lambda"><strong>Lambda permission required</strong><br>Allow <span class="mono">events.amazonaws.com</span> to invoke the function with ${source} as <span class="mono">AWS:SourceArn</span>, or supply a trusted execution role with <span class="mono">lambda:InvokeFunction</span>. <a href="#/lambda/functions">Open functions</a>.${template}</div>`;
-}
-
-function targetFields(functions, target = {}, required = false, sourceArn) {
-  const type = targetType(target);
-  const includesTarget = type !== "lambda" || !target.Arn || functions.some(fn => fn.FunctionArn === target.Arn);
-  const targetArn = type === "lambda" ? "" : target.Arn || "";
-  const typeOptions = [["lambda", "Lambda"], ["sqs", "SQS"], ["logs", "CloudWatch Logs"], ["apigateway", "API Gateway"], ["states", "Step Functions"]];
-  return `<div class="field-row"><div class="field"><label>Target type</label><select name="targetType">${typeOptions.map(([value, label]) => `<option value="${value}" ${type === value ? "selected" : ""}>${label}</option>`).join("")}</select></div><div class="field"><label>Target ID</label><input name="targetId" value="${escapeHtml(target.Id || `${type}-target`)}" maxlength="64" pattern="[A-Za-z0-9_.-]+" ${target.Id ? "readonly" : ""} required><span class="hint">Remove and re-add a target to change its ID.</span></div></div>
-    <div data-target-type-fields="lambda"><div class="field"><label>Lambda function${required ? "" : " (optional)"}</label><select name="functionArn" data-target-required="${required}"><option value="">${required ? "Select a function" : "No target"}</option>${includesTarget ? "" : `<option value="${escapeHtml(target.Arn)}" selected>${escapeHtml(functionNameFromArn(target.Arn))} · version or alias</option>`}${functions.map(fn => `<option value="${escapeHtml(fn.FunctionArn)}" ${fn.FunctionArn === target.Arn ? "selected" : ""}>${escapeHtml(fn.FunctionName)}</option>`).join("")}</select><span class="hint">Functions, published versions, and aliases can also be configured through the SDK.</span></div></div>
-    <div data-target-type-fields="sqs" ${type === "sqs" ? "" : "hidden"}><div class="field"><label>Queue ARN</label><input class="mono" name="targetArn" data-target-required="${required}" value="${escapeHtml(type === "sqs" ? targetArn : "")}" placeholder="arn:aws:sqs:${escapeHtml(ui.region)}:000000000000:orders"></div><div class="field"><label>Message group ID</label><input name="messageGroupId" maxlength="100" value="${escapeHtml(target.SqsParameters?.MessageGroupId || "")}" placeholder="tenant-a"><span class="hint">Required for FIFO targets; on Standard queues this enables fair-queue scheduling.</span></div></div>
-    <div data-target-type-fields="logs" ${type === "logs" ? "" : "hidden"}><div class="field"><label>Log group ARN</label><input class="mono" name="targetArn" data-target-required="${required}" value="${escapeHtml(type === "logs" ? targetArn : "")}" placeholder="arn:aws:logs:${escapeHtml(ui.region)}:000000000000:log-group:/aws/events/orders"></div><span class="hint">EventBridge creates a stable stream inside an existing log group; it never creates the group.</span></div>
-    <div data-target-type-fields="apigateway" ${type === "apigateway" ? "" : "hidden"}><div class="field"><label>Deployed API target ARN</label><input class="mono" name="targetArn" data-target-required="${required}" value="${escapeHtml(type === "apigateway" ? targetArn : "")}" placeholder="arn:aws:execute-api:${escapeHtml(ui.region)}:000000000000:api-id/dev/POST/orders/*"></div><div class="field"><label>Path parameter values (JSON array)</label><textarea name="pathParameterValues">${escapeHtml(JSON.stringify(target.HttpParameters?.PathParameterValues ?? [], null, 2))}</textarea></div><div class="field"><label>Query string parameters (JSON object)</label><textarea name="queryStringParameters">${escapeHtml(JSON.stringify(target.HttpParameters?.QueryStringParameters ?? {}, null, 2))}</textarea></div><div class="field"><label>Header parameters (JSON object)</label><textarea name="headerParameters">${escapeHtml(JSON.stringify(target.HttpParameters?.HeaderParameters ?? {}, null, 2))}</textarea><span class="hint">Values may be static text or supported JSON paths. EventBridge-managed headers such as Host and Authorization are prohibited.</span></div></div>
-    <div data-target-type-fields="states" ${type === "states" ? "" : "hidden"}><div class="field"><label>State machine ARN</label><input class="mono" name="targetArn" data-target-required="${required}" value="${escapeHtml(type === "states" ? targetArn : "")}" placeholder="arn:aws:states:${escapeHtml(ui.region)}:000000000000:stateMachine:orders"></div><span class="hint">Standard workflows start through normal durable StartExecution admission.</span></div>
-    ${targetInputFields(target)}
-    <div class="eventbridge-modal-section"><h3>Authorization and failure handling</h3><div data-role-fields><div class="field"><label>Execution role ARN (optional)</label><input class="mono" name="roleArn" value="${escapeHtml(target.RoleArn || "")}" placeholder="arn:aws:iam::000000000000:role/eventbridge-target"><span class="hint">Saving requires iam:PassRole and trust for events.amazonaws.com.</span></div></div><div class="field"><label>Dead-letter queue ARN (optional)</label><input class="mono" name="deadLetterArn" value="${escapeHtml(target.DeadLetterConfig?.Arn || "")}" placeholder="arn:aws:sqs:${escapeHtml(ui.region)}:000000000000:eventbridge-dlq"><span class="hint">Must be a Standard SQS queue in this Region with an EventBridge queue policy.</span></div><div class="field-row"><div class="field"><label>Maximum event age (seconds)</label><input name="maximumAge" type="number" min="60" max="86400" value="${escapeHtml(target.RetryPolicy?.MaximumEventAgeInSeconds ?? 86400)}" required></div><div class="field"><label>Maximum retry attempts</label><input name="maximumRetries" type="number" min="0" max="185" value="${escapeHtml(target.RetryPolicy?.MaximumRetryAttempts ?? 185)}" required></div></div></div>
-    <div data-policy-guidance-container>${targetPolicyGuidance("lambda", sourceArn, type === "lambda" ? target.Arn : undefined)}${targetPolicyGuidance("sqs", sourceArn, type === "sqs" ? target.Arn : undefined)}${targetPolicyGuidance("logs", sourceArn, type === "logs" ? target.Arn : undefined)}${targetPolicyGuidance("apigateway", sourceArn, type === "apigateway" ? target.Arn : undefined)}${targetPolicyGuidance("states", sourceArn, type === "states" ? target.Arn : undefined)}<div class="alert info"><strong>Dead-letter queue policy</strong><br>If configured, the Standard queue must separately allow <span class="mono">events.amazonaws.com</span> to send messages for this rule. DLQ messages contain the original event and delivery error attributes.<details><summary>DLQ policy statement template</summary><pre class="code-box eventbridge-target-preview">${escapeHtml(JSON.stringify(targetPolicyStatement("sqs", sourceArn, target.DeadLetterConfig?.Arn), null, 2))}</pre></details></div></div>`;
-}
-
-function bindTargetType(root = document) {
-  const select = root.querySelector('select[name="targetType"]');
-  if (!select) return;
-  const update = () => {
-    root.querySelectorAll("[data-target-type-fields]").forEach(section => {
-      const active = section.dataset.targetTypeFields === select.value;
-      section.hidden = !active;
-      section.querySelectorAll("input, textarea, select").forEach(control => {
-        control.disabled = !active;
-        control.required = active && control.dataset.targetRequired === "true";
-      });
-    });
-    const roleFields = root.querySelector("[data-role-fields]");
-    const roleInput = roleFields?.querySelector('input[name="roleArn"]');
-    if (roleFields) roleFields.hidden = select.value === "logs";
-    if (roleInput) roleInput.disabled = select.value === "logs";
-    root.querySelectorAll("[data-policy-guidance]").forEach(guidance => { guidance.hidden = guidance.dataset.policyGuidance !== select.value; });
-    if (!root.querySelector('input[name="targetId"]')?.readOnly) {
-      const id = root.querySelector('input[name="targetId"]');
-      if (id && /^(?:lambda|sqs|logs|apigateway|states)-target$/.test(id.value)) id.value = `${select.value}-target`;
-    }
-  };
-  select.addEventListener("change", update);
-  update();
-}
-
-function previewJsonPath(value, path) {
-  if (path === "$") return value;
-  if (!String(path).startsWith("$.")) return undefined;
-  const parts = String(path).slice(2).replace(/\[(?:'([^']+)'|"([^"]+)"|(\d+))\]/g, (_match, single, double, index) => `.${single ?? double ?? index}`).split(".").filter(Boolean);
-  return parts.reduce((current, part) => current === undefined || current === null ? undefined : current[part], value);
-}
-
-function placeholderInsideString(template, index) {
-  let quoted = false; let escaped = false;
-  for (let position = 0; position < index; position++) {
-    const character = template[position];
-    if (escaped) { escaped = false; continue; }
-    if (character === "\\") { escaped = true; continue; }
-    if (character === '"') quoted = !quoted;
-  }
-  return quoted;
-}
-
-function previewTargetInput(data) {
-  const sample = parseObject(data.get("targetSampleEvent"), "Preview sample event");
-  const mode = String(data.get("inputMode"));
-  if (mode === "matched") return sample;
-  if (mode === "input") return parseJson(data.get("input"), "Constant input");
-  if (mode === "path") return previewJsonPath(sample, String(data.get("inputPath")));
-  const paths = stringMap(data.get("inputPathsMap"), "Input paths map");
-  const values = Object.fromEntries(Object.entries(paths).map(([name, path]) => [name, previewJsonPath(sample, path)]));
-  values["aws.events.rule-name"] = "preview-rule";
-  values["aws.events.rule-arn"] = `arn:aws:events:${ui.region}:000000000000:rule/preview-rule`;
-  values["aws.events.event.ingestion-time"] = new Date().toISOString();
-  values["aws.events.event"] = Object.fromEntries(Object.entries(sample).filter(([name]) => name !== "detail"));
-  values["aws.events.event.json"] = sample;
-  const template = String(data.get("inputTemplate"));
-  const rendered = template.replace(/<([^>]+)>/g, (placeholder, name, offset) => {
-    if (!(name in values) || values[name] === undefined) return "";
-    const value = values[name];
-    if (!placeholderInsideString(template, offset)) return JSON.stringify(value);
-    const text = typeof value === "string" ? value : JSON.stringify(value);
-    return JSON.stringify(text).slice(1, -1);
-  });
-  let result;
-  try { result = JSON.parse(rendered); } catch { result = rendered; }
-  if (data.get("targetType") === "logs" && mode === "transformer") {
-    const keys = result && typeof result === "object" && !Array.isArray(result) ? Object.keys(result) : [];
-    if (keys.length !== 2 || !keys.includes("timestamp") || !keys.includes("message") || typeof result.timestamp !== "number" || typeof result.message !== "string") throw new Error("A transformed Logs target must produce exactly a numeric timestamp and string message");
-  }
-  return result;
-}
-
-function bindTargetPreview(root = document) {
-  const button = root.querySelector("[data-preview-target-input]");
-  const output = root.querySelector("[data-target-input-preview]");
-  if (!button || !output) return;
-  button.addEventListener("click", () => {
+  context.main.querySelector('[name="rulesBus"]').addEventListener("change", event => { rememberRulesBus(event.target.value); context.route(); });
+  const selected = () => { const input = context.main.querySelector('input[name="ruleSelect"]:checked'); return input ? rules.find(rule => rule.Name === input.value) : undefined; };
+  const syncActions = () => { const rule = selected(); const managed = Boolean(rule?.ManagedBy); context.main.querySelector('[data-rule-action="enable"]').disabled = !rule || managed || rule.State !== "DISABLED"; context.main.querySelector('[data-rule-action="disable"]').disabled = !rule || managed || rule.State === "DISABLED"; context.main.querySelector('[data-rule-action="delete"]').disabled = !rule; };
+  context.main.querySelectorAll('input[name="ruleSelect"]').forEach(input => input.addEventListener("change", syncActions)); syncActions();
+  context.main.querySelectorAll("[data-rule-action]").forEach(button => button.addEventListener("click", async () => {
+    const rule = selected(); if (!rule) return; const action = button.dataset.ruleAction;
     try {
-      const form = root.matches?.("form") ? root : root.querySelector("form") ?? root.closest("form");
-      if (!form) throw new Error("Target form is unavailable");
-      const value = previewTargetInput(new FormData(form));
-      output.innerHTML = `<div class="alert success" role="status"><strong>Preview ready</strong><pre class="code-box eventbridge-target-preview">${escapeHtml(typeof value === "string" ? value : JSON.stringify(value, null, 2))}</pre></div>`;
-    } catch (error) { output.innerHTML = `<div class="alert error" role="alert"><strong>Preview failed</strong><br>${escapeHtml(error instanceof Error ? error.message : String(error))}</div>`; }
-  });
-}
-
-function bindTargetModal(root = document) {
-  bindInputMode(root);
-  bindTargetType(root);
-  bindTargetPreview(root);
-}
-
-function bindModalPatternTest(context) {
-  const dialog = document.querySelector("#modal");
-  const button = dialog.querySelector("[data-test-rule-pattern]");
-  if (!button) return;
-  button.addEventListener("click", async () => {
-    const output = dialog.querySelector("[data-rule-test-result]");
-    button.disabled = true;
-    try {
-      const pattern = parseObject(dialog.querySelector('[name="pattern"]').value, "Event pattern");
-      const sample = parseObject(dialog.querySelector('[name="sampleEvent"]').value, "Sample event");
-      const result = await events("TestEventPattern", { EventPattern: JSON.stringify(pattern), Event: JSON.stringify(sample) });
-      output.innerHTML = `<div class="alert ${result.Result ? "success" : "warning"}" role="status"><strong>${result.Result ? "Pattern matches" : "Pattern does not match"}</strong><br>${result.Result ? "This sample would trigger the rule." : "Adjust the pattern or sample and test again."}</div>`;
-    } catch (error) { output.innerHTML = `<div class="alert error" role="alert"><strong>Pattern test failed</strong><br>${escapeHtml(error instanceof Error ? error.message : String(error))}</div>`; }
-    finally { button.disabled = false; }
-  });
+      if (action === "enable") { await events("EnableRule", { EventBusName: bus, Name: rule.Name }); context.toast("Rule enabled"); await context.route(); }
+      else if (action === "disable") { await events("DisableRule", { EventBusName: bus, Name: rule.Name }); context.toast("Rule disabled"); await context.route(); }
+      else deleteRuleWithTargets(context, bus, rule, await listTargets(bus, rule.Name), () => context.route());
+    } catch (error) { context.showError(error); }
+  }));
 }
 
 function bindCreateRule(context, selectedBus) {
-  document.querySelectorAll("[data-create-rule]").forEach(button => button.addEventListener("click", async () => {
-    try {
-      const [buses, functions] = await Promise.all([listBuses(), lambdaFunctions()]);
-      context.showModal("Create rule", `<div class="field-row"><div class="field"><label>Event bus</label><select name="bus" required>${buses.map(bus => `<option value="${escapeHtml(bus.Name)}" ${bus.Name === (selectedBus || "default") ? "selected" : ""}>${escapeHtml(bus.Name)}</option>`).join("")}</select></div><div class="field"><label>Rule name</label><input name="name" maxlength="64" pattern="[A-Za-z0-9_.-]+" required placeholder="route-order-events"></div></div><div class="field"><label>Description</label><input name="description" maxlength="512"></div><div class="field"><label>State</label><select name="state"><option value="ENABLED">Enabled</option><option value="DISABLED">Disabled</option></select></div><div class="field"><label>Event pattern (JSON)</label><textarea class="code-editor" name="pattern">${escapeHtml(defaultPattern)}</textarea><span class="hint">Optional when a legacy schedule expression is provided.</span></div><div class="field"><label>Sample event (JSON)</label><textarea name="sampleEvent">${escapeHtml(defaultSample)}</textarea></div><div class="eventbridge-inline-actions"><button class="button" type="button" data-test-rule-pattern>Test pattern</button></div><div class="eventbridge-test-result" data-rule-test-result aria-live="polite"></div><div class="eventbridge-modal-section"><h3>Target (optional)</h3>${targetFields(functions)}</div><div class="eventbridge-modal-section"><h3>Tags</h3><div class="field"><label>Tags (JSON object)</label><textarea name="tags">{}</textarea></div></div>`, "Create rule", async data => {
-        const bus = String(data.get("bus")); const name = String(data.get("name"));
-        const patternText = String(data.get("pattern") || "").trim(); const scheduleExpression = String(data.get("scheduleExpression") || "").trim();
-        if (!patternText && !scheduleExpression) throw new Error("Provide an event pattern, a legacy schedule expression, or both");
-        const pattern = patternText ? parseObject(patternText, "Event pattern") : undefined;
-        if (scheduleExpression && bus !== "default") throw new Error("Legacy scheduled rules are available only on the default event bus");
-        const result = await events("PutRule", { Name: name, EventBusName: bus, Description: String(data.get("description") || ""), State: String(data.get("state")), ...(pattern ? { EventPattern: JSON.stringify(pattern) } : {}), ...(scheduleExpression ? { ScheduleExpression: scheduleExpression } : {}), Tags: tagsFromMap(stringMap(data.get("tags"), "Tags")) });
-        const targetArn = targetArnFromForm(data);
-        if (targetArn) {
-          try {
-            const targetResult = await events("PutTargets", { Rule: name, EventBusName: bus, Targets: [targetFromForm(data, targetArn)] });
-            if (targetResult.FailedEntryCount) throw new Error(targetResult.FailedEntries?.[0]?.ErrorMessage || "Target could not be added");
-          } catch (error) {
-            context.toast(`Rule created without its target: ${error instanceof Error ? error.message : String(error)}`, "error");
-            location.hash = `${ruleRoot(bus, name)}/targets`;
-            return result;
-          }
-        }
-        context.toast("Rule created");
-        location.hash = `${ruleRoot(bus, name)}/details`;
-        return result;
-      }, true);
-      document.querySelector("#modal [name=state]")?.closest(".field")?.insertAdjacentHTML("afterend", '<div class="field"><label>Legacy schedule expression (optional)</label><input class="mono" name="scheduleExpression" placeholder="rate(5 minutes) or cron(0 9 ? * MON-FRI *)"><span class="hint">Default bus only, UTC, one-minute precision. Event patterns and schedules may coexist. Use EventBridge Scheduler for new time-driven work.</span></div>');
-      bindTargetModal(document.querySelector("#modal"));
-      bindModalPatternTest(context);
-    } catch (error) { context.showError(error); }
-  }));
+  document.querySelectorAll("[data-create-rule]").forEach(button => button.addEventListener("click", () => { setRuleWizardPrefill({ bus: selectedBus ?? "default" }); location.hash = "#/eventbridge/rules/create"; }));
 }
 
 async function describeRule(bus, name) { return events("DescribeRule", { EventBusName: bus, Name: name }); }
@@ -546,6 +286,24 @@ async function testRulePatternModal(context, rule) {
   }, true, { closeAfterSubmit: false, refreshAfterSubmit: false });
 }
 
+function bindModalPatternTest(context) {
+  const dialog = document.querySelector("#modal");
+  const button = dialog.querySelector("[data-test-rule-pattern]");
+  if (!button) return;
+  button.addEventListener("click", async () => {
+    const output = dialog.querySelector("[data-rule-test-result]");
+    button.disabled = true;
+    try {
+      const pattern = parseObject(dialog.querySelector('[name="pattern"]').value, "Event pattern");
+      const sample = parseObject(dialog.querySelector('[name="sampleEvent"]').value, "Sample event");
+      const result = await events("TestEventPattern", { EventPattern: JSON.stringify(pattern), Event: JSON.stringify(sample) });
+      output.innerHTML = `<div class="alert ${result.Result ? "success" : "warning"}" role="status"><strong>${result.Result ? "Pattern matches" : "Pattern does not match"}</strong><br>${result.Result ? "This sample would trigger the rule." : "Adjust the pattern or sample and test again."}</div>`;
+    } catch (error) { output.innerHTML = `<div class="alert error" role="alert"><strong>Pattern test failed</strong><br>${escapeHtml(error instanceof Error ? error.message : String(error))}</div>`; }
+    finally { button.disabled = false; }
+  });
+  void context;
+}
+
 async function editRuleModal(context, bus, rule) {
   context.showModal("Edit rule", `<div class="alert info"><strong>Replacement update</strong><br>Saving replaces the mutable rule configuration. Omitted values are cleared.</div><div class="field"><label>Event bus</label><input value="${escapeHtml(bus)}" disabled></div><div class="field"><label>Rule name</label><input value="${escapeHtml(rule.Name)}" disabled></div><div class="field"><label>Description</label><input name="description" maxlength="512" value="${escapeHtml(rule.Description || "")}"></div><div class="field"><label>State</label><select name="state"><option value="ENABLED" ${rule.State !== "DISABLED" ? "selected" : ""}>Enabled</option><option value="DISABLED" ${rule.State === "DISABLED" ? "selected" : ""}>Disabled</option></select></div><div class="field"><label>Event pattern (JSON)</label><textarea class="code-editor" name="pattern">${escapeHtml(rule.EventPattern ? context.prettyJson(rule.EventPattern) : "")}</textarea><span class="hint">Optional when a legacy schedule expression is provided.</span></div><div class="field"><label>Sample event (JSON)</label><textarea name="sampleEvent">${escapeHtml(defaultSample)}</textarea></div><div class="eventbridge-inline-actions"><button class="button" type="button" data-test-rule-pattern>Test pattern</button></div><div class="eventbridge-test-result" data-rule-test-result aria-live="polite"></div><p class="muted">Manage tags separately; the API ignores create-time tags when an existing rule is updated.</p>`, "Save rule", async data => {
     const patternText = String(data.get("pattern") || "").trim(); const scheduleExpression = String(data.get("scheduleExpression") || "").trim();
@@ -554,8 +312,21 @@ async function editRuleModal(context, bus, rule) {
     await events("PutRule", { Name: rule.Name, EventBusName: bus, Description: String(data.get("description") || ""), State: String(data.get("state")), ...(pattern ? { EventPattern: JSON.stringify(pattern) } : {}), ...(scheduleExpression ? { ScheduleExpression: scheduleExpression } : {}) });
     context.toast("Rule updated");
   }, true);
-  document.querySelector("#modal [name=state]")?.closest(".field")?.insertAdjacentHTML("afterend", `<div class="field"><label>Legacy schedule expression (optional)</label><input class="mono" name="scheduleExpression" value="${escapeHtml(rule.ScheduleExpression || "")}" placeholder="rate(5 minutes) or cron(0 9 ? * MON-FRI *)"><span class="hint">UTC and default bus only. EventBridge Scheduler is recommended for new schedules.</span></div>`);
+  if (bus === "default") document.querySelector("#modal [name=state]")?.closest(".field")?.insertAdjacentHTML("afterend", `<div class="field"><label>Legacy schedule expression (optional)</label><input class="mono" name="scheduleExpression" value="${escapeHtml(rule.ScheduleExpression || "")}" placeholder="rate(5 minutes) or cron(0 9 ? * MON-FRI *)"><span class="hint">UTC and default bus only. EventBridge Scheduler is recommended for new schedules.</span></div>`);
   bindModalPatternTest(context);
+}
+
+function deleteRuleWithTargets(context, bus, rule, targets, afterDelete) {
+  const managed = Boolean(rule.ManagedBy);
+  context.confirmDeletion(rule.Name, managed ? `${rule.Name} is a managed rule created by ${rule.ManagedBy}. Force delete it only if that service no longer needs it. Its ${targets.length} target${targets.length === 1 ? "" : "s"} will also be removed.` : `Delete rule ${rule.Name}? Its ${targets.length} target${targets.length === 1 ? "" : "s"} will also be removed.`, async () => {
+    if (targets.length) {
+      const removed = await events("RemoveTargets", { EventBusName: bus, Rule: rule.Name, Ids: targets.map(target => target.Id), ...(managed ? { Force: true } : {}) });
+      if (removed.FailedEntryCount) throw new Error(removed.FailedEntries?.[0]?.ErrorMessage || "One or more targets could not be removed");
+    }
+    await events("DeleteRule", { EventBusName: bus, Name: rule.Name, ...(managed ? { Force: true } : {}) });
+    context.toast(managed ? "Managed rule force deleted" : "Rule deleted");
+    await afterDelete();
+  });
 }
 
 function bindRuleActions(context, bus, rule, targets = []) {
@@ -566,24 +337,18 @@ function bindRuleActions(context, bus, rule, targets = []) {
     try { await events(rule.State === "DISABLED" ? "EnableRule" : "DisableRule", { EventBusName: bus, Name: rule.Name }); context.toast(`Rule ${rule.State === "DISABLED" ? "enabled" : "disabled"}`); await context.route(); }
     catch (error) { context.showError(error); }
   });
-  document.querySelector("[data-delete-rule]")?.addEventListener("click", () => context.confirmDeletion(rule.Name, `Delete rule ${rule.Name}? Its ${targets.length} target${targets.length === 1 ? "" : "s"} will also be removed.`, async () => {
-    if (targets.length) {
-      const removed = await events("RemoveTargets", { EventBusName: bus, Rule: rule.Name, Ids: targets.map(target => target.Id) });
-      if (removed.FailedEntryCount) throw new Error(removed.FailedEntries?.[0]?.ErrorMessage || "One or more targets could not be removed");
-    }
-    await events("DeleteRule", { EventBusName: bus, Name: rule.Name });
-    context.toast("Rule deleted");
-    location.hash = "#/eventbridge/rules";
-  }));
+  document.querySelector("[data-delete-rule]")?.addEventListener("click", () => deleteRuleWithTargets(context, bus, rule, targets, async () => { location.hash = "#/eventbridge/rules"; }));
 }
 
-async function ruleDetailsPage(context, bus, name) {
-  const [rule, targets, tags] = await Promise.all([describeRule(bus, name), listTargets(bus, name), describeRule(bus, name).then(item => listTags(item.Arn))]);
-  setRuleChrome(context, bus, name, "Details");
-  const targetTypes = [...new Set(targets.map(target => targetTypeLabel(targetType(target))))];
-  context.main.innerHTML = `<div class="page-width eventbridge-detail">${pageHeader(name, rule.Arn, '<button class="button" data-action="refresh">Refresh</button><button class="button" data-test-rule>Test pattern</button><button class="button" data-toggle-rule>' + (rule.State === "DISABLED" ? "Enable" : "Disable") + '</button><button class="button" data-edit-rule>Edit</button><button class="button danger" data-delete-rule>Delete</button>')}${ruleTabs(bus, name, "details")}<div class="eventbridge-summary"><section class="card"><div class="card-header"><h2>Rule details</h2></div><div class="card-body"><dl class="key-value"><dt>State</dt><dd>${stateMarkup(rule.State)}</dd><dt>Event bus</dt><dd><a href="${busRoot(bus)}/details">${escapeHtml(bus)}</a></dd><dt>Description</dt><dd>${escapeHtml(rule.Description || "–")}</dd><dt>ARN</dt><dd class="mono">${escapeHtml(rule.Arn)}</dd></dl></div></section><section class="card"><div class="card-header"><h2>Targets</h2><a href="${ruleRoot(bus, name)}/targets">Manage</a></div><div class="card-body"><div class="metric">${targets.length}</div><p class="muted">${targetTypes.length ? escapeHtml(targetTypes.join(" · ")) : "Lambda, SQS, Logs, and API Gateway supported"}</p></div></section><section class="card"><div class="card-header"><h2>Tags</h2><a href="${ruleRoot(bus, name)}/tags">Manage</a></div><div class="card-body"><div class="metric">${tags.length}</div><p class="muted">Resource metadata and authorization conditions</p></div></section></div><section class="card"><div class="card-header"><h2>Event pattern</h2><button class="button" data-test-rule>Test pattern</button></div><div class="card-body"><pre class="code-box eventbridge-json-preview">${escapeHtml(context.prettyJson(rule.EventPattern || "{}"))}</pre></div></section><div class="alert warning"><strong>Target permissions</strong><br>Each target needs either its documented resource-policy grant for <span class="mono">events.amazonaws.com</span> or a supported trusted execution role. Open Targets to see resource-specific guidance, retry settings, and DLQ configuration.</div></div>`;
-  if (rule.ScheduleExpression) context.main.querySelector(".eventbridge-summary")?.insertAdjacentHTML("afterend", `<section class="card"><div class="card-header"><h2>Legacy schedule</h2><a href="#/eventbridge/schedules">Use Scheduler for new schedules</a></div><div class="card-body"><p class="mono">${escapeHtml(rule.ScheduleExpression)}</p><p class="muted">Default event bus · UTC · one-minute minimum precision. This rule may also be triggered by its event pattern.</p></div></section>`);
-  bindRuleActions(context, bus, rule, targets);
+/** Rule details and event pattern sit above the Targets / Metrics / Tags tabs, as in the AWS rule page. */
+async function ruleHeader(context, bus, name, section) {
+  const [rule, targets] = await Promise.all([describeRule(bus, name), listTargets(bus, name)]);
+  setRuleChrome(context, bus, name, section);
+  const managed = Boolean(rule.ManagedBy);
+  const disabledAttribute = managed ? `disabled title="Managed rules cannot be modified; they are created by ${escapeHtml(rule.ManagedBy)}"` : "";
+  const actions = `<button class="button" data-action="refresh">Refresh</button>${rule.EventPattern ? '<button class="button" data-test-rule>Test pattern</button>' : ""}<button class="button" data-toggle-rule ${disabledAttribute}>${rule.State === "DISABLED" ? "Enable" : "Disable"}</button><button class="button" data-edit-rule ${disabledAttribute}>Edit</button><button class="button danger" data-delete-rule>${managed ? "Force delete" : "Delete"}</button>`;
+  const details = `<section class="card"><div class="card-header"><h2>Rule details</h2></div><div class="card-body detail-grid"><dl class="key-value"><dt>Name</dt><dd>${escapeHtml(rule.Name)}</dd><dt>Status</dt><dd>${stateMarkup(rule.State)}</dd><dt>Event bus</dt><dd><a href="${busRoot(bus)}/details">${escapeHtml(bus)}</a></dd></dl><dl class="key-value"><dt>Rule type</dt><dd>${escapeHtml(ruleTypeLabel(rule))}</dd><dt>Description</dt><dd>${escapeHtml(rule.Description || "–")}</dd><dt>ARN</dt><dd class="mono">${escapeHtml(rule.Arn)}</dd></dl><dl class="key-value"><dt>Managed by</dt><dd>${escapeHtml(rule.ManagedBy || "–")}</dd><dt>Created by</dt><dd class="mono">${escapeHtml(rule.CreatedBy || "–")}</dd><dt>Targets</dt><dd>${targets.length}</dd></dl></div></section>${managed ? `<div class="alert info"><strong>Managed rule</strong><br>${escapeHtml(rule.ManagedBy)} created this rule and manages it. It cannot be disabled, edited, re-targeted, or tagged; delete it only with Force delete if that service no longer needs it.</div>` : ""}${rule.EventPattern ? `<section class="card"><div class="card-header"><h2>Event pattern</h2><button class="button" data-test-rule>Test pattern</button></div><div class="card-body"><pre class="code-box eventbridge-json-preview">${escapeHtml(context.prettyJson(rule.EventPattern))}</pre></div></section>` : ""}${rule.ScheduleExpression ? `<section class="card"><div class="card-header"><h2>Schedule</h2><a href="#/eventbridge/schedules">Use Scheduler for new schedules</a></div><div class="card-body"><p class="mono">${escapeHtml(rule.ScheduleExpression)}</p><p class="muted">Legacy scheduled rule · default event bus · UTC · one-minute precision.${rule.EventPattern ? " This rule is also triggered by its event pattern." : ""}</p></div></section>` : ""}`;
+  return { rule, targets, header: `${pageHeader(name, rule.Arn, actions)}${details}`, bind: () => bindRuleActions(context, bus, rule, targets) };
 }
 
 async function addTargetModal(context, bus, rule, target) {
@@ -600,10 +365,10 @@ async function addTargetModal(context, bus, rule, target) {
 }
 
 function targetInputSummary(target) {
-  if (target.Input !== undefined) return "Constant JSON";
-  if (target.InputPath !== undefined) return `Path ${target.InputPath}`;
+  if (target.Input !== undefined) return "Constant (JSON text)";
+  if (target.InputPath !== undefined) return `Part of the matched event ${target.InputPath}`;
   if (target.InputTransformer) return "Input transformer";
-  return "Matched event";
+  return "Matched events";
 }
 
 function targetParameterSummary(target) {
@@ -644,13 +409,15 @@ function targetDiagnosticMarkup(target, bus, rule, deliveryState) {
   const dlqSent = Number(summary?.dlqSent ?? records.filter(item => item.deadLetterStatus === "SENT").length);
   const dlqFailed = Number(summary?.dlqFailed ?? records.filter(item => item.deadLetterStatus === "FAILED").length);
   const failure = latest?.errorMessage || latest?.lastError || latest?.errorCode;
-  return `<span class="status ${statusClass}">${escapeHtml(status)}</span><div class="muted small">Retries ${retries} · DLQ ${dlqSent} sent / ${dlqFailed} failed</div>${failure ? `<div class="muted small">${escapeHtml(boundedText(failure, 120))}</div>` : ""}`;
+  return `<span class="status ${statusClass}">${escapeHtml(status)}</span><div class="muted small">Retries ${retries} · DLQ ${dlqSent} sent / ${dlqFailed} failed</div>${failure ? `<div class="muted small">${escapeHtml(boundedTextLocal(failure, 120))}</div>` : ""}`;
 }
+function boundedTextLocal(value, maximum = 240) { const text = String(value ?? ""); return text.length > maximum ? `${text.slice(0, maximum)}…` : text; }
 
 async function ruleTargetsPage(context, bus, name) {
-  const [rule, targets, deliveryState] = await Promise.all([describeRule(bus, name), listTargets(bus, name), deliveryDiagnostics()]);
-  setRuleChrome(context, bus, name, "Targets");
-  context.main.innerHTML = `<div class="page-width eventbridge-detail">${pageHeader("Targets", `Independent Lambda, SQS, Logs, and API Gateway deliveries for ${escapeHtml(name)}.`, `<button class="button refresh" data-action="refresh" title="Refresh" aria-label="Refresh targets">↻</button><button class="button primary" data-add-target ${targets.length >= 5 ? "disabled title=\"A rule supports at most five targets\"" : ""}>Add target</button>`)}${ruleTabs(bus, name, "targets")}<div class="alert info"><strong>Independent at-least-once delivery</strong><br>Each target checkpoints, retries, and dead-letters independently. API Gateway 429 and 5xx responses retry; other 4xx responses are terminal. Lambda success means the asynchronous invocation was accepted.</div><section class="card"><div class="card-header"><h2>Targets <span class="muted">(${targets.length} of 5)</span></h2></div><div class="table-wrap">${targets.length ? `<table class="eventbridge-target-table"><thead><tr><th>ID</th><th>Type</th><th>Resource</th><th>Input / parameters</th><th>Authorization</th><th>DLQ</th><th>Last delivery</th><th>Maximum age</th><th>Retries</th><th>Actions</th></tr></thead><tbody>${targets.map((target, index) => `<tr><td>${escapeHtml(target.Id)}</td><td>${escapeHtml(targetTypeLabel(targetType(target)))}</td><td><a href="${targetHref(target)}">${escapeHtml(targetDisplayName(target))}</a><div class="mono small">${escapeHtml(target.Arn)}</div></td><td>${targetParameterSummary(target)}</td><td>${targetAuthorizationMarkup(target)}</td><td>${targetDeadLetterMarkup(target)}</td><td>${targetDiagnosticMarkup(target, bus, name, deliveryState)}</td><td>${target.RetryPolicy?.MaximumEventAgeInSeconds ?? 86400} sec</td><td>${target.RetryPolicy?.MaximumRetryAttempts ?? 185}</td><td class="no-wrap"><button class="button link" data-edit-target="${index}" aria-label="Edit target ${escapeHtml(target.Id)}">Edit</button><button class="button link danger" data-remove-target="${index}" aria-label="Remove target ${escapeHtml(target.Id)}">Remove</button></td></tr>`).join("")}</tbody></table>` : emptyState("↯", "No targets", "Add a local resource to receive matching events.", '<button class="button primary" data-add-target>Add target</button>')}</div></section><div class="alert warning"><strong>Target permission diagnostics</strong><br>Use Edit for the exact rule ARN and target-specific policy guidance. Resource policies and execution roles remain independently enforced; saving a target does not grant delivery access. Standard SQS DLQs need their own EventBridge queue-policy grant.</div></div>`;
+  const [{ rule, targets, header, bind }, deliveryState] = await Promise.all([ruleHeader(context, bus, name, "Targets"), deliveryDiagnostics()]);
+  const managed = Boolean(rule.ManagedBy);
+  context.main.innerHTML = `<div class="page-width eventbridge-detail">${header}${ruleTabs(bus, name, "targets")}<section class="card"><div class="card-header"><h2>Targets <span class="muted">(${targets.length} of 5)</span></h2><div class="actions"><button class="button refresh" data-action="refresh-targets" title="Refresh" aria-label="Refresh targets">↻</button><button class="button primary" data-add-target ${targets.length >= 5 ? 'disabled title="A rule supports at most five targets"' : managed ? 'disabled title="Managed rules cannot be re-targeted"' : ""}>Add target</button></div></div><div class="table-wrap">${targets.length ? `<table class="eventbridge-target-table"><thead><tr><th>ID</th><th>Type</th><th>Resource</th><th>Input / parameters</th><th>Authorization</th><th>DLQ</th><th>Last delivery</th><th>Maximum age</th><th>Retries</th><th>Actions</th></tr></thead><tbody>${targets.map((target, index) => `<tr><td>${escapeHtml(target.Id)}</td><td>${escapeHtml(targetTypeLabel(targetType(target)))}</td><td><a href="${targetHref(target)}">${escapeHtml(targetDisplayName(target))}</a><div class="mono small">${escapeHtml(target.Arn)}</div></td><td>${targetParameterSummary(target)}</td><td>${targetAuthorizationMarkup(target)}</td><td>${targetDeadLetterMarkup(target)}</td><td>${targetDiagnosticMarkup(target, bus, name, deliveryState)}</td><td>${target.RetryPolicy?.MaximumEventAgeInSeconds ?? 86400} sec</td><td>${target.RetryPolicy?.MaximumRetryAttempts ?? 185}</td><td class="no-wrap"><button class="button link" data-edit-target="${index}" aria-label="Edit target ${escapeHtml(target.Id)}" ${managed ? "disabled" : ""}>Edit</button><button class="button link danger" data-remove-target="${index}" aria-label="Remove target ${escapeHtml(target.Id)}" ${managed ? "disabled" : ""}>Remove</button></td></tr>`).join("")}</tbody></table>` : emptyState("↯", "No targets", managed ? "Managed rules created for archives have no targets." : "Add a local resource to receive matching events.", managed ? "" : '<button class="button primary" data-add-target>Add target</button>')}</div></section><div class="alert info"><strong>Independent at-least-once delivery</strong><br>Each target checkpoints, retries, and dead-letters independently. API Gateway 429 and 5xx responses retry; other 4xx responses are terminal. Lambda success means the asynchronous invocation was accepted. Resource policies and execution roles are enforced at delivery time; saving a target does not grant access.</div></div>`;
+  bind();
   document.querySelectorAll("[data-add-target]").forEach(button => button.addEventListener("click", () => addTargetModal(context, bus, rule).catch(context.showError)));
   document.querySelectorAll("[data-edit-target]").forEach(button => button.addEventListener("click", () => addTargetModal(context, bus, rule, targets[Number(button.dataset.editTarget)]).catch(context.showError)));
   document.querySelectorAll("[data-remove-target]").forEach(button => button.addEventListener("click", () => {
@@ -661,78 +428,67 @@ async function ruleTargetsPage(context, bus, name) {
       context.toast("Target removed");
     });
   }));
-  document.querySelector('[data-action="refresh"]')?.addEventListener("click", context.route);
+  document.querySelector('[data-action="refresh-targets"]')?.addEventListener("click", context.route);
 }
 
 async function ruleTagsPage(context, bus, name) {
-  const rule = await describeRule(bus, name); const resourceTags = await listTags(rule.Arn);
-  setRuleChrome(context, bus, name, "Tags");
-  context.main.innerHTML = `<div class="page-width eventbridge-detail">${pageHeader("Tags", `Key-value metadata for ${escapeHtml(name)}.`, '<button class="button primary" data-manage-tags>Manage tags</button>')}${ruleTabs(bus, name, "tags")}${tagsCard(resourceTags)}<div class="alert info"><strong>Update behavior</strong><br>Create-time tags apply only when the rule is first created. Use this page for later tag changes.</div></div>`;
-  document.querySelector("[data-manage-tags]")?.addEventListener("click", () => manageTags(context, rule, "rule").catch(context.showError));
+  const { rule, header, bind } = await ruleHeader(context, bus, name, "Tags");
+  const resourceTags = await listTags(rule.Arn);
+  context.main.innerHTML = `<div class="page-width eventbridge-detail">${header}${ruleTabs(bus, name, "tags")}${tagsCard(resourceTags)}<div class="alert info"><strong>Update behavior</strong><br>Create-time tags apply only when the rule is first created. Use Manage tags for later changes.</div></div>`;
+  bind(); const manage = document.querySelector("[data-manage-tags]"); if (rule.ManagedBy && manage) { manage.disabled = true; manage.title = "Managed rules cannot be tagged"; }
+  manage?.addEventListener("click", () => manageTags(context, rule, "rule").catch(context.showError));
 }
 
-async function ruleMonitoringPage(context, bus, name) {
-  const [rule, targets, deliveryState] = await Promise.all([describeRule(bus, name), listTargets(bus, name), deliveryDiagnostics()]);
+async function ruleMetricsPage(context, bus, name) {
+  const [{ rule, targets, header, bind }, deliveryState] = await Promise.all([ruleHeader(context, bus, name, "Metrics"), deliveryDiagnostics()]);
   const deliveries = (deliveryState.deliveries ?? []).filter(item => item.eventBusName === bus && item.ruleName === name);
   const diagnostics = (deliveryState.diagnostics ?? []).filter(item => item.eventBusName === bus && item.ruleName === name);
-  setRuleChrome(context, bus, name, "Monitoring");
-  context.main.innerHTML = `<div class="page-width eventbridge-detail">${pageHeader("Monitoring", `Delivery visibility for ${escapeHtml(name)}.`, '<button class="button refresh" data-action="refresh" title="Refresh" aria-label="Refresh monitoring">↻</button><a class="button" href="#/cloudwatch/metrics">View EventBridge metrics</a>')}${ruleTabs(bus, name, "monitoring")}<div class="eventbridge-summary"><section class="card"><div class="card-header"><h2>Rule state</h2></div><div class="card-body">${stateMarkup(rule.State)}<p class="muted">Disabled rules do not match new events.</p></div></section><section class="card"><div class="card-header"><h2>Configured targets</h2></div><div class="card-body"><div class="metric">${targets.length}</div><p class="muted">Up to five independent local targets</p></div></section><section class="card"><div class="card-header"><h2>Delivery state</h2></div><div class="card-body"><div class="metric">${deliveries.length}</div><p class="muted">Queued or leased · ${diagnostics.length} recent terminal/retry summaries</p></div></section></div><section class="card"><div class="card-header"><h2>Bounded local diagnostics <span class="muted">(${deliveries.length + diagnostics.length})</span></h2></div><div class="card-body"><p>At most 100 recent terminal/retry summaries are retained. Event IDs, target IDs, retries, and DLQ outcomes are visible without payloads; failures are never presented as successful invocations.</p></div><div class="table-wrap">${diagnosticTable(deliveries, diagnostics)}</div></section><section class="card"><div class="card-header"><h2>EventBridge metrics</h2><a href="#/cloudwatch/metrics">Open metric explorer</a></div><div class="card-body"><p class="mono">MatchedEvents · TriggeredRules · Invocations · InvocationAttempts · SuccessfulInvocationAttempts · RetryInvocationAttempts · FailedInvocations · InvocationsSentToDlq · InvocationsFailedToBeSentToDlq</p><p class="muted">Select the documented EventBusName and RuleName dimensions in CloudWatch. Target IDs and target counters exist only in bounded simulator diagnostics, never as invented service metric dimensions.</p></div></section></div>`;
-  document.querySelector('[data-action="refresh"]')?.addEventListener("click", context.route);
+  context.main.innerHTML = `<div class="page-width eventbridge-detail">${header}${ruleTabs(bus, name, "metrics")}<section class="card"><div class="card-header"><h2>EventBridge metrics</h2><a class="button" href="#/cloudwatch/metrics">Open metric explorer</a></div><div class="card-body"><p>CloudWatch publishes these <span class="mono">AWS/Events</span> metrics for this rule under the documented <span class="mono">RuleName</span>${bus === "default" ? "" : ' and <span class="mono">EventBusName</span>'} dimensions:</p><p class="mono">MatchedEvents · TriggeredRules · Invocations · InvocationsCreated · InvocationAttempts · SuccessfulInvocationAttempts · RetryInvocationAttempts · FailedInvocations · DeadLetterInvocations · InvocationsSentToDlq · InvocationsFailedToBeSentToDlq · IngestiontoInvocationStartLatency · IngestiontoInvocationCompleteLatency · IngestionToInvocationSuccessLatency</p><p class="muted">Target IDs and target counters exist only in bounded simulator diagnostics, never as invented service metric dimensions.</p></div></section><div class="eventbridge-summary"><section class="card"><div class="card-header"><h2>Rule state</h2></div><div class="card-body">${stateMarkup(rule.State)}<p class="muted">Disabled rules do not match new events.</p></div></section><section class="card"><div class="card-header"><h2>Configured targets</h2></div><div class="card-body"><div class="metric">${targets.length}</div><p class="muted">Up to five independent local targets</p></div></section><section class="card"><div class="card-header"><h2>Delivery state</h2></div><div class="card-body"><div class="metric">${deliveries.length}</div><p class="muted">Queued or leased · ${diagnostics.length} recent terminal/retry summaries</p></div></section></div><section class="card"><div class="card-header"><h2>Bounded local diagnostics <span class="muted">(${deliveries.length + diagnostics.length})</span></h2></div><div class="card-body"><p>StackSim addition: at most 100 recent terminal/retry summaries are retained. Event IDs, target IDs, retries, and DLQ outcomes are visible without payloads; failures are never presented as successful invocations.</p></div><div class="table-wrap">${diagnosticTable(deliveries, diagnostics)}</div></section></div>`;
+  bind();
 }
 
-function sendEntryMarkup(index, buses) {
-  return `<article class="eventbridge-entry" data-event-entry><div class="eventbridge-entry-header"><h3>Entry <span data-entry-number>${index + 1}</span></h3><button class="button link danger" type="button" data-remove-event-entry aria-label="Remove entry ${index + 1}" ${index === 0 ? "disabled" : ""}>Remove</button></div><div class="field-row"><div class="field"><label>Event bus</label><select name="eventBus">${buses.map(bus => `<option value="${escapeHtml(bus.Name)}">${escapeHtml(bus.Name)}</option>`).join("")}</select></div><div class="field"><label>Source</label><input name="source" value="example.orders" required maxlength="256"></div></div><div class="field"><label>Detail type</label><input name="detailType" value="Order state changed" required maxlength="128"></div><div class="field"><label>Detail (JSON object)</label><textarea name="detail" required>{
-  "state": "created"
-}</textarea></div><div class="field"><label>Resources (one ARN per line)</label><textarea name="resources" placeholder="arn:aws:..." rows="2"></textarea></div><div class="field-row"><div class="field"><label>Time (optional)</label><input name="time" type="datetime-local"></div><div class="field"><label>Trace header (optional)</label><input name="traceHeader" maxlength="500" placeholder="Root=1-..."></div></div></article>`;
-}
+// ---- Sandbox: Event pattern | Target input transformer ----
 
-function renumberEntries(root) {
-  const entries = [...root.querySelectorAll("[data-event-entry]")];
-  entries.forEach((entry, index) => { entry.querySelector("[data-entry-number]").textContent = String(index + 1); const remove = entry.querySelector("[data-remove-event-entry]"); remove.disabled = entries.length === 1; remove.setAttribute("aria-label", `Remove entry ${index + 1}`); });
-  root.querySelector("[data-add-event-entry]").disabled = entries.length >= 10;
-}
-
-function eventEntryInput(element) {
-  const value = name => element.querySelector(`[name="${name}"]`).value;
-  const detail = parseObject(value("detail"), "Event detail");
-  const time = value("time");
-  return { Source: value("source"), DetailType: value("detailType"), Detail: JSON.stringify(detail), EventBusName: value("eventBus"), Resources: value("resources").split(/\r?\n/).map(item => item.trim()).filter(Boolean), ...(time ? { Time: new Date(time).getTime() / 1000 } : {}), ...(value("traceHeader").trim() ? { TraceHeader: value("traceHeader").trim() } : {}) };
-}
-
-function sendResults(result) {
-  const entries = result.Entries ?? [];
-  return `<div class="alert ${result.FailedEntryCount ? "warning" : "success"}" role="status"><strong>${entries.length - (result.FailedEntryCount ?? 0)} accepted · ${result.FailedEntryCount ?? 0} failed</strong><br>Results retain request order. Accepted events are routed and cannot be browsed later.</div><div class="table-wrap"><table><thead><tr><th>Entry</th><th>Status</th><th>Event ID</th><th>Error</th></tr></thead><tbody>${entries.map((entry, index) => `<tr><td>${index + 1}</td><td>${entry.ErrorCode ? '<span class="status error">Failed</span>' : '<span class="status">Accepted</span>'}</td><td class="mono">${escapeHtml(entry.EventId || "–")}</td><td>${escapeHtml(entry.ErrorMessage || entry.ErrorCode || "–")}</td></tr>`).join("")}</tbody></table></div>`;
+function sandboxTabs(active) {
+  return tabs([{ label: "Event pattern", href: "#/eventbridge/sandbox", active: active === "pattern" }, { label: "Target input transformer", href: "#/eventbridge/sandbox/input-transformer", active: active === "transformer" }]);
 }
 
 async function sandboxPage(context) {
-  const buses = await listBuses();
   context.setChrome("eventbridge", ["EventBridge", "Sandbox"]);
-  context.main.innerHTML = `<div class="page-width eventbridge-page">${pageHeader("Sandbox", "Test a JSON event pattern or publish up to ten custom event entries.", '<a class="button" href="#/eventbridge/rules">View rules</a>')}<div class="alert info"><strong>EventBridge is not an event-history browser</strong><br>Only ordered per-entry publish results and generated event IDs are shown. Accepted payloads are evaluated, durably handed off where needed, and not retained for browsing.</div><div class="eventbridge-sandbox-grid"><section class="card"><div class="card-header"><h2>Test event pattern</h2><button class="button primary" type="button" data-test-sandbox-pattern>Test pattern</button></div><div class="card-body"><div class="field"><label>Event pattern (JSON)</label><textarea class="code-editor" name="sandboxPattern">${escapeHtml(defaultPattern)}</textarea></div><div class="field"><label>Sample event (JSON)</label><textarea class="code-editor" name="sandboxEvent">${escapeHtml(defaultSample)}</textarea></div><div class="eventbridge-test-result" data-sandbox-pattern-result aria-live="polite"></div></div></section><section class="card"><div class="card-header"><h2>Send events</h2><div class="actions"><button class="button" type="button" data-add-event-entry>Add entry</button><button class="button primary" type="button" data-send-events>Send events</button></div></div><div class="card-body" data-event-entries>${sendEntryMarkup(0, buses)}</div><div data-send-event-results aria-live="polite"></div></section></div><section class="card"><div class="card-header"><h2>Delivery visibility</h2><a href="#/cloudwatch/metrics">View EventBridge metrics</a></div><div class="card-body"><p>Use rule Monitoring pages for a bounded, payload-redacted target snapshot. CloudWatch contains documented bus/rule metrics; target IDs are never exposed as invented service metric dimensions.</p></div></section></div>`;
-  const entryRoot = document.querySelector("[data-event-entries]");
-  document.querySelector("[data-add-event-entry]").addEventListener("click", () => {
-    const count = entryRoot.querySelectorAll("[data-event-entry]").length;
-    if (count >= 10) return;
-    entryRoot.insertAdjacentHTML("beforeend", sendEntryMarkup(count, buses));
-    associateFormLabels(entryRoot);
-    renumberEntries(context.main);
-  });
-  entryRoot.addEventListener("click", event => {
-    const button = event.target.closest?.("[data-remove-event-entry]"); if (!button || button.disabled) return;
-    button.closest("[data-event-entry]").remove(); renumberEntries(context.main);
-  });
-  document.querySelector("[data-test-sandbox-pattern]").addEventListener("click", async event => {
-    const button = event.currentTarget; const output = document.querySelector("[data-sandbox-pattern-result]"); button.disabled = true;
-    try { const pattern = parseObject(document.querySelector('[name="sandboxPattern"]').value, "Event pattern"); const sample = parseObject(document.querySelector('[name="sandboxEvent"]').value, "Sample event"); const result = await events("TestEventPattern", { EventPattern: JSON.stringify(pattern), Event: JSON.stringify(sample) }); output.innerHTML = `<div class="alert ${result.Result ? "success" : "warning"}" role="status"><strong>${result.Result ? "Pattern matches" : "Pattern does not match"}</strong><br>${result.Result ? "This sample would trigger a rule using this pattern." : "No match; adjust the pattern or sample event."}</div>`; setDirty(false, "page"); }
-    catch (error) { output.innerHTML = `<div class="alert error" role="alert"><strong>Pattern test failed</strong><br>${escapeHtml(error instanceof Error ? error.message : String(error))}</div>`; }
-    finally { button.disabled = false; }
-  });
-  document.querySelector("[data-send-events]").addEventListener("click", async event => {
-    const button = event.currentTarget; const output = document.querySelector("[data-send-event-results]"); button.disabled = true;
-    try { const Entries = [...entryRoot.querySelectorAll("[data-event-entry]")].map(eventEntryInput); const result = await events("PutEvents", { Entries }); output.innerHTML = sendResults(result); setDirty(false, "page"); }
-    catch (error) { output.innerHTML = `<div class="card-body"><div class="alert error" role="alert"><strong>Events were not sent</strong><br>${escapeHtml(error instanceof Error ? error.message : String(error))}</div></div>`; }
-    finally { button.disabled = false; }
+  context.main.innerHTML = `<div class="page-width eventbridge-page">${pageHeader("Sandbox", "Test event patterns and input transformers without creating a rule.")}${sandboxTabs("pattern")}<div class="alert info"><strong>Nothing is published here</strong><br>The Sandbox tests a sample event against an event pattern with the same engine that evaluates live rules. To publish events, use Send events on an event bus.</div><form data-sandbox-pattern novalidate>${patternBuilderMarkup({})}<div class="actions page-actions"><button class="button primary" type="button" data-create-rule-with-pattern>Create rule with pattern</button></div></form></div>`;
+  const form = context.main.querySelector("[data-sandbox-pattern]"); associateFormLabels(form);
+  bindPatternBuilder(form, { onChange: () => setDirty(true, "page") });
+  form.querySelector("[data-test-pattern]").addEventListener("click", () => setDirty(false, "page"));
+  form.querySelector("[data-create-rule-with-pattern]").addEventListener("click", () => {
+    try { const pattern = readPatternBuilder(form); if (!pattern) throw new Error("Enter an event pattern first"); setRuleWizardPrefill({ pattern: JSON.stringify(JSON.parse(pattern), null, 2), sampleEvent: form.querySelector('[name="sampleEvent"]').value }); setDirty(false, "page"); location.hash = "#/eventbridge/rules/create/advanced"; }
+    catch (error) { context.showError(error); }
   });
 }
+
+async function sandboxInputTransformerPage(context) {
+  context.setChrome("eventbridge", ["EventBridge", "Sandbox"]);
+  const sampleOptions = sampleEventLibrary.flatMap((service, serviceIndex) => service.types.map((entry, typeIndex) => `<option value="${serviceIndex}:${typeIndex}">${escapeHtml(`${service.service} — ${entry.type}`)}</option>`)).join("");
+  context.main.innerHTML = `<div class="page-width eventbridge-page">${pageHeader("Sandbox", "Test event patterns and input transformers without creating a rule.")}${sandboxTabs("transformer")}<form data-sandbox-transformer novalidate><section class="card"><div class="card-header"><h2>Sample event</h2></div><div class="card-body"><div class="field"><label>Sample event type</label><select name="sampleType"><option value="aws">AWS events</option><option value="own">Enter my own</option></select></div><div class="field" data-sample-library><label>Sample events</label><select name="sampleEntry">${sampleOptions}</select></div><div class="field"><label>Sample event</label><textarea class="code-editor" name="sampleEvent">${escapeHtml(sampleEventJson(sampleEventLibrary[0].types[0]))}</textarea></div></div></section><section class="card"><div class="card-header"><h2>Target input transformer</h2></div><div class="card-body"><div class="field"><label>Input path</label><textarea class="code-editor" name="inputPathsMap">${escapeHtml(JSON.stringify({ bucket: "$.detail.bucket.name", key: "$.detail.object.key" }, null, 2))}</textarea><span class="hint">A JSON object of up to 100 variables mapped to JSON paths in the event (dot notation).</span></div><div class="field"><label>Template</label><textarea class="code-editor" name="inputTemplate">${escapeHtml('{"bucket": <bucket>, "key": <key>, "rule": <aws.events.rule-name>}')}</textarea><span class="hint">Use &lt;variable&gt; placeholders. Predefined: aws.events.rule-arn, aws.events.rule-name, aws.events.event.ingestion-time, aws.events.event, aws.events.event.json.</span></div><div class="eventbridge-inline-actions"><button class="button primary" type="button" data-generate-output>Generate output</button></div><div class="field"><label>Output</label><pre class="code-box eventbridge-target-preview" data-transformer-output aria-live="polite">Choose Generate output to render the template.</pre></div></div></section></form></div>`;
+  const form = context.main.querySelector("[data-sandbox-transformer]"); associateFormLabels(form);
+  const sampleField = form.querySelector('[name="sampleEvent"]'); const sampleEntry = form.querySelector('[name="sampleEntry"]');
+  form.querySelector('[name="sampleType"]').addEventListener("change", event => { form.querySelector("[data-sample-library]").hidden = event.target.value !== "aws"; });
+  sampleEntry.addEventListener("change", () => { const [serviceIndex, typeIndex] = sampleEntry.value.split(":").map(Number); const entry = sampleEventLibrary[serviceIndex]?.types[typeIndex]; if (entry) sampleField.value = sampleEventJson(entry); });
+  form.querySelector("[data-generate-output]").addEventListener("click", () => {
+    const output = form.querySelector("[data-transformer-output]");
+    try {
+      const sample = parseObject(sampleField.value, "Sample event"); const paths = stringMap(form.querySelector('[name="inputPathsMap"]').value, "Input path");
+      const values = Object.fromEntries(Object.entries(paths).map(([key, path]) => [key, previewJsonPath(sample, path)]));
+      values["aws.events.rule-name"] = "sandbox-rule"; values["aws.events.rule-arn"] = `arn:aws:events:${ui.region}:${ui.summary?.accountId ?? "000000000000"}:rule/sandbox-rule`; values["aws.events.event.ingestion-time"] = new Date().toISOString();
+      values["aws.events.event"] = Object.fromEntries(Object.entries(sample).filter(([key]) => key !== "detail")); values["aws.events.event.json"] = sample;
+      const template = form.querySelector('[name="inputTemplate"]').value;
+      const rendered = template.replace(/<([^>]+)>/g, (placeholder, variable, offset) => { if (!(variable in values) || values[variable] === undefined) return ""; const value = values[variable]; if (!placeholderInsideString(template, offset)) return JSON.stringify(value); return JSON.stringify(typeof value === "string" ? value : JSON.stringify(value)).slice(1, -1); });
+      let result; try { result = JSON.stringify(JSON.parse(rendered), null, 2); } catch { result = rendered; }
+      output.textContent = result; output.classList.remove("error");
+    } catch (error) { output.textContent = error instanceof Error ? error.message : String(error); output.classList.add("error"); }
+  });
+}
+
+// ---- Scheduler, archives, and replays ----
 
 async function allSchedules(groupName) {
   const items = []; let nextToken;
@@ -1000,7 +756,16 @@ export async function routeEventBridge(parts, context) {
   if (parts[0] !== metadata.key) return false;
   const render = async pending => { const result = await pending; decorateEventBridgePanelHelp(context.main); return result; };
   if (parts.length === 1) return render(eventBridgeOverview(context));
-  if (parts[1] === "sandbox" && parts.length === 2) return render(sandboxPage(context));
+  if (parts[1] === "sandbox") {
+    if (parts.length === 2) return render(sandboxPage(context));
+    if (parts.length === 3 && parts[2] === "input-transformer") return render(sandboxInputTransformerPage(context));
+    return context.notFound(parts);
+  }
+  if (parts[1] === "scheduled-rules") {
+    if (parts.length === 2) return render(scheduledRulesPage(context));
+    if (parts.length === 3 && parts[2] === "create") return render(ruleWizardPage(context, "schedule"));
+    return context.notFound(parts);
+  }
   if (parts[1] === "archives") {
     if (parts.length === 2) return render(archivesPage(context));
     if (parts.length === 3) return render(archiveDetailPage(context, parts[2]));
@@ -1025,19 +790,23 @@ export async function routeEventBridge(parts, context) {
     if (parts.length === 2) return render(eventBusesPage(context));
     if (!parts[2] || parts.length > 4) return context.notFound(parts);
     const name = parts[2]; const section = parts[3] ?? "details";
-    if (section === "details") return render(busDetailsPage(context, name));
-    if (section === "rules") return render(busRulesPage(context, name));
+    if (section === "details" || section === "rules") return render(busDetailsPage(context, name, section));
+    if (section === "archives") return render(busArchivesPage(context, name));
     if (section === "monitoring") return render(busMonitoringPage(context, name));
     if (section === "tags") return render(busTagsPage(context, name));
     return context.notFound(parts);
   }
   if (parts[1] === "rules") {
     if (parts.length === 2) return render(rulesPage(context));
+    if (parts[2] === "create") {
+      if (parts.length === 3) return render(ruleBuilderSelectionPage(context));
+      if (parts.length === 4 && parts[3] === "advanced") return render(ruleWizardPage(context, "pattern"));
+      return context.notFound(parts);
+    }
     if (!parts[2] || !parts[3] || parts.length > 5) return context.notFound(parts);
     const bus = parts[2]; const name = parts[3]; const section = parts[4] ?? "details";
-    if (section === "details") return render(ruleDetailsPage(context, bus, name));
-    if (section === "targets") return render(ruleTargetsPage(context, bus, name));
-    if (section === "monitoring") return render(ruleMonitoringPage(context, bus, name));
+    if (section === "details" || section === "targets") return render(ruleTargetsPage(context, bus, name));
+    if (section === "metrics" || section === "monitoring") return render(ruleMetricsPage(context, bus, name));
     if (section === "tags") return render(ruleTagsPage(context, bus, name));
     return context.notFound(parts);
   }

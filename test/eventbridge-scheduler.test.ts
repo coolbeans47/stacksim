@@ -363,8 +363,10 @@ test("DUG-05 sends a leased occurrence to its admitted DLQ after update", async 
   releaseDlq();
   await drive(h.clock, () => h.simulator.store.regionState().eventScheduleOccurrences[admitted.occurrenceId]?.status === "DLQ_SENT");
   const oldDlqDelivery = await h.sqs.send(new ReceiveMessageCommand({ QueueUrl: oldDlqUrl, WaitTimeSeconds: 0, MessageAttributeNames: ["All"] }));
-  assert.deepEqual(JSON.parse(oldDlqDelivery.Messages![0].Body!), { configuration: "old" });
-  assert.equal(oldDlqDelivery.Messages![0].MessageAttributes?.TARGET_ARN.StringValue, oldTargetArn);
+  const oldDlqBody = JSON.parse(oldDlqDelivery.Messages![0].Body!);
+  assert.deepEqual(JSON.parse(oldDlqBody.MessageBody), { configuration: "old" }, "the DLQ body is the SendMessage request Scheduler attempted");
+  assert.equal(oldDlqBody.QueueUrl, `https://sqs.${region}.amazonaws.com/${account}/dug05-leased-old`);
+  assert.equal(oldDlqDelivery.Messages![0].MessageAttributes?.TARGET_ARN.StringValue, "arn:aws:scheduler:::aws-sdk:sqs:sendMessage");
   assert.equal((await h.sqs.send(new ReceiveMessageCommand({ QueueUrl: newDlqUrl, WaitTimeSeconds: 0 }))).Messages, undefined);
 
   h.clock.advance(60_000);
