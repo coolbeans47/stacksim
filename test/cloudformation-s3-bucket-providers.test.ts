@@ -219,11 +219,13 @@ test("S3 bucket and bucket-policy providers drive the durable public website lif
     if (read.status === "SUCCESS") assert.deepEqual(read.model.properties, updated);
     assert.deepEqual((await sdk.send(new GetBucketLifecycleConfigurationCommand({ Bucket: initial.BucketName }))).Rules?.[0], {
       AbortIncompleteMultipartUpload: { DaysAfterInitiation: 8 },
+      Filter: {},
       Status: "Disabled",
     });
     assert.equal((await bucketProvider.update(initial.BucketName, updated, initial, context())).status, "SUCCESS", "rollback must restore the prior lifecycle configuration");
     assert.deepEqual((await sdk.send(new GetBucketLifecycleConfigurationCommand({ Bucket: initial.BucketName }))).Rules?.[0], {
       AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 },
+      Filter: {},
       Status: "Enabled",
     });
     assert.equal((await bucketProvider.update(initial.BucketName, initial, updated, context())).status, "SUCCESS", "the intended update must remain replayable after rollback");

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { CreateMultipartUploadCommand, DeleteObjectCommand, GetObjectAclCommand, ListMultipartUploadsCommand, ListObjectVersionsCommand, PutBucketOwnershipControlsCommand, PutBucketVersioningCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { CreateMultipartUploadCommand, DeleteObjectCommand, GetObjectAclCommand, ListMultipartUploadsCommand, ListObjectVersionsCommand, PutBucketOwnershipControlsCommand, PutBucketVersioningCommand, PutObjectCommand, PutPublicAccessBlockCommand, S3Client } from "@aws-sdk/client-s3";
 import { CreateQueueCommand, GetQueueAttributesCommand, SetQueueAttributesCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,7 +24,7 @@ async function createNotificationQueue(sqs: SQSClient, bucket: string, name: str
 }
 
 function browserErrors(page: Page): string[] {
-  const errors: string[] = []; page.on("pageerror", error => errors.push(`pageerror: ${error.message}`)); page.on("requestfailed", request => errors.push(`requestfailed: ${request.method()} ${request.url()}`)); page.on("response", response => { if (response.status() >= 400 && !(response.status() === 404 && (/[?&](?:website|policy)(?:[=&]|$)/.test(response.url()) || response.url().includes("/v20180820/configuration/publicAccessBlock")))) errors.push(`http ${response.status()}: ${response.request().method()} ${response.url()}`); }); return errors;
+  const errors: string[] = []; page.on("pageerror", error => errors.push(`pageerror: ${error.message}`)); page.on("requestfailed", request => errors.push(`requestfailed: ${request.method()} ${request.url()}`)); page.on("response", response => { if (response.status() >= 400 && !(response.status() === 404 && (/[?&](?:website|policy|policyStatus|object-lock|lifecycle|tagging|cors|ownershipControls|publicAccessBlock)(?:[=&]|$)/.test(response.url()) || response.url().includes("/v20180820/configuration/publicAccessBlock")))) errors.push(`http ${response.status()}: ${response.request().method()} ${response.url()}`); }); return errors;
 }
 
 test.describe("S3-01 through S3-08 console", () => {
@@ -43,16 +43,18 @@ test.describe("S3-01 through S3-08 console", () => {
     await page.getByRole("tab", { name: "Versions" }).click(); await expect(page.getByRole("row")).toHaveCount(3); await page.getByRole("button", { name: "Restore this version" }).click(); await page.getByRole("dialog").getByRole("button", { name: "Restore" }).click(); await expect(page.getByRole("row")).toHaveCount(4);
     await page.getByRole("link", { name: "notes/" }).click(); await page.getByRole("button", { name: "Copy" }).first().click(); const copy = page.getByRole("dialog"); await copy.getByLabel("Destination key").fill("notes/copied.txt"); await copy.getByLabel("Metadata", { exact: true }).selectOption("REPLACE"); await copy.getByLabel("Replacement metadata (JSON)").fill('{"edited":"yes"}'); await copy.getByLabel("Replacement content type").fill("text/plain"); await copy.getByRole("button", { name: "Copy" }).click();
     await page.getByRole("link", { name: "copied.txt" }).click(); await expect(page.getByRole("heading", { name: "Metadata", exact: true })).toBeVisible(); await page.getByText("Presigned URL guidance", { exact: true }).click(); await expect(page.getByText("Secret keys are used to sign locally", { exact: false })).toBeVisible(); await page.getByRole("link", { name: "notes/" }).click();
-    await page.getByRole("checkbox", { name: "Select notes/copied.txt" }).check(); await page.getByRole("button", { name: "Delete selected" }).click(); await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click(); await expect(page.getByRole("link", { name: "copied.txt" })).not.toBeVisible(); await expect(page.locator("#toast-region")).toContainText("1 deleted");
+    await page.getByRole("checkbox", { name: "Select notes/copied.txt" }).check(); await page.getByRole("button", { name: "Delete", exact: true }).first().click(); await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click(); await expect(page.getByRole("link", { name: "copied.txt" })).not.toBeVisible(); await expect(page.locator("#toast-region")).toContainText("1 deleted");
     await page.getByRole("tab", { name: "Management" }).click(); await expect(page.getByRole("heading", { name: "No incomplete uploads" })).toBeVisible(); expect(errors).toEqual([]);
   });
 
   test("object routes preserve unusual keys and expose version-scoped ACL permissions", async ({ page }) => {
     const errors = browserErrors(page); const bucket = "browser-s3-object-details"; const key = "folder/a #?% ✓.txt";
     await page.goto(`${consoleUrl}#/s3/buckets`); await page.getByRole("button", { name: "Create bucket" }).first().click(); await page.getByLabel("Bucket name").fill(bucket); await page.getByRole("dialog").getByRole("button", { name: "Create bucket" }).click();
+    await expect(page).toHaveURL(new RegExp(`#/s3/buckets/${bucket}/objects$`)); // the create request must finish before the SDK configures the bucket
     const s3 = new S3Client(sdkOptions(simulator));
     try {
       await s3.send(new PutBucketOwnershipControlsCommand({ Bucket: bucket, OwnershipControls: { Rules: [{ ObjectOwnership: "ObjectWriter" }] } }));
+      await s3.send(new PutPublicAccessBlockCommand({ Bucket: bucket, PublicAccessBlockConfiguration: { BlockPublicAcls: false, IgnorePublicAcls: false, BlockPublicPolicy: false, RestrictPublicBuckets: false } })); // new buckets block public ACLs by default
       await s3.send(new PutBucketVersioningCommand({ Bucket: bucket, VersioningConfiguration: { Status: "Enabled" } }));
       await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: "first" })); await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: "second" })); await s3.send(new PutObjectCommand({ Bucket: bucket, Key: `${key}-extra`, Body: "sibling" }));
       await page.goto(`${consoleUrl}#/s3/buckets/${bucket}/objects/${encodeURIComponent("folder/")}`); await page.getByRole("link", { name: "a #?% ✓.txt", exact: true }).click();
@@ -159,7 +161,7 @@ test.describe("S3-01 through S3-08 console", () => {
     await expect(notifications.getByRole("heading", { name: /Event notifications/ })).toBeVisible();
     await expect(notifications.getByRole("heading", { name: "No event notifications" })).toBeVisible();
     await expect(eventBridge.getByRole("heading", { name: "Amazon EventBridge" })).toBeVisible();
-    await expect(eventBridge.getByText("Disabled", { exact: true })).toBeVisible();
+    await expect(eventBridge.getByText("Off", { exact: true })).toBeVisible();
 
     const sqs = new SQSClient(sdkOptions(simulator));
     let uploadsArn: string;
@@ -206,7 +208,7 @@ test.describe("S3-01 through S3-08 console", () => {
     dialog = page.getByRole("dialog");
     await dialog.getByLabel("Publish events to Amazon EventBridge").check();
     await dialog.getByRole("button", { name: "Save changes" }).click();
-    await expect(eventBridge.getByText("Enabled", { exact: true })).toBeVisible();
+    await expect(eventBridge.getByText("On", { exact: true })).toBeVisible();
     await expect(notifications.getByText("uploads-created", { exact: true })).toBeVisible();
     await expect(notifications.getByText("tag-updates", { exact: true })).toBeVisible();
 
@@ -228,7 +230,7 @@ test.describe("S3-01 through S3-08 console", () => {
     await expect(notifications.getByText("tag-updates", { exact: true })).toBeVisible();
     await expect(notifications.getByText("s3:ObjectCreated:Copy", { exact: true })).toBeVisible();
     await expect(notifications.getByText("processed/<", { exact: true })).toBeVisible();
-    await expect(eventBridge.getByText("Enabled", { exact: true })).toBeVisible();
+    await expect(eventBridge.getByText("On", { exact: true })).toBeVisible();
 
     await notifications.getByRole("button", { name: "Edit uploads-v2" }).click();
     dialog = page.getByRole("dialog");
@@ -244,13 +246,13 @@ test.describe("S3-01 through S3-08 console", () => {
     await expect(notifications.getByText("tag-updates", { exact: true })).toBeVisible();
     await expect(notifications.getByText("s3:ObjectCreated:Put", { exact: true })).toBeVisible();
     await expect(notifications.getByText("s3:ObjectCreated:Copy", { exact: true })).toBeVisible();
-    await expect(eventBridge.getByText("Enabled", { exact: true })).toBeVisible();
+    await expect(eventBridge.getByText("On", { exact: true })).toBeVisible();
 
     await eventBridge.getByRole("button", { name: "Edit" }).click();
     dialog = page.getByRole("dialog");
     await dialog.getByLabel("Publish events to Amazon EventBridge").uncheck();
     await dialog.getByRole("button", { name: "Save changes" }).click();
-    await expect(eventBridge.getByText("Disabled", { exact: true })).toBeVisible();
+    await expect(eventBridge.getByText("Off", { exact: true })).toBeVisible();
     await expect(notifications.getByText("uploads-v2", { exact: true })).toBeVisible();
     await expect(notifications.getByText("tag-updates", { exact: true })).toBeVisible();
     await eventBridge.getByRole("button", { name: "Edit" }).click();
@@ -263,14 +265,14 @@ test.describe("S3-01 through S3-08 console", () => {
     await dialog.getByRole("button", { name: "Delete" }).click();
     await expect(notifications.getByText("uploads-v2", { exact: true })).not.toBeVisible();
     await expect(notifications.getByText("tag-updates", { exact: true })).toBeVisible();
-    await expect(eventBridge.getByText("Enabled", { exact: true })).toBeVisible();
+    await expect(eventBridge.getByText("On", { exact: true })).toBeVisible();
 
     await notifications.getByRole("button", { name: "Delete tag-updates" }).click();
     dialog = page.getByRole("dialog");
     await dialog.getByLabel(/To confirm deletion/).fill("tag-updates");
     await dialog.getByRole("button", { name: "Delete" }).click();
     await expect(notifications.getByRole("heading", { name: "No event notifications" })).toBeVisible();
-    await expect(eventBridge.getByText("Enabled", { exact: true })).toBeVisible();
+    await expect(eventBridge.getByText("On", { exact: true })).toBeVisible();
     expect(errors).toEqual([]);
   });
 
@@ -279,9 +281,14 @@ test.describe("S3-01 through S3-08 console", () => {
     await page.goto(`${consoleUrl}#/s3/buckets`);
     await page.getByRole("button", { name: "Create bucket" }).first().click();
     await page.getByLabel("Bucket name").fill(bucket);
+    // Opt out of Block Public Access in the create dialog, as the AWS form requires, so the public policy below is accepted.
+    await page.getByRole("dialog").getByRole("checkbox", { name: /Block all public access/ }).uncheck();
+    await expect(page.getByRole("dialog").getByRole("checkbox", { name: "BlockPublicPolicy" })).not.toBeChecked();
+    await page.getByRole("dialog").getByRole("checkbox", { name: /I acknowledge that the current settings/ }).check();
     await page.getByRole("dialog").getByRole("button", { name: "Create bucket" }).click();
     await page.getByRole("tab", { name: "Permissions" }).click();
     await expect(page.getByRole("heading", { name: "Block public access (bucket settings)" })).toBeVisible();
+    await expect(page.getByText("Some effective protections are disabled")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Access findings" })).toBeVisible();
     await expect(page.getByText(/not IAM Access Analyzer results/)).toBeVisible();
     await expect(page.getByText("BucketOwnerEnforced", { exact: true })).toBeVisible();
@@ -302,12 +309,14 @@ test.describe("S3-01 through S3-08 console", () => {
     await expect(page.getByText(/AllUsers/)).toBeVisible();
 
     await page.getByRole("heading", { name: "Block public access (bucket settings)" }).locator("xpath=ancestor::section[1]").getByRole("button", { name: "Edit" }).click();
-    dialog = page.getByRole("dialog"); for (const name of ["BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets"]) await dialog.getByLabel(name).check(); await dialog.getByLabel(/disabling protections can make data public/).check(); await dialog.getByLabel("Type the bucket name to confirm").fill(bucket); await dialog.getByRole("button", { name: "Save changes" }).click();
+    dialog = page.getByRole("dialog"); for (const name of ["BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets"]) await dialog.getByLabel(name).check(); await dialog.getByLabel("Type the bucket name to confirm").fill(bucket); await dialog.getByRole("button", { name: "Save changes" }).click();
     await expect(page.getByText("All effective protections are enabled")).toBeVisible();
 
+    await page.getByRole("tab", { name: "Properties" }).click();
     await page.getByRole("heading", { name: "Requester Pays" }).locator("xpath=ancestor::section[1]").getByRole("button", { name: "Edit" }).click();
-    dialog = page.getByRole("dialog"); await dialog.getByLabel("Payer").selectOption("Requester"); await dialog.getByRole("button", { name: "Save changes" }).click();
-    await expect(page.getByRole("heading", { name: "Requester Pays", exact: true }).locator("xpath=ancestor::section[1]")).toContainText("Requester");
+    dialog = page.getByRole("dialog"); await dialog.getByRole("radio", { name: /^Enable/ }).check(); await dialog.getByRole("button", { name: "Save changes" }).click();
+    await expect(page.getByRole("heading", { name: "Requester Pays", exact: true }).locator("xpath=ancestor::section[1]")).toContainText("Enabled");
+    await page.getByRole("tab", { name: "Permissions" }).click();
     await page.getByRole("heading", { name: "Attribute-based access control (ABAC)" }).locator("xpath=ancestor::section[1]").getByRole("button", { name: "Edit" }).click();
     dialog = page.getByRole("dialog"); await dialog.getByLabel("Status").selectOption("Enabled"); await dialog.getByRole("button", { name: "Save changes" }).click();
     await expect(page.getByRole("heading", { name: "Attribute-based access control (ABAC)", exact: true }).locator("xpath=ancestor::section[1]")).toContainText("Enabled");
@@ -326,16 +335,19 @@ test.describe("S3-01 through S3-08 console", () => {
 
     await page.getByRole("tab", { name: "Properties" }).click();
     await page.getByRole("button", { name: "Enable", exact: true }).click();
-    await page.locator(".s3-governance").getByRole("button", { name: "Configure Object Lock" }).click();
+    await page.locator(".s3-object-lock").getByRole("button", { name: "Edit" }).click();
+    await page.getByRole("dialog").getByRole("checkbox", { name: /Enable Object Lock/ }).check();
     await page.getByRole("dialog").getByRole("button", { name: "Enable", exact: true }).click();
-    await page.locator(".s3-governance").getByRole("button", { name: "Edit tags" }).click();
-    await page.getByRole("dialog").getByLabel("One key=value per line").fill("team=platform");
-    await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
+    await expect(page.locator(".s3-object-lock")).toContainText("Enabled");
+    await page.locator(".s3-bucket-tags").getByRole("button", { name: "Edit" }).click();
+    await page.getByRole("dialog").getByLabel("Tag key").first().fill("team"); await page.getByRole("dialog").getByLabel("Tag value").first().fill("platform");
+    await page.getByRole("dialog").getByRole("button", { name: "Save changes" }).click();
+    await expect(page.locator(".s3-bucket-tags")).toContainText("platform");
     const eventCard = page.locator(".s3-eventbridge-notifications");
     await eventCard.getByRole("button", { name: "Edit" }).click();
     await page.getByRole("dialog").getByLabel("Publish events to Amazon EventBridge").check();
     await page.getByRole("dialog").getByRole("button", { name: "Save changes" }).click();
-    await expect(eventCard.getByText("Enabled", { exact: true })).toBeVisible();
+    await expect(eventCard.getByText("On", { exact: true })).toBeVisible();
 
     await page.getByRole("tab", { name: "Objects" }).click();
     await page.getByRole("button", { name: "Upload" }).first().click();
@@ -356,11 +368,19 @@ test.describe("S3-01 through S3-08 console", () => {
     await page.getByRole("tab", { name: "Permissions" }).click(); await expect(page.getByText("ACLs disabled", { exact: true })).toBeVisible();
     await page.getByRole("link", { name: bucket, exact: true }).click();
     await page.getByRole("tab", { name: "Management" }).click();
-    await page.getByRole("button", { name: "Create rule" }).click();
+    await page.getByRole("button", { name: "Create lifecycle rule" }).click();
     dialog = page.getByRole("dialog");
-    await dialog.getByLabel("Lifecycle XML").fill(`<LifecycleConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><ID>archive-later</ID><Filter><Prefix>archive/</Prefix></Filter><Status>Enabled</Status><Transition><Days>30</Days><StorageClass>GLACIER</StorageClass></Transition></Rule></LifecycleConfiguration>`);
-    await dialog.getByRole("button", { name: "Save rules" }).click();
+    await dialog.getByLabel("Lifecycle rule name").fill("archive-later");
+    await dialog.getByRole("radio", { name: /Limit the scope/ }).check();
+    await dialog.getByLabel("Prefix", { exact: true }).fill("archive/");
+    await dialog.getByRole("checkbox", { name: /Transition current versions/ }).check();
+    await dialog.getByLabel("Days after object creation").first().fill("30");
+    await dialog.getByRole("button", { name: "Create rule" }).click();
     await expect(page.locator(".s3-lifecycle-rules")).toContainText("archive-later");
+    await expect(page.locator(".s3-lifecycle-rules")).toContainText("Prefix: archive/");
+    await expect(page.locator(".s3-lifecycle-rules")).toContainText("Transition to GLACIER after 30 days");
+    await page.locator(".s3-lifecycle-rules").getByRole("button", { name: "Disable archive-later" }).click();
+    await expect(page.locator(".s3-lifecycle-rules")).toContainText("Disabled");
     await page.getByRole("tab", { name: "Metrics" }).click();
     await expect(page.getByRole("heading", { name: "Pending notifications" })).toBeVisible();
     await expect(page.getByText("Payloads are never shown")).toBeVisible();
@@ -380,12 +400,12 @@ test.describe("S3-01 through S3-08 console", () => {
       await expect(page.getByRole("button", { name: "About Objects" })).toBeVisible();
 
       await page.getByRole("tab", { name: "Properties" }).click();
-      for (const label of ["Bucket Versioning", "Static website hosting", "Data governance", "Event notifications", "Amazon EventBridge"]) {
+      for (const label of ["Bucket Versioning", "Tags", "Default encryption", "Static website hosting", "Object Lock", "Requester Pays", "Event notifications", "Amazon EventBridge"]) {
         await expect(page.getByRole("button", { name: `About ${label}` })).toBeVisible();
       }
-      await page.getByRole("button", { name: "About Data governance" }).hover();
+      await page.getByRole("button", { name: "About Default encryption" }).hover();
       const governanceHelp = page.locator(".panel-help-tooltip:visible");
-      await expect(governanceHelp).toContainText("protect and classify bucket data");
+      await expect(governanceHelp).toContainText("Default encryption applies to every new object");
       await expect(governanceHelp).toContainText("StackSim support · Partial");
       const eventNotificationsHelpButton = page.getByRole("button", { name: "About Event notifications" });
       await eventNotificationsHelpButton.hover();
@@ -393,11 +413,12 @@ test.describe("S3-01 through S3-08 console", () => {
       await expect(eventNotificationsHelp).toContainText("examples/cdk-s3-lambda-notification-audit");
       await expect(eventNotificationsHelp).toContainText("comes from that deployed example, not from StackSim itself");
       await page.getByRole("button", { name: "Enable", exact: true }).click();
-      await page.locator(".s3-governance").getByRole("button", { name: "Configure Object Lock" }).click();
+      await page.locator(".s3-object-lock").getByRole("button", { name: "Edit" }).click();
+      await page.getByRole("dialog").getByRole("checkbox", { name: /Enable Object Lock/ }).check();
       await page.getByRole("dialog").getByRole("button", { name: "Enable", exact: true }).click();
 
       await page.getByRole("tab", { name: "Permissions" }).click();
-      for (const label of ["Block public access (bucket settings)", "Bucket policy", "Object Ownership", "Requester Pays", "Attribute-based access control (ABAC)"]) {
+      for (const label of ["Block public access (bucket settings)", "Bucket policy", "Object Ownership", "Attribute-based access control (ABAC)"]) {
         await expect(page.getByRole("button", { name: `About ${label}` })).toBeVisible();
       }
       await s3.send(new PutBucketOwnershipControlsCommand({ Bucket: bucket, OwnershipControls: { Rules: [{ ObjectOwnership: "ObjectWriter" }] } }));

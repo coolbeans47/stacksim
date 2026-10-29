@@ -202,6 +202,8 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
       CopyObject: "PutObject",
       UploadPartCopy: "PutObject",
       DeleteBucketOwnershipControls: "PutBucketOwnershipControls",
+      DeleteBucketTagging: "PutBucketTagging",
+      DeleteBucketCORS: "PutBucketCORS",
       PutBucketEncryption: "PutEncryptionConfiguration",
       DeleteBucketEncryption: "PutEncryptionConfiguration",
       GetEncryptionConfiguration: "GetEncryptionConfiguration",

@@ -1916,16 +1916,24 @@ export interface S3BucketState {
     blockPublicPolicy: boolean;
     restrictPublicBuckets: boolean;
   };
-  /** Bounded static-website configuration supported by the local endpoint. */
+  /** Static-website configuration served by the local website endpoint. */
   website?: {
-    indexDocument: string;
+    indexDocument?: string;
     errorDocument?: string;
+    redirectAllRequestsTo?: { hostName: string; protocol?: "http" | "https" };
+    routingRules?: Array<{
+      condition?: { keyPrefixEquals?: string; httpErrorCodeReturnedEquals?: string };
+      redirect: { hostName?: string; protocol?: "http" | "https"; replaceKeyPrefixWith?: string; replaceKeyWith?: string; httpRedirectCode?: string };
+    }>;
   };
-  /** Validated bucket CORS rules. CORS changes response headers, never authorization. */
+  /** Validated bucket CORS rules in stored order. CORS changes response headers, never authorization. */
   corsConfiguration?: Array<{
+    id?: string;
     allowedHeaders: string[];
-    allowedMethods: Array<"GET" | "HEAD">;
+    allowedMethods: Array<"GET" | "PUT" | "POST" | "DELETE" | "HEAD">;
     allowedOrigins: string[];
+    exposeHeaders?: string[];
+    maxAgeSeconds?: number;
   }>;
   /** Resource policy enforced by S3 and the anonymous website endpoint. */
   policyDocument?: PolicyDocument;

@@ -26,6 +26,7 @@ The S3 service in StackSim has a left navigation bar with these top-level areas:
 |------|---------|
 | **Overview** | Account summary and quick links |
 | **General purpose buckets** | Create, select, empty, and delete buckets |
+| **Account and organization settings** | Block Public Access settings for this account |
 
 Opening a bucket shows five tabs: **Objects**, **Properties**, **Permissions**, **Metrics**, and **Management**. Clicking an object name opens a dedicated object page with **Properties**, **Permissions**, and **Versions** tabs.
 
@@ -60,7 +61,7 @@ Bucket counts reflect the local installation. Object bytes are encrypted in a pr
 
 The **Buckets** panel lists every bucket in the account with name, Region, creation date, and ARN. You can create a bucket, filter the list, select one bucket for **Empty** or **Delete**, and open a bucket by clicking its name.
 
-Creating a bucket requires a globally unique name (within StackSim) and uses the current Region.
+Creating a bucket opens the same form as the AWS console: name and Region, Object Ownership, the four Block Public Access settings (all on by default, with an acknowledgement when you turn any off), Bucket Versioning, tags, default encryption (SSE-S3, SSE-KMS with the AWS managed key, or a DSSE-KMS descriptor), and Object Lock under Advanced settings.
 
 #### Why use it
 
@@ -152,7 +153,7 @@ Enable versioning on `customer-documents`, then accidentally overwrite `contract
 
 ##### What it is
 
-Configures the bucket to serve objects as a static website. Fields include **Index document** (for example `index.html`) and optional **Error document** (for example `error.html`). When enabled, StackSim exposes a local **Bucket website endpoint**.
+Configures the bucket to serve objects as a static website. The **Host a static website** hosting type takes an **Index document** (for example `index.html`), an optional **Error document** (for example `error.html`), and optional **Redirection rules** (JSON, as in the AWS console) that redirect by key prefix or by returned HTTP error code. The **Redirect requests for an object** hosting type sends every request to another host name and protocol. When enabled, StackSim exposes a local **Bucket website endpoint**.
 
 ##### Why use it
 
@@ -162,7 +163,7 @@ Public visitors still need permission to read objects (bucket policy or CloudFro
 
 ##### How it works in StackSim
 
-Website configuration, index and error resolution, redirects, and policy-based public access are active on a local endpoint. Separately, the bounded CloudFront CFR-01 profile serves a private simulator-owned regional bucket through an OAC-authorized per-distribution local HTTPS viewer. StackSim does not publish AWS DNS names, install system trust, or provide internet hosting.
+Website configuration, index and error resolution, redirect-all hosting, redirection rules, object redirect locations (`x-amz-website-redirect-location`), the S3 HTML error pages, CORS, and policy-based public access are active on a local endpoint. Separately, the bounded CloudFront CFR-01 profile serves a private simulator-owned regional bucket through an OAC-authorized per-distribution local HTTPS viewer. StackSim does not publish AWS DNS names, install system trust, or provide internet hosting.
 
 ##### Common AWS use cases
 
@@ -176,33 +177,76 @@ Enable hosting with index `index.html`, upload `index.html` and assets under `st
 
 ---
 
-#### Data governance
+#### Tags
 
 ##### What it is
 
-Groups protection and classification settings:
-
-- **Default encryption** — SSE-S3 (`AES256`) or KMS descriptor settings.
-- **Object Lock** — WORM retention defaults for compliance buckets.
-- **Bucket tags** — key=value labels for organization and ABAC policies.
+Key-value labels attached to the bucket, edited as rows in the **Tags** card. A bucket can carry up to 50 tags.
 
 ##### Why use it
 
-Default encryption ensures every new object is encrypted at rest without clients setting headers. Object Lock prevents deletion or overwrite for a retention period — required for SEC 17a-4 and similar regimes. Bucket tags drive cost allocation and attribute-based IAM policies.
+Tags organize buckets, drive cost allocation reports, and, when bucket ABAC is enabled, let IAM policies authorize access by attribute instead of naming every bucket.
 
 ##### How it works in StackSim
 
-SSE-S3 storage protection, tags, Object Lock retention, and legal enforcement are active. KMS and dual-layer KMS settings are stored as dependency descriptors; KMS-backed writes remain unavailable because StackSim does not provide KMS.
+Tags are stored durably and exposed to IAM conditions when ABAC is enabled. Cost allocation reports are not simulated.
 
-##### Common AWS use cases
+---
 
-- SSE-KMS with a specific CMK for regulated healthcare data (in AWS).
-- Object Lock in **COMPLIANCE** mode for audit logs that must not be deleted early.
-- Tag `Environment=prod` and `CostCenter=platform` for billing reports.
+#### Default encryption
+
+##### What it is
+
+The encryption applied to every new object written without its own encryption headers: **SSE-S3** (`AES256`), **SSE-KMS**, or a **DSSE-KMS** descriptor, with an optional **Bucket Key** for SSE-KMS.
+
+##### Why use it
+
+Default encryption guarantees that objects are encrypted at rest even when clients forget the headers. SSE-KMS adds key policies and audit trails; Bucket Keys reduce KMS request costs.
+
+##### How it works in StackSim
+
+SSE-S3 and SSE-KMS with the AWS managed key `aws/s3` are active. StackSim has no KMS service: the `aws/s3` key is an encryption descriptor, customer managed keys and DSSE-KMS remain stored descriptors, and object writes that need them fail.
+
+---
+
+#### Object Lock
+
+##### What it is
+
+Write-once-read-many (WORM) protection for object versions. Enabling Object Lock is permanent, requires Bucket Versioning, and can set a **default retention** mode (**GOVERNANCE** or **COMPLIANCE**) and period in days or years for every new version.
+
+##### Why use it
+
+Object Lock prevents deletion or overwrite for a retention period, which regulated workloads (SEC 17a-4 and similar) require. Governance mode can be bypassed by authorized users; Compliance mode cannot be shortened by anyone.
+
+##### How it works in StackSim
+
+Enabling Object Lock, default retention, per-version retention, legal holds, bypass permission checks, and deletion protection are enforced for local versions.
 
 ##### Example
 
 Enable Object Lock with default **GOVERNANCE** retention of 30 days on `audit-logs`. New objects inherit retention; individual objects can still receive longer retention or legal holds.
+
+---
+
+#### Requester Pays
+
+##### What it is
+
+When set to **Requester**, the caller must include `x-amz-request-payer: requester` and is considered responsible for request and data transfer charges instead of the bucket owner.
+
+##### Why use it
+
+Large public datasets (open data, scientific archives) use Requester Pays so the bucket owner is not billed for every download. Access still requires appropriate IAM or bucket policy permission.
+
+##### How it works in StackSim
+
+The request-payer header and authorization context are enforced locally. StackSim does not calculate charges or create billing records.
+
+##### Common AWS use cases
+
+- Open geospatial datasets where consumers pay egress.
+- Shared research buckets with controlled IAM access and payer shift.
 
 ---
 
@@ -212,7 +256,7 @@ Enable Object Lock with default **GOVERNANCE** retention of 30 days on `audit-lo
 
 Direct **Lambda** or **SQS** destinations triggered by S3 events. Each configuration has an ID, destination ARN, one or more event types, and optional prefix/suffix filters.
 
-Supported events include object created/removed, restore, tagging, ACL changes, lifecycle transitions, and StackSim annotation events.
+Supported events include object created/removed, restore, tagging, ACL changes, retention changes, annotation changes, and lifecycle transitions.
 
 ##### Why use it
 
@@ -268,7 +312,7 @@ Enable EventBridge on `data-lake-raw`, then create an EventBridge rule matching 
 
 ### Permissions
 
-The **Permissions** tab controls who can access bucket contents and how public exposure is prevented.
+The **Permissions** tab controls who can access bucket contents and how public exposure is prevented. Every new bucket starts with all four Block Public Access settings on, as on AWS; account-level settings are edited on the **Account and organization settings** page.
 
 ---
 
@@ -396,27 +440,6 @@ Canned ACLs, grant evaluation, ownership controls, and Block Public Access inter
 
 ---
 
-#### Requester Pays
-
-##### What it is
-
-When set to **Requester**, the caller must include `x-amz-request-payer: requester` and is considered responsible for request and data transfer charges instead of the bucket owner.
-
-##### Why use it
-
-Large public datasets (open data, scientific archives) use Requester Pays so the bucket owner is not billed for every download. Access still requires appropriate IAM or bucket policy permission.
-
-##### How it works in StackSim
-
-The request-payer header and authorization context are enforced locally. StackSim does not calculate charges or create billing records.
-
-##### Common AWS use cases
-
-- Open geospatial datasets where consumers pay egress.
-- Shared research buckets with controlled IAM access and payer shift.
-
----
-
 #### Attribute-based access control (ABAC)
 
 ##### What it is
@@ -479,7 +502,7 @@ The **Management** tab combines lifecycle configuration and operational cleanup.
 
 ##### What it is
 
-XML-defined rules that automatically transition objects to other storage classes, expire objects or delete markers, expire noncurrent versions, and abort incomplete multipart uploads. Rules support prefix, tag, size, and AND filters.
+Rules that automatically transition objects to other storage classes, expire objects or delete markers, expire noncurrent versions, and abort incomplete multipart uploads. The **Create lifecycle rule** form follows the AWS wizard: rule name, scope (entire bucket or prefix, tag, and size filters), the actions to perform, their day counts and storage classes, and the rule status. The rule table shows name, status, scope, current-version actions, noncurrent-version actions, and cleanup actions, with per-rule **Edit**, **Enable**/**Disable**, and **Delete**. **Edit XML** exposes the complete configuration document for power users.
 
 ##### Why use it
 
@@ -487,15 +510,17 @@ Lifecycle management reduces cost and enforces retention without custom jobs. In
 
 ##### How it works in StackSim
 
-Rule scheduling, filters, transitions, expiration, noncurrent versions, and multipart cleanup are active. Archive access restrictions are modeled; physical blobs remain in the local encrypted store.
+Rule scheduling, filters, transitions, expiration, noncurrent versions, delete-marker cleanup, and multipart cleanup are active, and the configuration is validated with the same rules as S3 (a rule needs a filter or prefix, `Days` and `Date` are exclusive, and so on). Archive access restrictions are modeled; physical blobs remain in the local encrypted store.
 
 ##### Common AWS use cases
 
 - Transition `logs/` to Glacier after 30 days; expire after 365 days.
 - Abort incomplete multipart uploads after 7 days (cost control).
-- Expire noncurrent versions 90 days after becoming noncurrent.
+- Expire noncurrent versions 90 days after becoming noncurrent, keeping the two newest.
 
 ##### Example
+
+Rule `archive-old-reports`, scope prefix `reports/`, actions: transition current versions to `GLACIER` after 30 days and expire current versions after 400 days. The equivalent XML, visible under **Edit XML**:
 
 ```xml
 <LifecycleConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
@@ -529,6 +554,24 @@ Multipart state is tracked locally; abort removes incomplete parts.
 
 - Abort uploads older than 24 hours after a client crash.
 - Empty a bucket before deletion (multipart uploads block deletion if not cleared).
+
+---
+
+## Account and organization settings
+
+### Block Public Access settings for this account
+
+#### What it is
+
+The four Block Public Access settings applied to every bucket in the account, with an **Edit** flow that mirrors the bucket-level editor (a master **Block all public access** switch, the four individual settings, and an acknowledgement when any is turned off).
+
+#### Why use it
+
+Account-level settings are the organization-wide safety net: a bucket cannot be made public unless both its own settings and the account settings allow it.
+
+#### How it works in StackSim
+
+The account configuration is stored through the S3 Control API and combined with each bucket's settings using the most restrictive value during every policy and ACL evaluation.
 
 ---
 
@@ -686,17 +729,17 @@ Per-version legal-hold state and deletion protection are enforced.
 
 #### What it is
 
-**StackSim extension** — named UTF-8 payloads attached to an object version (review notes, extracted JSON, workflow state). Not part of the standard AWS S3 API.
+Named data payloads (1 byte to 1 MiB each, up to 1,000 per object version) attached to an object version through the S3 annotation API operations (`PutObjectAnnotation`, `GetObjectAnnotation`, `ListObjectAnnotations`, `DeleteObjectAnnotation`). AWS uses them for AI-generated labels, processing results, lineage, and compliance records that are read without re-uploading the object.
 
 #### Why use it
 
-Local workflows can store structured sidecar data next to an object without a separate database table — useful in simulators and tests.
+Annotations keep AI labels, extracted results, lineage, and compliance records with the object they describe, readable through dedicated API operations and queryable at scale through S3 Metadata annotation tables.
 
 #### How it works in StackSim
 
-Version-scoped annotation CRUD, checksums, ETags, listing, and Object Lock protection are active.
+Version-scoped annotation CRUD, the documented naming rules and 1,000-per-version limit, checksums, ETags, conditional writes, CopyObject annotation copying, and Object Lock protection are active. SSE-C objects cannot carry annotations, as on AWS. S3 Metadata annotation tables are not simulated.
 
-#### Common AWS use cases (local)
+#### Common AWS use cases
 
 - Attach OCR results to a scanned PDF object in a tutorial pipeline.
 - Store human review approval metadata during a compliance exercise.
