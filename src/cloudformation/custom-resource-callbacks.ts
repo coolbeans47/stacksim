@@ -237,7 +237,7 @@ export class CustomResourceCallbackBroker {
       if (!parsed.verify(caCertificate.publicKey) || !parsed.checkPrivateKey(createPrivateKey(privateKey)) || !parsed.checkHost("s3.localhost") || !parsed.checkHost("example-bucket.s3.localhost") || !parsed.checkIP("127.0.0.1") || Date.parse(parsed.validFrom) > Date.now() || Date.parse(parsed.validTo) <= Date.now() + 24 * 60 * 60_000) throw new Error("S3 certificate is invalid, mismatched, not yet valid, or expiring");
       return { certificate, privateKey };
     } catch {
-      const generated = createLoopbackS3Certificate(caPrivateKey, Date.now());
+      const generated = createLoopbackS3Certificate(caPrivateKey, Date.now(), undefined, ca);
       await replacePkiBundle(this.pkiDirectory, [
         [this.s3CertificatePath, generated.certificate],
         [this.s3PrivateKeyPath, generated.privateKey],

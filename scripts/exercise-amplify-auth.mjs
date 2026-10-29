@@ -62,7 +62,7 @@ const received = [];
 const errors = [];
 const delay = ms => new Promise(done => setTimeout(done, ms));
 const waitUntil = async predicate => { for (let i = 0; i < 100; i++) { if (predicate()) return; await delay(50); } assert.fail('Realtime event timed out'); };
-const success = (result, message) => { check(!result.errors?.length && result.data, message); return result.data; };
+const success = (result, message) => { check(!result.errors?.length && result.data, result.errors?.length ? `${message}: ${JSON.stringify(result.errors)}` : message); return result.data; };
 try {
   if (mode === 'stale') {
     let rejected = false;

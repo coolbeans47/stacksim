@@ -596,6 +596,7 @@ export class StackSim {
     this.cloudfront.configureTls({
       certificate: callbackPki.certificate,
       privateKey: callbackPki.privateKey,
+      caCertificate: callbackPki.ca,
       caPrivateKey: callbackPki.caPrivateKey,
       caCertificatePath: this.customResourceCallbacks.caCertificatePath,
     });

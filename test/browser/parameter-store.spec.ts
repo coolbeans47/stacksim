@@ -153,7 +153,7 @@ test.describe("PSS-01 Parameter Store console", () => {
     expect(described.Parameters?.[0]?.Tier).toBe("Advanced");
     expect(described.Parameters?.[0]?.Policies?.[0]?.PolicyType).toBe("Expiration");
     await rulesLink.click();
-    await expect(page.getByRole("heading", { name: "Rules", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /^Rules \(\d+\)$/ })).toBeVisible();
     expect(page.url()).not.toContain(marker);
   });
 

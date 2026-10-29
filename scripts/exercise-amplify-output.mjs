@@ -57,7 +57,7 @@ try {
   await new Promise(resolvePromise => setTimeout(resolvePromise, 500));
 
   const first = await client.models.Todo.create({ title: `${label}-alpha`, priority: 1, completed: false });
-  if (first.errors?.length) throw new Error(`Amplify create failed with ${first.errors.length} errors`);
+  if (first.errors?.length) throw new Error(`Amplify create failed with ${first.errors.length} errors: ${JSON.stringify(first.errors)}`);
   await waitFor("create");
   const second = await client.models.Todo.create({ title: `${label}-alphabet`, priority: 2, completed: false });
   if (second.errors?.length) throw new Error(`Amplify second create failed with ${second.errors.length} errors`);
@@ -66,6 +66,11 @@ try {
   const pageTwo = pageOne.nextToken
     ? await client.models.Todo.list({ filter: { title: { beginsWith: `${label}-alpha` } }, limit: 1, nextToken: pageOne.nextToken })
     : { data: [], nextToken: null, errors: [{ message: "missing pagination token" }] };
+  // DynamoDB does not look ahead: a page that stops at its limit carries a LastEvaluatedKey even when it holds
+  // the last item, and the following page comes back empty with no key. Walk that final page like a real client.
+  const pageThree = pageTwo.nextToken
+    ? await client.models.Todo.list({ filter: { title: { beginsWith: `${label}-alpha` } }, limit: 1, nextToken: pageTwo.nextToken })
+    : { data: [], nextToken: null };
   let conditionError = false;
   try {
     await client.graphql({
@@ -87,7 +92,7 @@ try {
     create: Boolean(first.data?.id),
     get: got.data?.id === first.data.id,
     filter: pageOne.data.length === 1 && pageTwo.data.length === 1,
-    pagination: Boolean(pageOne.nextToken) && pageTwo.nextToken === null,
+    pagination: Boolean(pageOne.nextToken) && pageThree.data.length === 0 && pageThree.nextToken === null,
     conditionError,
     duplicateError: Array.isArray(duplicate.errors) && duplicate.errors.length > 0,
     update: updated.data?.id === first.data.id,

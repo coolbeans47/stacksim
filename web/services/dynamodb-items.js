@@ -2,7 +2,7 @@ import { dynamo } from "../api-client.js";
 import { emptyState, escapeHtml, pageHeader } from "../components.js";
 import { setDirty } from "../state.js";
 
-// DDB-16B: the Explore items page and the Create/Edit/Duplicate item pages follow the current AWS DynamoDB console.
+// The Explore items page and the Create/Edit/Duplicate item pages follow the current AWS DynamoDB console.
 // Every read and write uses a documented DynamoDB operation (Scan, Query, GetItem, PutItem, UpdateItem, DeleteItem),
 // so the service stays authoritative for validation; the page only assembles requests.
 

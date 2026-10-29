@@ -214,6 +214,8 @@ The certificate's names are `localhost`, `s3.localhost`, `*.s3.localhost`, `127.
 
 The SAM CLI and the AWS CLI need only `AWS_CA_BUNDLE` (or `ca_bundle` in the profile). They use their own CA bundle, not the operating system's. Node.js programs need `NODE_EXTRA_CA_CERTS=<path>/stacksim-ca.pem`.
 
+Every StackSim data directory has its own CA, and they all carry the same name. The certificates name their issuer by key identifier and serial number, so a CA imported into the operating-system store from one data directory does not interfere with certificates from another one (for example a test run on a temporary data directory with Node.js, which trusts the system store by default).
+
 Add the CA to your operating system's trust store only if another tool (a browser, or `curl` without `--cacert`) needs it. The CA's private key is in your StackSim data directory, and the CA is not limited to particular host names. Anyone who can read that directory could issue a certificate your machine would trust for any site. Prefer `AWS_CA_BUNDLE`, and remove the CA from the trust store when you no longer need it.
 
 - **Windows** (current user; confirm the security prompt):

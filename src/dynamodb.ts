@@ -110,10 +110,11 @@ const WARM_THROUGHPUT_QUOTA = 40_000;
 function validateWarmThroughput(value: any, now: number, status: "CREATING" | "UPDATING" = "UPDATING", previous?: DynamoWarmThroughputState): DynamoWarmThroughputState | undefined {
   if (value === undefined) return undefined;
   if (!value || !Number.isInteger(value.ReadUnitsPerSecond) || value.ReadUnitsPerSecond < 1 || !Number.isInteger(value.WriteUnitsPerSecond) || value.WriteUnitsPerSecond < 1) throw new AwsError("ValidationException", "WarmThroughput requires positive integer ReadUnitsPerSecond and WriteUnitsPerSecond");
-  // AWS: warm throughput can be raised up to the table/index quota but never decreased below the current value.
+  // AWS: warm throughput can be raised up to the table/index quota and, once set explicitly, never decreased below
+  // the value that was set. Values below the 12,000 / 4,000 defaults are accepted on CreateTable and on the first
+  // UpdateTable; the developer guide examples use 5 / 5 and 88 / 77.
   if (value.ReadUnitsPerSecond > WARM_THROUGHPUT_QUOTA || value.WriteUnitsPerSecond > WARM_THROUGHPUT_QUOTA) throw new AwsError("ValidationException", `WarmThroughput cannot exceed the quota of ${WARM_THROUGHPUT_QUOTA} units per second`);
-  const current = previous ?? DYNAMODB_DEFAULT_WARM_THROUGHPUT;
-  if (value.ReadUnitsPerSecond < current.ReadUnitsPerSecond || value.WriteUnitsPerSecond < current.WriteUnitsPerSecond) throw new AwsError("ValidationException", `WarmThroughput cannot be decreased below the current values (${current.ReadUnitsPerSecond} read / ${current.WriteUnitsPerSecond} write units per second)`);
+  if (previous && (value.ReadUnitsPerSecond < previous.ReadUnitsPerSecond || value.WriteUnitsPerSecond < previous.WriteUnitsPerSecond)) throw new AwsError("ValidationException", `WarmThroughput cannot be decreased below the current values (${previous.ReadUnitsPerSecond} read / ${previous.WriteUnitsPerSecond} write units per second)`);
   return { ReadUnitsPerSecond: value.ReadUnitsPerSecond, WriteUnitsPerSecond: value.WriteUnitsPerSecond, status, lastUpdatedAt: now };
 }
 

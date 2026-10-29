@@ -3,7 +3,7 @@ import { escapeHtml, metricChart } from "../components.js";
 import { setDirty } from "../state.js";
 
 
-// DDB-16C (UI-14): the Indexes tab lists global and local secondary indexes in separate tables with the AWS columns,
+// The Indexes tab lists global and local secondary indexes in separate tables with the AWS columns,
 // Create index is a full page, and deleting an index is confirmed by typing "confirm".
 const projectionLabel = projection => projection?.ProjectionType === "KEYS_ONLY" ? "Keys only" : projection?.ProjectionType === "INCLUDE" ? `Include: ${(projection.NonKeyAttributes ?? []).join(", ")}` : "All";
 const indexStatusLabel = index => index.Backfilling ? "Backfilling" : ({ ACTIVE: "Active", CREATING: "Creating", UPDATING: "Updating", DELETING: "Deleting" })[index.IndexStatus ?? "ACTIVE"] ?? index.IndexStatus;
@@ -92,7 +92,7 @@ export async function dynamoCreateIndexPage(context, tableName) {
   });
 }
 
-// DDB-16C (UI-06): the Monitor tab shows one graph per CloudWatch metric, like the AWS console, with time-range chips,
+// The Monitor tab shows one graph per CloudWatch metric, like the AWS console, with time-range chips,
 // an Alarms section for alarms on this table, and Contributor Insights below. Metric names and dimensions follow
 // https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/metrics-dimensions.html.
 const monitorRanges = [["1", "1h", 60], ["3", "3h", 60], ["12", "12h", 300], ["24", "1d", 300], ["72", "3d", 900], ["168", "1w", 3600]];

@@ -794,7 +794,7 @@ async function dynamoSettingsView(table) {
   return `${await dynamoCapacityView(table)}${await dynamoTableSettingsCards(table)}`;
 }
 
-// DDB-16C (UI-12, UI-13): Additional settings cards use the AWS key-management labels from the encryption tutorial,
+// Additional settings cards use the AWS key-management labels from the encryption tutorial,
 // "Enable delete protection", TTL Turn on/Turn off with an optional preview, and a single PITR settings dialog.
 function encryptionKind(sse) {
   if (!sse || sse.SSEType !== "KMS") return "OWNED";

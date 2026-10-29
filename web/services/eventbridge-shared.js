@@ -348,7 +348,7 @@ export function bindTargetModal(root = document) {
   bindTargetPreview(root);
 }
 
-// ---- Shared form helpers added for the 2026-10-29 console parity work (EVB-10) ----
+// ---- Shared form helpers added for the 2026-10-29 console parity work ----
 
 let tagRowId = 0;
 /** AWS-style key/value tag rows with "Add new tag" and per-row "Remove". */

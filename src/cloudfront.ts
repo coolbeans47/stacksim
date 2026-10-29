@@ -24,7 +24,7 @@ type RecordValue = Record<string, any>;
 type OriginResolver = (input: { accountId: string; region: string; bucketName: string }) => CloudFrontS3OriginPort;
 
 export interface CloudFrontInternalOwner { stackId: string; logicalId: string; resourceOperationId: string }
-export interface CloudFrontTlsConfiguration { certificate: string; privateKey: string; caPrivateKey: string; caCertificatePath: string }
+export interface CloudFrontTlsConfiguration { certificate: string; privateKey: string; caCertificate: string; caPrivateKey: string; caCertificatePath: string }
 
 function record(value: unknown): value is RecordValue { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 function requiredString(value: unknown, name: string): string { if (typeof value !== "string" || !value) throw new CloudFrontError("InvalidArgument", `${name} is required`); return value; }
@@ -181,7 +181,7 @@ export class CloudFrontService {
   private async bindViewer(distribution: CloudFrontDistributionState): Promise<void> {
     if (!this.tls || this.viewers.has(distribution.id)) return;
     const host = distribution.domainName.replace(/\.cloudfront\.net$/, ".localhost");
-    const leaf = createLoopbackHostCertificate(host, this.tls.caPrivateKey, Date.now());
+    const leaf = createLoopbackHostCertificate(host, this.tls.caPrivateKey, Date.now(), undefined, this.tls.caCertificate);
     const server = createSecureServer({ cert: leaf.certificate, key: leaf.privateKey }, (req, res) => { void this.handleViewer(distribution.id, req, res, true); });
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(distribution.localViewerPort, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
     this.viewers.set(distribution.id, server);

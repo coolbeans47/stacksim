@@ -221,6 +221,8 @@ test("DDB-15 request dispatch, condition semantics, and validation match DynamoD
     await rejects(client.send(new UpdateTableCommand({ TableName: "Quota", ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 10 } })), "LimitExceededException", "decreases are limited");
     clock.advance(3_600_000);
     await client.send(new UpdateTableCommand({ TableName: "Quota", ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 10 } })); clock.advance(100); await settle();
+    // Warm throughput below the 12,000 / 4,000 defaults is accepted (the developer guide's own examples use 5 / 5 and 88 / 77); only a decrease below an explicitly set value is rejected.
+    await client.send(new UpdateTableCommand({ TableName: "Quota", WarmThroughput: { ReadUnitsPerSecond: 500, WriteUnitsPerSecond: 300 } })); clock.advance(100); await settle();
     await rejects(client.send(new UpdateTableCommand({ TableName: "Quota", WarmThroughput: { ReadUnitsPerSecond: 100, WriteUnitsPerSecond: 100 } })), "ValidationException", "cannot be decreased");
     for (let round = 0; round < 4; round++) { await client.send(new UpdateTableCommand({ TableName: "Quota", BillingMode: "PAY_PER_REQUEST" })); clock.advance(100); await settle(); await client.send(new UpdateTableCommand({ TableName: "Quota", BillingMode: "PROVISIONED", ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 10 } })); clock.advance(100); await settle(); }
     await rejects(client.send(new UpdateTableCommand({ TableName: "Quota", BillingMode: "PAY_PER_REQUEST" })), "LimitExceededException", "4 times in a 24-hour");
