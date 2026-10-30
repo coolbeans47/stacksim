@@ -2878,7 +2878,7 @@ export interface CognitoUserPoolConfigurationState {
   deletionProtection: "ACTIVE" | "INACTIVE";
   autoVerifiedAttributes: "email"[];
   userAttributeUpdateSettings?: { attributesRequireVerificationBeforeUpdate: "email"[] };
-  aliasAttributes: "email"[];
+  aliasAttributes: Array<"email" | "preferred_username">;
   usernameAttributes: "email"[];
   usernameConfiguration: { caseSensitive: boolean };
   schemaAttributes: CognitoSchemaAttributeState[];

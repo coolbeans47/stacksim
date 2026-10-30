@@ -17,7 +17,7 @@ function object(value: unknown, field: string): Record<string, any> {
 
 function rejectUnknown(input: Record<string, any>, allowed: readonly string[], operation: string): void {
   const unknown = Object.keys(input).find(key => !allowed.includes(key));
-  if (unknown) throw new AwsError("InvalidParameterException", `${operation} does not support ${unknown} in COG-01.`);
+  if (unknown) throw new AwsError("InvalidParameterException", `${operation} does not support ${unknown}.`);
 }
 
 export function modeledUsername(value: unknown): string {
@@ -236,6 +236,11 @@ export function findUserByModeledUsername(
     sub = pool.usernameIndex[canonicalUsername(pool, submitted)];
     if (!sub && pool.configuration.aliasAttributes.includes("email")) {
       try { sub = pool.aliasIndex[cognitoEmail(submitted).canonical]; } catch { /* It was a username, not an email alias. */ }
+    }
+    if (!sub && pool.configuration.aliasAttributes.includes("preferred_username")) {
+      // Linear scan: preferred_username aliases are not indexed, and AWS compares them case-insensitively.
+      const wanted = submitted.toLowerCase();
+      sub = Object.values(pool.usersBySub).find(user => user.attributes.preferred_username?.value.toLowerCase() === wanted)?.sub;
     }
   }
   return sub ? pool.usersBySub[sub] : undefined;

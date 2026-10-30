@@ -10,7 +10,17 @@ export type CognitoCog07BoundaryCategory =
   | "provisioned-limit"
   | "saml-signing-certificate"
   | "advanced-token-customization"
-  | "sms-delivery";
+  | "sms-delivery"
+  | "custom-auth-challenge"
+  | "user-migration"
+  | "custom-sender"
+  | "inbound-federation-trigger"
+  | "issuer-key-configuration"
+  | "step-up-authentication"
+  | "pinpoint-analytics"
+  | "email-link-verification"
+  | "client-token-auth"
+  | "admin-auth-factors";
 
 const MESSAGES: Record<CognitoCog07BoundaryCategory, string> = {
   webauthn:
@@ -33,6 +43,26 @@ const MESSAGES: Record<CognitoCog07BoundaryCategory, string> = {
     "Advanced token customization for V2_0/V3_0 access tokens and M2M aws_client_metadata is not implemented in this simulator.",
   "sms-delivery":
     "SMS messages, SMS MFA, and SMS one-time passwords require Amazon SNS delivery that is not implemented in this simulator.",
+  "custom-auth-challenge":
+    "Custom authentication challenges (CUSTOM_AUTH with the define, create, and verify auth challenge triggers) are not implemented in this simulator.",
+  "user-migration":
+    "The migrate user Lambda trigger is not implemented in this simulator.",
+  "custom-sender":
+    "Custom email and SMS sender triggers and their KMS key are not implemented in this simulator.",
+  "inbound-federation-trigger":
+    "The inbound federation Lambda trigger is not implemented in this simulator.",
+  "issuer-key-configuration":
+    "IssuerConfiguration and KeyConfiguration (the updated issuer and customer-managed signing keys) are not implemented in this simulator.",
+  "step-up-authentication":
+    "Step-up authentication (AcrConfiguration, TARGET_ACR_VALUES, and MAX_AGE) is not implemented in this simulator.",
+  "pinpoint-analytics":
+    "App-client analytics through Amazon Pinpoint are not implemented in this simulator.",
+  "email-link-verification":
+    "Link-based email confirmation (CONFIRM_WITH_LINK) is not implemented in this simulator; use CONFIRM_WITH_CODE.",
+  "client-token-auth":
+    "GetClientToken and ALLOW_CLIENT_TOKEN_AUTH machine-to-machine tokens without a domain are not implemented in this simulator; use the client_credentials grant on the user pool domain.",
+  "admin-auth-factors":
+    "AdminGetUserAuthFactors and AdminDeleteSoftwareToken are not implemented in this simulator; use AdminGetUser and AdminSetUserMFAPreference.",
 };
 
 const OPERATION_BOUNDARIES: Record<string, CognitoCog07BoundaryCategory> = {
@@ -61,6 +91,10 @@ const OPERATION_BOUNDARIES: Record<string, CognitoCog07BoundaryCategory> = {
   GetProvisionedLimit: "provisioned-limit",
   UpdateProvisionedLimit: "provisioned-limit",
   GetSigningCertificate: "saml-signing-certificate",
+  DescribeTermsByClient: "managed-login-terms",
+  GetClientToken: "client-token-auth",
+  AdminGetUserAuthFactors: "admin-auth-factors",
+  AdminDeleteSoftwareToken: "admin-auth-factors",
 };
 
 export function cog07BoundaryCategory(operation: string): CognitoCog07BoundaryCategory | undefined {

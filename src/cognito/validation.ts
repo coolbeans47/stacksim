@@ -23,7 +23,7 @@ function rejectUnknown(value: Record<string, any>, allowed: readonly string[], f
   if (unsupported.length) {
     throw new AwsError(
       "InvalidParameterException",
-      `${field}.${unsupported[0]} is outside the implemented COG-01 boundary.`,
+      `${field}.${unsupported[0]} is not a supported parameter.`,
     );
   }
 }
@@ -173,13 +173,42 @@ function firstFactorPolicy(value: unknown): NonNullable<CognitoUserPoolConfigura
   return { allowedFirstAuthFactors: factors as Array<"PASSWORD" | "EMAIL_OTP"> };
 }
 
-function emailOnlyArray(value: unknown, field: string): "email"[] {
+function emailOnlyArray(value: unknown, field: string, also: readonly string[] = []): "email"[] {
   if (value === undefined) return [];
   const selected = strings(value, field);
-  if (selected.some(item => item !== "email")) {
-    throw new AwsError("InvalidParameterException", `${field} supports only email in COG-01.`);
+  if (selected.includes("phone_number")) throwCog07Boundary("sms-delivery");
+  if (selected.some(item => item !== "email" && !also.includes(item))) {
+    throw new AwsError("InvalidParameterException", `${field} contains an invalid attribute.`);
   }
   return selected as "email"[];
+}
+
+/**
+ * Documented CreateUserPool/UpdateUserPool members that StackSim does not run. No-op forms are accepted; the rest
+ * fail with a named simulator boundary before any state changes.
+ */
+function poolBoundaries(input: Record<string, any>): void {
+  if (input.SmsConfiguration !== undefined || input.SmsAuthenticationMessage !== undefined) throwCog07Boundary("sms-delivery");
+  if (input.IssuerConfiguration !== undefined || input.KeyConfiguration !== undefined) throwCog07Boundary("issuer-key-configuration");
+  if (input.AcrConfiguration !== undefined) throwCog07Boundary("step-up-authentication");
+  if (input.UserPoolAddOns !== undefined) {
+    const addOns = object(input.UserPoolAddOns, "UserPoolAddOns");
+    rejectUnknown(addOns, ["AdvancedSecurityMode", "AdvancedSecurityAdditionalFlows"], "UserPoolAddOns");
+    if (!["OFF", "AUDIT", "ENFORCED"].includes(addOns.AdvancedSecurityMode)) {
+      throw new AwsError("InvalidParameterException", "UserPoolAddOns.AdvancedSecurityMode must be OFF, AUDIT, or ENFORCED.");
+    }
+    // OFF is the default and a no-op; AUDIT/ENFORCED need threat protection.
+    if (addOns.AdvancedSecurityMode !== "OFF" || addOns.AdvancedSecurityAdditionalFlows !== undefined) throwCog07Boundary("threat-protection");
+  }
+  if (input.LambdaConfig !== undefined && input.LambdaConfig && typeof input.LambdaConfig === "object") {
+    const lambda = input.LambdaConfig as Record<string, unknown>;
+    if (["DefineAuthChallenge", "CreateAuthChallenge", "VerifyAuthChallengeResponse"].some(key => lambda[key] !== undefined)) {
+      throwCog07Boundary("custom-auth-challenge");
+    }
+    if (lambda.UserMigration !== undefined) throwCog07Boundary("user-migration");
+    if (["CustomEmailSender", "CustomSMSSender", "KMSKeyID"].some(key => lambda[key] !== undefined)) throwCog07Boundary("custom-sender");
+    if (lambda.InboundFederation !== undefined) throwCog07Boundary("inbound-federation-trigger");
+  }
 }
 
 interface CognitoConfigurationContext {
@@ -509,10 +538,13 @@ function verificationTemplate(
   const template = input.VerificationMessageTemplate === undefined
     ? {}
     : object(input.VerificationMessageTemplate, "VerificationMessageTemplate");
-  rejectUnknown(template, ["DefaultEmailOption", "EmailSubject", "EmailMessage", "SmsMessage"], "VerificationMessageTemplate");
-  if ((template.DefaultEmailOption ?? "CONFIRM_WITH_CODE") !== "CONFIRM_WITH_CODE") {
-    throw new AwsError("InvalidParameterException", "Only code-based email confirmation is available in COG-01.");
+  rejectUnknown(template, ["DefaultEmailOption", "EmailSubject", "EmailMessage", "SmsMessage", "EmailSubjectByLink", "EmailMessageByLink"], "VerificationMessageTemplate");
+  const defaultEmailOption = template.DefaultEmailOption ?? "CONFIRM_WITH_CODE";
+  if (defaultEmailOption === "CONFIRM_WITH_LINK") throwCog07Boundary("email-link-verification");
+  if (defaultEmailOption !== "CONFIRM_WITH_CODE") {
+    throw new AwsError("InvalidParameterException", "VerificationMessageTemplate.DefaultEmailOption must be CONFIRM_WITH_CODE or CONFIRM_WITH_LINK.");
   }
+  // The link templates are inert while the code option is selected.
   const emailSubject = template.EmailSubject ?? input.EmailVerificationSubject ?? "Your verification code";
   const emailMessage = template.EmailMessage ?? input.EmailVerificationMessage ?? "Your verification code is {####}.";
   const legacySmsMessage = input.SmsVerificationMessage;
@@ -551,7 +583,8 @@ const CREATE_POOL_FIELDS = [
   "UsernameAttributes", "EmailVerificationMessage", "EmailVerificationSubject", "SmsVerificationMessage", "VerificationMessageTemplate",
   "EmailConfiguration", "AdminCreateUserConfig", "Schema", "UsernameConfiguration",
   "AccountRecoverySetting", "UserPoolTier", "MfaConfiguration", "EnabledMfas", "LambdaConfig",
-  "UserPoolTags", "DeviceConfiguration", "UserAttributeUpdateSettings",
+  "UserPoolTags", "DeviceConfiguration", "UserAttributeUpdateSettings", "UserPoolAddOns", "SmsConfiguration",
+  "SmsAuthenticationMessage", "IssuerConfiguration", "KeyConfiguration", "AcrConfiguration",
 ] as const;
 
 const UPDATE_POOL_FIELDS = [
@@ -559,6 +592,8 @@ const UPDATE_POOL_FIELDS = [
   "EmailVerificationMessage", "EmailVerificationSubject", "SmsVerificationMessage", "VerificationMessageTemplate",
   "EmailConfiguration", "AdminCreateUserConfig", "AccountRecoverySetting", "UserPoolTier",
   "MfaConfiguration", "EnabledMfas", "LambdaConfig", "DeviceConfiguration", "UserAttributeUpdateSettings",
+  "UserPoolTags", "UserPoolAddOns", "SmsConfiguration", "SmsAuthenticationMessage", "IssuerConfiguration",
+  "KeyConfiguration", "AcrConfiguration",
 ] as const;
 
 function attributeUpdateSettings(input: Record<string, any>): CognitoUserPoolConfigurationState["userAttributeUpdateSettings"] {
@@ -670,7 +705,8 @@ export function createPoolConfiguration(
   context: CognitoConfigurationContext,
 ): CognitoUserPoolConfigurationState {
   rejectUnknown(input, CREATE_POOL_FIELDS, "CreateUserPool");
-  const aliasAttributes = emailOnlyArray(input.AliasAttributes, "AliasAttributes");
+  poolBoundaries(input);
+  const aliasAttributes = emailOnlyArray(input.AliasAttributes, "AliasAttributes", ["preferred_username"]) as Array<"email" | "preferred_username">;
   const usernameAttributes = emailOnlyArray(input.UsernameAttributes, "UsernameAttributes");
   if (aliasAttributes.length && usernameAttributes.length) {
     throw new AwsError("InvalidParameterException", "AliasAttributes and UsernameAttributes are mutually exclusive.");
@@ -733,6 +769,7 @@ export function updatePoolConfiguration(
   context: CognitoConfigurationContext,
 ): CognitoUserPoolConfigurationState {
   rejectUnknown(input, UPDATE_POOL_FIELDS, "UpdateUserPool");
+  poolBoundaries(input);
   const defaults = defaultPoolConfiguration();
   const email = emailConfiguration(input.EmailConfiguration, context);
   const phaseThree = phaseThreeConfiguration(input);
@@ -952,12 +989,13 @@ export function clientConfiguration(
   operation: "create" | "update",
 ): Omit<CognitoAppClientState, "id" | "name" | "createdAt" | "updatedAt" | "secret"> {
   rejectUnknown(input, operation === "create" ? CREATE_CLIENT_FIELDS : UPDATE_CLIENT_FIELDS, "UserPoolClient");
-  for (const deferred of [
-    "AnalyticsConfiguration", "EnablePropagateAdditionalUserContextData",
-  ]) {
-    if (has(input, deferred)) {
-      throw new AwsError("InvalidParameterException", `${deferred} is implemented in a later Cognito phase.`);
+  if (input.AnalyticsConfiguration !== undefined) throwCog07Boundary("pinpoint-analytics");
+  if (input.EnablePropagateAdditionalUserContextData !== undefined) {
+    if (typeof input.EnablePropagateAdditionalUserContextData !== "boolean") {
+      throw new AwsError("InvalidParameterException", "EnablePropagateAdditionalUserContextData must be a boolean.");
     }
+    // false is the default; true only feeds threat protection.
+    if (input.EnablePropagateAdditionalUserContextData) throwCog07Boundary("threat-protection");
   }
   if (operation === "create") clientSecretCreation(input);
   // AWS: "If you don't specify a value for ExplicitAuthFlows, your app client supports ALLOW_REFRESH_TOKEN_AUTH, ALLOW_USER_SRP_AUTH, and ALLOW_CUSTOM_AUTH."

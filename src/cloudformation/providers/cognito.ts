@@ -449,7 +449,7 @@ function canonicalUserPool(properties: unknown, context: ProviderContext): Model
     UsernameConfiguration: { CaseSensitive: input.UsernameConfiguration?.CaseSensitive ?? true },
     AdminCreateUserConfig: {
       AllowAdminCreateUserOnly: input.AdminCreateUserConfig?.AllowAdminCreateUserOnly ?? false,
-      ...(input.AdminCreateUserConfig?.UnusedAccountValidityDays === undefined ? {} : { UnusedAccountValidityDays: input.AdminCreateUserConfig.UnusedAccountValidityDays }),
+      UnusedAccountValidityDays: input.AdminCreateUserConfig?.UnusedAccountValidityDays ?? 7,
       InviteMessageTemplate: {
         EmailSubject: input.AdminCreateUserConfig?.InviteMessageTemplate?.EmailSubject ?? "Your temporary password",
         EmailMessage: input.AdminCreateUserConfig?.InviteMessageTemplate?.EmailMessage ?? "Your username is {username} and temporary password is {####}.",
@@ -607,7 +607,8 @@ function poolModel(raw: Json, tags: Record<string, string>): Model {
 async function readPool(service: CognitoService, poolId: string, context: ProviderContext): Promise<ProviderReadModel<Model>> {
   const raw = (await service.executeCloudFormationControl("DescribeUserPool", { UserPoolId: poolId })).UserPool as Json;
   const tags = (await service.executeCloudFormationControl("ListTagsForResource", { ResourceArn: raw.Arn })).Tags as Record<string, string>;
-  return { physicalId: poolId, properties: poolModel(raw, tags), attributes: poolAttributes(context, poolId, raw.Arn) };
+  const properties = poolModel({ ...raw, SchemaAttributes: service.cloudFormationConfiguredSchema(poolId) }, tags);
+  return { physicalId: poolId, properties, attributes: poolAttributes(context, poolId, raw.Arn) };
 }
 
 function clientInput(model: Model, create: boolean, clientId?: string): Json {
@@ -682,16 +683,21 @@ function createPoolProvider(service: CognitoService): ProductionResourceProvider
     plan(previous, desired) { return cfn10Plan(previous, desired, COGNITO_USER_POOL_SCHEMA); },
     async create(desired, context) {
       try {
-        const listed = await service.executeCloudFormationControl("ListUserPools", { MaxResults: 60 });
-        for (const item of listed.UserPools as Json[]) {
-          if (item.Name !== desired.UserPoolName) continue;
-          const existing = await readPool(service, String(item.Id), context);
-          const tags = (await service.executeCloudFormationControl("ListTagsForResource", { ResourceArn: existing.attributes.Arn })).Tags as Record<string, string>;
-          if (tags[COGNITO_OWNER_TAG] === owner(context) && cfn10Same(existing.properties, desired)) {
-            return success(existing.physicalId, desired, existing.attributes);
+        // Pool names are not unique, so a retried create recognizes its own pool by the owner tag only;
+        // a same-named pool owned by anyone else is left alone and a new pool is created.
+        let nextToken: string | undefined;
+        do {
+          const listed = await service.executeCloudFormationControl("ListUserPools", { MaxResults: 60, ...(nextToken ? { NextToken: nextToken } : {}) });
+          for (const item of listed.UserPools as Json[]) {
+            if (item.Name !== desired.UserPoolName) continue;
+            const existing = await readPool(service, String(item.Id), context);
+            const tags = (await service.executeCloudFormationControl("ListTagsForResource", { ResourceArn: existing.attributes.Arn })).Tags as Record<string, string>;
+            if (tags[COGNITO_OWNER_TAG] === owner(context) && cfn10Same(existing.properties, desired)) {
+              return success(existing.physicalId, desired, existing.attributes);
+            }
           }
-          return { status: "FAILED", errorCode: "AlreadyExists", message: `Cognito user pool ${desired.UserPoolName} already exists` };
-        }
+          nextToken = typeof listed.NextToken === "string" ? listed.NextToken : undefined;
+        } while (nextToken);
         const response = await service.executeCloudFormationControl("CreateUserPool", servicePoolInput(desired, context, true));
         const raw = response.UserPool as Json;
         return success(String(raw.Id), desired, poolAttributes(context, String(raw.Id), raw.Arn));

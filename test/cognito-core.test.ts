@@ -62,7 +62,7 @@ test("Cognito control state paginates, isolates Regions, rejects inert features,
     assert.match(eastPool.UserPool?.Id ?? "", /^us-east-1_/);
     await assert.rejects(
       east.send(new DescribeUserPoolCommand({ UserPoolId: ids[0] })),
-      /User pool not found|UserPoolId is invalid/,
+      /User pool .* does not exist|UserPoolId is invalid/,
     );
 
     const triggerPool = await west.send(new CreateUserPoolCommand({
