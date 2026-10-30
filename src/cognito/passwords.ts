@@ -85,7 +85,7 @@ export function validatePasswordPolicy(password: unknown, policy: CognitoPasswor
   const bytes = Buffer.byteLength(password, "utf8");
   if (bytes > COGNITO_PASSWORD_KDF.maximumInputBytes) failures.push("no more than 256 UTF-8 bytes");
   if (failures.length) {
-    throw new AwsError("InvalidPasswordException", `Password must contain ${failures.join(", ")}.`);
+    throw new AwsError("InvalidPasswordException", `Password did not conform with policy: Password must contain ${failures.join(", ")}.`);
   }
 }
 

@@ -132,11 +132,11 @@ function poolIssues(properties: unknown, _context: ProviderContext): ProviderVal
   if (!properties || typeof properties !== "object" || Array.isArray(properties)) return issues;
   const record = properties as Cfn10Object;
   if (record.AllowClassicFlow === true) {
-    cfn10Issue(issues, "Properties.AllowClassicFlow", "AllowClassicFlow=true is not supported.");
+    cfn10Issue(issues, "Properties.AllowClassicFlow", "The basic (classic) authentication flow is not implemented in this simulator.");
   }
   for (const field of REJECTED_POOL_PROPERTIES) {
     if (record[field] !== undefined) {
-      cfn10Issue(issues, `Properties.${field}`, `${field} is not supported.`);
+      cfn10Issue(issues, `Properties.${field}`, `${field} (developer, OIDC, SAML identity sources and Cognito Sync) is not implemented in this simulator.`);
     }
   }
   if (record.SupportedLoginProviders && typeof record.SupportedLoginProviders === "object"
@@ -172,7 +172,7 @@ function attachmentIssues(properties: unknown): ProviderValidationIssue[] {
   if (!properties || typeof properties !== "object" || Array.isArray(properties)) return issues;
   const record = properties as Cfn10Object;
   if (record.RoleMappings && typeof record.RoleMappings === "object" && !Array.isArray(record.RoleMappings)) {
-    if (Object.keys(record.RoleMappings).length > 1) cfn10Issue(issues, "Properties.RoleMappings", "Only one User Pool Token role mapping is supported.");
+    if (Object.keys(record.RoleMappings).length > 10) cfn10Issue(issues, "Properties.RoleMappings", "RoleMappings supports at most 10 entries.");
     for (const [key, mapping] of Object.entries(record.RoleMappings)) {
       const path = `Properties.RoleMappings.${key}`;
       if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) {
@@ -180,10 +180,17 @@ function attachmentIssues(properties: unknown): ProviderValidationIssue[] {
         continue;
       }
       const entry = mapping as Cfn10Object;
-      cfn10ExactKeys(entry, ["IdentityProvider", "Type", "AmbiguousRoleResolution"], path, issues);
-      if (entry.Type !== "Token" || entry.AmbiguousRoleResolution !== "AuthenticatedRole"
+      cfn10ExactKeys(entry, ["IdentityProvider", "Type", "AmbiguousRoleResolution", "RulesConfiguration"], path, issues);
+      if (!["Token", "Rules"].includes(String(entry.Type)) || !["AuthenticatedRole", "Deny"].includes(String(entry.AmbiguousRoleResolution))
         || typeof entry.IdentityProvider !== "string" || !entry.IdentityProvider) {
-        cfn10Issue(issues, path, "Only a User Pool Token mapping with IdentityProvider and AuthenticatedRole fallback is supported.");
+        cfn10Issue(issues, path, "A role mapping needs IdentityProvider, Type Token or Rules, and AmbiguousRoleResolution AuthenticatedRole or Deny.");
+      }
+      const rules = (entry.RulesConfiguration as Cfn10Object | undefined)?.Rules;
+      if (entry.Type === "Rules" && (!Array.isArray(rules) || rules.length < 1 || rules.length > 25)) {
+        cfn10Issue(issues, `${path}.RulesConfiguration`, "Rules mappings need RulesConfiguration.Rules with 1-25 rules.");
+      }
+      if (entry.Type === "Token" && entry.RulesConfiguration !== undefined) {
+        cfn10Issue(issues, `${path}.RulesConfiguration`, "RulesConfiguration is only valid for Rules mappings.");
       }
     }
   }
@@ -211,7 +218,12 @@ function canonicalAttachment(input: Cfn10Object): Model {
   const mappings = input.RoleMappings && typeof input.RoleMappings === "object"
     ? Object.fromEntries(Object.entries(input.RoleMappings).map(([key, mapping]: [string, any]) => {
       const provider = mapping.IdentityProvider ?? key;
-      return [provider, { IdentityProvider: provider, Type: mapping.Type, AmbiguousRoleResolution: mapping.AmbiguousRoleResolution }];
+      return [provider, {
+        IdentityProvider: provider,
+        Type: mapping.Type,
+        AmbiguousRoleResolution: mapping.AmbiguousRoleResolution,
+        ...(mapping.RulesConfiguration ? { RulesConfiguration: { Rules: [...mapping.RulesConfiguration.Rules] } } : {}),
+      }];
     })) : {};
   return cfn10Stable({
     IdentityPoolId: input.IdentityPoolId,
@@ -222,7 +234,11 @@ function canonicalAttachment(input: Cfn10Object): Model {
 
 function serviceRoleMappings(desired: Model): Cfn10Object {
   return Object.fromEntries(Object.entries(desired.RoleMappings ?? {}).map(([provider, mapping]: [string, any]) =>
-    [provider, { Type: mapping.Type, AmbiguousRoleResolution: mapping.AmbiguousRoleResolution }]));
+    [provider, {
+      Type: mapping.Type,
+      AmbiguousRoleResolution: mapping.AmbiguousRoleResolution,
+      ...(mapping.RulesConfiguration ? { RulesConfiguration: mapping.RulesConfiguration } : {}),
+    }]));
 }
 
 async function readPool(service: CognitoIdentityService, poolId: string): Promise<ProviderReadModel<Model>> {

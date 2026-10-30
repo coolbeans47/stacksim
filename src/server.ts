@@ -90,7 +90,7 @@ import { sendSesV2Error } from "./ses/protocol-v2.js";
 import { verifyVerificationToken } from "./ses/verification-links.js";
 import { CognitoService } from "./cognito.js";
 import { CognitoIdentityService } from "./cognito-identity.js";
-import { cognitoTargetOperation, isCognitoNonIamTarget } from "./cognito/action-inventory.js";
+import { isCognitoIdentityProviderNamespace, isCognitoNonIamTarget } from "./cognito/action-inventory.js";
 import { isCognitoIdentityNonIamTarget, isCognitoIdentityTarget } from "./cognito-identity/action-inventory.js";
 import { sendCognitoError } from "./cognito/protocol.js";
 import { CognitoSecrets } from "./cognito/secrets.js";
@@ -1481,6 +1481,13 @@ export class StackSim {
                 : path.endsWith("/continue-update-rollback") ? "ContinueUpdateRollback"
                   : method === "PUT" ? "UpdateStack" : method === "DELETE" ? "DeleteStack" : "ConsoleMutation";
       action = `cloudformation:${operation}`;
+    } else if (/^\/_stacksim\/api\/cognito(?:-identity)?\/actions\/[A-Za-z]+$/.test(pathname)) {
+      // Console action routes run one official operation; the body is not parsed here, so the action is evaluated
+      // against every resource ("*"), which never grants more than a pool-scoped policy would.
+      const identity = pathname.startsWith("/_stacksim/api/cognito-identity/");
+      operation = pathname.slice(pathname.lastIndexOf("/") + 1);
+      resource = "*";
+      action = `${identity ? "cognito-identity" : "cognito-idp"}:${operation}`;
     } else if (pathname.startsWith("/_stacksim/api/cognito-identity/")) {
       const path = pathname.slice("/_stacksim/api/cognito-identity/".length);
       const poolId = path.match(/^identity-pools\/([^/]+)/)?.[1];
@@ -1521,7 +1528,7 @@ export class StackSim {
 
   private routeService(req: import("node:http").IncomingMessage, url: URL): string {
     if (req.headers["x-stacksim-service"] === "cloudfront" || url.pathname.startsWith("/2020-05-31/")) return "cloudfront";
-    const target = String(req.headers["x-amz-target"] ?? ""); const explicit = String(req.headers["x-stacksim-service"] ?? ""); const host = String(req.headers.host ?? "").replace(/:\d+$/, ""); if (explicit === "appsync" || explicit === "iam" || explicit === "sts" || explicit === "xray") return explicit; if (new Set(["/TraceSegments", "/TraceSummaries", "/Traces", "/ServiceGraph", "/TraceGraph"]).has(url.pathname)) return "xray"; if (explicit === "states" || target.startsWith("AWSStepFunctions.")) return "states"; if (explicit === "cognito-identity" || isCognitoIdentityTarget(target) || cognitoIdentitySdkEndpointRegion(url.pathname)) return "cognito-identity"; if (explicit === "cognito-idp" || cognitoTargetOperation(target)) return "cognito-idp"; if (explicit === "sns") return "sns"; if (explicit === "ses" || url.pathname.startsWith("/v2/email/")) return "ses"; if (explicit === "cloudformation") return "cloudformation"; if (explicit === "ssm" || target.startsWith("AmazonSSM.")) return "ssm"; if (explicit === "secretsmanager" || target.startsWith("secretsmanager.")) return "secretsmanager"; if (explicit === "rds") return "rds"; if (explicit === "events" || target.startsWith("AWSEvents.")) return "events"; if (explicit === "scheduler") return "scheduler"; if (explicit === "sqs" || target.startsWith("AmazonSQS.")) return "sqs"; if (explicit === "s3" || /(?:^|\.)s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com$/i.test(host) || /.+\.(?:localhost|127\.0\.0\.1)$/i.test(host)) return "s3"; if (/^DynamoDB(?:Streams)?_/.test(target)) return "dynamodb"; if (target.startsWith("Logs_20140328")) return "logs"; if (target.startsWith("GraniteServiceVersion20100801.")) return "monitoring"; if (url.pathname.startsWith("/2014-11-13") || url.pathname.startsWith("/2015-03-31") || url.pathname.startsWith("/2016-08-19") || url.pathname.startsWith("/2017-03-31/tags/") || url.pathname.startsWith("/2017-10-31") || url.pathname.startsWith("/2018-10-31") || url.pathname.startsWith("/2019-09-25") || url.pathname.startsWith("/2019-09-30") || url.pathname.startsWith("/2020-04-22") || url.pathname.startsWith("/2020-06-30") || url.pathname.startsWith("/2021-07-20") || url.pathname.startsWith("/2021-10-31") || url.pathname.startsWith("/2021-11-15") || url.pathname.startsWith("/2024-08-31") || url.pathname.startsWith("/2025-11-30") || url.pathname.startsWith("/2025-12-01")) return "lambda"; if (url.pathname.startsWith("/v2") || url.pathname.startsWith("/restapis") || url.pathname === "/account" || url.pathname.startsWith("/tags/") || url.pathname.startsWith("/apikeys") || url.pathname.startsWith("/usageplans") || url.pathname.startsWith("/domainnames") || url.pathname.startsWith("/domainnameaccessassociations") || url.pathname === "/rejectdomainnameaccessassociations" || url.pathname.startsWith("/vpclinks") || url.pathname.startsWith("/clientcertificates") || url.pathname.startsWith("/sdktypes")) return "apigateway";
+    const target = String(req.headers["x-amz-target"] ?? ""); const explicit = String(req.headers["x-stacksim-service"] ?? ""); const host = String(req.headers.host ?? "").replace(/:\d+$/, ""); if (explicit === "appsync" || explicit === "iam" || explicit === "sts" || explicit === "xray") return explicit; if (new Set(["/TraceSegments", "/TraceSummaries", "/Traces", "/ServiceGraph", "/TraceGraph"]).has(url.pathname)) return "xray"; if (explicit === "states" || target.startsWith("AWSStepFunctions.")) return "states"; if (explicit === "cognito-identity" || isCognitoIdentityTarget(target) || cognitoIdentitySdkEndpointRegion(url.pathname)) return "cognito-identity"; if (explicit === "cognito-idp" || isCognitoIdentityProviderNamespace(target)) return "cognito-idp"; if (explicit === "sns") return "sns"; if (explicit === "ses" || url.pathname.startsWith("/v2/email/")) return "ses"; if (explicit === "cloudformation") return "cloudformation"; if (explicit === "ssm" || target.startsWith("AmazonSSM.")) return "ssm"; if (explicit === "secretsmanager" || target.startsWith("secretsmanager.")) return "secretsmanager"; if (explicit === "rds") return "rds"; if (explicit === "events" || target.startsWith("AWSEvents.")) return "events"; if (explicit === "scheduler") return "scheduler"; if (explicit === "sqs" || target.startsWith("AmazonSQS.")) return "sqs"; if (explicit === "s3" || /(?:^|\.)s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com$/i.test(host) || /.+\.(?:localhost|127\.0\.0\.1)$/i.test(host)) return "s3"; if (/^DynamoDB(?:Streams)?_/.test(target)) return "dynamodb"; if (target.startsWith("Logs_20140328")) return "logs"; if (target.startsWith("GraniteServiceVersion20100801.")) return "monitoring"; if (url.pathname.startsWith("/2014-11-13") || url.pathname.startsWith("/2015-03-31") || url.pathname.startsWith("/2016-08-19") || url.pathname.startsWith("/2017-03-31/tags/") || url.pathname.startsWith("/2017-10-31") || url.pathname.startsWith("/2018-10-31") || url.pathname.startsWith("/2019-09-25") || url.pathname.startsWith("/2019-09-30") || url.pathname.startsWith("/2020-04-22") || url.pathname.startsWith("/2020-06-30") || url.pathname.startsWith("/2021-07-20") || url.pathname.startsWith("/2021-10-31") || url.pathname.startsWith("/2021-11-15") || url.pathname.startsWith("/2024-08-31") || url.pathname.startsWith("/2025-11-30") || url.pathname.startsWith("/2025-12-01")) return "lambda"; if (url.pathname.startsWith("/v2") || url.pathname.startsWith("/restapis") || url.pathname === "/account" || url.pathname.startsWith("/tags/") || url.pathname.startsWith("/apikeys") || url.pathname.startsWith("/usageplans") || url.pathname.startsWith("/domainnames") || url.pathname.startsWith("/domainnameaccessassociations") || url.pathname === "/rejectdomainnameaccessassociations" || url.pathname.startsWith("/vpclinks") || url.pathname.startsWith("/clientcertificates") || url.pathname.startsWith("/sdktypes")) return "apigateway";
     // Path-style requests without a signature (browser CORS preflights, anonymous reads of public objects,
     // presigned-URL-free website assets) still belong to S3 when the first path segment names a bucket.
     const firstSegment = url.pathname.replace(/^\//, "").split("/", 1)[0];
@@ -2029,6 +2036,37 @@ export class StackSim {
     return new Promise((resolve, reject) => { server.once("error", reject); server.listen(port, this.host, () => { server.off("error", reject); resolve(); }); });
   }
 
+  private validateConsoleMutation(req: import("node:http").IncomingMessage): void {
+    if (req.headers["x-stacksim-console-request"] !== "1") {
+      throw new AwsError("InvalidConsoleRequest", "The console mutation header is required.", 403);
+    }
+    if (typeof req.headers.origin !== "string" || typeof req.headers.host !== "string") {
+      throw new AwsError("InvalidConsoleRequest", "A same-origin Origin header is required.", 403);
+    }
+    let origin: URL;
+    let expected: URL;
+    try {
+      origin = new URL(req.headers.origin);
+      expected = new URL(`${(req.socket as any).encrypted ? "https" : "http"}://${req.headers.host}`);
+    } catch {
+      throw new AwsError("InvalidConsoleRequest", "The Origin or Host header is invalid.", 403);
+    }
+    const loopback = (hostname: string): boolean =>
+      hostname === "localhost"
+      || hostname === "::1"
+      || hostname === "[::1]"
+      || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+    if (!loopback(origin.hostname) || !loopback(expected.hostname) || origin.origin !== expected.origin) {
+      throw new AwsError("InvalidConsoleRequest", "The request Origin is not the bound loopback console origin.", 403);
+    }
+    if (req.headers["sec-fetch-site"] && req.headers["sec-fetch-site"] !== "same-origin") {
+      throw new AwsError("InvalidConsoleRequest", "Cross-site console mutations are not allowed.", 403);
+    }
+    if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+      throw new AwsError("InvalidConsoleRequest", "The request must use application/json.", 415);
+    }
+  }
+
   private async localCognitoIdentityApi(
     req: import("node:http").IncomingMessage,
     res: import("node:http").ServerResponse,
@@ -2051,6 +2089,11 @@ export class StackSim {
         }
       };
       if (path === "identity-pools" && req.method === "GET") return json(res, identity.localIdentityPools());
+      const identityAction = path.match(/^actions\/([A-Za-z]+)$/);
+      if (identityAction && req.method === "POST") {
+        this.validateConsoleMutation(req);
+        return json(res, await identity.localAction(identityAction[1], await readJson(req) as Record<string, unknown>));
+      }
       const detail = path.match(/^identity-pools\/([^/]+)$/);
       if (detail && req.method === "GET") return json(res, { identityPool: identity.localIdentityPool(decode(detail[1])) });
       return json(res, { message: "Unknown local Cognito Identity console route." }, 404);
@@ -2084,36 +2127,12 @@ export class StackSim {
           throw new AwsError("InvalidParameterException", "A Cognito console path segment is invalid.", 400);
         }
       };
-      const validateMutation = (): void => {
-        if (req.headers["x-stacksim-console-request"] !== "1") {
-          throw new AwsError("InvalidConsoleRequest", "The console mutation header is required.", 403);
-        }
-        if (typeof req.headers.origin !== "string" || typeof req.headers.host !== "string") {
-          throw new AwsError("InvalidConsoleRequest", "A same-origin Origin header is required.", 403);
-        }
-        let origin: URL;
-        let expected: URL;
-        try {
-          origin = new URL(req.headers.origin);
-          expected = new URL(`${(req.socket as any).encrypted ? "https" : "http"}://${req.headers.host}`);
-        } catch {
-          throw new AwsError("InvalidConsoleRequest", "The Origin or Host header is invalid.", 403);
-        }
-        const loopback = (hostname: string): boolean =>
-          hostname === "localhost"
-          || hostname === "::1"
-          || hostname === "[::1]"
-          || /^127(?:\.\d{1,3}){3}$/.test(hostname);
-        if (!loopback(origin.hostname) || !loopback(expected.hostname) || origin.origin !== expected.origin) {
-          throw new AwsError("InvalidConsoleRequest", "The request Origin is not the bound loopback console origin.", 403);
-        }
-        if (req.headers["sec-fetch-site"] && req.headers["sec-fetch-site"] !== "same-origin") {
-          throw new AwsError("InvalidConsoleRequest", "Cross-site console mutations are not allowed.", 403);
-        }
-        if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-          throw new AwsError("InvalidConsoleRequest", "The request must use application/json.", 415);
-        }
-      };
+      const validateMutation = (): void => this.validateConsoleMutation(req);
+      const action = path.match(/^actions\/([A-Za-z]+)$/);
+      if (action && req.method === "POST") {
+        validateMutation();
+        return json(res, await cognito.localAction(action[1], await readJson(req) as Record<string, unknown>));
+      }
       if (path === "user-pools") {
         if (req.method === "GET") return json(res, cognito.localUserPools());
         if (req.method === "POST") {

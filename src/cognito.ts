@@ -21,14 +21,22 @@ import type {
   CognitoRecoverableSecretState,
   CognitoRefreshSessionState,
   CognitoResourceServerState,
+  CognitoSchemaAttributeState,
   CognitoUserAttributeState,
   CognitoUserPoolConfigurationState,
   CognitoUserPoolState,
   CognitoUserState,
 } from "./types.js";
 import { cognitoTargetOperation } from "./cognito/action-inventory.js";
-import { STANDARD_CLIENT_ATTRIBUTES, STANDARD_USER_ATTRIBUTES } from "./cognito/attributes.js";
-import { cog07BoundaryMessage, throwCog07BoundaryForOperation } from "./cognito/cog07-boundaries.js";
+import {
+  clientCanReadAttribute,
+  clientCanWriteAttribute,
+  effectiveClientReadAttributes,
+  effectiveClientWriteAttributes,
+  STANDARD_CLIENT_ATTRIBUTES,
+  STANDARD_USER_ATTRIBUTES,
+} from "./cognito/attributes.js";
+import { cog07BoundaryMessage, throwCog07Boundary, throwCog07BoundaryForOperation } from "./cognito/cog07-boundaries.js";
 import {
   assignClientSecrets,
   clientHasSecret,
@@ -73,6 +81,7 @@ import {
   parseUserAttributes,
 } from "./cognito/users.js";
 import {
+  clientAllowsAuthFlow,
   clientConfiguration,
   clientId,
   clientSecretCreation,
@@ -139,6 +148,10 @@ const CONFIRMATION_ATTEMPTS = 5;
 const RESEND_WINDOW_MS = 60 * 60 * 1_000;
 const RESEND_LIMIT = 3;
 const ADMISSION_WINDOW_MS = 5 * 60 * 1_000;
+const PAGINATION_TOKEN_LIFETIME_MS = 60 * 60 * 1_000;
+const SIGN_IN_LOCKOUT_THRESHOLD = 5;
+const SIGN_IN_LOCKOUT_MAX_SECONDS = 15 * 60;
+const SIGN_IN_LOCKOUT_RESET_MS = 15 * 60 * 1_000;
 const INTENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const OAUTH_CODE_LIFETIME_MS = 5 * 60 * 1_000;
 const OAUTH_BROWSER_SESSION_LIFETIME_MS = 60 * 60 * 1_000;
@@ -428,6 +441,148 @@ function dnsSuffixForRegion(region: string): "amazonaws.com" | "amazonaws.com.cn
   return region.startsWith("cn-") ? "amazonaws.com.cn" : "amazonaws.com";
 }
 
+/** One stored schema entry in the DescribeUserPool shape, with the name supplied by the caller. */
+const PUBLIC_CONTEXT_OPERATIONS = new Set([
+  "SignUp", "ConfirmSignUp", "ResendConfirmationCode", "ForgotPassword", "ConfirmForgotPassword",
+  "InitiateAuth", "RespondToAuthChallenge",
+]);
+const ADMIN_CONTEXT_OPERATIONS = new Set(["AdminInitiateAuth", "AdminRespondToAuthChallenge"]);
+
+/**
+ * UserContextData, AnalyticsMetadata, and (admin) ContextData are documented optional members that feed threat
+ * protection and Pinpoint analytics. Neither feature runs locally, so the members are validated and ignored, as
+ * AWS does when the feature is off.
+ */
+function acceptIgnoredContextMembers(operation: string, input: Record<string, any>): void {
+  // REFRESH_TOKEN is the documented alias of REFRESH_TOKEN_AUTH; normalize before proof validation.
+  if ((operation === "InitiateAuth" || operation === "AdminInitiateAuth") && input.AuthFlow === "REFRESH_TOKEN") {
+    input.AuthFlow = "REFRESH_TOKEN_AUTH";
+  }
+  const members = PUBLIC_CONTEXT_OPERATIONS.has(operation)
+    ? ["UserContextData", "AnalyticsMetadata"]
+    : ADMIN_CONTEXT_OPERATIONS.has(operation) ? ["ContextData", "AnalyticsMetadata"] : [];
+  for (const member of members) {
+    if (input[member] === undefined) continue;
+    if (!input[member] || typeof input[member] !== "object" || Array.isArray(input[member])) {
+      throw new AwsError("InvalidParameterException", `${member} must be an object.`);
+    }
+    delete input[member];
+  }
+}
+
+/** Distinguishes an expired access token from one that does not verify, as the AWS messages do. */
+function accessTokenFailureMessage(token: string, now: number): string {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"));
+    if (typeof payload?.exp === "number" && payload.exp * 1_000 <= now && payload.token_use === "access") {
+      return "Access Token has expired";
+    }
+  } catch { /* Not a decodable JWT. */ }
+  return "Invalid Access Token";
+}
+
+const CONSOLE_ACTIONS: ReadonlySet<string> = new Set([
+  "CreateUserPool", "DescribeUserPool", "UpdateUserPool", "DeleteUserPool",
+  "CreateUserPoolClient", "DescribeUserPoolClient", "UpdateUserPoolClient",
+  "ListUsers", "AdminCreateUser", "AdminGetUser", "AdminConfirmSignUp", "AdminDeleteUser", "AdminDisableUser", "AdminEnableUser",
+  "AdminResetUserPassword", "AdminUserGlobalSignOut", "AdminListUserAuthEvents", "AdminListGroupsForUser",
+  "ListUsersInGroup", "AdminAddUserToGroup", "AdminRemoveUserFromGroup",
+  "CreateGroup", "GetGroup", "UpdateGroup", "DeleteGroup",
+  "GetUserPoolMfaConfig", "SetUserPoolMfaConfig",
+  "CreateResourceServer", "DescribeResourceServer", "UpdateResourceServer", "DeleteResourceServer",
+  "CreateIdentityProvider", "DescribeIdentityProvider", "UpdateIdentityProvider",
+  "CreateUserPoolDomain", "UpdateUserPoolDomain", "DeleteUserPoolDomain",
+  "TagResource", "UntagResource", "ListTagsForResource",
+]);
+
+function redactConsoleSecrets(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactConsoleSecrets);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => !["ClientSecret", "client_secret", "SecretCode", "TemporaryPassword"].includes(key))
+    .map(([key, item]) => [key, redactConsoleSecrets(item)]));
+}
+
+function schemaAttributeView(attribute: CognitoSchemaAttributeState, name: string): Record<string, unknown> {
+  return {
+    Name: name,
+    AttributeDataType: attribute.attributeDataType,
+    DeveloperOnlyAttribute: attribute.developerOnlyAttribute,
+    Mutable: attribute.mutable,
+    Required: attribute.required,
+    ...(attribute.stringAttributeConstraints
+      ? {
+          StringAttributeConstraints: {
+            MinLength: attribute.stringAttributeConstraints.minLength,
+            MaxLength: attribute.stringAttributeConstraints.maxLength,
+          },
+        }
+      : {}),
+    ...(attribute.numberAttributeConstraints
+      ? {
+          NumberAttributeConstraints: {
+            MinValue: attribute.numberAttributeConstraints.minValue,
+            MaxValue: attribute.numberAttributeConstraints.maxValue,
+          },
+        }
+      : {}),
+  };
+}
+
+/** The standard attributes in the order of the DescribeUserPool sample response. */
+const STANDARD_SCHEMA: readonly CognitoSchemaAttributeState[] = Object.freeze([
+  "sub", "name", "given_name", "family_name", "middle_name", "nickname", "preferred_username", "profile",
+  "picture", "website", "email", "email_verified", "gender", "birthdate", "zoneinfo", "locale", "phone_number",
+  "phone_number_verified", "address", "updated_at",
+].map((name): CognitoSchemaAttributeState => {
+  if (name === "email_verified" || name === "phone_number_verified") {
+    return { name, attributeDataType: "Boolean", developerOnlyAttribute: false, mutable: true, required: false };
+  }
+  if (name === "updated_at") {
+    return { name, attributeDataType: "Number", developerOnlyAttribute: false, mutable: true, required: false, numberAttributeConstraints: { minValue: "0" } };
+  }
+  return {
+    name,
+    attributeDataType: "String",
+    developerOnlyAttribute: false,
+    mutable: name !== "sub",
+    required: name === "sub",
+    stringAttributeConstraints: name === "sub"
+      ? { minLength: "1", maxLength: "2048" }
+      : name === "birthdate" ? { minLength: "10", maxLength: "10" } : { minLength: "0", maxLength: "2048" },
+  };
+}));
+
+/**
+ * AWS: DescribeUserPool lists every standard attribute and "returns this value as value for standard attributes,
+ * custom:value for custom attributes, and dev:value for developer-only attributes."
+ */
+function describedSchemaView(configuration: CognitoUserPoolConfigurationState): Array<Record<string, unknown>> {
+  const configured = new Map(configuration.schemaAttributes.map(attribute => [attribute.name, attribute]));
+  return [
+    ...STANDARD_SCHEMA.map(standard => {
+      const override = configured.get(standard.name);
+      return schemaAttributeView(override
+        ? {
+            ...standard,
+            mutable: override.mutable,
+            required: override.required,
+            ...(override.stringAttributeConstraints ? { stringAttributeConstraints: { ...standard.stringAttributeConstraints, ...override.stringAttributeConstraints } } : {}),
+            ...(override.numberAttributeConstraints ? { numberAttributeConstraints: { ...standard.numberAttributeConstraints, ...override.numberAttributeConstraints } } : {}),
+          }
+        : standard, standard.name);
+    }),
+    ...configuration.schemaAttributes
+      .filter(attribute => !STANDARD_SCHEMA.some(standard => standard.name === attribute.name))
+      .map(attribute => schemaAttributeView(attribute, `${attribute.developerOnlyAttribute ? "dev:" : ""}custom:${attribute.name}`)),
+  ];
+}
+
+/** The schema entries a template or API caller configured, in the unprefixed stored form CloudFormation compares. */
+function configuredSchemaView(configuration: CognitoUserPoolConfigurationState): Array<Record<string, unknown>> {
+  return configuration.schemaAttributes.map(attribute => schemaAttributeView(attribute, attribute.name));
+}
+
 function poolConfigurationView(configuration: CognitoUserPoolConfigurationState): Record<string, unknown> {
   return {
     Policies: {
@@ -440,6 +595,9 @@ function poolConfigurationView(configuration: CognitoUserPoolConfigurationState)
         TemporaryPasswordValidityDays: configuration.policies.passwordPolicy.temporaryPasswordValidityDays,
         PasswordHistorySize: configuration.policies.passwordPolicy.passwordHistorySize ?? 0,
       },
+      SignInPolicy: {
+        AllowedFirstAuthFactors: [...(configuration.policies.signInPolicy?.allowedFirstAuthFactors ?? ["PASSWORD"])],
+      },
     },
     DeletionProtection: configuration.deletionProtection,
     AutoVerifiedAttributes: [...configuration.autoVerifiedAttributes],
@@ -451,37 +609,14 @@ function poolConfigurationView(configuration: CognitoUserPoolConfigurationState)
     UsernameConfiguration: { CaseSensitive: configuration.usernameConfiguration.caseSensitive },
     AdminCreateUserConfig: {
       AllowAdminCreateUserOnly: configuration.adminCreateUserConfig.allowAdminCreateUserOnly,
-      ...(configuration.adminCreateUserConfig.unusedAccountValidityDays === undefined
-        ? {}
-        : { UnusedAccountValidityDays: configuration.adminCreateUserConfig.unusedAccountValidityDays }),
+      // AWS: "This parameter is no longer in use" but DescribeUserPool still returns it, default 7.
+      UnusedAccountValidityDays: configuration.adminCreateUserConfig.unusedAccountValidityDays ?? 7,
       InviteMessageTemplate: {
         EmailSubject: configuration.adminCreateUserConfig.inviteMessageTemplate.emailSubject,
         EmailMessage: configuration.adminCreateUserConfig.inviteMessageTemplate.emailMessage,
       },
     },
-    SchemaAttributes: configuration.schemaAttributes.map(attribute => ({
-      Name: attribute.name,
-      AttributeDataType: attribute.attributeDataType,
-      DeveloperOnlyAttribute: attribute.developerOnlyAttribute,
-      Mutable: attribute.mutable,
-      Required: attribute.required,
-      ...(attribute.stringAttributeConstraints
-        ? {
-            StringAttributeConstraints: {
-              MinLength: attribute.stringAttributeConstraints.minLength,
-              MaxLength: attribute.stringAttributeConstraints.maxLength,
-            },
-          }
-        : {}),
-      ...(attribute.numberAttributeConstraints
-        ? {
-            NumberAttributeConstraints: {
-              MinValue: attribute.numberAttributeConstraints.minValue,
-              MaxValue: attribute.numberAttributeConstraints.maxValue,
-            },
-          }
-        : {}),
-    })),
+    SchemaAttributes: describedSchemaView(configuration),
     AccountRecoverySetting: configuration.accountRecoverySetting === undefined
       ? undefined
       : {
@@ -551,6 +686,8 @@ function poolView(pool: CognitoUserPoolState): Record<string, unknown> {
     EstimatedNumberOfUsers: Object.keys(pool.usersBySub ?? {}).length,
     Arn: pool.arn,
     ...poolConfigurationView(pool.configuration),
+    UserPoolTags: { ...pool.tags },
+    ...(pool.domain ? { Domain: pool.domain.domain } : {}),
   };
 }
 
@@ -588,13 +725,13 @@ function userView(user: CognitoUserState): Record<string, unknown> {
     UserLastModifiedDate: timestamp(user.updatedAt),
     Enabled: user.enabled,
     UserStatus: user.status,
-    MFAOptions: [],
   };
 }
 
-function groupView(group: import("./types.js").CognitoGroupState): Record<string, unknown> {
+function groupView(group: import("./types.js").CognitoGroupState, poolId: string): Record<string, unknown> {
   return {
     GroupName: group.name,
+    UserPoolId: poolId,
     ...(group.description === undefined ? {} : { Description: group.description }),
     ...(group.roleArn === undefined ? {} : { RoleArn: group.roleArn }),
     ...(group.precedence === undefined ? {} : { Precedence: group.precedence }),
@@ -619,8 +756,8 @@ function clientView(poolId: string, client: CognitoAppClientState, secret?: stri
       AccessToken: client.tokenValidityUnits.accessToken,
       IdToken: client.tokenValidityUnits.idToken,
     },
-    ReadAttributes: [...client.readAttributes],
-    WriteAttributes: [...client.writeAttributes],
+    ...(client.readAttributes === undefined ? {} : { ReadAttributes: [...client.readAttributes] }),
+    ...(client.writeAttributes === undefined ? {} : { WriteAttributes: [...client.writeAttributes] }),
     ExplicitAuthFlows: [...client.explicitAuthFlows],
     PreventUserExistenceErrors: client.preventUserExistenceErrors,
     EnableTokenRevocation: client.enableTokenRevocation,
@@ -1203,7 +1340,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
   private pool(value: unknown): CognitoUserPoolState {
     const id = userPoolId(value);
     const pool = this.state.pools[id];
-    if (!pool) throw new AwsError("ResourceNotFoundException", "User pool not found.");
+    if (!pool) throw new AwsError("ResourceNotFoundException", `User pool ${id} does not exist.`);
     return pool;
   }
 
@@ -1240,7 +1377,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       const name = STANDARD_USER_ATTRIBUTES.has(schema.name) ? schema.name : `custom:${schema.name}`;
       return schema.required
         && schema.mutable
-        && client.writeAttributes.includes(name)
+        && clientCanWriteAttribute(client, name)
         && !user.attributes[name]
         ? [`userAttributes.${name}`]
         : [];
@@ -1522,7 +1659,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       source === "InitiateAuth"
       && (
         client.refreshTokenRotation.feature === "ENABLED"
-        || !client.explicitAuthFlows.includes("ALLOW_REFRESH_TOKEN_AUTH")
+        || !clientAllowsAuthFlow(client, "ALLOW_REFRESH_TOKEN_AUTH")
       )
     ) {
       throw new AwsError("InvalidParameterException", "REFRESH_TOKEN_AUTH is not enabled for this app client.");
@@ -1551,6 +1688,18 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
   }
 
   private validateAccessProof(input: Record<string, any>, requiredScope: string | false = COGNITO_USER_ADMIN_SCOPE): void {
+    if (input.AccessToken === undefined || input.AccessToken === null) {
+      throw new AwsError(
+        "InvalidParameterException",
+        "1 validation error detected: Value null at 'accessToken' failed to satisfy constraint: Member must not be null",
+      );
+    }
+    if (typeof input.AccessToken !== "string" || !/^[A-Za-z0-9\-_=.]+$/.test(input.AccessToken)) {
+      throw new AwsError(
+        "InvalidParameterException",
+        "1 validation error detected: Value at 'accessToken' failed to satisfy constraint: Member must satisfy regular expression pattern: [A-Za-z0-9-_=.]+",
+      );
+    }
     let verified;
     try {
       verified = verifyCognitoAccessToken(
@@ -1561,7 +1710,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         { requiredScope },
       );
     } catch {
-      throw new AwsError("NotAuthorizedException", "Access Token has been revoked.");
+      throw new AwsError("NotAuthorizedException", accessTokenFailureMessage(input.AccessToken, this.clock.now()));
     }
     const client = verified.pool.clients[verified.claims.clientId];
     const user = verified.pool.usersBySub[verified.claims.sub];
@@ -1600,7 +1749,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       || input.Session.length > 2_048
       || typeof input.ClientId !== "string"
     ) {
-      throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+      throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
     }
     const { pool, client } = this.appClientAcrossPools(input.ClientId);
     const challenge = pool.challenges[input.Session];
@@ -1614,7 +1763,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       || this.clock.now() >= challenge.expiresAt
       || !user.enabled
     ) {
-      throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+      throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
     }
     const responses = input.ChallengeResponses;
     if (!responses || typeof responses !== "object" || Array.isArray(responses)) {
@@ -1626,7 +1775,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
     const resolved = this.adminUser(pool, username);
     if (resolved.sub !== user.sub) {
-      throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+      throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
     }
     this.validateSecretHash(pool, client, username, responses.SECRET_HASH);
     this.challengeProof.set(input, { pool, client, user, challenge });
@@ -1639,7 +1788,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     challenge: import("./types.js").CognitoChallengeState;
   } {
     if (typeof sessionValue !== "string" || sessionValue.length < 20 || sessionValue.length > 2_048) {
-      throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+      throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
     }
     for (const pool of Object.values(this.state.pools)) {
       const challenge = pool.challenges[sessionValue];
@@ -1657,11 +1806,45 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         return { pool, client, user, challenge };
       }
     }
-    throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+    throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
+  }
+
+  /**
+   * AWS: after five failed password sign-ins Cognito locks the user out for 2^(n-5) seconds, doubling up to
+   * about fifteen minutes; attempts during a lockout return "Password attempts exceeded" without counting, and
+   * fifteen quiet minutes or a successful sign-in after the lockout reset the counter. Successful sign-ins are
+   * never throttled per user.
+   */
+  private assertSignInNotLockedOut(user: CognitoUserState): void {
+    const lockout = user.signInLockout;
+    if (lockout && this.clock.now() < lockout.lockedUntil) {
+      throw new AwsError("NotAuthorizedException", "Password attempts exceeded");
+    }
+  }
+
+  private async recordFailedSignIn(poolId: string, sub: string): Promise<void> {
+    await this.exclusive(async () => {
+      const user = this.state.pools[poolId]?.usersBySub[sub];
+      if (!user) return;
+      const now = this.clock.now();
+      const previous = user.signInLockout && now - user.signInLockout.lastFailureAt < SIGN_IN_LOCKOUT_RESET_MS
+        ? user.signInLockout.failures
+        : 0;
+      const failures = previous + 1;
+      user.signInLockout = {
+        failures,
+        lastFailureAt: now,
+        lockedUntil: failures >= SIGN_IN_LOCKOUT_THRESHOLD
+          ? now + Math.min(2 ** (failures - SIGN_IN_LOCKOUT_THRESHOLD), SIGN_IN_LOCKOUT_MAX_SECONDS) * 1_000
+          : 0,
+      };
+      this.state.revision += 1;
+      await this.store.save();
+    });
   }
 
   private async admit(
-    kind: "SIGN_UP" | "PASSWORD" | "REFRESH",
+    kind: "SIGN_UP" | "REFRESH",
     pool: CognitoUserPoolState,
     client: CognitoAppClientState,
     value: string,
@@ -1738,20 +1921,18 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
             throw new AwsError("InvalidParameterException", "AuthParameters is required.");
           }
           this.validateSecretHash(pool, client, parameters.USERNAME, parameters.SECRET_HASH);
-          const usernameKey = pool.configuration.usernameAttributes.includes("email")
-            ? cognitoEmail(parameters.USERNAME).canonical
-            : canonicalUsername(pool, modeledUsername(parameters.USERNAME));
-          await this.admit("PASSWORD", pool, client, usernameKey, 10);
         } else if (input.AuthFlow === "USER_SRP_AUTH") {
           const parameters = input.AuthParameters;
           if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
             throw new AwsError("InvalidParameterException", "AuthParameters is required.");
           }
           this.validateSecretHash(pool, client, parameters.USERNAME, parameters.SECRET_HASH);
-          const usernameKey = pool.configuration.usernameAttributes.includes("email")
-            ? cognitoEmail(parameters.USERNAME).canonical
-            : canonicalUsername(pool, modeledUsername(parameters.USERNAME));
-          await this.admit("PASSWORD", pool, client, usernameKey, 10);
+        } else if (input.AuthFlow === "USER_AUTH") {
+          const parameters = input.AuthParameters;
+          if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
+            throw new AwsError("InvalidParameterException", "AuthParameters is required.");
+          }
+          this.validateSecretHash(pool, client, parameters.USERNAME, parameters.SECRET_HASH);
         } else if (input.AuthFlow === "REFRESH_TOKEN_AUTH") {
           if (typeof input.AuthParameters?.REFRESH_TOKEN === "string") {
             await this.admit("REFRESH", pool, client, input.AuthParameters.REFRESH_TOKEN, 30);
@@ -1763,6 +1944,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       case "AdminInitiateAuth": {
         const pool = this.pool(input.UserPoolId);
         const client = this.appClient(pool, input.ClientId);
+        if (input.AuthFlow === "REFRESH_TOKEN_AUTH") {
+          if (typeof input.AuthParameters?.REFRESH_TOKEN === "string") {
+            await this.admit("REFRESH", pool, client, input.AuthParameters.REFRESH_TOKEN, 30);
+          }
+          this.validateRefreshProof(input, "InitiateAuth");
+          return;
+        }
         this.validateSecretHash(
           pool,
           client,
@@ -2415,6 +2603,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     deviceKey?: string,
     tokenGenerationCause: TokenGenerationCause = "TokenGeneration_Authentication",
   ): Promise<CognitoAuthenticationStep> {
+    delete user.signInLockout;
     purgeExpiredPendingDevices(user, this.clock.now());
     if (this.rememberedDeviceForAuth(pool, user, deviceKey)) {
       const challenge = this.createChallenge(pool, client, user, "DEVICE_SRP_AUTH", clientMetadata);
@@ -2815,12 +3004,17 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       }
       this.secrets.assertAvailable();
       input = await parseCognitoJson(req);
+      acceptIgnoredContextMembers(operation, input);
       metricPoolId = this.safePoolId(input);
       await this.metric(operation, "CallCount", metricPoolId);
       await this.validateProof(operation, input);
       metricPoolId ??= this.accessProof.get(input)?.pool.id ?? this.refreshProof.get(input)?.pool.id;
       const output = await this.dispatch(operation, input);
       metricPoolId ??= (output as any)?.UserPool?.Id;
+      // AWS returns an empty ChallengeParameters map beside a successful AuthenticationResult.
+      if (/^(Admin)?(InitiateAuth|RespondToAuthChallenge)$/.test(operation) && (output as any)?.AuthenticationResult && !(output as any).ChallengeParameters) {
+        (output as any).ChallengeParameters = {};
+      }
       this.audit(operation, "SUCCESS", requestId, metricPoolId);
       await this.store.save();
       await this.metric(operation, "SuccessCount", metricPoolId);
@@ -2973,6 +3167,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       case "GetProvisionedLimit":
       case "UpdateProvisionedLimit":
       case "GetSigningCertificate":
+      case "AdminDeleteSoftwareToken":
+      case "AdminGetUserAuthFactors":
+      case "DescribeTermsByClient":
+      case "GetClientToken":
         throwCog07BoundaryForOperation(operation);
       default:
         throw new AwsError("UnknownOperationException", "Unknown operation.");
@@ -2984,6 +3182,20 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
    * Providers deliberately reuse the same validated Cognito operations as the
    * public AWS JSON endpoint and never read or mutate Cognito persistence.
    */
+  /**
+   * Pagination tokens are positional, scoped to their listing, and expire after an hour (the documented ListUsers
+   * lifetime); unrelated writes anywhere in the Region no longer invalidate them.
+   */
+  private paginationTokenFresh(issuedAt: unknown): boolean {
+    const now = this.clock.now();
+    return typeof issuedAt === "number" && issuedAt <= now && now - issuedAt < PAGINATION_TOKEN_LIFETIME_MS;
+  }
+
+  /** CloudFormation compares template schema entries with the configured entries, not the full described schema. */
+  cloudFormationConfiguredSchema(poolId: string): Array<Record<string, unknown>> {
+    return configuredSchemaView(this.pool(poolId).configuration);
+  }
+
   async executeCloudFormationControl(
     operation: string,
     input: Record<string, unknown>,
@@ -3008,9 +3220,6 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       this.clock.now(),
     );
     return this.exclusive(async () => {
-      if (this.state.poolNameIndex[name]) {
-        throw new AwsError("InvalidParameterException", `A user pool named ${name} already exists.`);
-      }
       if (Object.keys(this.state.pools).length >= MAX_POOLS) {
         throw new AwsError("LimitExceededException", "The user-pool limit has been exceeded.");
       }
@@ -3049,7 +3258,6 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         federationReplayIds: {},
       };
       this.state.pools[id] = pool;
-      this.state.poolNameIndex[name] = id;
       this.state.revision += 1;
       await this.store.save();
       return { UserPool: poolView(pool) };
@@ -3108,17 +3316,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       region: this.region,
     });
     const nextName = input.PoolName === undefined ? pool.name : cognitoName(input.PoolName, "PoolName");
+    const addedTags = input.UserPoolTags === undefined ? undefined : tagMap(input.UserPoolTags);
     return this.exclusive(async () => {
       const current = this.pool(pool.id);
-      const conflict = this.state.poolNameIndex[nextName];
-      if (conflict && conflict !== current.id) {
-        throw new AwsError("InvalidParameterException", `A user pool named ${nextName} already exists.`);
-      }
-      if (current.name !== nextName) {
-        delete this.state.poolNameIndex[current.name];
-        this.state.poolNameIndex[nextName] = current.id;
-        current.name = nextName;
-      }
+      // UpdateUserPool.UserPoolTags assigns the supplied tags; tags that are not named are kept.
+      if (addedTags) Object.assign(current.tags, addedTags);
+      // AWS: PoolName is "A friendly name"; it is not unique.
+      current.name = nextName;
       current.configuration = nextConfiguration;
       current.updatedAt = this.clock.now();
       this.state.revision += 1;
@@ -3134,12 +3338,11 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     const id = userPoolId(input.UserPoolId);
     return this.exclusive(async () => {
       const pool = this.state.pools[id];
-      if (!pool) throw new AwsError("ResourceNotFoundException", "User pool not found.");
+      if (!pool) throw new AwsError("ResourceNotFoundException", `User pool ${id} does not exist.`);
       if (pool.configuration.deletionProtection === "ACTIVE") {
         throw new AwsError("InvalidParameterException", "User pool deletion protection is active.");
       }
       delete this.state.pools[id];
-      delete this.state.poolNameIndex[pool.name];
       if (pool.domain) delete this.state.domainIndex[pool.domain.domain];
       for (const [intentId, intent] of Object.entries(this.state.deliveryIntents)) {
         if (intent.poolId === id) delete this.state.deliveryIntents[intentId];
@@ -3164,8 +3367,14 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     const pool = this.pool(input.UserPoolId);
     const name = cognitoName(input.ClientName, "ClientName");
     const configuration = clientConfiguration(input, "create");
-    this.validateClientAttributes(pool, configuration.readAttributes, "ReadAttributes");
-    this.validateClientAttributes(pool, configuration.writeAttributes, "WriteAttributes");
+    this.validateClientAttributes(pool, configuration.readAttributes ?? [], "ReadAttributes");
+    this.validateClientAttributes(pool, configuration.writeAttributes ?? [], "WriteAttributes");
+    if (pool.configuration.userPoolTier === "LITE" && configuration.explicitAuthFlows.includes("ALLOW_USER_AUTH")) {
+      throw new AwsError(
+        "FeatureUnavailableInTierException",
+        "ALLOW_USER_AUTH requires a user pool on the Essentials or Plus feature plan.",
+      );
+    }
     const secretCreation = clientSecretCreation(input);
     this.validateClientOAuth(
       pool,
@@ -3174,9 +3383,6 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     );
     return this.exclusive(async () => {
       const current = this.pool(pool.id);
-      if (current.clientNameIndex[name]) {
-        throw new AwsError("InvalidParameterException", `An app client named ${name} already exists.`);
-      }
       if (Object.keys(current.clients).length >= MAX_CLIENTS_PER_POOL) {
         throw new AwsError("LimitExceededException", "The app-client limit has been exceeded.");
       }
@@ -3198,7 +3404,6 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         ]);
       }
       current.clients[id] = client;
-      current.clientNameIndex[name] = id;
       current.updatedAt = now;
       this.state.revision += 1;
       await this.store.save();
@@ -3250,20 +3455,22 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     const existing = this.appClient(pool, input.ClientId);
     const name = input.ClientName === undefined ? existing.name : cognitoName(input.ClientName, "ClientName");
     const configuration = clientConfiguration(input, "update");
-    this.validateClientAttributes(pool, configuration.readAttributes, "ReadAttributes");
-    this.validateClientAttributes(pool, configuration.writeAttributes, "WriteAttributes");
+    this.validateClientAttributes(pool, configuration.readAttributes ?? [], "ReadAttributes");
+    this.validateClientAttributes(pool, configuration.writeAttributes ?? [], "WriteAttributes");
+    if (pool.configuration.userPoolTier === "LITE" && configuration.explicitAuthFlows.includes("ALLOW_USER_AUTH")) {
+      throw new AwsError(
+        "FeatureUnavailableInTierException",
+        "ALLOW_USER_AUTH requires a user pool on the Essentials or Plus feature plan.",
+      );
+    }
     this.validateClientOAuth(pool, configuration, clientHasSecret(existing));
     return this.exclusive(async () => {
       const currentPool = this.pool(pool.id);
       const current = this.appClient(currentPool, existing.id);
-      const conflict = currentPool.clientNameIndex[name];
-      if (conflict && conflict !== current.id) {
-        throw new AwsError("InvalidParameterException", `An app client named ${name} already exists.`);
-      }
-      if (current.name !== name) {
-        delete currentPool.clientNameIndex[current.name];
-        currentPool.clientNameIndex[name] = current.id;
-      }
+      // UpdateUserPoolClient resets omitted settings, including the attribute lists, to their defaults.
+      if (configuration.readAttributes === undefined) delete current.readAttributes;
+      if (configuration.writeAttributes === undefined) delete current.writeAttributes;
+      if (configuration.defaultRedirectUri === undefined) delete current.defaultRedirectUri;
       Object.assign(current, configuration, { name, updatedAt: this.clock.now() });
       currentPool.updatedAt = current.updatedAt;
       this.state.revision += 1;
@@ -3283,7 +3490,6 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       const client = currentPool.clients[id];
       if (!client) throw new AwsError("ResourceNotFoundException", "App client not found.");
       delete currentPool.clients[id];
-      delete currentPool.clientNameIndex[client.name];
       for (const [brandingId, branding] of Object.entries(currentPool.managedLoginBranding)) {
         if (branding.clientId === id) delete currentPool.managedLoginBranding[brandingId];
       }
@@ -3694,13 +3900,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     let index = 0;
     if (input.NextToken !== undefined) {
       try {
-        const cursor = this.tokens.decode<{ poolId: string; revision: number; index: number }>(
+        const cursor = this.tokens.decode<{ poolId: string; issuedAt: number; index: number }>(
           "ListIdentityProviders",
           input.NextToken,
         );
         if (
           cursor.poolId !== pool.id
-          || cursor.revision !== this.state.revision
+          || !this.paginationTokenFresh(cursor.issuedAt)
           || !Number.isInteger(cursor.index)
           || cursor.index < 0
         ) throw new Error();
@@ -3724,7 +3930,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         ? {
             NextToken: this.tokens.encode("ListIdentityProviders", {
               poolId: pool.id,
-              revision: this.state.revision,
+              issuedAt: this.clock.now(),
               index: next,
             }),
           }
@@ -4051,20 +4257,21 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       throw new AwsError("InvalidParameterException", "ListResourceServers contains an unsupported field.");
     }
     const pool = this.pool(input.UserPoolId);
-    const max = input.MaxResults === undefined ? 60 : input.MaxResults;
-    if (!Number.isInteger(max) || max < 1 || max > 60) {
-      throw new AwsError("InvalidParameterException", "MaxResults must be an integer from 1 through 60.");
+    // AWS: ListResourceServers.MaxResults is required, 1-50.
+    const max = input.MaxResults;
+    if (!Number.isInteger(max) || max < 1 || max > 50) {
+      throw new AwsError("InvalidParameterException", "MaxResults must be an integer from 1 through 50.");
     }
     let index = 0;
     if (input.NextToken !== undefined) {
       try {
-        const cursor = this.tokens.decode<{ poolId: string; revision: number; index: number }>(
+        const cursor = this.tokens.decode<{ poolId: string; issuedAt: number; index: number }>(
           "ListResourceServers",
           input.NextToken,
         );
         if (
           cursor.poolId !== pool.id
-          || cursor.revision !== this.state.revision
+          || !this.paginationTokenFresh(cursor.issuedAt)
           || !Number.isInteger(cursor.index)
           || cursor.index < 0
         ) throw new Error();
@@ -4083,7 +4290,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         ? {
             NextToken: this.tokens.encode("ListResourceServers", {
               poolId: pool.id,
-              revision: this.state.revision,
+              issuedAt: this.clock.now(),
               index: next,
             }),
           }
@@ -4184,9 +4391,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
     const pool = this.pool(input.UserPoolId);
     const domain = this.domainName(input.Domain);
-    const managedLoginVersion = input.ManagedLoginVersion ?? 2;
+    // Lite pools offer only the classic hosted UI, so an omitted version records 1 there.
+    const managedLoginVersion = input.ManagedLoginVersion ?? (pool.configuration.userPoolTier === "LITE" ? 1 : 2);
     if (![1, 2].includes(managedLoginVersion)) {
       throw new AwsError("InvalidParameterException", "ManagedLoginVersion must be 1 or 2.");
+    }
+    if (managedLoginVersion === 2 && pool.configuration.userPoolTier === "LITE") {
+      throw new AwsError("FeatureUnavailableInTierException", "Managed login requires the Essentials or Plus feature plan.");
     }
     if (!this.publicBaseUrl) {
       throw new AwsError("InvalidParameterException", "The Cognito public origin is not bound.");
@@ -4724,7 +4935,6 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       UserLastModifiedDate: timestamp(user.updatedAt),
       Enabled: user.enabled,
       UserStatus: user.status,
-      MFAOptions: [],
       PreferredMfaSetting: user.preferredMfaSetting,
       UserMFASettingList: [...user.userMfaSettingList],
     };
@@ -4746,26 +4956,35 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       if (typeof input.Filter !== "string" || input.Filter.length > 256) {
         throw new AwsError("InvalidParameterException", "Filter is invalid.");
       }
-      const match = /^(username|email|status|cognito:user_status)\s*(=|\^=)\s*"([^"]*)"$/.exec(input.Filter);
+      // AWS: searchable attributes are username, email, phone_number, name, given_name, family_name,
+      // preferred_username, cognito:user_status (case-insensitive), status (Enabled/Disabled), and sub.
+      const match = /^\s*(username|email|phone_number|name|given_name|family_name|preferred_username|cognito:user_status|status|sub)\s*(=|\^=)\s*"([^"]*)"\s*$/.exec(input.Filter);
       if (!match) throw new AwsError("InvalidParameterException", "Filter is invalid.");
-      const [, field, operator, expected] = match;
+      const [, field, operator, rawExpected] = match;
+      const insensitive = field === "cognito:user_status";
+      const expected = insensitive ? rawExpected.toLowerCase() : rawExpected;
       users = users.filter(user => {
-        const value = field === "username"
+        const raw = field === "username"
           ? user.username
-          : field === "email"
-            ? user.attributes.email?.value ?? ""
-            : user.status;
+          : field === "sub"
+            ? user.sub
+            : field === "status"
+              ? user.enabled ? "Enabled" : "Disabled"
+              : field === "cognito:user_status"
+                ? user.status
+                : user.attributes[field]?.value ?? "";
+        const value = insensitive ? raw.toLowerCase() : raw;
         return operator === "=" ? value === expected : value.startsWith(expected);
       });
     }
     let index = 0;
     if (input.PaginationToken !== undefined) {
       try {
-        const cursor = this.tokens.decode<{ poolId: string; revision: number; index: number }>(
+        const cursor = this.tokens.decode<{ poolId: string; issuedAt: number; index: number }>(
           "ListUsers",
           input.PaginationToken,
         );
-        if (cursor.poolId !== pool.id || cursor.revision !== this.state.revision || !Number.isInteger(cursor.index)) {
+        if (cursor.poolId !== pool.id || !this.paginationTokenFresh(cursor.issuedAt) || !Number.isInteger(cursor.index)) {
           throw new Error();
         }
         index = cursor.index;
@@ -4775,13 +4994,25 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
     const page = users.slice(index, index + limit);
     const next = index + page.length;
+    let projection: Set<string> | undefined;
+    if (input.AttributesToGet !== undefined) {
+      if (!Array.isArray(input.AttributesToGet) || input.AttributesToGet.some((name: unknown) => typeof name !== "string")) {
+        throw new AwsError("InvalidParameterException", "AttributesToGet must be an array of attribute names.");
+      }
+      projection = new Set(input.AttributesToGet);
+    }
     return {
-      Users: page.map(userView),
+      Users: page.map(user => {
+        const view = userView(user);
+        return projection
+          ? { ...view, Attributes: (view.Attributes as Array<{ Name: string }>).filter(attribute => projection!.has(attribute.Name)) }
+          : view;
+      }),
       ...(next < users.length
         ? {
             PaginationToken: this.tokens.encode("ListUsers", {
               poolId: pool.id,
-              revision: this.state.revision,
+              issuedAt: this.clock.now(),
               index: next,
             }),
           }
@@ -4873,7 +5104,8 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     if (
       Object.keys(input).some(key => !["UserPoolId", "Username", "Password", "Permanent"].includes(key))
       || typeof input.Password !== "string"
-      || typeof input.Permanent !== "boolean"
+      // AWS: Permanent is optional and an omitted value sets a temporary password.
+      || input.Permanent !== undefined && typeof input.Permanent !== "boolean"
     ) {
       throw new AwsError("InvalidParameterException", "AdminSetUserPassword parameters are invalid.");
     }
@@ -4972,7 +5204,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       throw new AwsError("InvalidParameterException", "TagResource parameters are invalid.");
     }
     const pool = Object.values(this.state.pools).find(candidate => candidate.arn === input.ResourceArn);
-    if (!pool) throw new AwsError("ResourceNotFoundException", "User pool not found.");
+    if (!pool) throw new AwsError("ResourceNotFoundException", "The resource ARN does not identify an existing user pool.");
     const tags = tagMap(input.Tags);
     return this.exclusive(async () => {
       const current = this.pool(pool.id);
@@ -4995,7 +5227,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       throw new AwsError("InvalidParameterException", "UntagResource parameters are invalid.");
     }
     const pool = Object.values(this.state.pools).find(candidate => candidate.arn === input.ResourceArn);
-    if (!pool) throw new AwsError("ResourceNotFoundException", "User pool not found.");
+    if (!pool) throw new AwsError("ResourceNotFoundException", "The resource ARN does not identify an existing user pool.");
     return this.exclusive(async () => {
       const current = this.pool(pool.id);
       for (const key of input.TagKeys) delete current.tags[key];
@@ -5011,7 +5243,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       throw new AwsError("InvalidParameterException", "ListTagsForResource parameters are invalid.");
     }
     const pool = Object.values(this.state.pools).find(candidate => candidate.arn === input.ResourceArn);
-    if (!pool) throw new AwsError("ResourceNotFoundException", "User pool not found.");
+    if (!pool) throw new AwsError("ResourceNotFoundException", "The resource ARN does not identify an existing user pool.");
     return { Tags: { ...pool.tags } };
   }
 
@@ -5030,7 +5262,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       current.updatedAt = now;
       this.state.revision += 1;
       await this.store.save();
-      return { Group: groupView(current.groups[name]) };
+      return { Group: groupView(current.groups[name], current.id) };
     });
   }
 
@@ -5069,7 +5301,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     }
     const group = this.pool(input.UserPoolId).groups[groupName(input.GroupName)];
     if (!group) throw new AwsError("ResourceNotFoundException", "Group not found.");
-    return { Group: groupView(group) };
+    return { Group: groupView(group, userPoolId(input.UserPoolId)) };
   }
 
   ListGroups(input: Record<string, any>): Record<string, unknown> {
@@ -5085,8 +5317,8 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     let index = 0;
     if (input.NextToken !== undefined) {
       try {
-        const cursor = this.tokens.decode<{ poolId: string; revision: number; index: number }>("ListGroups", input.NextToken);
-        if (cursor.poolId !== pool.id || cursor.revision !== this.state.revision) throw new Error();
+        const cursor = this.tokens.decode<{ poolId: string; issuedAt: number; index: number }>("ListGroups", input.NextToken);
+        if (cursor.poolId !== pool.id || !this.paginationTokenFresh(cursor.issuedAt)) throw new Error();
         index = cursor.index;
       } catch {
         throw new AwsError("InvalidParameterException", "NextToken is invalid.");
@@ -5095,9 +5327,9 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     const page = groups.slice(index, index + limit);
     const next = index + page.length;
     return {
-      Groups: page.map(groupView),
+      Groups: page.map(group => groupView(group, pool.id)),
       ...(next < groups.length
-        ? { NextToken: this.tokens.encode("ListGroups", { poolId: pool.id, revision: this.state.revision, index: next }) }
+        ? { NextToken: this.tokens.encode("ListGroups", { poolId: pool.id, issuedAt: this.clock.now(), index: next }) }
         : {}),
     };
   }
@@ -5121,7 +5353,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       current.updatedAt = group.updatedAt;
       this.state.revision += 1;
       await this.store.save();
-      return { Group: groupView(group) };
+      return { Group: groupView(group, userPoolId(input.UserPoolId)) };
     });
   }
 
@@ -5191,13 +5423,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         const cursor = this.tokens.decode<{
           poolId: string;
           userSub: string;
-          revision: number;
+          issuedAt: number;
           index: number;
         }>("AdminListGroupsForUser", input.NextToken);
         if (
           cursor.poolId !== pool.id
           || cursor.userSub !== user.sub
-          || cursor.revision !== this.state.revision
+          || !this.paginationTokenFresh(cursor.issuedAt)
           || !Number.isInteger(cursor.index)
         ) throw new Error();
         index = cursor.index;
@@ -5211,13 +5443,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     const page = groups.slice(index, index + limit);
     const next = index + page.length;
     return {
-      Groups: page.map(groupView),
+      Groups: page.map(group => groupView(group, pool.id)),
       ...(next < groups.length
         ? {
             NextToken: this.tokens.encode("AdminListGroupsForUser", {
               poolId: pool.id,
               userSub: user.sub,
-              revision: this.state.revision,
+              issuedAt: this.clock.now(),
               index: next,
             }),
           }
@@ -5245,13 +5477,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         const cursor = this.tokens.decode<{
           poolId: string;
           groupName: string;
-          revision: number;
+          issuedAt: number;
           index: number;
         }>("ListUsersInGroup", input.NextToken);
         if (
           cursor.poolId !== pool.id
           || cursor.groupName !== name
-          || cursor.revision !== this.state.revision
+          || !this.paginationTokenFresh(cursor.issuedAt)
           || !Number.isInteger(cursor.index)
         ) throw new Error();
         index = cursor.index;
@@ -5268,7 +5500,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
             NextToken: this.tokens.encode("ListUsersInGroup", {
               poolId: pool.id,
               groupName: name,
-              revision: this.state.revision,
+              issuedAt: this.clock.now(),
               index: next,
             }),
           }
@@ -5306,6 +5538,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     const generationId = randomBytes(16).toString("base64url");
     const now = this.clock.now();
     let intentId: string | undefined;
+    let signUpSession: string | undefined;
     const user: CognitoUserState = {
       sub,
       username: pool.configuration.usernameAttributes.includes("email") ? sub : parsed.submittedUsername,
@@ -5344,7 +5577,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       const currentPool = this.pool(pool.id);
       const currentClient = this.appClient(currentPool, client.id);
       if (currentPool.usernameIndex[parsed.usernameIndexKey]) {
-        throw new AwsError("UsernameExistsException", "An account with the given username already exists.");
+        throw new AwsError("UsernameExistsException", "User already exists");
       }
       if (
         user.status === "UNCONFIRMED"
@@ -5364,6 +5597,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       }
       currentPool.usersBySub[sub] = user;
       currentPool.usernameIndex[parsed.usernameIndexKey] = sub;
+      if (clientAllowsAuthFlow(currentClient, "ALLOW_USER_AUTH")) {
+        // AWS: "A session Id that you can pass to ConfirmSignUp when you want to immediately sign in your user with the USER_AUTH flow".
+        signUpSession = this.createChallenge(currentPool, currentClient, user, "SIGN_UP").id;
+      }
       if (
         user.attributes.email?.verified
         && currentPool.configuration.aliasAttributes.includes("email")
@@ -5387,6 +5624,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     return {
       UserConfirmed: user.status === "CONFIRMED",
       UserSub: sub,
+      ...(signUpSession ? { Session: signUpSession } : {}),
       ...(intentId ? {
         CodeDeliveryDetails: {
           Destination: maskEmail(email!.value),
@@ -5397,33 +5635,51 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     };
   }
 
-  async ConfirmSignUp(input: Record<string, any>): Promise<Record<string, never>> {
+  async ConfirmSignUp(input: Record<string, any>): Promise<Record<string, unknown>> {
     const unknown = Object.keys(input).find(key => ![
-      "ClientId", "SecretHash", "Username", "ConfirmationCode", "ForceAliasCreation", "ClientMetadata",
+      "ClientId", "SecretHash", "Username", "ConfirmationCode", "ForceAliasCreation", "ClientMetadata", "Session",
     ].includes(key));
-    if (unknown) throw new AwsError("InvalidParameterException", `ConfirmSignUp does not support ${unknown} in COG-01.`);
+    if (unknown) throw new AwsError("InvalidParameterException", `ConfirmSignUp does not support ${unknown}.`);
     const clientMetadata = stringRecord(input.ClientMetadata, "ClientMetadata");
     const { pool, client } = this.appClientAcrossPools(input.ClientId);
     modeledUsername(input.Username);
     if (typeof input.ConfirmationCode !== "string") {
-      throw new AwsError("CodeMismatchException", "Invalid verification code provided.");
+      throw new AwsError("CodeMismatchException", "Invalid verification code provided, please try again.");
     }
     if (input.ForceAliasCreation !== undefined && typeof input.ForceAliasCreation !== "boolean") {
       throw new AwsError("InvalidParameterException", "ForceAliasCreation must be a boolean.");
     }
     let confirmedUser: CognitoUserState | undefined;
+    let confirmedSession: string | undefined;
     await this.exclusive(async () => {
       const currentPool = this.pool(pool.id);
       this.appClient(currentPool, client.id);
       const user = findUserByModeledUsername(currentPool, input.Username);
       if (!user) {
         if (client.preventUserExistenceErrors === "ENABLED") {
-          throw new AwsError("CodeMismatchException", "Invalid verification code provided.");
+          throw new AwsError("CodeMismatchException", "Invalid verification code provided, please try again.");
         }
         throw new AwsError("UserNotFoundException", "User does not exist.");
       }
       if (user.status === "CONFIRMED") {
         throw new AwsError("NotAuthorizedException", "User cannot be confirmed. Current status is CONFIRMED.");
+      }
+      const signUpChallenge = input.Session === undefined
+        ? undefined
+        : typeof input.Session === "string" ? currentPool.challenges[input.Session] : undefined;
+      if (
+        input.Session !== undefined
+        && (
+          !signUpChallenge
+          || signUpChallenge.purpose !== "SIGN_UP"
+          || signUpChallenge.status !== "ACTIVE"
+          || signUpChallenge.clientId !== client.id
+          || signUpChallenge.userSub !== user.sub
+          || signUpChallenge.userGenerationId !== user.generationId
+          || this.clock.now() >= signUpChallenge.expiresAt
+        )
+      ) {
+        throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
       }
       const intent = user.activeConfirmationIntentId
         ? this.state.deliveryIntents[user.activeConfirmationIntentId]
@@ -5453,7 +5709,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         if (intent.attempts >= CONFIRMATION_ATTEMPTS) {
           throw new AwsError("LimitExceededException", "Confirmation code attempt limit exceeded.");
         }
-        throw new AwsError("CodeMismatchException", "Invalid verification code provided.");
+        throw new AwsError("CodeMismatchException", "Invalid verification code provided, please try again.");
       }
       const email = user.attributes.email;
       if (currentPool.configuration.aliasAttributes.includes("email")) {
@@ -5471,6 +5727,11 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       user.status = "CONFIRMED";
       user.updatedAt = this.clock.now();
       user.activeConfirmationIntentId = undefined;
+      if (signUpChallenge) {
+        signUpChallenge.signUpConfirmed = true;
+        signUpChallenge.expiresAt = this.clock.now() + this.appClient(currentPool, client.id).authSessionValidity * 60_000;
+        confirmedSession = signUpChallenge.id;
+      }
       intent.status = "CONSUMED";
       intent.statusUpdatedAt = this.clock.now();
       for (const other of Object.values(this.state.deliveryIntents)) {
@@ -5497,12 +5758,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       "PostConfirmation_ConfirmSignUp",
       { clientMetadata },
     );
-    return {};
+    return confirmedSession ? { Session: confirmedSession } : {};
   }
 
   async ResendConfirmationCode(input: Record<string, any>): Promise<Record<string, unknown>> {
-    const unknown = Object.keys(input).find(key => !["ClientId", "SecretHash", "Username"].includes(key));
-    if (unknown) throw new AwsError("InvalidParameterException", `ResendConfirmationCode does not support ${unknown} in COG-01.`);
+    const unknown = Object.keys(input).find(key => !["ClientId", "SecretHash", "Username", "ClientMetadata"].includes(key));
+    if (unknown) throw new AwsError("InvalidParameterException", `ResendConfirmationCode does not support ${unknown}.`);
+    const resendClientMetadata = stringRecord(input.ClientMetadata, "ClientMetadata");
     const { pool, client } = this.appClientAcrossPools(input.ClientId);
     modeledUsername(input.Username);
     let intentId: string | undefined;
@@ -5527,7 +5789,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         throw new AwsError("LimitExceededException", "Confirmation code resend limit exceeded.");
       }
       const intent = this.newDeliveryIntent(currentPool, currentClient, user, "RESEND_SIGN_UP");
-      await this.applyCustomMessage(currentPool, currentClient, user, intent);
+      await this.applyCustomMessage(currentPool, currentClient, user, intent, resendClientMetadata);
       this.state.deliveryIntents[intent.id] = intent;
       intentId = intent.id;
       email = user.attributes.email.value;
@@ -5643,10 +5905,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     const preferredRole = preferredCandidates.size === 1 ? [...preferredCandidates][0] : undefined;
     const readableAttributes = Object.fromEntries(
       Object.entries(user.attributes)
-        .filter(([name]) => client.readAttributes.includes(name))
+        .filter(([name]) => clientCanReadAttribute(client, name))
         .map(([name, attribute]) => [name, attribute.value]),
     );
-    if (client.readAttributes.includes("email") && user.attributes.email) {
+    if (clientCanReadAttribute(client, "email") && user.attributes.email) {
       readableAttributes.email = user.attributes.email.value;
     }
     const baseIdClaims: Record<string, unknown> = {
@@ -5673,7 +5935,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           }
         : {}),
       ...(session.oauthNonce ? { nonce: session.oauthNonce } : {}),
-      ...(client.readAttributes.includes("email") && user.attributes.email
+      ...(clientCanReadAttribute(client, "email") && user.attributes.email
         ? {
             email: user.attributes.email.value,
             email_verified: user.attributes.email.verified,
@@ -5690,6 +5952,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       client_id: client.id,
       iss: issuer,
       token_use: "access",
+      version: 2,
       scope: accessScopes.join(" "),
       auth_time: authTime,
       iat: now,
@@ -5810,9 +6073,12 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
   async InitiateAuth(input: Record<string, any>): Promise<Record<string, unknown>> {
     const admin = input.UserPoolId !== undefined;
     const unknown = Object.keys(input).find(key =>
-      !["AuthFlow", "AuthParameters", "ClientId", "ClientMetadata", ...(admin ? ["UserPoolId"] : [])].includes(key)
+      !["AuthFlow", "AuthParameters", "ClientId", "ClientMetadata", "Session", ...(admin ? ["UserPoolId"] : [])].includes(key)
     );
     if (unknown) throw new AwsError("InvalidParameterException", `InitiateAuth does not support ${unknown}.`);
+    if (input.Session !== undefined && input.AuthFlow !== "USER_AUTH") {
+      throw new AwsError("InvalidParameterException", "Session is accepted only with the USER_AUTH flow.");
+    }
     const located = admin
       ? (() => {
           const pool = this.pool(input.UserPoolId);
@@ -5833,8 +6099,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       if (parameters.DEVICE_KEY !== undefined) assertDeviceKey(parameters.DEVICE_KEY);
       return this.refreshAuthentication(input);
     }
-    if (!admin && input.AuthFlow === "USER_SRP_AUTH") {
-      if (!client.explicitAuthFlows.includes("ALLOW_USER_SRP_AUTH")) {
+    if (input.AuthFlow === "CUSTOM_AUTH") throwCog07Boundary("custom-auth-challenge");
+    if (admin && input.AuthFlow === "ADMIN_NO_SRP_AUTH") input.AuthFlow = "ADMIN_USER_PASSWORD_AUTH";
+    if (input.AuthFlow === "USER_SRP_AUTH") {
+      if (!clientAllowsAuthFlow(client, "ALLOW_USER_SRP_AUTH")) {
         throw new AwsError("InvalidParameterException", "USER_SRP_AUTH is not enabled for this app client.");
       }
       const parameters = input.AuthParameters;
@@ -5860,12 +6128,15 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         deviceKey,
       );
     }
+    if (input.AuthFlow === "USER_AUTH") {
+      return this.beginChoiceAuthentication(pool, client, input, clientMetadata);
+    }
     const expectedFlow = admin ? "ADMIN_USER_PASSWORD_AUTH" : "USER_PASSWORD_AUTH";
     if (input.AuthFlow !== expectedFlow) {
       throw new AwsError("InvalidParameterException", `${expectedFlow} is required.`);
     }
     const requiredFlow = admin ? "ALLOW_ADMIN_USER_PASSWORD_AUTH" : "ALLOW_USER_PASSWORD_AUTH";
-    if (!client.explicitAuthFlows.includes(requiredFlow)) {
+    if (!clientAllowsAuthFlow(client, requiredFlow)) {
       throw new AwsError("InvalidParameterException", `${expectedFlow} is not enabled for this app client.`);
     }
     const parameters = input.AuthParameters;
@@ -5885,25 +6156,41 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     const deviceKey = parameters.DEVICE_KEY === undefined
       ? undefined
       : assertDeviceKey(parameters.DEVICE_KEY);
-    modeledUsername(parameters.USERNAME);
-    const user = findUserByModeledUsername(pool, parameters.USERNAME);
+    return this.passwordAuthentication(pool, client, parameters.USERNAME, parameters.PASSWORD, clientMetadata, deviceKey);
+  }
+
+  private async passwordAuthentication(
+    pool: CognitoUserPoolState,
+    client: CognitoAppClientState,
+    username: string,
+    suppliedPassword: string,
+    clientMetadata: Record<string, string>,
+    deviceKey?: string,
+  ): Promise<Record<string, unknown>> {
+    modeledUsername(username);
+    const user = findUserByModeledUsername(pool, username);
     const passwordSnapshot = user ? {
       generationId: user.generationId,
       passwordChangedAt: user.passwordChangedAt,
       sessionEpoch: user.sessionEpoch,
       verifierFingerprint: passwordVerifierFingerprint(user),
     } : undefined;
+    if (user) this.assertSignInNotLockedOut(user);
     const passwordMatches = user
-      ? await this.passwords.verify(parameters.PASSWORD, user.password)
-      : await this.passwords.dummy(parameters.PASSWORD);
+      ? await this.passwords.verify(suppliedPassword, user.password)
+      : await this.passwords.dummy(suppliedPassword);
     if (!user) {
       if (client.preventUserExistenceErrors === "ENABLED") {
         throw new AwsError("NotAuthorizedException", "Incorrect username or password.");
       }
       throw new AwsError("UserNotFoundException", "User does not exist.");
     }
-    if (!passwordMatches || !user.enabled) {
+    if (!passwordMatches) {
+      await this.recordFailedSignIn(pool.id, user.sub);
       throw new AwsError("NotAuthorizedException", "Incorrect username or password.");
+    }
+    if (!user.enabled) {
+      throw new AwsError("NotAuthorizedException", "User is disabled.");
     }
     await this.invokeTrigger(
       pool,
@@ -5964,7 +6251,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         });
       }
       if (user.status === "RESET_REQUIRED") {
-        throw new AwsError("PasswordResetRequiredException", "Password reset is required.");
+        throw new AwsError("PasswordResetRequiredException", "Password reset required for the user");
       }
       throw new AwsError("UserNotConfirmedException", "User is not confirmed.");
     }
@@ -5999,6 +6286,218 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     return this.deliverAuthenticationStep(step);
   }
 
+  /** First factors this user may choose under USER_AUTH: password and SRP always, email OTP on eligible pools. */
+  private availableFirstFactors(
+    pool: CognitoUserPoolState,
+    user: CognitoUserState | undefined,
+  ): Array<"PASSWORD" | "PASSWORD_SRP" | "EMAIL_OTP"> {
+    const factors = pool.configuration.policies.signInPolicy?.allowedFirstAuthFactors ?? ["PASSWORD"];
+    return [
+      "PASSWORD",
+      "PASSWORD_SRP",
+      ...(factors.includes("EMAIL_OTP")
+        && pool.configuration.userPoolTier !== "LITE"
+        && pool.configuration.emailConfiguration.emailSendingAccount === "DEVELOPER"
+        && user?.status === "CONFIRMED"
+        && user.attributes.email?.verified
+        ? ["EMAIL_OTP" as const]
+        : []),
+    ];
+  }
+
+  private async beginChoiceAuthentication(
+    pool: CognitoUserPoolState,
+    client: CognitoAppClientState,
+    input: Record<string, any>,
+    clientMetadata: Record<string, string>,
+  ): Promise<Record<string, unknown>> {
+    if (!clientAllowsAuthFlow(client, "ALLOW_USER_AUTH")) {
+      throw new AwsError("InvalidParameterException", "USER_AUTH is not enabled for this app client.");
+    }
+    const parameters = input.AuthParameters;
+    if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
+      throw new AwsError("InvalidParameterException", "AuthParameters is required.");
+    }
+    if (parameters.TARGET_ACR_VALUES !== undefined || parameters.MAX_AGE !== undefined) {
+      throw new AwsError(
+        "InvalidParameterException",
+        "Step-up authentication (TARGET_ACR_VALUES and MAX_AGE) is not implemented in this simulator.",
+      );
+    }
+    if (
+      Object.keys(parameters).some(key =>
+        !["USERNAME", "PREFERRED_CHALLENGE", "PASSWORD", "SRP_A", "SECRET_HASH", "DEVICE_KEY"].includes(key)
+      )
+      || typeof parameters.USERNAME !== "string"
+      || parameters.PREFERRED_CHALLENGE !== undefined && typeof parameters.PREFERRED_CHALLENGE !== "string"
+    ) {
+      throw new AwsError("InvalidParameterException", "USER_AUTH parameters are invalid.");
+    }
+    const deviceKey = parameters.DEVICE_KEY === undefined ? undefined : assertDeviceKey(parameters.DEVICE_KEY);
+    modeledUsername(parameters.USERNAME);
+    const user = findUserByModeledUsername(pool, parameters.USERNAME);
+    if (input.Session !== undefined) {
+      return this.signUpSessionAuthentication(pool, client, user, input.Session, clientMetadata, deviceKey);
+    }
+    if (!user && client.preventUserExistenceErrors !== "ENABLED") {
+      throw new AwsError("UserNotFoundException", "User does not exist.");
+    }
+    const available = this.availableFirstFactors(pool, user);
+    const preferred = parameters.PREFERRED_CHALLENGE;
+    if (preferred === "PASSWORD" && typeof parameters.PASSWORD === "string") {
+      return this.passwordAuthentication(pool, client, parameters.USERNAME, parameters.PASSWORD, clientMetadata, deviceKey);
+    }
+    if (preferred === "PASSWORD_SRP" && typeof parameters.SRP_A === "string") {
+      if (!user) throw new AwsError("NotAuthorizedException", "Incorrect username or password.");
+      return this.beginSrpAuthentication(pool, client, parameters.USERNAME, parameters.SRP_A, clientMetadata, deviceKey);
+    }
+    if (!user) {
+      // PreventUserExistenceErrors=ENABLED: answer like an existing user without creating a usable session.
+      return {
+        ChallengeName: "SELECT_CHALLENGE",
+        Session: randomBytes(32).toString("base64url"),
+        ChallengeParameters: {},
+        AvailableChallenges: available,
+      };
+    }
+    if (preferred === "EMAIL_OTP" && available.includes("EMAIL_OTP")) {
+      return this.beginEmailOtpSignIn(pool, client, user, clientMetadata, deviceKey);
+    }
+    // AWS: "If the preferred challenge isn't available, Amazon Cognito responds with SELECT_CHALLENGE and a list of available challenges."
+    const purpose = preferred === "PASSWORD" ? "PASSWORD" : "SELECT_CHALLENGE";
+    return this.exclusive(async () => {
+      const currentPool = this.pool(pool.id);
+      const currentClient = this.appClient(currentPool, client.id);
+      const currentUser = currentPool.usersBySub[user.sub];
+      if (!currentUser || currentUser.generationId !== user.generationId) {
+        throw new AwsError("NotAuthorizedException", "Incorrect username or password.");
+      }
+      const challenge = this.createChallenge(currentPool, currentClient, currentUser, purpose, clientMetadata);
+      challenge.availableChallenges = available;
+      if (deviceKey) challenge.deviceKey = deviceKey;
+      this.state.revision += 1;
+      await this.store.save();
+      return {
+        ChallengeName: purpose,
+        Session: challenge.id,
+        ChallengeParameters: purpose === "PASSWORD" ? { USERNAME: currentUser.username } : {},
+        ...(purpose === "SELECT_CHALLENGE" ? { AvailableChallenges: [...available] } : {}),
+      };
+    });
+  }
+
+  private async beginEmailOtpSignIn(
+    pool: CognitoUserPoolState,
+    client: CognitoAppClientState,
+    user: CognitoUserState,
+    clientMetadata: Record<string, string>,
+    deviceKey?: string,
+  ): Promise<Record<string, unknown>> {
+    const step = await this.exclusive(async () => {
+      const currentPool = this.pool(pool.id);
+      const currentClient = this.appClient(currentPool, client.id);
+      const currentUser = currentPool.usersBySub[user.sub];
+      if (!currentUser || currentUser.generationId !== user.generationId || !currentUser.enabled) {
+        throw new AwsError("NotAuthorizedException", "Incorrect username or password.");
+      }
+      const result = await this.selectedMfaAuthenticationStep(
+        currentPool,
+        currentClient,
+        currentUser,
+        "EMAIL_OTP",
+        clientMetadata,
+        deviceKey,
+      );
+      this.state.revision += 1;
+      await this.store.save();
+      return result;
+    });
+    return this.deliverAuthenticationStep(step);
+  }
+
+  /** Signs a newly confirmed user in with the Session that SignUp issued and ConfirmSignUp accepted. */
+  private async signUpSessionAuthentication(
+    pool: CognitoUserPoolState,
+    client: CognitoAppClientState,
+    user: CognitoUserState | undefined,
+    session: unknown,
+    clientMetadata: Record<string, string>,
+    deviceKey?: string,
+  ): Promise<Record<string, unknown>> {
+    const step = await this.exclusive(async () => {
+      const currentPool = this.pool(pool.id);
+      const currentClient = this.appClient(currentPool, client.id);
+      const challenge = typeof session === "string" ? currentPool.challenges[session] : undefined;
+      const currentUser = user ? currentPool.usersBySub[user.sub] : undefined;
+      if (
+        !challenge
+        || !currentUser
+        || challenge.purpose !== "SIGN_UP"
+        || !challenge.signUpConfirmed
+        || challenge.status !== "ACTIVE"
+        || challenge.clientId !== currentClient.id
+        || challenge.userSub !== currentUser.sub
+        || challenge.userGenerationId !== currentUser.generationId
+        || this.clock.now() >= challenge.expiresAt
+        || !currentUser.enabled
+        || currentUser.status !== "CONFIRMED"
+      ) {
+        throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
+      }
+      challenge.status = "CONSUMED";
+      const result = await this.authenticationStep(currentPool, currentClient, currentUser, clientMetadata, deviceKey);
+      this.state.revision += 1;
+      await this.store.save();
+      return result;
+    });
+    return this.deliverAuthenticationStep(step);
+  }
+
+  private async respondChoiceChallenge(
+    input: Record<string, any>,
+    context: {
+      pool: CognitoUserPoolState;
+      client: CognitoAppClientState;
+      user: CognitoUserState;
+      challenge: import("./types.js").CognitoChallengeState;
+    },
+    clientMetadata: Record<string, string>,
+  ): Promise<Record<string, unknown>> {
+    const responses = input.ChallengeResponses as Record<string, unknown>;
+    const answer = input.ChallengeName === "PASSWORD" ? "PASSWORD" : responses.ANSWER;
+    const available = context.challenge.availableChallenges ?? ["PASSWORD", "PASSWORD_SRP"];
+    if (typeof answer !== "string" || !(available as string[]).includes(answer)) {
+      throw new AwsError("InvalidParameterException", "ANSWER must select an available challenge.");
+    }
+    if (answer === "PASSWORD" && typeof responses.PASSWORD !== "string") {
+      throw new AwsError("InvalidParameterException", "PASSWORD is required.");
+    }
+    if (answer === "PASSWORD_SRP" && typeof responses.SRP_A !== "string") {
+      throw new AwsError("InvalidParameterException", "SRP_A is required.");
+    }
+    await this.exclusive(async () => {
+      const challenge = this.pool(context.pool.id).challenges[context.challenge.id];
+      if (!challenge || challenge.status !== "ACTIVE") {
+        throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
+      }
+      challenge.status = "CONSUMED";
+      this.state.revision += 1;
+      await this.store.save();
+    });
+    const deviceKey = context.challenge.deviceKey;
+    if (answer === "PASSWORD") {
+      return this.passwordAuthentication(
+        context.pool, context.client, responses.USERNAME as string, responses.PASSWORD as string, clientMetadata, deviceKey,
+      );
+    }
+    if (answer === "PASSWORD_SRP") {
+      return this.beginSrpAuthentication(
+        context.pool, context.client, responses.USERNAME as string, responses.SRP_A as string, clientMetadata, deviceKey,
+      );
+    }
+    return this.beginEmailOtpSignIn(context.pool, context.client, context.user, clientMetadata, deviceKey);
+  }
+
   AdminInitiateAuth(input: Record<string, any>): Promise<Record<string, unknown>> {
     if (input.UserPoolId === undefined) {
       throw new AwsError("InvalidParameterException", "UserPoolId is required.");
@@ -6025,7 +6524,9 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       }
       throw new AwsError("UserNotFoundException", "User does not exist.");
     }
-    if (!user.enabled || !user.srp || !["CONFIRMED", "FORCE_CHANGE_PASSWORD"].includes(user.status)) {
+    this.assertSignInNotLockedOut(user);
+    if (!user.enabled) throw new AwsError("NotAuthorizedException", "User is disabled.");
+    if (!user.srp || !["CONFIRMED", "FORCE_CHANGE_PASSWORD"].includes(user.status)) {
       throw new AwsError("NotAuthorizedException", "Incorrect username or password.");
     }
     const A = BigInt(`0x${suppliedA}`);
@@ -6105,14 +6606,17 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     stringRecord(input.ClientMetadata, "ClientMetadata");
     const context = this.challengeProof.get(input);
     if (!context || context.challenge.purpose !== input.ChallengeName) {
-      throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+      throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
     }
     const suppliedClientMetadata = stringRecord(input.ClientMetadata, "ClientMetadata");
     const clientMetadata = Object.keys(suppliedClientMetadata).length
       ? suppliedClientMetadata
       : context.challenge.clientMetadata ?? {};
     if (input.UserPoolId !== undefined && input.UserPoolId !== context.pool.id) {
-      throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+      throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
+    }
+    if (input.ChallengeName === "SELECT_CHALLENGE" || input.ChallengeName === "PASSWORD") {
+      return this.respondChoiceChallenge(input, context, clientMetadata);
     }
     if (input.ChallengeName === "PASSWORD_VERIFIER") {
       const responses = input.ChallengeResponses;
@@ -6157,6 +6661,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       supplied.fill(0);
       expected.fill(0);
       if (!valid) {
+        await this.recordFailedSignIn(context.pool.id, context.user.sub);
         return this.failedMfaChallenge(context, "Incorrect username or password.", "NotAuthorizedException");
       }
       await this.invokeTrigger(
@@ -6173,7 +6678,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         const user = pool.usersBySub[context.user.sub];
         const challenge = pool.challenges[context.challenge.id];
         if (!user || !challenge || challenge.status !== "ACTIVE" || !user.enabled) {
-          throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+          throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
         }
         challenge.status = "CONSUMED";
         delete challenge.srpKey;
@@ -6240,7 +6745,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           || !user.userMfaSettingList.includes(answer)
           || !pool.configuration.enabledMfas.includes(answer)
         ) {
-          throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+          throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
         }
         challenge.status = "CONSUMED";
         const selected = await this.selectedMfaAuthenticationStep(
@@ -6314,19 +6819,31 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       context.user,
     );
     const requiredAttributeSet = new Set(requiredAttributeKeys);
+    // AWS: any attribute the app client can write may accompany the new password, not only the required ones.
+    const suppliedAttributeKeys = Object.keys(responses).filter(key => key.startsWith("userAttributes."));
     const unsupportedResponse = Object.keys(responses).find(key =>
       !["USERNAME", "NEW_PASSWORD", "SECRET_HASH"].includes(key)
       && !requiredAttributeSet.has(key)
+      && !(
+        key.startsWith("userAttributes.")
+        && clientCanWriteAttribute(context.client, key.slice("userAttributes.".length))
+        && !context.pool.configuration.schemaAttributes.some(schema =>
+          !schema.mutable
+          && (STANDARD_USER_ATTRIBUTES.has(schema.name) ? schema.name : `custom:${schema.name}`) === key.slice("userAttributes.".length)
+          && context.user.attributes[key.slice("userAttributes.".length)] !== undefined)
+      )
     );
     if (unsupportedResponse) {
       throw new AwsError("InvalidParameterException", `Challenge response ${unsupportedResponse} is not writable.`);
     }
-    if (requiredAttributeKeys.some(key => typeof responses[key] !== "string")) {
+    if ([...requiredAttributeKeys, ...suppliedAttributeKeys].some(key => typeof responses[key] !== "string")) {
       throw new AwsError("InvalidParameterException", "Required user attributes must be supplied.");
     }
     const mergedAttributeInput = [
-      ...Object.entries(context.user.attributes).map(([Name, attribute]) => ({ Name, Value: attribute.value })),
-      ...requiredAttributeKeys.map(key => ({
+      ...Object.entries(context.user.attributes)
+        .filter(([Name]) => !suppliedAttributeKeys.includes(`userAttributes.${Name}`))
+        .map(([Name, attribute]) => ({ Name, Value: attribute.value })),
+      ...suppliedAttributeKeys.map(key => ({
         Name: key.slice("userAttributes.".length),
         Value: responses[key],
       })),
@@ -6361,7 +6878,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         || user.status !== "FORCE_CHANGE_PASSWORD"
         || this.clock.now() >= challenge.expiresAt
       ) {
-        throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+        throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
       }
       const previousPassword = user.password;
       const previousHistory = [...user.passwordHistory];
@@ -6371,10 +6888,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       const previousStatus = user.status;
       const currentRequiredAttributeKeys = this.missingNewPasswordRequiredAttributes(pool, client, user);
       if (JSON.stringify(currentRequiredAttributeKeys) !== JSON.stringify(requiredAttributeKeys)) {
-        throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+        throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
       }
       const previousAttributes = structuredClone(user.attributes);
-      for (const key of requiredAttributeKeys) {
+      for (const key of suppliedAttributeKeys) {
         const name = key.slice("userAttributes.".length);
         user.attributes[name] = validatedAttributes[name];
       }
@@ -6481,7 +6998,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       const user = pool.usersBySub[context.user.sub];
       const prior = pool.challenges[context.challenge.id];
       if (!user || !prior || prior.status !== "ACTIVE" || prior.purpose !== "DEVICE_SRP_AUTH") {
-        throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+        throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
       }
       prior.status = "CONSUMED";
       const challenge = this.createChallenge(pool, client, user, "DEVICE_PASSWORD_VERIFIER", clientMetadata);
@@ -6579,7 +7096,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         || !currentDevice
         || currentDevice.rememberedStatus !== "remembered"
       ) {
-        throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+        throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
       }
       challenge.status = "CONSUMED";
       delete challenge.srpKey;
@@ -6669,7 +7186,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         || challenge.status !== "ACTIVE"
         || this.clock.now() >= challenge.expiresAt
       ) {
-        throw new AwsError("NotAuthorizedException", "Invalid session for the user.");
+        throw new AwsError("NotAuthorizedException", "Invalid session for the user, session is expired.");
       }
       const created = this.newRefreshSession(pool, client, user);
       const authentication = await this.authenticationResult(
@@ -6732,9 +7249,6 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     ].includes(key));
     if (unknown) throw new AwsError("InvalidParameterException", `ForgotPassword does not support ${unknown}.`);
     stringRecord(input.ClientMetadata, "ClientMetadata");
-    if (input.UserContextData !== undefined) {
-      throw new AwsError("InvalidParameterException", "UserContextData is unavailable.");
-    }
     const { pool, client } = this.appClientAcrossPools(input.ClientId);
     const user = (() => {
       try { return this.adminUser(pool, input.Username); } catch { return undefined; }
@@ -6746,7 +7260,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       throw new AwsError("UserNotFoundException", "User does not exist.");
     }
     if (!user.enabled || !["CONFIRMED", "RESET_REQUIRED"].includes(user.status)) {
-      throw new AwsError("InvalidParameterException", "User password cannot be reset in the current state.");
+      throw new AwsError("NotAuthorizedException", "User password cannot be reset in the current state.");
     }
     const recoveryEmail = passwordRecoveryEmail(pool, user, false);
     let intentId: string | undefined;
@@ -6786,13 +7300,10 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       throw new AwsError("InvalidParameterException", `ConfirmForgotPassword does not support ${unknown}.`);
     }
     stringRecord(input.ClientMetadata, "ClientMetadata");
-    if (input.UserContextData !== undefined) {
-      throw new AwsError("InvalidParameterException", "UserContextData is unavailable.");
-    }
     const { pool, client } = this.appClientAcrossPools(input.ClientId);
     const user = this.adminUser(pool, input.Username);
     if (!user.enabled) {
-      throw new AwsError("CodeMismatchException", "Invalid verification code provided.");
+      throw new AwsError("CodeMismatchException", "Invalid verification code provided, please try again.");
     }
     validatePasswordPolicy(input.Password, pool.configuration.policies.passwordPolicy);
     const history = [user.password, ...user.passwordHistory];
@@ -6807,7 +7318,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       const currentPool = this.pool(pool.id);
       const currentUser = this.adminUser(currentPool, user.username);
       if (!currentUser.enabled) {
-        throw new AwsError("CodeMismatchException", "Invalid verification code provided.");
+        throw new AwsError("CodeMismatchException", "Invalid verification code provided, please try again.");
       }
       const intent = currentUser.activePasswordResetIntentId
         ? this.state.deliveryIntents[currentUser.activePasswordResetIntentId]
@@ -6839,7 +7350,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         if (intent.attempts >= CONFIRMATION_ATTEMPTS) {
           throw new AwsError("LimitExceededException", "Confirmation code attempt limit exceeded.");
         }
-        throw new AwsError("CodeMismatchException", "Invalid verification code provided.");
+        throw new AwsError("CodeMismatchException", "Invalid verification code provided, please try again.");
       }
       currentUser.passwordHistory = [currentUser.password, ...currentUser.passwordHistory]
         .slice(0, currentPool.configuration.policies.passwordPolicy.passwordHistorySize ?? 0);
@@ -6986,7 +7497,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         throw new AwsError("NotAuthorizedException", "Access Token has been revoked.");
       }
       for (const raw of input.UserAttributes ?? []) {
-        if (typeof raw?.Name === "string" && !client.writeAttributes.includes(raw.Name)) {
+        if (typeof raw?.Name === "string" && !clientCanWriteAttribute(client, raw.Name)) {
           throw new AwsError("NotAuthorizedException", `App client cannot write ${raw.Name}.`);
         }
       }
@@ -7247,7 +7758,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         intent.attempts += 1;
         this.state.revision += 1;
         await this.store.save();
-        throw new AwsError("CodeMismatchException", "Invalid verification code provided.");
+        throw new AwsError("CodeMismatchException", "Invalid verification code provided, please try again.");
       }
       const verifiedEmail = user.pendingAttributeValues?.email ?? user.attributes.email;
       if (!verifiedEmail) throw new AwsError("InvalidParameterException", "User has no email attribute.");
@@ -7384,17 +7895,20 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     } finally {
       supplied.fill(0);
     }
-    if (!valid) throw new AwsError("CodeMismatchException", "Invalid software token code.");
+    // AWS: "thrown when there is a code mismatch and the service fails to configure the software token TOTP" MFA.
+    if (!valid) throw new AwsError("EnableSoftwareTokenMFAException", "Code mismatch");
     await this.exclusive(async () => {
       const pool = this.pool(context.pool.id);
       const user = pool.usersBySub[context.user.sub];
       if (!user?.mfa.softwareToken?.secret) {
         throw new AwsError("SoftwareTokenMFANotFoundException", "Software token is not associated.");
       }
-      user.mfa.softwareToken.enabled = true;
       user.mfa.softwareToken.verifiedAt = this.clock.now();
-      if (!user.userMfaSettingList.includes("SOFTWARE_TOKEN_MFA")) {
-        user.userMfaSettingList.push("SOFTWARE_TOKEN_MFA");
+      // In an OPTIONAL pool a verified token is registered but not enforced until SetUserMFAPreference (or the
+      // admin variant) enables it; MFA_SETUP sessions and required-MFA pools activate it immediately.
+      if (input.Session !== undefined || pool.configuration.mfaConfiguration === "ON") {
+        user.mfa.softwareToken.enabled = true;
+        if (!user.userMfaSettingList.includes("SOFTWARE_TOKEN_MFA")) user.userMfaSettingList.push("SOFTWARE_TOKEN_MFA");
       }
       user.updatedAt = this.clock.now();
       this.state.revision += 1;
@@ -7513,14 +8027,20 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     const context = this.accessProof.get(input);
     if (!context) throw new AwsError("NotAuthorizedException", "Access Token has been revoked.");
     return {
+      Username: context.user.username,
+      ...(context.user.preferredMfaSetting ? { PreferredMfaSetting: context.user.preferredMfaSetting } : {}),
+      ...(context.user.userMfaSettingList.length ? { UserMFASettingList: [...context.user.userMfaSettingList] } : {}),
       ConfiguredUserAuthFactors: [
         "PASSWORD",
         ...(context.user.userMfaSettingList.includes("EMAIL_OTP") ? ["EMAIL_OTP"] : []),
+        ...(context.user.mfa.softwareToken?.verifiedAt ? ["SOFTWARE_TOKEN"] : []),
       ],
     };
   }
 
   async SetUserPoolMfaConfig(input: Record<string, any>): Promise<Record<string, unknown>> {
+    if (input.WebAuthnConfiguration !== undefined) throwCog07Boundary("webauthn");
+    if (input.SmsMfaConfiguration !== undefined) throwCog07Boundary("sms-delivery");
     if (Object.keys(input).some(key => ![
       "UserPoolId", "SmsMfaConfiguration", "SoftwareTokenMfaConfiguration",
       "MfaConfiguration", "EmailMfaConfiguration",
@@ -7740,13 +8260,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         const cursor = this.tokens.decode<{
           poolId: string;
           userSub: string;
-          revision: number;
+          issuedAt: number;
           index: number;
         }>(operation, paginationToken);
         if (
           cursor.poolId !== pool.id
           || cursor.userSub !== user.sub
-          || cursor.revision !== this.state.revision
+          || !this.paginationTokenFresh(cursor.issuedAt)
           || !Number.isInteger(cursor.index)
           || cursor.index < 0
         ) {
@@ -7766,7 +8286,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
             PaginationToken: this.tokens.encode(operation, {
               poolId: pool.id,
               userSub: user.sub,
-              revision: this.state.revision,
+              issuedAt: this.clock.now(),
               index: next,
             }),
           }
@@ -7918,13 +8438,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         const cursor = this.tokens.decode<{
           poolId: string;
           userSub: string;
-          revision: number;
+          issuedAt: number;
           index: number;
         }>("AdminListUserAuthEvents", input.NextToken);
         if (
           cursor.poolId !== pool.id
           || cursor.userSub !== user.sub
-          || cursor.revision !== this.state.revision
+          || !this.paginationTokenFresh(cursor.issuedAt)
           || !Number.isInteger(cursor.index)
           || cursor.index < 0
         ) {
@@ -7954,7 +8474,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
             NextToken: this.tokens.encode("AdminListUserAuthEvents", {
               poolId: pool.id,
               userSub: user.sub,
-              revision: this.state.revision,
+              issuedAt: this.clock.now(),
               index: next,
             }),
           }
@@ -8288,8 +8808,8 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       Username: context.user.username,
       UserAttributes: userAttributesView(context.user).filter(attribute =>
         attribute.Name === "sub"
-        || context.client.readAttributes.includes(attribute.Name)
-        || attribute.Name === "email_verified" && context.client.readAttributes.includes("email")
+        || clientCanReadAttribute(context.client, attribute.Name)
+        || attribute.Name === "email_verified" && clientCanReadAttribute(context.client, "email")
       ),
       PreferredMfaSetting: context.user.preferredMfaSetting,
       UserMFASettingList: [...context.user.userMfaSettingList],
@@ -8329,6 +8849,23 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       poolCount: pools.length,
       clientCount: pools.reduce((total, pool) => total + Object.keys(pool.clients).length, 0),
     };
+  }
+
+  /**
+   * Console editors run official administrator operations through this allowlist so the console never gains a
+   * second write path. Responses are redacted: client secrets and identity-provider secrets are never returned.
+   */
+  async localAction(operation: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!CONSOLE_ACTIONS.has(operation)) {
+      throw new AwsError("InvalidParameterException", `${operation} is not available from the console.`, 400);
+    }
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new AwsError("InvalidParameterException", "The console action body is invalid.", 400);
+    }
+    this.secrets.assertAvailable();
+    const output = (await this.dispatch(operation, { ...input })) ?? {};
+    await this.store.save();
+    return redactConsoleSecrets(output) as Record<string, unknown>;
   }
 
   localUserPools(): { userPools: Array<Record<string, unknown>> } {
@@ -8372,6 +8909,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           : undefined,
         resourceServerCount: Object.keys(pool.resourceServers).length,
         inboxPath: "#/ses/inbox?originService=cognito-idp",
+        tags: { ...pool.tags },
         userCount: Object.keys(pool.usersBySub).length,
         appClientCount: Object.keys(pool.clients).length,
         configuration: {
@@ -8428,7 +8966,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
             .map(attribute => ({ ...attribute })),
         },
         boundaries: {
-          tags: Object.keys(pool.tags).length ? { ...pool.tags } : "None",
+          tags: { ...pool.tags },
           groupsAndAdminActions: "Available",
           mfa: "Software token and eligible email OTP",
           oauthAndManagedLogin: "Available",
@@ -8791,8 +9329,9 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       },
       preventUserExistenceErrors: client.preventUserExistenceErrors,
       enableTokenRevocation: client.enableTokenRevocation,
-      readAttributes: [...client.readAttributes],
-      writeAttributes: [...client.writeAttributes],
+      readAttributes: effectiveClientReadAttributes(client),
+      writeAttributes: effectiveClientWriteAttributes(client),
+      attributePermissionsDefault: client.readAttributes === undefined && client.writeAttributes === undefined,
       hasSecret: clientHasSecret(client),
       secretDisplay: clientHasSecret(client) ? "Masked; use the official API read surface when required" : "No client secret",
       oauthAvailable: client.allowedOAuthFlowsUserPoolClient,
@@ -8939,8 +9478,8 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
         Feature: client.refreshTokenRotation.feature,
         RetryGracePeriodSeconds: client.refreshTokenRotation.retryGracePeriodSeconds,
       },
-      ReadAttributes: [...client.readAttributes],
-      WriteAttributes: [...client.writeAttributes],
+      ...(client.readAttributes === undefined ? {} : { ReadAttributes: [...client.readAttributes] }),
+      ...(client.writeAttributes === undefined ? {} : { WriteAttributes: [...client.writeAttributes] }),
       SupportedIdentityProviders: input.supportedIdentityProviders ?? [...client.supportedIdentityProviders],
       CallbackURLs: input.callbackUrls ?? [...client.callbackUrls],
       LogoutURLs: input.logoutUrls ?? [...client.logoutUrls],
@@ -10018,9 +10557,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       throw new OAuthEndpointError("access_denied", "Incorrect username or password.");
     }
     const user = findUserByModeledUsername(pool, username);
+    if (user?.signInLockout && this.clock.now() < user.signInLockout.lockedUntil) {
+      throw new OAuthEndpointError("access_denied", "Password attempts exceeded");
+    }
     const matches = user
       ? await this.passwords.verify(password, user.password)
       : await this.passwords.dummy(password);
+    if (user && !matches) await this.recordFailedSignIn(pool.id, user.sub);
     if (!user || !matches || !user.enabled) {
       throw new OAuthEndpointError("access_denied", "Incorrect username or password.");
     }
@@ -10028,7 +10571,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       throw new OAuthEndpointError(
         "access_denied",
         user.status === "RESET_REQUIRED"
-          ? "Password reset is required."
+          ? "Password reset required for the user"
           : "The user must be confirmed before managed login.",
       );
     }
@@ -10605,7 +11148,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     };
     const openidOnly = scopes.length === 1 && scopes[0] === "openid";
     if (openidOnly) {
-      for (const name of context.client.readAttributes) {
+      for (const name of effectiveClientReadAttributes(context.client)) {
         const attribute = context.user.attributes[name];
         if (!attribute) continue;
         attributes[name] = attribute.value;
@@ -10613,13 +11156,13 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           attributes[`${name}_verified`] = attribute.verified;
         }
       }
-    } else if (scopes.includes("email") && context.client.readAttributes.includes("email") && context.user.attributes.email) {
+    } else if (scopes.includes("email") && clientCanReadAttribute(context.client, "email") && context.user.attributes.email) {
       attributes.email = context.user.attributes.email.value;
       attributes.email_verified = context.user.attributes.email.verified;
     }
     if (!openidOnly && (
       scopes.includes("phone")
-      && context.client.readAttributes.includes("phone_number")
+      && clientCanReadAttribute(context.client, "phone_number")
       && context.user.attributes.phone_number
     )) {
       attributes.phone_number = context.user.attributes.phone_number.value;
@@ -10633,7 +11176,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       ]);
       for (const [name, attribute] of Object.entries(context.user.attributes)) {
         if (
-          context.client.readAttributes.includes(name)
+          clientCanReadAttribute(context.client, name)
           && (name.startsWith("custom:") || profileClaims.has(name))
         ) {
           attributes[name] = attribute.value;
@@ -10979,7 +11522,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     clientId: string;
     token: string;
     serverSideTokenCheck: boolean;
-  }): { sub: string; originJti?: string; hasRoleClaims: boolean } {
+  }): { sub: string; originJti?: string; hasRoleClaims: boolean; claims: Record<string, unknown> } {
     const pool = this.state.pools[input.userPoolId];
     if (!pool || !pool.clients[input.clientId]) {
       throw new AwsError("NotAuthorizedException", "Invalid login token.");
@@ -11023,6 +11566,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       sub,
       ...(originJti ? { originJti } : {}),
       hasRoleClaims: verified.claims["cognito:preferred_role"] !== undefined || verified.claims["cognito:roles"] !== undefined,
+      claims: { ...verified.claims },
     };
   }
 }

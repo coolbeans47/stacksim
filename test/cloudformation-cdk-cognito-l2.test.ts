@@ -175,7 +175,7 @@ test("repository-pinned CDK UserPool L2 defaults and Cognito trigger permission 
     await assert.rejects(cognitoClient.send(new CreateUserPoolCommand({
       PoolName: "cognito-l2-sms-delivery-rejected",
       AutoVerifiedAttributes: ["phone_number"],
-    })), /only email/i);
+    })), /Amazon SNS delivery/);
     await cloudformation.send(new CreateStackCommand({
       StackName: "cognito-l2-stack",
       TemplateBody: JSON.stringify(template),
@@ -190,9 +190,9 @@ test("repository-pinned CDK UserPool L2 defaults and Cognito trigger permission 
     const describedSchema = new Map(described.UserPool?.SchemaAttributes?.map(attribute => [attribute.Name, attribute]));
     assert.equal(describedSchema.get("given_name")?.Required, true);
     assert.equal(describedSchema.get("family_name")?.Required, true);
-    assert.equal(describedSchema.get("company_name")?.Required, false);
-    assert.equal(describedSchema.get("company_type")?.Required, false);
-    assert.equal(describedSchema.get("invited_company_id")?.Required, false);
+    assert.equal(describedSchema.get("custom:company_name")?.Required, false);
+    assert.equal(describedSchema.get("custom:company_type")?.Required, false);
+    assert.equal(describedSchema.get("custom:invited_company_id")?.Required, false);
     const describedClient = await cognitoClient.send(new DescribeUserPoolClientCommand({
       UserPoolId: outputs.UserPoolId,
       ClientId: outputs.UserPoolClientId,

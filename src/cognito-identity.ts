@@ -43,6 +43,7 @@ import type { StateStore } from "./state.js";
 import type { StsService } from "./sts.js";
 import type {
   CognitoIdentityPoolState,
+  CognitoIdentityRoleMappingState,
   CognitoIdentityProviderBindingState,
   CognitoIdentityRecordState,
 } from "./types.js";
@@ -321,6 +322,9 @@ export class CognitoIdentityService {
     const id = requiredString(input.IdentityPoolId, "IdentityPoolId", 1, MAX_IDENTITY_ID_LENGTH);
     const roles = identityPoolRoles(input.Roles);
     const roleMappings = identityPoolRoleMappings(input.RoleMappings);
+    for (const mapping of Object.values(roleMappings)) {
+      for (const rule of mapping.RulesConfiguration?.Rules ?? []) this.sameAccountRole(rule.RoleARN, "RulesConfiguration.Rules.RoleARN");
+    }
     if (roles.authenticated) this.sameAccountRole(roles.authenticated, "Roles.authenticated");
     if (roles.unauthenticated) this.sameAccountRole(roles.unauthenticated, "Roles.unauthenticated");
     return this.exclusive(async () => {
@@ -328,9 +332,11 @@ export class CognitoIdentityService {
       if (Object.keys(roles).length && pool.allowUnauthenticatedIdentities && !roles.unauthenticated) {
         throw new AwsError("InvalidParameterException", "Roles.unauthenticated is required when unauthenticated identities are enabled.");
       }
-      if (Object.keys(roleMappings).some(provider => !pool.cognitoIdentityProviders.some(binding => `${binding.providerName}:${binding.clientId}` === provider))
-        || Object.keys(roleMappings).length && !roles.authenticated) {
-        throw new AwsError("InvalidParameterException", "Token role mappings require an attached User Pool client and authenticated role.");
+      if (Object.keys(roleMappings).some(provider => !pool.cognitoIdentityProviders.some(binding => `${binding.providerName}:${binding.clientId}` === provider))) {
+        throw new AwsError("InvalidParameterException", "RoleMappings keys must name an attached User Pool provider and client as <provider>:<client id>.");
+      }
+      if (Object.values(roleMappings).some(mapping => mapping.AmbiguousRoleResolution === "AuthenticatedRole") && !roles.authenticated) {
+        throw new AwsError("InvalidParameterException", "AuthenticatedRole fallback requires Roles.authenticated.");
       }
       pool.roles = Object.keys(roles).length ? roles : undefined;
       pool.roleMappings = Object.keys(roleMappings).length ? roleMappings : undefined;
@@ -385,7 +391,7 @@ export class CognitoIdentityService {
   private verifyLogins(
     pool: CognitoIdentityPoolState,
     logins: Record<string, string>,
-  ): { providerName: string; subject: string; serverSideTokenCheck: boolean } | undefined {
+  ): { providerName: string; subject: string; serverSideTokenCheck: boolean; claims: Record<string, unknown>; mapping?: CognitoIdentityRoleMappingState } | undefined {
     const keys = Object.keys(logins);
     if (!keys.length) return undefined;
     if (keys.length !== 1) {
@@ -405,12 +411,52 @@ export class CognitoIdentityService {
       serverSideTokenCheck: binding.serverSideTokenCheck,
     });
     const mapping = pool.roleMappings?.[`${binding.providerName}:${binding.clientId}`];
-    if (mapping && verified.hasRoleClaims) {
-      // The generated no-group graph uses AuthenticatedRole when the ID token
-      // contains no role claims. Group/preferred-role selection is not admitted.
-      throw new AwsError("NotAuthorizedException", "Token role claims are not supported by this identity pool role mapping.");
+    return { providerName, subject: verified.sub, serverSideTokenCheck: binding.serverSideTokenCheck, claims: verified.claims, ...(mapping ? { mapping } : {}) };
+  }
+
+  /**
+   * Chooses the authenticated role: Token mappings use cognito:preferred_role (or a CustomRoleArn listed in
+   * cognito:roles, or the only listed role), Rules mappings use the first matching rule, and an unresolved
+   * mapping falls back to the authenticated role or denies, as AmbiguousRoleResolution says.
+   */
+  private authenticatedRole(
+    pool: CognitoIdentityPoolState,
+    verified: { claims: Record<string, unknown>; mapping?: CognitoIdentityRoleMappingState },
+    customRoleArn: string | undefined,
+  ): string | undefined {
+    const mapping = verified.mapping;
+    if (!mapping) {
+      if (customRoleArn) throw new AwsError("InvalidParameterException", "CustomRoleArn requires a Token role mapping.");
+      return pool.roles?.authenticated;
     }
-    return { providerName, subject: verified.sub, serverSideTokenCheck: binding.serverSideTokenCheck };
+    let resolved: string | undefined;
+    if (mapping.Type === "Token") {
+      const roles = Array.isArray(verified.claims["cognito:roles"]) ? (verified.claims["cognito:roles"] as unknown[]).map(String) : [];
+      const preferred = typeof verified.claims["cognito:preferred_role"] === "string" ? verified.claims["cognito:preferred_role"] as string : undefined;
+      if (customRoleArn) {
+        if (!roles.includes(customRoleArn)) throw new AwsError("NotAuthorizedException", "CustomRoleArn is not one of the token's cognito:roles.");
+        resolved = customRoleArn;
+      } else {
+        resolved = preferred ?? (roles.length === 1 ? roles[0] : undefined);
+      }
+    } else {
+      if (customRoleArn) throw new AwsError("InvalidParameterException", "CustomRoleArn requires a Token role mapping.");
+      resolved = mapping.RulesConfiguration?.Rules.find(rule => {
+        const claim = verified.claims[rule.Claim];
+        const values = Array.isArray(claim) ? claim.map(String) : claim === undefined ? [] : [String(claim)];
+        switch (rule.MatchType) {
+          case "Equals": return values.includes(rule.Value);
+          case "NotEqual": return values.length > 0 && !values.includes(rule.Value);
+          case "StartsWith": return values.some(value => value.startsWith(rule.Value));
+          case "Contains": return values.some(value => value.includes(rule.Value));
+        }
+      })?.RoleARN;
+    }
+    if (resolved) return resolved;
+    if (mapping.AmbiguousRoleResolution === "Deny") {
+      throw new AwsError("NotAuthorizedException", "The identity pool role mapping did not resolve a role and AmbiguousRoleResolution is Deny.");
+    }
+    return pool.roles?.authenticated;
   }
 
   async GetId(input: Record<string, any>): Promise<Record<string, unknown>> {
@@ -457,9 +503,9 @@ export class CognitoIdentityService {
 
   async GetCredentialsForIdentity(input: Record<string, any>): Promise<Record<string, unknown>> {
     this.admit("GetCredentialsForIdentity", GET_CREDENTIALS_RATE);
-    if (input.CustomRoleArn !== undefined) {
-      throw new AwsError("InvalidParameterException", "CustomRoleArn is not supported.");
-    }
+    const customRoleArn = input.CustomRoleArn === undefined
+      ? undefined
+      : requiredString(input.CustomRoleArn, "CustomRoleArn", 20, 2048);
     const requestedIdentityId = this.assertIdentityId(input.IdentityId);
     const logins = loginsMap(input.Logins);
     return this.exclusive(async () => {
@@ -469,6 +515,9 @@ export class CognitoIdentityService {
       let identity = pool.identities[identityId];
       const verified = this.verifyLogins(pool, logins);
       if (!verified) {
+        if (customRoleArn) {
+          throw new AwsError("InvalidParameterException", "CustomRoleArn requires an authenticated login with a Token role mapping.");
+        }
         if (!pool.allowUnauthenticatedIdentities || identity.authClass !== "unauthenticated") {
           throw new AwsError("NotAuthorizedException", "Unauthenticated access is not allowed for this identity pool.");
         }
@@ -515,7 +564,7 @@ export class CognitoIdentityService {
         && identity.logins[verified.providerName] !== verified.subject) {
         throw new AwsError("NotAuthorizedException", "Invalid login token.");
       }
-      const roleArn = pool.roles?.authenticated;
+      const roleArn = this.authenticatedRole(pool, verified, customRoleArn);
       if (!roleArn) {
         throw new AwsError("InvalidIdentityPoolConfigurationException", "Invalid identity pool configuration.");
       }
@@ -573,6 +622,17 @@ export class CognitoIdentityService {
     };
   }
 
+  /** Console editors run official Identity Pools control operations through this allowlist. */
+  async localAction(operation: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!LOCAL_IDENTITY_ACTIONS.has(operation)) {
+      throw new AwsError("InvalidParameterException", `${operation} is not available from the console.`, 400);
+    }
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new AwsError("InvalidParameterException", "The console action body is invalid.", 400);
+    }
+    return (await this.dispatch(operation, { ...input })) ?? {};
+  }
+
   localIdentityPools(): { identityPools: Array<Record<string, unknown>> } {
     return {
       identityPools: Object.values(this.state.pools)
@@ -597,8 +657,24 @@ export class CognitoIdentityService {
       Arn: this.arn(pool.id),
       Roles: { ...(pool.roles ?? {}) },
       IdentityCount: Object.keys(pool.identities).length,
+      // Identity browser rows: identity IDs and linked provider names only; provider subjects are not shown.
+      Identities: Object.values(pool.identities)
+        .sort((left, right) => right.createdAt - left.createdAt)
+        .slice(0, 200)
+        .map(identity => ({
+          IdentityId: identity.identityId,
+          Logins: Object.keys(identity.logins),
+          AuthClass: identity.authClass,
+          CreationDate: identity.createdAt,
+          LastModifiedDate: identity.updatedAt,
+        })),
       CreatedAt: pool.createdAt,
       UpdatedAt: pool.updatedAt,
     };
   }
 }
+
+const LOCAL_IDENTITY_ACTIONS: ReadonlySet<string> = new Set([
+  "CreateIdentityPool", "DescribeIdentityPool", "UpdateIdentityPool", "DeleteIdentityPool",
+  "GetIdentityPoolRoles", "SetIdentityPoolRoles", "TagResource", "UntagResource", "ListTagsForResource",
+]);

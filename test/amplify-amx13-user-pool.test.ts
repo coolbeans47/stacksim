@@ -49,7 +49,7 @@ test("AMX-13A unchanged generated User Pool/client properties create, update, re
     const clientId = String(client.ref(clientCreated.model));
     assert.equal((await simulator.cognito.executeCloudFormationControl("DescribeUserPoolClient", { UserPoolId: poolId, ClientId: clientId }) as any).UserPoolClient.ExplicitAuthFlows.includes("ALLOW_CUSTOM_AUTH"), true);
     const sdk = new CognitoIdentityProviderClient({ endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials });
-    await assert.rejects(sdk.send(new InitiateAuthCommand({ ClientId: clientId, AuthFlow: "CUSTOM_AUTH", AuthParameters: { USERNAME: "nobody" } })), /USER_PASSWORD_AUTH is required/);
+    await assert.rejects(sdk.send(new InitiateAuthCommand({ ClientId: clientId, AuthFlow: "CUSTOM_AUTH", AuthParameters: { USERNAME: "nobody" } })), /Custom authentication challenges .* not implemented in this simulator/);
     sdk.destroy();
     const changed = pool.canonicalize({ ...poolProperties, UserPoolName: "amx13-updated" }, context("Pool"));
     assert.equal((await pool.update(poolId, { ...desired, Schema: poolProperties.Schema }, changed, context("Pool"))).status, "SUCCESS", "previous provider models with omitted schema defaults remain updateable");

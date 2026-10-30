@@ -467,14 +467,15 @@ test("frozen sign-up, password, and refresh admission limits persist only keyed 
       (error: any) => error?.name === "TooManyRequestsException",
     );
 
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    // COG-08 (2026-10-30 review): successful sign-ins are not admitted per user; five failures lock the user out.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
       await assert.rejects(
         active.client.send(new InitiateAuthCommand({
           AuthFlow: "USER_PASSWORD_AUTH",
           ClientId: clientId,
           AuthParameters: { USERNAME: mainEmail, PASSWORD: "Wrong-password-1!" },
         })),
-        (error: any) => error?.name === "NotAuthorizedException",
+        (error: any) => error?.name === "NotAuthorizedException" && error.message === "Incorrect username or password.",
       );
     }
     await assert.rejects(
@@ -483,14 +484,14 @@ test("frozen sign-up, password, and refresh admission limits persist only keyed 
         ClientId: clientId,
         AuthParameters: { USERNAME: mainEmail, PASSWORD: password },
       })),
-      (error: any) => error?.name === "TooManyRequestsException",
+      (error: any) => error?.name === "NotAuthorizedException" && error.message === "Password attempts exceeded",
     );
 
     const admissions = active.simulator.store.regionState(region).cognito.admissions;
     assert.equal(JSON.stringify(admissions).includes(mainEmail), false);
     assert.equal(JSON.stringify(admissions).includes(signupEmail), false);
     assert(Object.values(admissions).some(bucket => bucket.kind === "SIGN_UP" && bucket.timestamps.length === 10));
-    assert(Object.values(admissions).some(bucket => bucket.kind === "PASSWORD" && bucket.timestamps.length === 10));
+    assert.equal(Object.values(admissions).some(bucket => bucket.kind === "PASSWORD"), false);
 
     clock.advance(5 * 60 * 1_000 + 1);
     const authenticated = (await active.client.send(new InitiateAuthCommand({
@@ -532,7 +533,7 @@ test("frozen sign-up, password, and refresh admission limits persist only keyed 
       return result.Datapoints?.reduce((sum, datapoint) => sum + (datapoint.Sum ?? 0), 0) ?? 0;
     };
     assert.equal(await throttleCount("SignUp"), 1);
-    assert.equal(await throttleCount("InitiateAuth"), 1);
+    assert.equal(await throttleCount("InitiateAuth"), 0);
     assert.equal(await throttleCount("GetTokensFromRefreshToken"), 1);
   } finally {
     cloudwatch?.destroy();

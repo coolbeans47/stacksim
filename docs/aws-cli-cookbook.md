@@ -1203,6 +1203,27 @@ To find a particular user:
 aws cognito-idp admin-get-user --user-pool-id USER_POOL_ID --username USERNAME
 ```
 
+To search by attribute (`=` exact, `^=` starts with; `status` is `Enabled` or `Disabled`, `cognito:user_status` is the confirmation status):
+
+```console
+aws cognito-idp list-users --user-pool-id USER_POOL_ID --filter 'given_name ^= "Ada"' --attributes-to-get email name
+aws cognito-idp list-users --user-pool-id USER_POOL_ID --filter 'status = "Disabled"'
+```
+
+To confirm a self-registered user without a code:
+
+```console
+aws cognito-idp admin-confirm-sign-up --user-pool-id USER_POOL_ID --username USERNAME
+```
+
+### How to sign in with choice-based authentication
+
+The app client needs `ALLOW_USER_AUTH`. Omit `PREFERRED_CHALLENGE` to receive `SELECT_CHALLENGE` with the available methods.
+
+```console
+aws cognito-idp initiate-auth --client-id CLIENT_ID --auth-flow USER_AUTH --auth-parameters USERNAME=USERNAME,PREFERRED_CHALLENGE=PASSWORD,PASSWORD=PASSWORD
+```
+
 ### How to list groups and group membership
 
 ```console

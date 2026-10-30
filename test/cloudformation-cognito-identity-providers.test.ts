@@ -108,10 +108,17 @@ test("CID-01 CloudFormation providers register Identity Pool and RoleAttachment 
     assert.ok(poolProvider.validate({ AllowUnauthenticatedIdentities: true, SupportedLoginProviders: { "accounts.google.com": "external" } }, context("Social")).some(issue => issue.path.includes("SupportedLoginProviders")));
     for (const mapping of [
       { IdentityProvider: "provider:client", Type: "Rules", AmbiguousRoleResolution: "AuthenticatedRole" },
-      { IdentityProvider: "provider:client", Type: "Token", AmbiguousRoleResolution: "Deny" },
+      // CFN-02 (2026-10-30 review): Token+Deny is valid; an unknown resolution is not.
+      { IdentityProvider: "provider:client", Type: "Token", AmbiguousRoleResolution: "Sometimes" },
       { IdentityProvider: "provider:client", Type: "Token", AmbiguousRoleResolution: "AuthenticatedRole", RulesConfiguration: { Rules: [] } },
     ]) {
       assert.ok(attachmentProvider.validate({ IdentityPoolId: "pool", RoleMappings: { Generated: mapping } }, context("MappingBoundary")).some(issue => issue.path.includes("RoleMappings")));
+    }
+    for (const mapping of [
+      { IdentityProvider: "provider:client", Type: "Token", AmbiguousRoleResolution: "Deny" },
+      { IdentityProvider: "provider:client", Type: "Rules", AmbiguousRoleResolution: "Deny", RulesConfiguration: { Rules: [{ Claim: "name", MatchType: "Equals", Value: "x", RoleARN: "arn:aws:iam::000000000000:role/x" }] } },
+    ]) {
+      assert.deepEqual(attachmentProvider.validate({ IdentityPoolId: "pool", RoleMappings: { Generated: mapping } }, context("MappingValid")), []);
     }
 
     const createdPool = await idp.send(new CreateUserPoolCommand({

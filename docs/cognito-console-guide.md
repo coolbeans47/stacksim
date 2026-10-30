@@ -1,773 +1,178 @@
 # StackSim Cognito console guide
 
-This guide explains every panel in the StackSim Cognito console: what each setting does, why you would use it in real AWS workloads, and how it maps to production Amazon Cognito User Pools behavior.
+This guide explains every page of the StackSim Cognito console: what each setting does, why you would use it in real AWS workloads, and how it maps to production Amazon Cognito behavior.
 
-StackSim models user pools, users, groups, app clients, managed login, OAuth, federation, MFA, Lambda triggers, and signed JWTs locally. Identity pools live on the same Cognito console as user pools and exchange User Pool ID tokens for temporary AWS credentials. Where local behavior differs from AWS (for example DNS for hosted domains or SMS MFA), those boundaries are called out explicitly.
+StackSim models user pools, users, groups, app clients, choice-based and password sign-in, managed login, OAuth, OIDC and SAML federation, MFA, Lambda triggers, and signed JWTs locally. Identity pools share the Cognito console and exchange user pool ID tokens for temporary AWS credentials. Where local behavior differs from AWS (DNS for custom domains, SMS, passkeys, threat protection), the page says so.
 
 ---
 
 ## How to read this guide
 
-Each section follows the same pattern:
-
-1. **What it is** — the console panel and its main fields.
-2. **Why use it** — the problem it solves in AWS.
-3. **How it works in StackSim** — what is fully simulated versus reference-only.
-4. **Common AWS use cases** — typical production scenarios.
-5. **Example** — a concrete configuration when one helps.
+Each page section says **what it is**, **why you use it**, and **how it works in StackSim**. Pages follow the current AWS console's menu, so a tutorial written for the AWS console should lead you to the same page here.
 
 ---
 
 ## Console navigation
 
-The Cognito service in StackSim has a left navigation bar with these top-level areas:
+The left navigation shows **User pools** and **Identity pools**. Opening a user pool replaces the rest of the menu with the pool's grouped menu, as in the AWS console:
 
-| Area | Purpose |
-|------|---------|
-| **Overview** | Account summary, user-pool and identity-pool cards, and integration notes |
-| **User pools** | Create, list, and open user pools |
-| **Identity pools** | List and inspect enhanced-flow credential brokers |
+| Group | Pages |
+|-------|-------|
+| — | **Overview** |
+| Applications | **App clients** |
+| User management | **Users**, **Groups** |
+| Authentication | **Authentication methods**, **Sign-in**, **Sign-up**, **Social and external providers**, **Message templates** |
+| Security | **Threat protection** |
+| Branding | **Domain**, **Managed login** |
+| Extensions | **Lambda triggers** |
+| — | **Settings** (Feature plans, User pool security) |
 
-Opening a user pool shows tabs: **Overview**, **Users**, **Groups**, **App clients**, **Managed login**, **Sign-in**, and **Self-service sign-up**.
+The console never shows passwords, temporary passwords, confirmation codes, sessions, refresh tokens, private keys, identity-provider secrets, or client secrets. Not displaying client secrets is a StackSim policy: AWS has **Show client secret**, and `DescribeUserPoolClient` returns the secret to API callers here too.
 
-StackSim implements **Cognito User Pools** and a CID-01 **Cognito Identity Pools** slice (enhanced `GetId` / `GetCredentialsForIdentity`, User Pool ID-token login, and two CloudFormation types). The pinned authenticated learning fixtures also admit the generated no-group Token/AuthenticatedRole mapping. Classic flow, other role mappings, social IdPs, and developer identities remain unavailable.
-
----
-
-## Overview
-
-### What it is
-
-The **Overview** page summarizes regional user pools and identity pools, plus total users and app clients. It also lists local integration details: JSON 1.1 protocol, SDK client, SES Inbox delivery, issuer format, and JWKS tooling route.
-
-### Why use it
-
-In AWS, the Cognito landing page orients you toward user pools, getting-started tasks, and documentation before you configure sign-in for an application.
-
-### How it works in StackSim
-
-Counts reflect the local installation. Product cards link to **User pools** and **Identity pools**. A **Create user pool** button opens the pool creation modal.
-
-User counts are safe console summaries — no passwords, secrets, or token material appear on this page.
-
-### Common AWS use cases
-
-- Confirm pools exist after CDK or Terraform deploy.
-- Navigate to **User pools** to open a specific directory.
-- Copy integration notes before wiring an application SDK.
+Every editor calls the official Cognito operation (`UpdateUserPool`, `UpdateUserPoolClient`, `SetUserPoolMfaConfig`, `AdminConfirmSignUp`, …) through the console's private action route. Because `UpdateUserPool` and `UpdateUserPoolClient` reset omitted settings to their defaults, the console reads the current configuration first and sends it back with your change.
 
 ---
 
 ## User pools
 
-### User pools (list)
+**What it is.** The regional list of user pools with name, ID, created and last-updated time. Select a pool with its radio button to **Delete** it (deletion protection must be inactive); **Create user pool** opens the setup wizard.
 
-#### What it is
+**Why use it.** A user pool is the user directory and token issuer for one or more applications.
 
-The **User pools** panel lists every pool with name, status, user count, app client count, created date, and tags. You can filter the list, open a pool, refresh, or create a new one.
+**How it works in StackSim.** Pools persist in the data directory. Pool names are friendly names and need not be unique, as on AWS.
 
-#### Why use it
+## Create user pool (Set up resources for your application)
 
-Every Cognito-backed application starts with at least one user pool. The list view is where operators find pools by name and verify automation created the expected resources.
+**What it is.** The AWS application-first wizard:
 
-#### How it works in StackSim
+1. **Define your application** — choose an **Application type** (Traditional web application, Single-page application (SPA), Mobile app, Machine-to-machine application) and **Name your application**.
+2. **Configure options** — **Options for sign-in identifiers** (Email, Phone number, Username), **Enable self-registration**, and **Required attributes for sign-up**.
+3. **Add a return URL** (optional) — where managed login redirects after sign-in.
+4. **Create user pool** — then **Set up your application** shows the issuer, client ID, JWKS URL, and an SDK sample; **Go to overview** opens the pool.
 
-User-pool creation, listing, updates, deletion, users, groups, password and SRP authentication, recovery, MFA, Lambda triggers, signed JWTs, and local JWKS are active and persist locally.
+**Why use it.** One step gives a working pool and app client for the application you are building.
 
-#### Common AWS use cases
-
-- `production-users` — live application directory.
-- `staging-users` — pre-production testing with separate clients.
-- `internal-admin` — staff-only pool with administrator-created users.
-
-#### Example
-
-After deploying a CDK stack with `AWS::Cognito::UserPool`, open **User pools** and confirm the pool name, status `Active`, and expected tag keys appear in the list.
+**How it works in StackSim.** The wizard creates the pool (case-insensitive user names and deletion protection active, like console-created AWS pools; the name is `User pool - <random>` until you rename it) and an app client. Traditional web and machine-to-machine clients get a client secret. User-facing clients enable `ALLOW_USER_AUTH`, SRP, and refresh, and prevent user-existence errors; a return URL adds the authorization-code grant with the OpenID scopes. A machine-to-machine client gets a `default-m2m-resource-server-<random>` resource server with a `read` scope and the client-credentials grant. Phone-number sign-in is disabled because SMS delivery is not implemented in this simulator.
 
 ---
 
-## Create user pool
+## Overview
 
-### What it is
+**What it is.** **User pool information** (name, ID, ARN, token signing key URL, estimated number of users, feature plan, created and updated time, deletion protection) with **Rename**; **Token issuer** (the AWS-shaped issuer and the local JWKS URL, plus a link to the filtered SES Inbox); and **Tags** as key/value rows with **Manage tags**.
 
-The **Create user pool** modal collects:
-
-- **Pool name** — directory display name.
-- **Sign-in option** — username, email address, or username with email alias.
-- **Minimum password length** — 6–99 characters.
-- **Self-service sign-up** — allow public registration or restrict to administrators.
-- **Automatically verify email** — send confirmation codes for email.
-- **Require email** — add `email` as a required schema attribute.
-- **Usernames are case sensitive** — match sign-in identifier casing.
-- **Deletion protection** — block accidental pool deletion.
-- **Password requirements** — uppercase, lowercase, numbers, symbols.
-
-An info note explains that email starts with the Cognito-default local sender; use the official API with a verified SES identity for the DEVELOPER profile.
-
-### Why use it
-
-Pool creation establishes the authentication contract for an application: how users sign in, how passwords are validated, whether users can self-register, and how email verification works.
-
-### How it works in StackSim
-
-The modal creates an **Essentials** tier pool with user administration, password/SRP authentication, groups, and local email confirmation. Advanced MFA and Lambda trigger settings can also be configured later through **Configure** on the pool overview or the official SDK.
-
-Created pools persist locally. Verification codes are captured in the regional **SES Inbox**, never sent externally.
-
-### Common AWS use cases
-
-- B2C web app — email sign-in, self-service sign-up, auto-verify email.
-- Internal tool — username sign-in, administrator-only creation.
-- Mobile app backend — username with email alias, strict password policy.
-
-### Example
-
-For a notes API tutorial pool:
-
-```text
-Pool name:           notes-users
-Sign-in option:      Email address
-Minimum length:      8
-Self-service sign-up: enabled
-Auto-verify email:   enabled
-Require email:       enabled
-Password rules:      uppercase, lowercase, numbers, symbols
-```
+**How it works in StackSim.** Tokens keep the issuer `https://cognito-idp.<region>.amazonaws.com/<pool id>`. The JWKS URL is loopback tooling; it never contacts AWS.
 
 ---
 
-## User pool: Overview tab
+## App clients
 
-### Pool summary cards
+**What it is.** The list of app clients (name, client ID, whether a secret exists, created time) and **Create app client**, which asks for the **Application type**, **App client name**, and an optional **Return URL**.
 
-#### What it is
+Opening a client shows **App client information** with **Edit** and **Delete**, then three tabs:
 
-Three summary cards show **Users**, **App clients**, and **Messaging** (sending account and verification method), with links to the relevant tabs and SES Inbox.
+- **Quick setup guide** — issuer, client ID, and discovery URL for an OpenID Connect library.
+- **Login pages** — **Managed login pages configuration** with **Edit**: allowed callback and sign-out URLs, identity providers, OAuth 2.0 grant types, OpenID Connect scopes, and custom scopes (checkboxes from your resource servers). **View login page** opens managed login when the pool has a domain.
+- **Attribute permissions** — which attributes the client can read and write, with **Edit**.
 
-#### Why use it
+**Edit** on App client information changes the name, authentication flows (shown with the console's descriptions, for example *Choice-based sign-in* for `ALLOW_USER_AUTH`), authentication-flow session duration, refresh/access/ID token expiration with minutes/hours/days units, token revocation, user-existence errors, and refresh-token rotation with its grace period.
 
-Operators quickly see whether a pool has registered users, configured clients, and working email delivery before debugging authentication failures.
-
-#### How it works in StackSim
-
-Counts and messaging settings reflect live local state. **Open filtered SES Inbox** shows Cognito confirmation and invitation messages for this pool.
+**How it works in StackSim.** All nine `ExplicitAuthFlows` values are accepted, including the legacy names. A client created without attribute lists reads every standard attribute plus `email_verified` and `phone_number_verified` and writes every standard attribute; custom attributes need an explicit list. Authorization-code requests must use PKCE S256 (local policy). Rotation requires `GetTokensFromRefreshToken` and cannot be combined with `ALLOW_REFRESH_TOKEN_AUTH`.
 
 ---
 
-### Pool details
+## Users
 
-#### What it is
+**What it is.** A table with **User name**, **Email address**, **Email verified**, **Confirmation status**, and **Status** (Enabled/Disabled). Search by an attribute — User name, Email, Phone number, Name, Given name, Family name, Preferred user name, User ID (sub), Confirmation status, or Status — with a starts-with match, and page through results with **Previous page**/**Next page**. Select a disabled user to **Delete user**; **Create user** opens the form.
 
-**Pool details** displays pool ID, status, tier, ARN, created/updated timestamps, deletion protection, and tags.
+**Create user** has **Invitation message** (Send an email invitation; Don't send an invitation; SMS is shown but unavailable locally), **User name** (when the pool does not sign in with email), **Email address** with **Mark email address as verified**, **Phone number** with **Mark phone number as verified**, **Temporary password** (Generate a password / Set a password), and any pool-defined attributes. Immutable custom attributes can be supplied only here.
 
-Header actions: **Configure** (MFA, Lambda triggers, tags) and **Delete** (disabled when deletion protection is active).
-
-#### Why use it
-
-The overview is the canonical place to read pool metadata, confirm tier, and manage pool-wide settings that affect every user and client.
-
-#### How it works in StackSim
-
-MFA modes, software-token settings, supported Lambda triggers, tags, and deletion protection are active. Trigger functions need a Cognito service-principal resource-policy permission for this pool ARN.
-
-#### Common AWS use cases
-
-- Attach `PreTokenGeneration` to inject custom claims.
-- Enable optional TOTP MFA for privileged accounts.
-- Tag pools for cost allocation (`Environment=prod`).
-
-#### Example
-
-Configure MFA as **Optional** with software-token MFA enabled, then set `PreTokenGeneration` to a Lambda ARN that adds `tenantId` to ID tokens.
-
----
-
-### Configure user pool (modal)
-
-#### What it is
-
-The **Configure user pool** modal edits:
-
-- **MFA mode** — Off, Optional, or Required.
-- **Software-token MFA** — enable TOTP second factor.
-- **Lambda trigger ARNs** — Pre sign-up, Custom message, Post confirmation, Pre authentication, Post authentication, Pre token generation.
-- **Tags** — one `key=value` per line.
-
-#### Why use it
-
-Pool-wide hooks and MFA policy apply to every authentication path — direct SDK flows, managed login, and federated sign-in.
-
-#### How it works in StackSim
-
-Trigger failures fail closed and never expose passwords or token material. Lambda functions must grant `cognito-idp.amazonaws.com` permission with this pool ARN as `SourceArn`.
-
-SMS MFA is unavailable locally; software-token and email OTP are supported.
-
----
-
-### Token issuer and public keys
-
-#### What it is
-
-Shows the **canonical issuer** (`https://cognito-idp.{region}.amazonaws.com/{poolId}`) and a **local JWKS URL** for token verification during development.
-
-#### Why use it
-
-API Gateway Cognito authorizers, Lambda authorizers, and application middleware verify JWT signatures against the pool issuer and JWKS document.
-
-#### How it works in StackSim
-
-Tokens keep the provider-compatible issuer. The loopback JWKS URL is developer tooling — it does not change the token issuer or contact public AWS endpoints.
-
-#### Common AWS use cases
-
-- Configure API Gateway `COGNITO_USER_POOLS` authorizer with this pool.
-- Point local JWT middleware at the loopback JWKS URL during integration tests.
-
----
-
-### Email confirmation
-
-#### What it is
-
-Displays sending account, verification method, subject, from address, and a link to **Open Cognito confirmation messages** in the SES Inbox.
-
-#### Why use it
-
-Sign-up and password recovery depend on deliverable verification messages. Operators confirm templates and sender configuration when users report missing codes.
-
-#### How it works in StackSim
-
-Email is captured in the regional SES Inbox. External mail is never sent. The console never reveals confirmation codes or their digests.
-
-#### Common AWS use cases
-
-- Self-service sign-up with email confirmation code.
-- Administrator invitation with temporary password email.
-- Forgot-password flow delivering a reset code.
-
----
-
-## User pool: Users tab
-
-### Users (list)
-
-#### What it is
-
-The **Users** panel lists users with email/username, status (`CONFIRMED`, `UNCONFIRMED`, etc.), enabled/disabled access, email verification, and created date. **Create user** opens the administrator provisioning modal.
-
-#### Why use it
-
-Administrator-created users support onboarding flows where sign-up is disabled, bulk provisioning, or help-desk account creation.
-
-#### How it works in StackSim
-
-User creation, temporary passwords, confirmation status, email verification, enable/disable, pagination, search, and local SES invitation capture are active. Generated temporary passwords and confirmation codes are never displayed by the console.
-
-#### Common AWS use cases
-
-- HR provisions employees before first login.
-- Support creates a test account with a temporary password.
-- Admin marks email verified to skip confirmation for trusted addresses.
-
-#### Example
-
-Create user with email `user@example.test`, mark email verified, enable invitation delivery — then open the SES Inbox to read the welcome message and temporary password (as an application user would).
-
----
-
-### Create user (modal)
-
-#### What it is
-
-Fields include:
-
-- **Email address** or **Username** (depending on pool sign-in configuration).
-- **Email address** (when username sign-in is used).
-- **Temporary password** (optional — Cognito generates one if omitted).
-- **Mark email as verified**.
-- **Send invitation to the SES Inbox**.
-- **Pool-defined attributes** — required or optional schema fields at creation time.
-
-#### Why use it
-
-`AdminCreateUser` establishes accounts without public sign-up and optionally forces a password change at first sign-in.
-
-#### How it works in StackSim
-
-Immutable custom attributes can only be supplied during creation. Invitation emails appear in the SES Inbox; suppress delivery with **Send invitation** unchecked (maps to `MessageAction: SUPPRESS`).
-
----
-
-## User pool: User detail
+**How it works in StackSim.** Search uses `ListUsers` filters, so it accepts the ten searchable attributes AWS documents. Invitations are captured in the SES Inbox; generated temporary passwords are never shown.
 
 ### User details
 
-#### What it is
+**What it is.** **User information** with an **Actions** menu: Reset password, Set password, Confirm account (for self-registered unconfirmed users), Disable/Enable user access, Sign out of all sessions, and Delete user (available after access is disabled). Every action asks for confirmation. Below are **User attributes** (Add attribute, Edit, Remove, Mark as verified for email and phone), **Group memberships** (Add user to group, Edit MFA preference), and **User event history** (recent sign-in events).
 
-The **User details** panel shows status, enabled flag, active session count, sub, username, and timestamps. Actions: **Enable/Disable**, **Set password**, **Reset password**, **Sign out**, **Delete**.
-
-#### Why use it
-
-After creation, operators manage account lifecycle: lock compromised accounts, force password rotation, revoke sessions, or remove users.
-
-#### How it works in StackSim
-
-Account status, password policy enforcement, reset delivery through the SES Inbox, token-session revocation, and deletion are active. Existing access tokens remain valid until expiry unless the consuming application checks revocation.
-
-#### Common AWS use cases
-
-- Disable a departed employee immediately.
-- Reset password and deliver code via email.
-- Revoke refresh sessions after credential leak.
+**How it works in StackSim.** Disabling a user revokes refresh sessions; already issued access tokens stay valid until they expire. Reset password delivers a code to the SES Inbox. Email-message MFA can be preferred only after the pool enables it on **Sign-in**.
 
 ---
 
-### Attributes
+## Groups
 
-#### What it is
+**What it is.** Groups with name, description, precedence, IAM role ARN, and created time; select one to **Delete**, or **Create group** (name, description, precedence, and an IAM role chosen from your IAM roles). Opening a group shows **Group information** with **Edit** and **Delete**, and **Group members** with **Add user to group** and **Remove from group**.
 
-A table of user attributes (name, value, verification status) with **Edit**, **Remove**, and **Add attribute** actions for mutable pool-defined fields.
-
-#### Why use it
-
-Profile data drives application behavior, marketing preferences, and authorization decisions derived from token claims.
-
-#### How it works in StackSim
-
-Schema validation, mutable attribute add/edit/remove, verification flags, required fields, and string or number constraints are active. Immutable attributes can be supplied only when the user is created.
-
-Verifiable attributes (`email`, `phone_number`) support administrator verification toggles.
-
-#### Common AWS use cases
-
-- Store `custom:department` for internal routing.
-- Update display name after marriage.
-- Mark email verified after manual identity check.
+**How it works in StackSim.** Groups add `cognito:groups`, `cognito:roles`, and `cognito:preferred_role` to newly issued tokens. Existing tokens are not rewritten.
 
 ---
 
-### Groups and MFA (user level)
+## Authentication methods
 
-#### What it is
+**What it is.** **Email** (Send email with Cognito, or Send email with Amazon SES with an SES identity ARN, FROM and REPLY-TO addresses, and configuration set) with **Edit**; **SMS**; **Password policy** (minimum length, requirements, temporary-password expiry, prevent use of previous passwords) with **Edit**; and **Passwordless** (the choice-based sign-in options).
 
-Shows current **Groups** membership and **MFA methods** with preferred method. **Edit groups** and **Edit email MFA** open configuration modals.
+**How it works in StackSim.** Both email options deliver to the local SES Inbox; Amazon SES delivery needs an identity verified in the local SES console in the same account and Region. SMS is not implemented in this simulator. Password history needs the Essentials or Plus plan.
 
-#### Why use it
+## Sign-in
 
-Group membership adds `cognito:groups` and `cognito:preferred_role` claims to newly issued tokens. Per-user MFA preference controls whether email OTP is used at sign-in.
+**What it is.** **Options for user pool sign-in** (identifiers and case sensitivity, fixed at creation); **Options for choice-based sign-in** (Password always; Email message one-time password; SMS and passkeys shown as unavailable) with **Edit**; **Multi-factor authentication** (Require MFA / Optional MFA / No MFA, and the methods Authenticator apps, Email message, SMS message) with **Edit**; **User account recovery** (Email only; Email if available, otherwise SMS; SMS if available, otherwise email; None – users must contact an administrator) with **Edit**.
 
-#### How it works in StackSim
+**How it works in StackSim.** Choice-based sign-in (`USER_AUTH`) supports password, SRP, and email one-time passwords; email MFA and email one-time passwords need the Essentials or Plus plan and Amazon SES email. In an Optional-MFA pool, an authenticator app is enforced only after the user sets it as an MFA preference. Five failed password attempts lock a user out for a second, doubling up to about fifteen minutes.
 
-Membership changes, precedence and role claims, email OTP preferences, software-token MFA APIs, and newly issued token claims are active. Existing tokens are not rewritten after a group change. SMS MFA is unavailable.
+## Sign-up
 
-#### Common AWS use cases
+**What it is.** **Self-service sign-up** (Enable self-registration) with **Edit**; **Attribute verification and user account confirmation** (Cognito-assisted email verification and *Keep original attribute value active when an update is pending*) with **Edit**; **Required attributes** (fixed at creation); and **Custom attributes** with **Add custom attributes**.
 
-- Add user to `admins` group for elevated API access.
-- Enable email OTP for users without authenticator apps.
+**How it works in StackSim.** Custom attribute definitions are permanent. String and Number match the AWS console; Boolean and DateTime are API types this console also offers as a StackSim extra. Confirmation codes go to the SES Inbox and are never shown.
 
----
+## Social and external providers
 
-## User pool: Groups tab
+**What it is.** The pool's identity providers (type, identifiers, attribute mapping, number of app clients) with Test, Edit, and Delete, and **Add identity provider** with provider choices. OpenID Connect asks for provider name, client ID, client secret, authorized scopes, issuer URL, and attribute request method; SAML asks for a metadata URL or document and IdP-initiated sign-in. Both map attributes with **User pool attribute** / **Provider attribute** rows.
 
-### Groups (list)
+**How it works in StackSim.** OIDC discovery and signed SAML are fully verified. Loopback providers work by default; public HTTPS providers need `STACKSIM_COGNITO_ALLOW_PUBLIC_IDP=true`; private, metadata, and link-local targets are blocked. Facebook, Google, Login with Amazon, and Sign in with Apple are shown but unavailable, because StackSim does not contact public sign-in services. **View signing certificate** is not implemented in this simulator.
 
-#### What it is
+## Message templates
 
-The **Groups** panel lists groups with name, description, precedence, IAM role ARN, member count, and delete action. **Create group** opens a modal.
+**What it is.** **Verification message**, **Invitation message**, and **MFA message** (subject and body) with **Edit**.
 
-#### Why use it
-
-Groups organize users and inject authorization claims into ID and access tokens without maintaining separate role databases in the application.
-
-#### How it works in StackSim
-
-Group creation, deletion, membership, precedence, role claims, listing, and search are active. IAM role assumption itself is outside the user-pool service and is not performed by this panel.
-
-An info note reminds that group changes appear in newly issued tokens only.
-
-#### Common AWS use cases
-
-- `readers` / `editors` / `admins` for content APIs.
-- Precedence `1` on `admins` when a user belongs to multiple groups with roles.
-- Role ARN for cross-service access via `cognito:preferred_role`.
-
-#### Example
-
-```text
-Group name:    editors
-Description:   Can create and update notes
-Precedence:    10
-IAM role ARN:  arn:aws:iam::123456789012:role/NotesEditor
-```
+**How it works in StackSim.** Messages must contain `{####}`; invitations also contain `{username}`. Link-based verification is not implemented in this simulator.
 
 ---
 
-### Create group (modal)
+## Threat protection
 
-#### What it is
+**What it is.** The enforcement mode and feature plan. **How it works in StackSim.** Threat protection needs the Plus plan and production risk telemetry and is not implemented in this simulator; `AdvancedSecurityMode: OFF` is accepted.
 
-Fields: **Group name**, **Description**, **Precedence** (optional), **IAM role ARN** (optional).
+## Domain
 
-#### Why use it
+**What it is.** **Domain** with an **Actions** menu (Create Cognito domain; Create custom domain, unavailable; Update branding version; Delete Cognito domain), showing the Cognito domain, prefix, and **Branding version** (Managed login or Hosted UI (classic)); **Resource servers** with **Create resource server** (name, identifier, and custom scope rows), Edit, and Delete; and the issuer and local discovery/JWKS tooling URLs.
 
-Precedence resolves which group's IAM role becomes `cognito:preferred_role` when a user belongs to multiple groups that define roles.
+**How it works in StackSim.** The domain is a loopback URL under `/_stacksim/cognito-domain/<prefix>`; custom domains need DNS, CloudFront, and ACM, which StackSim does not provide. Lite pools offer only the classic hosted UI.
 
-#### How it works in StackSim
+## Managed login
 
-Same as groups list — membership and claims are active; STS role assumption is not simulated here.
+**What it is.** **Styles** (per app client) with **Create a style**, **Open managed login**, and **Terms documents**.
 
----
-
-## User pool: App clients tab
-
-### App clients (list)
-
-#### What it is
-
-Lists app clients with name, enabled authentication flows, whether a client secret exists (never revealed), and created date. **Create app client** opens the creation modal.
-
-#### Why use it
-
-Each application (web, mobile, machine-to-machine) needs its own client with appropriate flows, token lifetimes, and OAuth settings.
-
-#### How it works in StackSim
-
-Password, administrator-password, SRP, and refresh flows; client secrets; token validity; revocation; refresh rotation; managed-login OAuth; and exact callback validation are active. Secrets are write-only and never redisplayed.
-
-#### Common AWS use cases
-
-- SPA — authorization code + PKCE, no client secret.
-- Backend service — client credentials or admin password flow with secret.
-- Mobile app — SRP + refresh token rotation.
+**How it works in StackSim.** A style applies a page title and a six-digit primary color to the local managed login page. The visual branding editor, images, and terms documents are not implemented in this simulator.
 
 ---
 
-### Create app client (modal)
+## Lambda triggers
 
-#### What it is
+**What it is.** The configured triggers with trigger type, category, Lambda function, and event version, and **Add Lambda trigger** (trigger type and Lambda function).
 
-Collects:
+**How it works in StackSim.** Pre sign-up, post confirmation, pre and post authentication, pre token generation (event version V1_0), and custom message run real local Lambda functions; add a resource-policy permission for `cognito-idp.amazonaws.com` with the pool ARN as `SourceArn`. Custom-authentication, migrate-user, custom-sender, and inbound-federation triggers are not implemented in this simulator.
 
-- **App client name**
-- **Authentication flows** — `ALLOW_USER_PASSWORD_AUTH`, `ALLOW_ADMIN_USER_PASSWORD_AUTH`, `ALLOW_USER_SRP_AUTH`, `ALLOW_REFRESH_TOKEN_AUTH`
-- **Token validity** — access (hours), ID (hours), refresh (days)
-- **Generate a client secret**
-- **Prevent user-existence errors**, **Enable token revocation**, **Enable refresh-token rotation**
-- **Managed login and OAuth** — enable OAuth, callback URLs, logout URLs, scopes, authorization code + PKCE, implicit grant
+## Settings
 
-#### Why use it
+**What it is.** Two tabs. **Feature plans** shows Lite, Essentials, and Plus with **Change plan**. **User pool security** shows **Deletion protection** with **Activate**/**Deactivate** and **Delete user pool**.
 
-Principle of least privilege: enable only the flows and grants the application actually uses.
-
-#### How it works in StackSim
-
-Refresh-token rotation replaces `ALLOW_REFRESH_TOKEN_AUTH` when enabled. Callback URLs must match exactly for managed login redirects.
-
-#### Example
-
-Local web app client:
-
-```text
-Name:              local-web
-Flows:             USER_PASSWORD_AUTH, REFRESH_TOKEN_AUTH
-Access/ID validity: 1 hour
-Refresh validity:  30 days
-OAuth:             enabled
-Callback URL:      http://127.0.0.1:3000/callback
-Scopes:            openid email profile
-Grant:             Authorization code + PKCE
-```
+**How it works in StackSim.** Lite pools cannot use managed login, choice-based sign-in, email MFA, or password history. Plus-only threat protection is not implemented.
 
 ---
 
-## User pool: App client detail
+## Identity pools
 
-### App client details
+**What it is.** The identity pools list (name, ID, guest access, identity count, created time) with **Delete** and **Create identity pool**. The create page walks through **Configure identity pool trust** (authenticated and guest access; Amazon Cognito user pool as the identity source), **Configure permissions** (authenticated and guest roles), **Connect identity providers** (user pool and app client), **Configure properties** (name and tags), and **Review and create**. A pool has three tabs: **User access** (identity providers, authenticated role, guest access with Activate/Deactivate), **Identity browser** (identity IDs and linked logins), and **Properties** (name, tags, Delete identity pool).
 
-#### What it is
-
-Shows client name, client ID, secret presence, user-existence error setting, token revocation, created date, enabled authentication flows, token validity table, and hosted authentication (OAuth grants, providers, callback/logout URLs, scopes). Actions: **Edit OAuth settings**, **Delete**.
-
-#### Why use it
-
-The detail page is where you verify a deployed client's configuration matches application expectations before debugging sign-in failures.
-
-#### How it works in StackSim
-
-Client lifecycle, direct flows, token issuance, OAuth configuration, provider associations, revision-safe updates, and refresh-session revocation are active on local Cognito endpoints.
-
-#### Common AWS use cases
-
-- Confirm callback URL matches deployed frontend origin.
-- Enable Cognito plus a SAML provider for enterprise SSO.
-- Add custom resource-server scopes to allowed OAuth scopes.
-
----
-
-### Edit OAuth settings (modal)
-
-#### What it is
-
-Edits managed-login OAuth enablement, callback URLs, logout URLs, allowed scopes, identity providers (Cognito plus configured external providers), and grant types (authorization code, implicit, client credentials).
-
-#### Why use it
-
-OAuth settings connect managed login and federated IdPs to a specific application redirect URI and scope contract.
-
-#### How it works in StackSim
-
-Exact callback validation applies. External providers must be created on the **Managed login** tab first, then enabled per client.
-
----
-
-## User pool: Managed login tab
-
-### User-pool domain
-
-#### What it is
-
-Configures a **domain prefix** and **managed login version** (2 · Managed login or 1 · Hosted UI classic). When configured, shows local domain base URL and **Open managed login** link.
-
-#### Why use it
-
-A stable domain hosts OAuth authorize, token, logout, and discovery endpoints for browser-based sign-in.
-
-#### How it works in StackSim
-
-Domain uniqueness, managed-login versions, discovery, authorize, token, logout, and local login routes are active. The domain is a local descriptor — it does not provision DNS, CloudFront, ACM certificates, public TLS, or an AWS-hosted domain.
-
-#### Common AWS use cases
-
-- `myapp.auth.{region}.amazoncognito.com` equivalent for browser login.
-- OAuth 2.0 authorization code flow with PKCE.
-
-#### Example
-
-```text
-Domain prefix:          my-local-app
-Managed login version:  2
-Local base URL:         (shown in console — use for authorize redirects)
-```
-
----
-
-### Issuer and local tooling aliases
-
-#### What it is
-
-Displays canonical issuer, **Discovery URL**, and **JWKS URL** for OAuth/OIDC clients.
-
-#### Why use it
-
-OIDC libraries fetch `.well-known/openid-configuration` and JWKS to validate tokens and build authorize URLs.
-
-#### How it works in StackSim
-
-Discovery and JWKS use loopback tooling aliases. Managed-login endpoints are distinct and never replace the token issuer.
-
----
-
-### Social and external providers
-
-#### What it is
-
-Lists OIDC and SAML 2.0 identity providers with identifiers, attribute mappings, certificate fingerprints, enabled client count, and **Test**, **Edit**, **Delete** actions. **Create provider** opens a modal.
-
-Create/edit fields: provider name, protocol (OIDC or SAML), provider details JSON, attribute mapping JSON, IdP identifiers.
-
-#### Why use it
-
-Federation lets users sign in with corporate IdP, Google, or other standards-compatible providers while Cognito still issues application tokens.
-
-#### How it works in StackSim
-
-OIDC discovery, signed SAML metadata and assertions, attribute mapping, client enablement, and connection tests are active. Loopback providers work by default. Public HTTPS providers require `STACKSIM_COGNITO_ALLOW_PUBLIC_IDP=true`. Private-network, metadata, and link-local targets remain blocked. Client secrets are write-only; certificates display fingerprints only.
-
-#### Common AWS use cases
-
-- Enterprise SAML SSO with attribute mapping `email ← mail`.
-- OIDC social login with discovery issuer and client credentials.
-
-#### Example (OIDC provider details)
-
-```json
-{
-  "oidc_issuer": "http://127.0.0.1:8080",
-  "client_id": "local-oidc-client",
-  "client_secret": "secret",
-  "authorize_scopes": "openid email profile"
-}
-```
-
----
-
-### Resource servers
-
-#### What it is
-
-Lists resource servers (API identifiers) and custom scopes such as `https://api.example.test/read`. **Create resource server** accepts name, identifier, and scopes (`name | description` per line).
-
-#### Why use it
-
-Resource servers namespace custom OAuth scopes for API authorization — access tokens carry `scope` claims the API validates.
-
-#### How it works in StackSim
-
-Resource-server creation, deletion, scope validation, app-client scope selection, OAuth consent, and access-token scope claims are active locally.
-
-#### Common AWS use cases
-
-- Protect microservice with scope `api/read`.
-- Machine-to-machine client credentials requesting `api/write`.
-
----
-
-### Managed-login branding
-
-#### What it is
-
-Per app client, set **Page title** and **Primary color** (#RRGGBB) for the local version 2 login page.
-
-#### Why use it
-
-Branding gives users recognizable application context on the hosted sign-in page.
-
-#### How it works in StackSim
-
-The local version 2 login page applies client-specific page title and six-digit primary color. Logos, images, advanced style tokens, and the broader AWS managed-login branding editor are not implemented. Branding requires managed login version 2.
-
----
-
-## User pool: Sign-in tab
-
-### Sign-in experience
-
-#### What it is
-
-Read-only summary of sign-in identifier mode (email, username, or username with email alias), case sensitivity, account recovery, MFA mode and methods, passwordless availability, and whether SRP is enabled by any app client.
-
-#### Why use it
-
-Operators verify pool-level sign-in policy matches product requirements without opening CloudFormation or SDK responses.
-
-#### How it works in StackSim
-
-Reflects pool configuration set at creation and through **Configure**. Passwordless sign-in is unavailable locally.
-
----
-
-### Password policy
-
-#### What it is
-
-Displays minimum length, character class requirements, temporary password validity days, and password history size.
-
-#### Why use it
-
-Password policy balances security and usability; operators confirm deployed settings when users report password rejection.
-
-#### How it works in StackSim
-
-Policy is enforced on user creation, password change, and administrator set-password operations.
-
----
-
-### Enabled client flows
-
-#### What it is
-
-Aggregates authentication flows enabled across all app clients in the pool.
-
-#### Why use it
-
-Quick check that at least one client enables the flow your test script or application uses (for example SRP for mobile).
-
-#### How it works in StackSim
-
-Derived from app client configuration; edit clients on the **App clients** tab to change flows.
-
----
-
-## User pool: Self-service sign-up tab
-
-### Self-service sign-up
-
-#### What it is
-
-Shows whether public sign-up is enabled, required attributes, automatic verification attributes, delivery method (email via local SES), and SMS availability.
-
-#### Why use it
-
-Self-service sign-up is the default for consumer applications; administrators disable it for invite-only or enterprise pools.
-
-#### How it works in StackSim
-
-Sign-up availability is set at pool creation (`AllowAdminCreateUserOnly`). SMS is unavailable.
-
----
-
-### Verification message
-
-#### What it is
-
-Displays sending account, sender, subject, and link to the filtered SES Inbox.
-
-#### Why use it
-
-Confirm verification templates before users attempt registration.
-
-#### How it works in StackSim
-
-Codes stay in captured email only — the console never exposes them.
-
----
-
-### Custom attributes
-
-#### What it is
-
-Lists `custom:` schema definitions (type, mutability, constraints). **Add custom attribute** opens a modal with name, data type (String, Number, Boolean, DateTime), mutability, and type-specific constraints.
-
-#### Why use it
-
-Custom attributes extend the user directory with application-specific profile or authorization data without a separate database.
-
-#### How it works in StackSim
-
-Schema creation, naming and type validation, string and number constraints, creation-time values, mutable updates, and token read/write attribute behavior are active. Custom attribute definitions **cannot be removed** after creation. Immutable values can be set only when a user is created.
-
-#### Common AWS use cases
-
-- `custom:tenantId` — immutable tenant assignment at registration.
-- `custom:department` — mutable HR field updatable by administrators.
-
-#### Example
-
-```text
-Name:     department
-Type:     String
-Mutable:  yes
-Min/max:  2–20 characters
-```
-
-Stored as `custom:department` on users and available in tokens when configured for read/write on app clients.
-
----
-
-### Advanced sign-up features
-
-#### What it is
-
-Summary of configured Lambda triggers, custom attribute count, managed login for terms/branding, and pointer to external identity providers on **Managed login**.
-
-#### Why use it
-
-Overview of sign-up pipeline extensions before testing registration end-to-end.
-
-#### How it works in StackSim
-
-Lambda triggers execute on supported lifecycle events when ARNs are configured and permitted.
+**How it works in StackSim.** The enhanced flow (`GetId`, `GetCredentialsForIdentity`) issues credentials from user pool ID tokens with the attached roles. **Connect identity providers → Role settings** can choose the role from `cognito:preferred_role` (user pool group roles); rule-based mappings and `Deny` are available through `SetIdentityPoolRoles` and CloudFormation. The basic (classic) flow, social identity providers, and developer-authenticated identities are not implemented in this simulator.
 
 ---
 
@@ -775,12 +180,19 @@ Lambda triggers execute on supported lifecycle events when ARNs are configured a
 
 | Flow | Typical client | Use when |
 |------|----------------|----------|
+| **USER_AUTH** (choice-based, `ALLOW_USER_AUTH`) | Current console default for new app clients | Let the user pick a first factor: password, SRP, or (on pools that send email through Amazon SES and allow it in the sign-in policy) an email one-time code; also signs a user in right after sign-up confirmation with the `Session` that `SignUp` returned |
 | **USER_PASSWORD_AUTH** | Web/mobile with backend | Simple username/password against Cognito |
 | **ADMIN_USER_PASSWORD_AUTH** | Trusted server | Admin or migration scripts authenticate users |
 | **USER_SRP_AUTH** | Mobile | Secure remote password protocol |
 | **REFRESH_TOKEN_AUTH** | All long-lived sessions | Obtain new access/ID tokens without re-login |
 | **Authorization code + PKCE** | SPA | Browser OAuth without client secret |
 | **Client credentials** | Service | Machine-to-machine with scopes |
+
+---
+
+Repeated successful sign-ins are never throttled. As on AWS, five failed password attempts lock the user out for one second, doubling with each further failure up to about fifteen minutes; attempts during the lockout return `Password attempts exceeded`, and a successful sign-in afterwards resets the count.
+
+App clients created without **Attribute read and write permissions** can read every standard attribute (plus `email_verified` and `phone_number_verified`) and write every standard attribute; `DescribeUserPoolClient` then returns no `ReadAttributes`/`WriteAttributes`. Custom attributes need an explicit list.
 
 ---
 
@@ -798,18 +210,18 @@ Lambda triggers execute on supported lifecycle events when ARNs are configured a
 
 | Feature | StackSim behavior |
 |---------|-------------------|
-| Cognito Identity Pools | Separate service: enhanced GetId/GetCredentialsForIdentity, User Pool ID tokens, guest identities when enabled; the exact generated no-group mapping is admitted; classic flow and other role mappings are unavailable |
+| Cognito Identity Pools | Separate service: enhanced GetId/GetCredentialsForIdentity, User Pool ID tokens, guest identities when enabled, console create/edit/delete, Token and Rules role mappings; the classic flow is unavailable |
 | SMS MFA / SMS verification | Unavailable |
 | External email delivery | Never sent; use SES Inbox |
-| Client secrets | Write-only; console shows existence only |
+| Client secrets | StackSim policy: the console shows only that a secret exists (AWS has Show client secret); `DescribeUserPoolClient` returns it |
 | Temporary passwords / codes | Never displayed in console |
-| User-pool domain | Local descriptor; no DNS/TLS provisioning |
+| User-pool domain | Loopback Cognito domain; custom domains (DNS, CloudFront, ACM) are unavailable |
 | Public IdP federation | Requires `STACKSIM_COGNITO_ALLOW_PUBLIC_IDP=true` |
 | Private/metadata/link-local IdP targets | Blocked |
 | KMS encryption | Not modeled for user pools |
 | Advanced branding | Title and primary color only (managed login v2) |
 | Token revocation | Supported; existing JWTs valid until expiry unless app checks revocation |
-| SES DEVELOPER profile | Configure verified identity via official API |
+| SES DEVELOPER profile | Authentication methods → Email → Send email with Amazon SES, with a verified local SES identity |
 
 ---
 

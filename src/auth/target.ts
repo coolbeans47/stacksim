@@ -428,7 +428,8 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
     const identityPoolId = input.IdentityPoolId;
     resource = typeof resourceArn === "string"
       ? resourceArn
-      : ["CreateIdentityPool", "ListIdentityPools"].includes(operation)
+      // Service Authorization Reference: these actions have no resource type (Resource "*").
+      : ["CreateIdentityPool", "ListIdentityPools", "SetIdentityPoolRoles", "SetPrincipalTagAttributeMap", "DescribeIdentity", "DeleteIdentities"].includes(operation)
         ? "*"
         : typeof identityPoolId === "string"
           ? `arn:${partition}:cognito-identity:${region}:${accountId}:identitypool/${identityPoolId}`

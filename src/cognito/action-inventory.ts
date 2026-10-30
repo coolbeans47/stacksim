@@ -144,7 +144,17 @@ const entries: Array<[string, CognitoAuthorizationClass]> = [
   ["GetProvisionedLimit", "IAM"],
   ["UpdateProvisionedLimit", "IAM"],
   ["GetSigningCertificate", "IAM"],
+  // Added to the Cognito API after the pinned SDK (3.1094.0); routed as named boundaries.
+  ["AdminDeleteSoftwareToken", "IAM"],
+  ["AdminGetUserAuthFactors", "IAM"],
+  ["DescribeTermsByClient", "IAM"],
+  ["GetClientToken", "PUBLIC_APP_CLIENT"],
 ];
+
+/** Operations in the current API reference that the pinned SDK does not export. */
+export const COGNITO_POST_SDK_PIN_OPERATIONS = Object.freeze([
+  "AdminDeleteSoftwareToken", "AdminGetUserAuthFactors", "DescribeTermsByClient", "GetClientToken",
+]);
 
 export const COGNITO_ACTION_INVENTORY = new Map<string, CognitoActionInventoryEntry>(
   entries.map(([operation, authorization]) => [
@@ -152,6 +162,11 @@ export const COGNITO_ACTION_INVENTORY = new Map<string, CognitoActionInventoryEn
     { operation, authorization, target: `${PREFIX}${operation}` },
   ]),
 );
+
+/** True for any target in the Cognito user-pools namespace, known or not, so unknown actions get a Cognito error. */
+export function isCognitoIdentityProviderNamespace(target: unknown): boolean {
+  return typeof target === "string" && target.startsWith(PREFIX);
+}
 
 export function cognitoTargetOperation(target: unknown): string | undefined {
   if (typeof target !== "string" || !target.startsWith(PREFIX)) return undefined;

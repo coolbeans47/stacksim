@@ -244,7 +244,7 @@ test("COGGAP-24 updates pool names and append-only schema without replacement", 
     assert.equal(updated.physicalId, poolId);
     const described = await simulator.cognito.executeCloudFormationControl("DescribeUserPool", { UserPoolId: poolId }) as any;
     assert.equal(described.UserPool.Name, "gap24-after");
-    assert(described.UserPool.SchemaAttributes.some((attribute: any) => attribute.Name === "department"));
+    assert(described.UserPool.SchemaAttributes.some((attribute: any) => attribute.Name === "custom:department"));
     assert.equal((await simulator.cognito.executeCloudFormationControl("ListUserPoolClients", {
       UserPoolId: poolId,
       MaxResults: 10,
