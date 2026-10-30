@@ -38,6 +38,8 @@ export const COGNITO_USER_POOL_USER_TO_GROUP_TYPE = "AWS::Cognito::UserPoolUserT
 export const COGNITO_USER_POOL_RESOURCE_SERVER_TYPE = "AWS::Cognito::UserPoolResourceServer";
 export const COGNITO_USER_POOL_DOMAIN_TYPE = "AWS::Cognito::UserPoolDomain";
 export const COGNITO_USER_POOL_IDENTITY_PROVIDER_TYPE = "AWS::Cognito::UserPoolIdentityProvider";
+export const COGNITO_MANAGED_LOGIN_BRANDING_TYPE = "AWS::Cognito::ManagedLoginBranding";
+export const COGNITO_UI_CUSTOMIZATION_ATTACHMENT_TYPE = "AWS::Cognito::UserPoolUICustomizationAttachment";
 
 type Model = Readonly<Record<string, any>>;
 type Json = Record<string, any>;
@@ -68,9 +70,10 @@ export const COGNITO_USER_POOL_SCHEMA: ProviderSchema = Object.freeze({
     DeletionProtection: stringProperty("MUTABLE"),
     AutoVerifiedAttributes: arrayProperty("MUTABLE"),
     UserAttributeUpdateSettings: objectProperty("MUTABLE"),
-    AliasAttributes: arrayProperty("REPLACEMENT"),
-    UsernameAttributes: arrayProperty("REPLACEMENT"),
-    UsernameConfiguration: objectProperty("REPLACEMENT"),
+    // AWS: every UserPool property is "Update requires: No interruption"; changing an immutable one fails the update.
+    AliasAttributes: arrayProperty("MUTABLE"),
+    UsernameAttributes: arrayProperty("MUTABLE"),
+    UsernameConfiguration: objectProperty("MUTABLE"),
     AdminCreateUserConfig: objectProperty("MUTABLE"),
     Schema: arrayProperty("MUTABLE"),
     AccountRecoverySetting: objectProperty("MUTABLE"),
@@ -84,9 +87,16 @@ export const COGNITO_USER_POOL_SCHEMA: ProviderSchema = Object.freeze({
     LambdaConfig: objectProperty("MUTABLE"),
     UserPoolTier: stringProperty("MUTABLE"),
     UserPoolTags: objectProperty("MUTABLE"),
+    UserPoolAddOns: objectProperty("MUTABLE"),
+    DeviceConfiguration: objectProperty("MUTABLE"),
+    IssuerConfiguration: objectProperty("MUTABLE"),
+    KeyConfiguration: objectProperty("MUTABLE"),
+    SmsConfiguration: objectProperty("MUTABLE"),
+    SmsAuthenticationMessage: stringProperty("MUTABLE"),
   }),
   ref: Object.freeze({ supported: true, valueType: "string", description: "User-pool identifier." }),
   attributes: Object.freeze({
+    UserPoolId: Object.freeze({ valueType: "string" }),
     Arn: Object.freeze({ valueType: "string" }),
     ProviderName: Object.freeze({ valueType: "string" }),
     ProviderURL: Object.freeze({ valueType: "string" }),
@@ -124,9 +134,11 @@ export const COGNITO_USER_POOL_CLIENT_SCHEMA: ProviderSchema = Object.freeze({
     AllowedOAuthFlows: arrayProperty("MUTABLE"),
     AllowedOAuthScopes: arrayProperty("MUTABLE"),
     AllowedOAuthFlowsUserPoolClient: booleanProperty("MUTABLE"),
+    AnalyticsConfiguration: objectProperty("MUTABLE"),
+    EnablePropagateAdditionalUserContextData: booleanProperty("MUTABLE"),
   }),
   ref: Object.freeze({ supported: true, valueType: "string", description: "App-client identifier." }),
-  attributes: Object.freeze({}),
+  attributes: Object.freeze({ ClientId: Object.freeze({ valueType: "string" }) }),
   replacement: Object.freeze({ defaultOrder: "CREATE_BEFORE_DELETE" as const }),
   retention: CFN10_RETENTION,
   tags: CFN10_NO_TAGS,
@@ -209,7 +221,7 @@ export const COGNITO_USER_POOL_DOMAIN_SCHEMA: ProviderSchema = Object.freeze({
     ManagedLoginVersion: numberProperty("MUTABLE"),
   }),
   ref: Object.freeze({ supported: true, valueType: "string" }),
-  attributes: Object.freeze({}),
+  attributes: Object.freeze({ CloudFrontDistribution: Object.freeze({ valueType: "string" }) }),
   replacement: Object.freeze({ defaultOrder: "CREATE_BEFORE_DELETE" as const }),
   retention: CFN10_RETENTION,
   tags: CFN10_NO_TAGS,
@@ -233,6 +245,38 @@ export const COGNITO_USER_POOL_IDENTITY_PROVIDER_SCHEMA: ProviderSchema = Object
   tags: CFN10_NO_TAGS,
 });
 
+export const COGNITO_MANAGED_LOGIN_BRANDING_SCHEMA: ProviderSchema = Object.freeze({
+  typeName: COGNITO_MANAGED_LOGIN_BRANDING_TYPE,
+  unknownProperties: "REJECT",
+  properties: Object.freeze({
+    UserPoolId: stringProperty("REPLACEMENT", true),
+    ClientId: stringProperty("REPLACEMENT"),
+    UseCognitoProvidedValues: booleanProperty("MUTABLE"),
+    Settings: Object.freeze({ valueType: "any" as const, updateBehavior: "MUTABLE" as const }),
+    ReturnMergedResources: booleanProperty("MUTABLE"),
+  }),
+  ref: Object.freeze({ supported: true, valueType: "string", description: "Managed login branding identifier." }),
+  attributes: Object.freeze({ ManagedLoginBrandingId: Object.freeze({ valueType: "string" }) }),
+  replacement: Object.freeze({ defaultOrder: "CREATE_BEFORE_DELETE" as const }),
+  retention: CFN10_RETENTION,
+  tags: CFN10_NO_TAGS,
+});
+
+export const COGNITO_UI_CUSTOMIZATION_ATTACHMENT_SCHEMA: ProviderSchema = Object.freeze({
+  typeName: COGNITO_UI_CUSTOMIZATION_ATTACHMENT_TYPE,
+  unknownProperties: "REJECT",
+  properties: Object.freeze({
+    UserPoolId: stringProperty("REPLACEMENT", true),
+    ClientId: stringProperty("REPLACEMENT", true),
+    CSS: stringProperty("MUTABLE"),
+  }),
+  ref: Object.freeze({ supported: true, valueType: "string" }),
+  attributes: Object.freeze({}),
+  replacement: Object.freeze({ defaultOrder: "CREATE_BEFORE_DELETE" as const }),
+  retention: CFN10_RETENTION,
+  tags: CFN10_NO_TAGS,
+});
+
 const schemas = Object.freeze({
   [COGNITO_USER_POOL_TYPE]: COGNITO_USER_POOL_SCHEMA,
   [COGNITO_USER_POOL_CLIENT_TYPE]: COGNITO_USER_POOL_CLIENT_SCHEMA,
@@ -242,13 +286,16 @@ const schemas = Object.freeze({
   [COGNITO_USER_POOL_RESOURCE_SERVER_TYPE]: COGNITO_USER_POOL_RESOURCE_SERVER_SCHEMA,
   [COGNITO_USER_POOL_DOMAIN_TYPE]: COGNITO_USER_POOL_DOMAIN_SCHEMA,
   [COGNITO_USER_POOL_IDENTITY_PROVIDER_TYPE]: COGNITO_USER_POOL_IDENTITY_PROVIDER_SCHEMA,
+  [COGNITO_MANAGED_LOGIN_BRANDING_TYPE]: COGNITO_MANAGED_LOGIN_BRANDING_SCHEMA,
+  [COGNITO_UI_CUSTOMIZATION_ATTACHMENT_TYPE]: COGNITO_UI_CUSTOMIZATION_ATTACHMENT_SCHEMA,
 });
 
 const USER_POOL_MUTABLE = Object.freeze([
   "Policies", "DeletionProtection", "AutoVerifiedAttributes", "AdminCreateUserConfig",
   "AccountRecoverySetting", "EmailConfiguration", "EmailVerificationMessage",
   "EmailVerificationSubject", "VerificationMessageTemplate", "MfaConfiguration",
-  "EnabledMfas", "LambdaConfig", "UserPoolTier", "UserAttributeUpdateSettings",
+  "EnabledMfas", "LambdaConfig", "UserPoolTier", "UserAttributeUpdateSettings", "UserPoolAddOns",
+  "DeviceConfiguration", "IssuerConfiguration", "KeyConfiguration", "SmsConfiguration", "SmsAuthenticationMessage",
 ]);
 
 const COGNITO_OWNER_TAG = "stacksim:cloudformation:owner";
@@ -324,7 +371,7 @@ function userPoolIssues(properties: unknown): ProviderValidationIssue[] {
       issues.push(issue("Properties.UserAttributeUpdateSettings", "Verification before update requires AutoVerifiedAttributes to include email"));
     }
   }
-  exactObject(properties.Policies, ["PasswordPolicy"], "Properties.Policies", issues);
+  exactObject(properties.Policies, ["PasswordPolicy", "SignInPolicy"], "Properties.Policies", issues);
   if (record(properties.Policies?.PasswordPolicy)) {
     cfn10ExactKeys(properties.Policies.PasswordPolicy, [
       "MinimumLength", "RequireUppercase", "RequireLowercase", "RequireNumbers",
@@ -333,7 +380,7 @@ function userPoolIssues(properties: unknown): ProviderValidationIssue[] {
   }
   exactObject(properties.AdminCreateUserConfig, ["AllowAdminCreateUserOnly", "UnusedAccountValidityDays", "InviteMessageTemplate"], "Properties.AdminCreateUserConfig", issues);
   exactObject(properties.EmailConfiguration, ["EmailSendingAccount", "SourceArn", "From", "ReplyToEmailAddress", "ConfigurationSet"], "Properties.EmailConfiguration", issues);
-  exactObject(properties.VerificationMessageTemplate, ["DefaultEmailOption", "EmailMessage", "EmailSubject", "SmsMessage"], "Properties.VerificationMessageTemplate", issues);
+  exactObject(properties.VerificationMessageTemplate, ["DefaultEmailOption", "EmailMessage", "EmailSubject", "SmsMessage", "EmailMessageByLink", "EmailSubjectByLink"], "Properties.VerificationMessageTemplate", issues);
   if (
     typeof properties.SmsVerificationMessage === "string"
     && record(properties.VerificationMessageTemplate)
@@ -346,7 +393,12 @@ function userPoolIssues(properties: unknown): ProviderValidationIssue[] {
     ));
   }
   exactObject(properties.AccountRecoverySetting, ["RecoveryMechanisms"], "Properties.AccountRecoverySetting", issues);
-  exactObject(properties.LambdaConfig, ["PreSignUp", "CustomMessage", "PostConfirmation", "PreAuthentication", "PostAuthentication", "PreTokenGeneration", "PreTokenGenerationConfig"], "Properties.LambdaConfig", issues);
+  // Unimplemented trigger keys reach the service, which names the boundary.
+  exactObject(properties.LambdaConfig, [
+    "PreSignUp", "CustomMessage", "PostConfirmation", "PreAuthentication", "PostAuthentication", "PreTokenGeneration",
+    "PreTokenGenerationConfig", "DefineAuthChallenge", "CreateAuthChallenge", "VerifyAuthChallengeResponse", "UserMigration",
+    "CustomEmailSender", "CustomSMSSender", "KMSKeyID", "InboundFederation",
+  ], "Properties.LambdaConfig", issues);
   if (properties.UserPoolTags !== undefined) {
     stringMap(properties.UserPoolTags, "Properties.UserPoolTags", issues);
     if (record(properties.UserPoolTags) && Object.keys(properties.UserPoolTags).length > 49) issues.push(issue("Properties.UserPoolTags", "UserPoolTags supports at most 49 user tags"));
@@ -440,7 +492,10 @@ function canonicalUserPool(properties: unknown, context: ProviderContext): Model
   const smsMessage = verification.SmsMessage ?? input.SmsVerificationMessage;
   return Object.freeze(cfn10Stable({
     UserPoolName: input.UserPoolName ?? cfn10GeneratedName(context, "pool-", 128, /[^\w\s+=,.@-]/gu),
-    Policies: { PasswordPolicy: { ...passwordPolicyDefaults, ...password } },
+    Policies: {
+      PasswordPolicy: { ...passwordPolicyDefaults, ...password },
+      SignInPolicy: cfn10Stable(input.Policies?.SignInPolicy ?? { AllowedFirstAuthFactors: ["PASSWORD"] }),
+    },
     DeletionProtection: input.DeletionProtection ?? "INACTIVE",
     AutoVerifiedAttributes: [...(input.AutoVerifiedAttributes ?? [])].sort(),
     UserAttributeUpdateSettings: { AttributesRequireVerificationBeforeUpdate: [...(input.UserAttributeUpdateSettings?.AttributesRequireVerificationBeforeUpdate ?? [])].sort() },
@@ -468,6 +523,10 @@ function canonicalUserPool(properties: unknown, context: ProviderContext): Model
     EnabledMfas: [...(input.EnabledMfas ?? [])].sort(),
     LambdaConfig: cfn10Stable(input.LambdaConfig ?? {}),
     UserPoolTier: input.UserPoolTier ?? "ESSENTIALS",
+    // AdvancedSecurityMode OFF is the default and a no-op; any other add-on reaches the service boundary.
+    ...(record(input.UserPoolAddOns) && input.UserPoolAddOns.AdvancedSecurityMode !== "OFF" ? { UserPoolAddOns: input.UserPoolAddOns } : {}),
+    ...Object.fromEntries((["DeviceConfiguration", "IssuerConfiguration", "KeyConfiguration", "SmsConfiguration", "SmsAuthenticationMessage"] as const)
+      .filter(name => input[name] !== undefined).map(name => [name, input[name]])),
     UserPoolTags: canonicalTags(input.UserPoolTags),
   }));
 }
@@ -499,6 +558,9 @@ function canonicalClient(properties: unknown, context: ProviderContext): Model {
     AllowedOAuthFlows: [...(input.AllowedOAuthFlows ?? [])].sort(),
     AllowedOAuthScopes: [...(input.AllowedOAuthScopes ?? [])].sort(),
     AllowedOAuthFlowsUserPoolClient: input.AllowedOAuthFlowsUserPoolClient ?? false,
+    // false is the default and a no-op; true and analytics reach the service, which names the boundary.
+    ...(input.EnablePropagateAdditionalUserContextData === true ? { EnablePropagateAdditionalUserContextData: true } : {}),
+    ...(input.AnalyticsConfiguration === undefined ? {} : { AnalyticsConfiguration: input.AnalyticsConfiguration }),
   }));
 }
 
@@ -559,6 +621,7 @@ function providerName(context: ProviderContext, poolId: string): string {
 function poolAttributes(context: ProviderContext, poolId: string, arn?: unknown): Record<string, string> {
   const name = providerName(context, poolId);
   return {
+    UserPoolId: poolId,
     Arn: typeof arn === "string" ? arn : `arn:${context.partition}:cognito-idp:${context.region}:${context.accountId}:userpool/${poolId}`,
     ProviderName: name,
     ProviderURL: `https://${name}`,
@@ -584,7 +647,8 @@ function poolModel(raw: Json, tags: Record<string, string>): Model {
   const cleanTags = Object.fromEntries(Object.entries(tags).filter(([key]) => key !== COGNITO_OWNER_TAG));
   return Object.freeze(cfn10Stable({
     UserPoolName: raw.Name,
-    Policies: { PasswordPolicy: raw.Policies?.PasswordPolicy },
+    Policies: { PasswordPolicy: raw.Policies?.PasswordPolicy, SignInPolicy: raw.Policies?.SignInPolicy },
+    ...(raw.DeviceConfiguration ? { DeviceConfiguration: raw.DeviceConfiguration } : {}),
     DeletionProtection: raw.DeletionProtection,
     AutoVerifiedAttributes: raw.AutoVerifiedAttributes ?? [],
     UserAttributeUpdateSettings: raw.UserAttributeUpdateSettings ?? { AttributesRequireVerificationBeforeUpdate: [] },
@@ -633,6 +697,8 @@ function clientInput(model: Model, create: boolean, clientId?: string): Json {
     AllowedOAuthFlows: model.AllowedOAuthFlows,
     AllowedOAuthScopes: model.AllowedOAuthScopes,
     AllowedOAuthFlowsUserPoolClient: model.AllowedOAuthFlowsUserPoolClient,
+    ...(model.EnablePropagateAdditionalUserContextData === undefined ? {} : { EnablePropagateAdditionalUserContextData: model.EnablePropagateAdditionalUserContextData }),
+    ...(model.AnalyticsConfiguration === undefined ? {} : { AnalyticsConfiguration: model.AnalyticsConfiguration }),
   };
 }
 
@@ -668,7 +734,7 @@ async function readClient(service: CognitoService, poolId: string, clientId: str
   return {
     physicalId,
     properties: clientModel(raw, typeof raw.ClientSecret === "string" && raw.ClientSecret.length > 0),
-    attributes: {},
+    attributes: { ClientId: clientId },
   };
 }
 
@@ -709,6 +775,12 @@ function createPoolProvider(service: CognitoService): ProductionResourceProvider
     },
     async update(physicalId, previous, desired, context): Promise<ProviderUpdateResult<Model>> {
       try {
+        for (const name of ["AliasAttributes", "UsernameAttributes", "UsernameConfiguration"] as const) {
+          if (!cfn10Same(previous[name], desired[name])) {
+            // AWS updates the pool in place; the service rejects the immutable change, the update fails, and the pool survives.
+            throw new AwsError("InvalidParameterException", `${name} cannot be changed after the user pool is created; the user pool is unchanged.`);
+          }
+        }
         const desiredSchema = new Map((desired.Schema as Json[]).map(attribute => [attribute.Name, attribute]));
         for (const existing of previous.Schema as Json[]) {
           const next = desiredSchema.get(existing.Name);
@@ -774,7 +846,7 @@ function createClientProvider(service: CognitoService): ProductionResourceProvid
         const response = await service.executeCloudFormationControl("CreateUserPoolClient", clientInput(desired, true));
         const raw = response.UserPoolClient as Json;
         const physicalId = cfn10Physical("cognito-client", [desired.UserPoolId, String(raw.ClientId)]);
-        return success(physicalId, desired);
+        return success(physicalId, desired, { ClientId: String(raw.ClientId) });
       } catch (error) { return failed(error); }
     },
     async read(physicalId): Promise<ProviderReadResult<Model>> {
@@ -791,7 +863,7 @@ function createClientProvider(service: CognitoService): ProductionResourceProvid
           throw new AwsError("RequiresReplacement", "UserPoolId and GenerateSecret changes require replacement", 409);
         }
         await service.executeCloudFormationControl("UpdateUserPoolClient", clientInput(desired, false, clientId));
-        return success(physicalId, desired);
+        return success(physicalId, desired, { ClientId: clientId });
       } catch (error) { return failed(error); }
     },
     async delete(physicalId): Promise<ProviderDeleteResult> {
@@ -802,7 +874,10 @@ function createClientProvider(service: CognitoService): ProductionResourceProvid
       } catch (error) { return isMissing(error) ? { status: "NOT_FOUND", physicalId } : failed(error); }
     },
     ref(model) { return cfn10ParsePhysical(model.physicalId, "cognito-client", 2)[1]; },
-    getAtt(_model, attribute) { throw new Error(`${COGNITO_USER_POOL_CLIENT_TYPE} does not support Fn::GetAtt ${attribute}`); },
+    getAtt(model, attribute) {
+      if (attribute === "ClientId") return cfn10ParsePhysical(model.physicalId, "cognito-client", 2)[1];
+      return cfn10GetAtt(COGNITO_USER_POOL_CLIENT_TYPE, COGNITO_USER_POOL_CLIENT_SCHEMA, model, attribute);
+    },
   };
 }
 
@@ -947,6 +1022,10 @@ function createResourceServerProvider(service: CognitoService): ProductionResour
   });
 }
 
+// Prefix (Cognito) domains have no CloudFront distribution of their own (DescribeUserPoolDomain returns no
+// CloudFrontDomain for them); custom domains are not implemented, so the attribute is always empty.
+const DOMAIN_ATTRIBUTES = Object.freeze({ CloudFrontDistribution: "" });
+
 function createDomainProvider(service: CognitoService): ProductionResourceProvider<Model> {
   const schema = COGNITO_USER_POOL_DOMAIN_SCHEMA;
   return {
@@ -961,7 +1040,7 @@ function createDomainProvider(service: CognitoService): ProductionResourceProvid
       const physicalId = cfn10Physical("cognito-domain", [desired.UserPoolId, desired.Domain]);
       try {
         await service.executeCloudFormationControl("CreateUserPoolDomain", desired as Json);
-        return success(physicalId, desired);
+        return success(physicalId, desired, DOMAIN_ATTRIBUTES);
       } catch (error) { return failed(error); }
     },
     async read(physicalId): Promise<ProviderReadResult<Model>> {
@@ -970,14 +1049,14 @@ function createDomainProvider(service: CognitoService): ProductionResourceProvid
         const description = (await service.executeCloudFormationControl("DescribeUserPoolDomain", { Domain })).DomainDescription as Json;
         if (!description?.Domain || description.UserPoolId !== UserPoolId) return { status: "NOT_FOUND", physicalId };
         const properties = { UserPoolId, Domain, ManagedLoginVersion: Number(description.ManagedLoginVersion ?? description.Version ?? 2) };
-        return { status: "SUCCESS", physicalId, model: { physicalId, properties, attributes: {} } };
+        return { status: "SUCCESS", physicalId, model: { physicalId, properties, attributes: DOMAIN_ATTRIBUTES } };
       } catch (error) { return isMissing(error) ? { status: "NOT_FOUND", physicalId } : failed(error); }
     },
     async update(physicalId, previous, desired): Promise<ProviderUpdateResult<Model>> {
       try {
         if (previous.UserPoolId !== desired.UserPoolId || previous.Domain !== desired.Domain) throw new AwsError("RequiresReplacement", "UserPoolId and Domain changes require replacement", 409);
         await service.executeCloudFormationControl("UpdateUserPoolDomain", desired as Json);
-        return success(physicalId, desired);
+        return success(physicalId, desired, DOMAIN_ATTRIBUTES);
       } catch (error) { return failed(error); }
     },
     async delete(physicalId): Promise<ProviderDeleteResult> {
@@ -988,7 +1067,7 @@ function createDomainProvider(service: CognitoService): ProductionResourceProvid
       } catch (error) { return isMissing(error) ? { status: "NOT_FOUND", physicalId } : failed(error); }
     },
     ref(model) { return cfn10ParsePhysical(model.physicalId, "cognito-domain", 2)[1]; },
-    getAtt(_model, attribute) { throw new Error(`${COGNITO_USER_POOL_DOMAIN_TYPE} does not support Fn::GetAtt ${attribute}`); },
+    getAtt(model, attribute) { return cfn10GetAtt(COGNITO_USER_POOL_DOMAIN_TYPE, schema, model, attribute); },
   };
 }
 
@@ -1001,6 +1080,103 @@ function identityProviderModel(raw: Json): Model {
     AttributeMapping: raw.AttributeMapping ?? {},
     IdpIdentifiers: raw.IdpIdentifiers ?? [],
   }));
+}
+
+function createManagedLoginBrandingProvider(service: CognitoService): ProductionResourceProvider<Model> {
+  const schema = COGNITO_MANAGED_LOGIN_BRANDING_SCHEMA;
+  const input = (model: Model): Json => ({
+    UserPoolId: model.UserPoolId,
+    ...(model.UseCognitoProvidedValues === undefined ? {} : { UseCognitoProvidedValues: model.UseCognitoProvidedValues }),
+    ...(model.Settings === undefined ? {} : { Settings: model.Settings }),
+  });
+  return {
+    typeName: COGNITO_MANAGED_LOGIN_BRANDING_TYPE,
+    providerVersion: 1,
+    visibility: "production",
+    schema,
+    validate(properties) { return commonIssues(properties, schema); },
+    canonicalize(properties, context) { return canonicalCommon(COGNITO_MANAGED_LOGIN_BRANDING_TYPE, properties, context); },
+    plan(previous, desired) { return cfn10Plan(previous, desired, schema); },
+    async create(desired) {
+      try {
+        const response = await service.executeCloudFormationControl("CreateManagedLoginBranding", { ...input(desired), ...(desired.ClientId === undefined ? {} : { ClientId: desired.ClientId }) });
+        const id = String((response.ManagedLoginBranding as Json).ManagedLoginBrandingId);
+        return success(cfn10Physical("cognito-branding", [desired.UserPoolId, id]), desired, { ManagedLoginBrandingId: id });
+      } catch (error) { return failed(error); }
+    },
+    async read(physicalId): Promise<ProviderReadResult<Model>> {
+      try {
+        const [UserPoolId, ManagedLoginBrandingId] = cfn10ParsePhysical(physicalId, "cognito-branding", 2);
+        const raw = (await service.executeCloudFormationControl("DescribeManagedLoginBranding", { UserPoolId, ManagedLoginBrandingId })).ManagedLoginBranding as Json;
+        const properties = cfn10Stable({ UserPoolId, ...(raw.Settings === undefined ? {} : { Settings: raw.Settings }), ...(raw.UseCognitoProvidedValues === undefined ? {} : { UseCognitoProvidedValues: raw.UseCognitoProvidedValues }) });
+        return { status: "SUCCESS", physicalId, model: { physicalId, properties, attributes: { ManagedLoginBrandingId } } };
+      } catch (error) { return isMissing(error) ? { status: "NOT_FOUND", physicalId } : failed(error); }
+    },
+    async update(physicalId, previous, desired): Promise<ProviderUpdateResult<Model>> {
+      try {
+        const [UserPoolId, ManagedLoginBrandingId] = cfn10ParsePhysical(physicalId, "cognito-branding", 2);
+        if (previous.UserPoolId !== desired.UserPoolId || previous.ClientId !== desired.ClientId) throw new AwsError("RequiresReplacement", "UserPoolId and ClientId changes require replacement", 409);
+        await service.executeCloudFormationControl("UpdateManagedLoginBranding", { ...input(desired), UserPoolId, ManagedLoginBrandingId });
+        return success(physicalId, desired, { ManagedLoginBrandingId });
+      } catch (error) { return failed(error); }
+    },
+    async delete(physicalId): Promise<ProviderDeleteResult> {
+      try {
+        const [UserPoolId, ManagedLoginBrandingId] = cfn10ParsePhysical(physicalId, "cognito-branding", 2);
+        await service.executeCloudFormationControl("DeleteManagedLoginBranding", { UserPoolId, ManagedLoginBrandingId });
+        return { status: "SUCCESS", physicalId };
+      } catch (error) { return isMissing(error) ? { status: "NOT_FOUND", physicalId } : failed(error); }
+    },
+    ref(model) { return cfn10ParsePhysical(model.physicalId, "cognito-branding", 2)[1]; },
+    getAtt(model, attribute) {
+      if (attribute === "ManagedLoginBrandingId") return cfn10ParsePhysical(model.physicalId, "cognito-branding", 2)[1];
+      return cfn10GetAtt(COGNITO_MANAGED_LOGIN_BRANDING_TYPE, schema, model, attribute);
+    },
+  };
+}
+
+function createUiCustomizationProvider(service: CognitoService): ProductionResourceProvider<Model> {
+  const schema = COGNITO_UI_CUSTOMIZATION_ATTACHMENT_SCHEMA;
+  return {
+    typeName: COGNITO_UI_CUSTOMIZATION_ATTACHMENT_TYPE,
+    providerVersion: 1,
+    visibility: "production",
+    schema,
+    validate(properties) { return commonIssues(properties, schema); },
+    canonicalize(properties, context) { return canonicalCommon(COGNITO_UI_CUSTOMIZATION_ATTACHMENT_TYPE, properties, context); },
+    plan(previous, desired) { return cfn10Plan(previous, desired, schema); },
+    async create(desired) {
+      try {
+        await service.executeCloudFormationControl("SetUICustomization", { UserPoolId: desired.UserPoolId, ClientId: desired.ClientId, ...(desired.CSS === undefined ? {} : { CSS: desired.CSS }) });
+        return success(cfn10Physical("cognito-ui", [desired.UserPoolId, desired.ClientId]), desired);
+      } catch (error) { return failed(error); }
+    },
+    async read(physicalId): Promise<ProviderReadResult<Model>> {
+      try {
+        const [UserPoolId, ClientId] = cfn10ParsePhysical(physicalId, "cognito-ui", 2);
+        const raw = (await service.executeCloudFormationControl("GetUICustomization", { UserPoolId, ClientId })).UICustomization as Json;
+        const properties = cfn10Stable({ UserPoolId, ClientId, ...(raw?.CSS ? { CSS: raw.CSS } : {}) });
+        return { status: "SUCCESS", physicalId, model: { physicalId, properties, attributes: DOMAIN_ATTRIBUTES } };
+      } catch (error) { return isMissing(error) ? { status: "NOT_FOUND", physicalId } : failed(error); }
+    },
+    async update(physicalId, previous, desired): Promise<ProviderUpdateResult<Model>> {
+      try {
+        if (previous.UserPoolId !== desired.UserPoolId || previous.ClientId !== desired.ClientId) throw new AwsError("RequiresReplacement", "UserPoolId and ClientId changes require replacement", 409);
+        await service.executeCloudFormationControl("SetUICustomization", { UserPoolId: desired.UserPoolId, ClientId: desired.ClientId, ...(desired.CSS === undefined ? {} : { CSS: desired.CSS }) });
+        return success(physicalId, desired);
+      } catch (error) { return failed(error); }
+    },
+    async delete(physicalId): Promise<ProviderDeleteResult> {
+      try {
+        const [UserPoolId, ClientId] = cfn10ParsePhysical(physicalId, "cognito-ui", 2);
+        // Removing the attachment clears the client's classic hosted-UI CSS.
+        await service.executeCloudFormationControl("SetUICustomization", { UserPoolId, ClientId });
+        return { status: "SUCCESS", physicalId };
+      } catch (error) { return isMissing(error) ? { status: "NOT_FOUND", physicalId } : failed(error); }
+    },
+    ref(model) { return model.physicalId; },
+    getAtt(model, attribute) { return cfn10GetAtt(COGNITO_UI_CUSTOMIZATION_ATTACHMENT_TYPE, schema, model, attribute); },
+  };
 }
 
 function createIdentityProviderProvider(service: CognitoService): ProductionResourceProvider<Model> {
@@ -1105,6 +1281,8 @@ export function createCognitoCloudFormationProviders(
     createResourceServerProvider(service),
     createDomainProvider(service),
     createIdentityProviderProvider(service),
+    createManagedLoginBrandingProvider(service),
+    createUiCustomizationProvider(service),
   ]);
 }
 
@@ -1117,13 +1295,15 @@ export const COGNITO_CLOUDFORMATION_RESOURCE_TYPES = Object.freeze([
   COGNITO_USER_POOL_RESOURCE_SERVER_TYPE,
   COGNITO_USER_POOL_DOMAIN_TYPE,
   COGNITO_USER_POOL_IDENTITY_PROVIDER_TYPE,
+  COGNITO_MANAGED_LOGIN_BRANDING_TYPE,
+  COGNITO_UI_CUSTOMIZATION_ATTACHMENT_TYPE,
 ].sort());
 
 export const COGNITO_CLOUDFORMATION_AUTHORIZATION_MATRIX = Object.freeze({
   [COGNITO_USER_POOL_TYPE]: Object.freeze({
     CREATE: Object.freeze(["cognito-idp:ListUserPools", "cognito-idp:CreateUserPool", "cognito-idp:DescribeUserPool", "cognito-idp:ListTagsForResource"]),
     READ: Object.freeze(["cognito-idp:DescribeUserPool", "cognito-idp:ListTagsForResource"]),
-    UPDATE: Object.freeze(["cognito-idp:DescribeUserPool", "cognito-idp:UpdateUserPool", "cognito-idp:ListTagsForResource", "cognito-idp:TagResource", "cognito-idp:UntagResource"]),
+    UPDATE: Object.freeze(["cognito-idp:DescribeUserPool", "cognito-idp:UpdateUserPool", "cognito-idp:AddCustomAttributes", "cognito-idp:ListTagsForResource", "cognito-idp:TagResource", "cognito-idp:UntagResource"]),
     DELETE: Object.freeze(["cognito-idp:DeleteUserPool"]),
   }),
   [COGNITO_USER_POOL_CLIENT_TYPE]: Object.freeze({
@@ -1167,6 +1347,18 @@ export const COGNITO_CLOUDFORMATION_AUTHORIZATION_MATRIX = Object.freeze({
     READ: Object.freeze(["cognito-idp:DescribeIdentityProvider"]),
     UPDATE: Object.freeze(["cognito-idp:UpdateIdentityProvider"]),
     DELETE: Object.freeze(["cognito-idp:DeleteIdentityProvider"]),
+  }),
+  [COGNITO_MANAGED_LOGIN_BRANDING_TYPE]: Object.freeze({
+    CREATE: Object.freeze(["cognito-idp:CreateManagedLoginBranding"]),
+    READ: Object.freeze(["cognito-idp:DescribeManagedLoginBranding"]),
+    UPDATE: Object.freeze(["cognito-idp:UpdateManagedLoginBranding"]),
+    DELETE: Object.freeze(["cognito-idp:DeleteManagedLoginBranding"]),
+  }),
+  [COGNITO_UI_CUSTOMIZATION_ATTACHMENT_TYPE]: Object.freeze({
+    CREATE: Object.freeze(["cognito-idp:SetUICustomization"]),
+    READ: Object.freeze(["cognito-idp:GetUICustomization"]),
+    UPDATE: Object.freeze(["cognito-idp:SetUICustomization"]),
+    DELETE: Object.freeze(["cognito-idp:SetUICustomization"]),
   }),
 });
 

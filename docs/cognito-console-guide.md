@@ -172,7 +172,7 @@ Opening a client shows **App client information** with **Edit** and **Delete**, 
 
 **What it is.** The identity pools list (name, ID, guest access, identity count, created time) with **Delete** and **Create identity pool**. The create page walks through **Configure identity pool trust** (authenticated and guest access; Amazon Cognito user pool as the identity source), **Configure permissions** (authenticated and guest roles), **Connect identity providers** (user pool and app client), **Configure properties** (name and tags), and **Review and create**. A pool has three tabs: **User access** (identity providers, authenticated role, guest access with Activate/Deactivate), **Identity browser** (identity IDs and linked logins), and **Properties** (name, tags, Delete identity pool).
 
-**How it works in StackSim.** The enhanced flow (`GetId`, `GetCredentialsForIdentity`) issues credentials from user pool ID tokens with the attached roles. The basic (classic) flow, token- and rule-based role selection, social identity providers, and developer-authenticated identities are not implemented in this simulator.
+**How it works in StackSim.** The enhanced flow (`GetId`, `GetCredentialsForIdentity`) issues credentials from user pool ID tokens with the attached roles. **Connect identity providers → Role settings** can choose the role from `cognito:preferred_role` (user pool group roles); rule-based mappings and `Deny` are available through `SetIdentityPoolRoles` and CloudFormation. The basic (classic) flow, social identity providers, and developer-authenticated identities are not implemented in this simulator.
 
 ---
 
@@ -210,7 +210,7 @@ App clients created without **Attribute read and write permissions** can read ev
 
 | Feature | StackSim behavior |
 |---------|-------------------|
-| Cognito Identity Pools | Separate service: enhanced GetId/GetCredentialsForIdentity, User Pool ID tokens, guest identities when enabled, console create/edit/delete; classic flow and token/rule role mappings are unavailable |
+| Cognito Identity Pools | Separate service: enhanced GetId/GetCredentialsForIdentity, User Pool ID tokens, guest identities when enabled, console create/edit/delete, Token and Rules role mappings; the classic flow is unavailable |
 | SMS MFA / SMS verification | Unavailable |
 | External email delivery | Never sent; use SES Inbox |
 | Client secrets | StackSim policy: the console shows only that a secret exists (AWS has Show client secret); `DescribeUserPoolClient` returns it |

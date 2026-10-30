@@ -3260,6 +3260,14 @@ export interface CognitoIdentityRecordState {
   authClass: "authenticated" | "unauthenticated";
 }
 
+export interface CognitoIdentityRoleMappingState {
+  Type: "Token" | "Rules";
+  AmbiguousRoleResolution: "AuthenticatedRole" | "Deny";
+  RulesConfiguration?: {
+    Rules: Array<{ Claim: string; MatchType: "Equals" | "Contains" | "StartsWith" | "NotEqual"; Value: string; RoleARN: string }>;
+  };
+}
+
 export interface CognitoIdentityPoolState {
   id: string;
   name: string;
@@ -3272,8 +3280,8 @@ export interface CognitoIdentityPoolState {
     authenticated?: string;
     unauthenticated?: string;
   };
-  /** Frozen Amplify no-group Token mapping, keyed by User Pool provider:client. */
-  roleMappings?: Record<string, { Type: "Token"; AmbiguousRoleResolution: "AuthenticatedRole" }>;
+  /** Role mappings keyed by User Pool provider:client (Token or Rules, up to 10). */
+  roleMappings?: Record<string, CognitoIdentityRoleMappingState>;
   tags: Record<string, string>;
   identities: Record<string, CognitoIdentityRecordState>;
   /** `${providerName}\0${subject}` → Identity ID */

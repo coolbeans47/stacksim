@@ -82,12 +82,14 @@ const registeredResourceTypes = new Set([
   "AWS::CloudWatch::MetricStream",
   "AWS::Cognito::IdentityPool",
   "AWS::Cognito::IdentityPoolRoleAttachment",
+  "AWS::Cognito::ManagedLoginBranding",
   "AWS::Cognito::UserPool",
   "AWS::Cognito::UserPoolClient",
   "AWS::Cognito::UserPoolDomain",
   "AWS::Cognito::UserPoolGroup",
   "AWS::Cognito::UserPoolIdentityProvider",
   "AWS::Cognito::UserPoolResourceServer",
+  "AWS::Cognito::UserPoolUICustomizationAttachment",
   "AWS::Cognito::UserPoolUser",
   "AWS::Cognito::UserPoolUserToGroupAttachment",
   "AWS::DynamoDB::GlobalTable",
@@ -281,7 +283,7 @@ test("standard CDK waiters survive the CFN-01 through CFN-08 interruption matrix
     const assembly = join(root, "prepared.out");
     const registeredTypes = ((simulator!.cloudformation as any).providers.list() as Array<{ typeName: string }>).map(provider => provider.typeName).sort();
     assert.equal(cfn0108ResourceTypes.size, 23);
-    assert.equal(registeredResourceTypes.size, 113);
+    assert.equal(registeredResourceTypes.size, 115);
     assert.deepEqual([...registeredResourceTypes].sort(), registeredTypes, "the exact registry inventory must track every registered production provider; this recovery scenario still synthesizes only the historical CFN-01 through CFN-08 fixture");
 
     const prepared = await runCdk(["--output", assembly, "deploy", "RestStack", "--method", "prepare-change-set", "--change-set-name", "recovery-create", "--require-approval", "never"], env);

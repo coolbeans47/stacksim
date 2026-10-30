@@ -11522,7 +11522,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     clientId: string;
     token: string;
     serverSideTokenCheck: boolean;
-  }): { sub: string; originJti?: string; hasRoleClaims: boolean } {
+  }): { sub: string; originJti?: string; hasRoleClaims: boolean; claims: Record<string, unknown> } {
     const pool = this.state.pools[input.userPoolId];
     if (!pool || !pool.clients[input.clientId]) {
       throw new AwsError("NotAuthorizedException", "Invalid login token.");
@@ -11566,6 +11566,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
       sub,
       ...(originJti ? { originJti } : {}),
       hasRoleClaims: verified.claims["cognito:preferred_role"] !== undefined || verified.claims["cognito:roles"] !== undefined,
+      claims: { ...verified.claims },
     };
   }
 }

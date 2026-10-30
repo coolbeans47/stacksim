@@ -171,21 +171,53 @@ export function identityPoolRoles(value: unknown): { authenticated?: string; una
   return { ...(authenticated ? { authenticated } : {}), ...(unauthenticated ? { unauthenticated } : {}) };
 }
 
-/** The pinned Amplify graph emits a single no-group Token fallback mapping. */
+/**
+ * AWS: up to ten role mappings keyed by "<user pool provider>:<client id>"; Token mappings use the ID token's
+ * cognito:preferred_role / cognito:roles, Rules mappings evaluate up to 25 claim rules, and AmbiguousRoleResolution
+ * chooses the authenticated role or denies when no role is resolved.
+ */
 export function identityPoolRoleMappings(value: unknown): NonNullable<CognitoIdentityPoolState["roleMappings"]> {
   if (value === undefined) return {};
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length > 1) {
-    throw new AwsError("InvalidParameterException", "Only one User Pool Token role mapping is supported.");
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length > 10) {
+    throw new AwsError("InvalidParameterException", "RoleMappings must be a map of at most 10 entries.");
   }
   const mappings: NonNullable<CognitoIdentityPoolState["roleMappings"]> = {};
   for (const [provider, entry] of Object.entries(value)) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)
-      || Object.keys(entry).some(key => key !== "Type" && key !== "AmbiguousRoleResolution")
-      || (entry as Record<string, unknown>).Type !== "Token"
-      || (entry as Record<string, unknown>).AmbiguousRoleResolution !== "AuthenticatedRole") {
-      throw new AwsError("InvalidParameterException", "Only Token role mappings with AuthenticatedRole fallback are supported.");
+      || Object.keys(entry).some(key => !["Type", "AmbiguousRoleResolution", "RulesConfiguration"].includes(key))) {
+      throw new AwsError("InvalidParameterException", `RoleMappings.${provider} is invalid.`);
     }
-    mappings[provider] = { Type: "Token", AmbiguousRoleResolution: "AuthenticatedRole" };
+    const record = entry as Record<string, any>;
+    if (record.Type !== "Token" && record.Type !== "Rules") {
+      throw new AwsError("InvalidParameterException", `RoleMappings.${provider}.Type must be Token or Rules.`);
+    }
+    if (record.AmbiguousRoleResolution !== "AuthenticatedRole" && record.AmbiguousRoleResolution !== "Deny") {
+      throw new AwsError("InvalidParameterException", `RoleMappings.${provider}.AmbiguousRoleResolution must be AuthenticatedRole or Deny.`);
+    }
+    let rules: NonNullable<CognitoIdentityPoolState["roleMappings"]>[string]["RulesConfiguration"];
+    if (record.Type === "Rules") {
+      const configured = record.RulesConfiguration?.Rules;
+      if (!Array.isArray(configured) || configured.length < 1 || configured.length > 25) {
+        throw new AwsError("InvalidParameterException", `RoleMappings.${provider}.RulesConfiguration must contain 1-25 rules.`);
+      }
+      rules = {
+        Rules: configured.map((rule: any, index: number) => {
+          if (!rule || typeof rule !== "object" || Object.keys(rule).some(key => !["Claim", "MatchType", "Value", "RoleARN"].includes(key))
+            || !["Equals", "Contains", "StartsWith", "NotEqual"].includes(rule.MatchType)) {
+            throw new AwsError("InvalidParameterException", `RoleMappings.${provider}.RulesConfiguration.Rules[${index}] is invalid.`);
+          }
+          return {
+            Claim: requiredString(rule.Claim, `Rules[${index}].Claim`, 1, 64),
+            MatchType: rule.MatchType,
+            Value: requiredString(rule.Value, `Rules[${index}].Value`, 1, 128),
+            RoleARN: requiredString(rule.RoleARN, `Rules[${index}].RoleARN`, 20, 2048),
+          };
+        }),
+      };
+    } else if (record.RulesConfiguration !== undefined) {
+      throw new AwsError("InvalidParameterException", `RoleMappings.${provider}.RulesConfiguration is only valid for Rules mappings.`);
+    }
+    mappings[provider] = { Type: record.Type, AmbiguousRoleResolution: record.AmbiguousRoleResolution, ...(rules ? { RulesConfiguration: rules } : {}) };
   }
   return mappings;
 }

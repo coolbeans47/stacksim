@@ -4050,7 +4050,7 @@ export class CloudFormationService {
           : typeof properties.IdentityPoolId === "string"
             ? properties.IdentityPoolId
             : physicalId;
-        if (action === "cognito-identity:CreateIdentityPool") {
+        if (action === "cognito-identity:CreateIdentityPool" || action === "cognito-identity:SetIdentityPoolRoles") {
           resources.push("*");
         } else if (typeof poolId === "string" && poolId) {
           resources.push(`arn:aws:cognito-identity:${this.region}:${accountId}:identitypool/${poolId}`);

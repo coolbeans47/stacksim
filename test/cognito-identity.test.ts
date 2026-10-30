@@ -651,22 +651,20 @@ test("AMX-14 generated Token fallback mapping persists and preserves offline ID-
     const poolBefore = structuredClone(simulator.store.regionState(region).cognitoIdentity.pools[poolId]);
     for (const invalidMappings of [
       { [`${provider}:wrong-client`]: { Type: "Token", AmbiguousRoleResolution: "AuthenticatedRole" } },
+      // CFN-02 (2026-10-30 review): Token+Deny and Rules mappings are valid; Rules still needs its rules.
       { [`${provider}:${login.clientId}`]: { Type: "Rules", AmbiguousRoleResolution: "AuthenticatedRole" } },
-      { [`${provider}:${login.clientId}`]: { Type: "Token", AmbiguousRoleResolution: "Deny" } },
+      { [`${provider}:${login.clientId}`]: { Type: "Token", AmbiguousRoleResolution: "Sometimes" } },
     ]) {
       await assert.rejects(identity.send(new SetIdentityPoolRolesCommand({ IdentityPoolId: poolId, Roles: roles, RoleMappings: invalidMappings as any })),
         (error: any) => error.name === "InvalidParameterException");
       assert.deepEqual(simulator.store.regionState(region).cognitoIdentity.pools[poolId], poolBefore);
     }
-    // A real signed token carrying group role claims must not silently select
-    // the fallback role; that selection remains outside this frozen fixture.
+    // A token carrying group role claims selects cognito:preferred_role through the Token mapping.
     await idp.send(new CreateGroupCommand({ UserPoolId: login.userPoolId, GroupName: "role-selection", RoleArn: roles.authenticated }));
     await idp.send(new AdminAddUserToGroupCommand({ UserPoolId: login.userPoolId, Username: "user@example.test", GroupName: "role-selection" }));
     const groupLogin = await idp.send(new InitiateAuthCommand({ ClientId: login.clientId, AuthFlow: "USER_PASSWORD_AUTH", AuthParameters: { USERNAME: "user@example.test", PASSWORD: password } }));
-    const sessionsBeforeDeniedToken = Object.keys(simulator.store.ensureAccount().iam.sessions);
-    await assert.rejects(identity.send(new GetCredentialsForIdentityCommand({ IdentityId: guest.IdentityId, Logins: { [provider]: groupLogin.AuthenticationResult!.IdToken! } })),
-      (error: any) => error.name === "NotAuthorizedException");
-    assert.deepEqual(Object.keys(simulator.store.ensureAccount().iam.sessions), sessionsBeforeDeniedToken);
+    const preferred = await identity.send(new GetCredentialsForIdentityCommand({ IdentityId: guest.IdentityId, Logins: { [provider]: groupLogin.AuthenticationResult!.IdToken! } }));
+    assert.equal(simulator.store.ensureAccount().iam.sessions[preferred.Credentials!.AccessKeyId!].roleArn, roles.authenticated);
 
     await idp.send(new AdminDisableUserCommand({ UserPoolId: login.userPoolId, Username: "user@example.test" }));
     // Disabling a user does not revoke an already issued offline JWT.
