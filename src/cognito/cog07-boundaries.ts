@@ -9,7 +9,8 @@ export type CognitoCog07BoundaryCategory =
   | "log-delivery"
   | "provisioned-limit"
   | "saml-signing-certificate"
-  | "advanced-token-customization";
+  | "advanced-token-customization"
+  | "sms-delivery";
 
 const MESSAGES: Record<CognitoCog07BoundaryCategory, string> = {
   webauthn:
@@ -30,6 +31,8 @@ const MESSAGES: Record<CognitoCog07BoundaryCategory, string> = {
     "SAML signing-certificate export requires a SAML identity provider with exportable metadata that is not implemented in this simulator.",
   "advanced-token-customization":
     "Advanced token customization for V2_0/V3_0 access tokens and M2M aws_client_metadata is not implemented in this simulator.",
+  "sms-delivery":
+    "SMS messages, SMS MFA, and SMS one-time passwords require Amazon SNS delivery that is not implemented in this simulator.",
 };
 
 const OPERATION_BOUNDARIES: Record<string, CognitoCog07BoundaryCategory> = {

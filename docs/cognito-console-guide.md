@@ -775,12 +775,19 @@ Lambda triggers execute on supported lifecycle events when ARNs are configured a
 
 | Flow | Typical client | Use when |
 |------|----------------|----------|
+| **USER_AUTH** (choice-based, `ALLOW_USER_AUTH`) | Current console default for new app clients | Let the user pick a first factor: password, SRP, or (on pools that send email through Amazon SES and allow it in the sign-in policy) an email one-time code; also signs a user in right after sign-up confirmation with the `Session` that `SignUp` returned |
 | **USER_PASSWORD_AUTH** | Web/mobile with backend | Simple username/password against Cognito |
 | **ADMIN_USER_PASSWORD_AUTH** | Trusted server | Admin or migration scripts authenticate users |
 | **USER_SRP_AUTH** | Mobile | Secure remote password protocol |
 | **REFRESH_TOKEN_AUTH** | All long-lived sessions | Obtain new access/ID tokens without re-login |
 | **Authorization code + PKCE** | SPA | Browser OAuth without client secret |
 | **Client credentials** | Service | Machine-to-machine with scopes |
+
+---
+
+Repeated successful sign-ins are never throttled. As on AWS, five failed password attempts lock the user out for one second, doubling with each further failure up to about fifteen minutes; attempts during the lockout return `Password attempts exceeded`, and a successful sign-in afterwards resets the count.
+
+App clients created without **Attribute read and write permissions** can read every standard attribute (plus `email_verified` and `phone_number_verified`) and write every standard attribute; `DescribeUserPoolClient` then returns no `ReadAttributes`/`WriteAttributes`. Custom attributes need an explicit list.
 
 ---
 

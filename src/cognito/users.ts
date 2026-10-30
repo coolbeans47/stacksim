@@ -1,6 +1,6 @@
 import { AwsError } from "../errors.js";
 import { parseMailboxAddress } from "../ses/validation.js";
-import { STANDARD_USER_ATTRIBUTES } from "./attributes.js";
+import { clientCanWriteAttribute, STANDARD_USER_ATTRIBUTES } from "./attributes.js";
 import type {
   CognitoAppClientState,
   CognitoUserAttributeState,
@@ -212,7 +212,7 @@ export function parseSignUp(
     if (schema?.developerOnlyAttribute) {
       throw new AwsError("InvalidParameterException", `User attribute ${name} cannot be set during SignUp.`);
     }
-    if (!client.writeAttributes.includes(name)) {
+    if (!clientCanWriteAttribute(client, name)) {
       throw new AwsError("NotAuthorizedException", `App client cannot write the ${name} attribute.`);
     }
   }

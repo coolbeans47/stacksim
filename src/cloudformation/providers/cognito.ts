@@ -484,8 +484,9 @@ function canonicalClient(properties: unknown, context: ProviderContext): Model {
     AccessTokenValidity: input.AccessTokenValidity ?? 1,
     IdTokenValidity: input.IdTokenValidity ?? 1,
     TokenValidityUnits: input.TokenValidityUnits ?? { AccessToken: "hours", IdToken: "hours", RefreshToken: "days" },
-    ReadAttributes: [...(input.ReadAttributes ?? ["email"])].sort(),
-    WriteAttributes: [...(input.WriteAttributes ?? ["email"])].sort(),
+    // Omitted lists mean every standard attribute, as on the service API.
+    ...(input.ReadAttributes === undefined ? {} : { ReadAttributes: [...input.ReadAttributes].sort() }),
+    ...(input.WriteAttributes === undefined ? {} : { WriteAttributes: [...input.WriteAttributes].sort() }),
     ExplicitAuthFlows: [...(input.ExplicitAuthFlows ?? DEFAULT_EXPLICIT_AUTH_FLOWS)].sort(),
     PreventUserExistenceErrors: input.PreventUserExistenceErrors ?? "LEGACY",
     EnableTokenRevocation: input.EnableTokenRevocation ?? true,
@@ -583,7 +584,7 @@ function poolModel(raw: Json, tags: Record<string, string>): Model {
   const cleanTags = Object.fromEntries(Object.entries(tags).filter(([key]) => key !== COGNITO_OWNER_TAG));
   return Object.freeze(cfn10Stable({
     UserPoolName: raw.Name,
-    Policies: raw.Policies,
+    Policies: { PasswordPolicy: raw.Policies?.PasswordPolicy },
     DeletionProtection: raw.DeletionProtection,
     AutoVerifiedAttributes: raw.AutoVerifiedAttributes ?? [],
     UserAttributeUpdateSettings: raw.UserAttributeUpdateSettings ?? { AttributesRequireVerificationBeforeUpdate: [] },
@@ -643,8 +644,8 @@ function clientModel(raw: Json, generateSecret: boolean): Model {
     AccessTokenValidity: raw.AccessTokenValidity,
     IdTokenValidity: raw.IdTokenValidity,
     TokenValidityUnits: raw.TokenValidityUnits,
-    ReadAttributes: raw.ReadAttributes ?? [],
-    WriteAttributes: raw.WriteAttributes ?? [],
+    ...(raw.ReadAttributes === undefined ? {} : { ReadAttributes: [...raw.ReadAttributes].sort() }),
+    ...(raw.WriteAttributes === undefined ? {} : { WriteAttributes: [...raw.WriteAttributes].sort() }),
     ExplicitAuthFlows: raw.ExplicitAuthFlows ?? [],
     PreventUserExistenceErrors: raw.PreventUserExistenceErrors,
     EnableTokenRevocation: raw.EnableTokenRevocation,

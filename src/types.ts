@@ -2693,6 +2693,8 @@ export interface CognitoUserState {
   pendingDevices?: Record<string, CognitoPendingDeviceState>;
   sessionEpoch: number;
   externalIdentities: CognitoExternalIdentityState[];
+  /** Failed password sign-ins counted for the documented temporary lockout; cleared by a successful sign-in. */
+  signInLockout?: { failures: number; lastFailureAt: number; lockedUntil: number };
 }
 
 export interface EventBridgeSchedulerTargetState {
@@ -2868,7 +2870,11 @@ export interface CognitoDeliveryIntentState {
 }
 
 export interface CognitoUserPoolConfigurationState {
-  policies: { passwordPolicy: CognitoPasswordPolicyState };
+  policies: {
+    passwordPolicy: CognitoPasswordPolicyState;
+    /** Choice-based sign-in first factors; omitted means PASSWORD only. */
+    signInPolicy?: { allowedFirstAuthFactors: Array<"PASSWORD" | "EMAIL_OTP"> };
+  };
   deletionProtection: "ACTIVE" | "INACTIVE";
   autoVerifiedAttributes: "email"[];
   userAttributeUpdateSettings?: { attributesRequireVerificationBeforeUpdate: "email"[] };
@@ -2921,7 +2927,7 @@ export interface CognitoUserPoolConfigurationState {
       lambdaVersion: "V1_0";
     };
   };
-  userPoolTier: "ESSENTIALS" | "PLUS";
+  userPoolTier: "LITE" | "ESSENTIALS" | "PLUS";
   deviceConfiguration?: {
     challengeRequiredOnNewDevice: boolean;
     deviceOnlyRememberedOnUserPrompt: boolean;
@@ -2948,6 +2954,10 @@ export interface CognitoAppClientState {
     | "ALLOW_USER_SRP_AUTH"
     | "ALLOW_ADMIN_USER_PASSWORD_AUTH"
     | "ALLOW_CUSTOM_AUTH"
+    | "ALLOW_USER_AUTH"
+    | "ADMIN_NO_SRP_AUTH"
+    | "CUSTOM_AUTH_FLOW_ONLY"
+    | "USER_PASSWORD_AUTH"
   >;
   refreshTokenValidity: number;
   accessTokenValidity: number;
@@ -2957,8 +2967,10 @@ export interface CognitoAppClientState {
     accessToken: "seconds" | "minutes" | "hours" | "days";
     idToken: "seconds" | "minutes" | "hours" | "days";
   };
-  readAttributes: string[];
-  writeAttributes: string[];
+  /** Omitted when no custom set is configured: the client then reads every standard attribute plus the two verification flags. */
+  readAttributes?: string[];
+  /** Omitted when no custom set is configured: the client then writes every standard attribute. */
+  writeAttributes?: string[];
   preventUserExistenceErrors: "LEGACY" | "ENABLED";
   enableTokenRevocation: boolean;
   authSessionValidity: number;
@@ -3105,7 +3117,10 @@ export interface CognitoChallengeState {
     | "MFA_SETUP"
     | "EMAIL_OTP"
     | "DEVICE_SRP_AUTH"
-    | "DEVICE_PASSWORD_VERIFIER";
+    | "DEVICE_PASSWORD_VERIFIER"
+    | "SELECT_CHALLENGE"
+    | "PASSWORD"
+    | "SIGN_UP";
   poolId: string;
   clientId: string;
   userSub: string;
@@ -3123,6 +3138,10 @@ export interface CognitoChallengeState {
   srpKey?: CognitoRecoverableSecretState;
   deviceKey?: string;
   deliveryIntentId?: string;
+  /** SIGN_UP sessions only: true once ConfirmSignUp accepted the session, so USER_AUTH may sign in with it. */
+  signUpConfirmed?: boolean;
+  /** SELECT_CHALLENGE and PASSWORD sessions only: the first factors offered to the user. */
+  availableChallenges?: Array<"PASSWORD" | "PASSWORD_SRP" | "EMAIL_OTP">;
 }
 
 export interface CognitoPendingDeviceState {

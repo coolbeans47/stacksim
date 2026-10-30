@@ -120,7 +120,8 @@ function temporaryPasswordValidityDays(value: unknown): number {
 function passwordPolicy(value: unknown): CognitoUserPoolConfigurationState["policies"] {
   if (value === undefined) return { passwordPolicy: { ...DEFAULT_PASSWORD_POLICY } };
   const policies = object(value, "Policies");
-  rejectUnknown(policies, ["PasswordPolicy"], "Policies");
+  rejectUnknown(policies, ["PasswordPolicy", "SignInPolicy"], "Policies");
+  const signInPolicy = policies.SignInPolicy === undefined ? undefined : firstFactorPolicy(policies.SignInPolicy);
   const password = policies.PasswordPolicy === undefined ? {} : object(policies.PasswordPolicy, "Policies.PasswordPolicy");
   rejectUnknown(password, [
     "MinimumLength", "RequireUppercase", "RequireLowercase", "RequireNumbers", "RequireSymbols",
@@ -148,7 +149,28 @@ function passwordPolicy(value: unknown): CognitoUserPoolConfigurationState["poli
         ? DEFAULT_PASSWORD_POLICY.passwordHistorySize
         : integer(password.PasswordHistorySize, "Policies.PasswordPolicy.PasswordHistorySize", 0, 24),
     },
+    ...(signInPolicy ? { signInPolicy } : {}),
   };
+}
+
+function firstFactorPolicy(value: unknown): NonNullable<CognitoUserPoolConfigurationState["policies"]["signInPolicy"]> {
+  const policy = object(value, "Policies.SignInPolicy");
+  rejectUnknown(policy, ["AllowedFirstAuthFactors"], "Policies.SignInPolicy");
+  const factors = policy.AllowedFirstAuthFactors === undefined
+    ? ["PASSWORD"]
+    : strings(policy.AllowedFirstAuthFactors, "Policies.SignInPolicy.AllowedFirstAuthFactors");
+  if (factors.length < 1 || factors.length > 5 || factors.some(factor => !["PASSWORD", "EMAIL_OTP", "SMS_OTP", "WEB_AUTHN", "SOFTWARE_TOKEN"].includes(factor))) {
+    throw new AwsError("InvalidParameterException", "Policies.SignInPolicy.AllowedFirstAuthFactors contains an invalid value.");
+  }
+  if (factors.includes("SOFTWARE_TOKEN")) {
+    throw new AwsError("InvalidParameterException", "SOFTWARE_TOKEN is not supported as a first authentication factor.");
+  }
+  if (factors.includes("SMS_OTP")) throwCog07Boundary("sms-delivery");
+  if (factors.includes("WEB_AUTHN")) throwCog07Boundary("webauthn");
+  if (!factors.includes("PASSWORD")) {
+    throw new AwsError("InvalidParameterException", "Policies.SignInPolicy.AllowedFirstAuthFactors must include PASSWORD.");
+  }
+  return { allowedFirstAuthFactors: factors as Array<"PASSWORD" | "EMAIL_OTP"> };
 }
 
 function emailOnlyArray(value: unknown, field: string): "email"[] {
@@ -424,6 +446,37 @@ function schema(value: unknown): CognitoUserPoolConfigurationState["schemaAttrib
 
 export const DEFAULT_EXPLICIT_AUTH_FLOWS = Object.freeze(["ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_USER_SRP_AUTH", "ALLOW_CUSTOM_AUTH"] as const);
 
+const LEGACY_AUTH_FLOWS: ReadonlySet<string> = new Set(["ADMIN_NO_SRP_AUTH", "CUSTOM_AUTH_FLOW_ONLY", "USER_PASSWORD_AUTH"]);
+
+const EXPLICIT_AUTH_FLOWS: ReadonlySet<string> = new Set([
+  "ALLOW_ADMIN_USER_PASSWORD_AUTH", "ALLOW_CUSTOM_AUTH", "ALLOW_USER_PASSWORD_AUTH", "ALLOW_USER_SRP_AUTH",
+  "ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_USER_AUTH", ...LEGACY_AUTH_FLOWS,
+]);
+
+type ModernAuthFlow =
+  | "ALLOW_ADMIN_USER_PASSWORD_AUTH" | "ALLOW_CUSTOM_AUTH" | "ALLOW_USER_PASSWORD_AUTH"
+  | "ALLOW_USER_SRP_AUTH" | "ALLOW_REFRESH_TOKEN_AUTH" | "ALLOW_USER_AUTH";
+
+/**
+ * Whether an app client permits a flow. Legacy values (ADMIN_NO_SRP_AUTH, USER_PASSWORD_AUTH,
+ * CUSTOM_AUTH_FLOW_ONLY) predate the ALLOW_ names: SRP and refresh stay available beside the first two,
+ * and CUSTOM_AUTH_FLOW_ONLY permits only custom authentication plus refresh.
+ */
+export function clientAllowsAuthFlow(client: Pick<CognitoAppClientState, "explicitAuthFlows">, flow: ModernAuthFlow): boolean {
+  const flows: readonly string[] = client.explicitAuthFlows;
+  if (flows.includes(flow)) return true;
+  if (!flows.some(value => LEGACY_AUTH_FLOWS.has(value))) return false;
+  const customOnly = flows.includes("CUSTOM_AUTH_FLOW_ONLY");
+  switch (flow) {
+    case "ALLOW_REFRESH_TOKEN_AUTH": return true;
+    case "ALLOW_CUSTOM_AUTH": return customOnly;
+    case "ALLOW_USER_SRP_AUTH": return !customOnly;
+    case "ALLOW_USER_PASSWORD_AUTH": return flows.includes("USER_PASSWORD_AUTH");
+    case "ALLOW_ADMIN_USER_PASSWORD_AUTH": return flows.includes("ADMIN_NO_SRP_AUTH");
+    default: return false;
+  }
+}
+
 function accountRecovery(value: unknown): CognitoUserPoolConfigurationState["accountRecoverySetting"] {
   if (value === undefined) return { recoveryMechanisms: [{ name: "verified_email", priority: 1 }] };
   const input = object(value, "AccountRecoverySetting");
@@ -582,6 +635,36 @@ function phaseThreeConfiguration(input: Record<string, any>): Pick<
   };
 }
 
+function userPoolTier(value: unknown): CognitoUserPoolConfigurationState["userPoolTier"] {
+  const tier = value ?? "ESSENTIALS";
+  if (tier !== "LITE" && tier !== "ESSENTIALS" && tier !== "PLUS") {
+    throw new AwsError("InvalidParameterException", "UserPoolTier must be LITE, ESSENTIALS, or PLUS.");
+  }
+  return tier;
+}
+
+/** Essentials-or-higher settings named by the feature-plan page; Lite pools reject them. */
+function tierFeatures(
+  policies: CognitoUserPoolConfigurationState["policies"],
+  tier: CognitoUserPoolConfigurationState["userPoolTier"],
+  email: CognitoUserPoolConfigurationState["emailConfiguration"],
+): CognitoUserPoolConfigurationState["policies"] {
+  const factors = policies.signInPolicy?.allowedFirstAuthFactors ?? ["PASSWORD"];
+  if (tier === "LITE" && ((policies.passwordPolicy.passwordHistorySize ?? 0) > 0 || factors.length > 1)) {
+    throw new AwsError(
+      "FeatureUnavailableInTierException",
+      "Password history and passwordless sign-in require the Essentials or Plus feature plan.",
+    );
+  }
+  if (factors.includes("EMAIL_OTP") && email.emailSendingAccount !== "DEVELOPER") {
+    throw new AwsError(
+      "InvalidParameterException",
+      "EMAIL_OTP sign-in requires DEVELOPER email delivery through Amazon SES.",
+    );
+  }
+  return policies;
+}
+
 export function createPoolConfiguration(
   input: Record<string, any>,
   context: CognitoConfigurationContext,
@@ -604,15 +687,13 @@ export function createPoolConfiguration(
   if (!["ACTIVE", "INACTIVE"].includes(deletionProtection)) {
     throw new AwsError("InvalidParameterException", "DeletionProtection must be ACTIVE or INACTIVE.");
   }
-  if (!["ESSENTIALS", "PLUS"].includes(input.UserPoolTier ?? "ESSENTIALS")) {
-    throw new AwsError("InvalidParameterException", "UserPoolTier must be ESSENTIALS or PLUS.");
-  }
+  const tier = userPoolTier(input.UserPoolTier);
   const email = emailConfiguration(input.EmailConfiguration, context);
   const phaseThree = phaseThreeConfiguration(input);
   if (
     phaseThree.enabledMfas.includes("EMAIL_OTP")
     && (
-      !["ESSENTIALS", "PLUS"].includes(input.UserPoolTier ?? "ESSENTIALS")
+      tier === "LITE"
       || email.emailSendingAccount !== "DEVELOPER"
     )
   ) {
@@ -625,8 +706,10 @@ export function createPoolConfiguration(
     throw new AwsError("InvalidParameterException", "Required MFA must enable at least one MFA method.");
   }
   const deviceConfiguration = parseDeviceConfiguration(input.DeviceConfiguration);
+  const policies = passwordPolicy(input.Policies);
+  tierFeatures(policies, tier, email);
   return {
-    policies: passwordPolicy(input.Policies),
+    policies,
     deletionProtection,
     autoVerifiedAttributes: emailOnlyArray(input.AutoVerifiedAttributes, "AutoVerifiedAttributes"),
     userAttributeUpdateSettings: attributeUpdateSettings(input),
@@ -639,7 +722,7 @@ export function createPoolConfiguration(
     emailConfiguration: email,
     verificationMessageTemplate: verificationTemplate(input),
     ...phaseThree,
-    userPoolTier: input.UserPoolTier ?? "ESSENTIALS",
+    userPoolTier: tier,
     ...(deviceConfiguration ? { deviceConfiguration } : {}),
   };
 }
@@ -653,15 +736,10 @@ export function updatePoolConfiguration(
   const defaults = defaultPoolConfiguration();
   const email = emailConfiguration(input.EmailConfiguration, context);
   const phaseThree = phaseThreeConfiguration(input);
-  const tier = (() => {
-    if (!["ESSENTIALS", "PLUS"].includes(input.UserPoolTier ?? "ESSENTIALS")) {
-      throw new AwsError("InvalidParameterException", "UserPoolTier must be ESSENTIALS or PLUS.");
-    }
-    return (input.UserPoolTier ?? "ESSENTIALS") as "ESSENTIALS" | "PLUS";
-  })();
+  const tier = userPoolTier(input.UserPoolTier);
   if (
     phaseThree.enabledMfas.includes("EMAIL_OTP")
-    && (!["ESSENTIALS", "PLUS"].includes(tier) || email.emailSendingAccount !== "DEVELOPER")
+    && (tier === "LITE" || email.emailSendingAccount !== "DEVELOPER")
   ) {
     throw new AwsError(
       "InvalidParameterException",
@@ -680,7 +758,7 @@ export function updatePoolConfiguration(
     usernameAttributes: [...current.usernameAttributes],
     usernameConfiguration: { ...current.usernameConfiguration },
     schemaAttributes: structuredClone(current.schemaAttributes),
-    policies: passwordPolicy(input.Policies),
+    policies: tierFeatures(passwordPolicy(input.Policies), tier, email),
     deletionProtection: input.DeletionProtection === undefined
       ? defaults.deletionProtection
       : (() => {
@@ -744,8 +822,9 @@ function validity(
   return Number(value);
 }
 
-function clientAttributes(value: unknown, field: string): string[] {
-  if (value === undefined) return ["email"];
+function clientAttributes(value: unknown, field: string): string[] | undefined {
+  // Omitted lists mean every standard attribute and are not echoed by DescribeUserPoolClient.
+  if (value === undefined) return undefined;
   const selected = strings(value, field);
   if (selected.some(item =>
     !STANDARD_CLIENT_ATTRIBUTES.has(item)
@@ -837,6 +916,10 @@ function oauthScopes(value: unknown): string[] {
   return selected;
 }
 
+function optionalList<K extends string>(key: K, value: string[] | undefined): Partial<Record<K, string[]>> {
+  return value === undefined ? {} : { [key]: value } as Record<K, string[]>;
+}
+
 export interface CognitoClientSecretCreation {
   generate: boolean;
   supplied?: string;
@@ -879,18 +962,16 @@ export function clientConfiguration(
   if (operation === "create") clientSecretCreation(input);
   // AWS: "If you don't specify a value for ExplicitAuthFlows, your app client supports ALLOW_REFRESH_TOKEN_AUTH, ALLOW_USER_SRP_AUTH, and ALLOW_CUSTOM_AUTH."
   const flows = input.ExplicitAuthFlows === undefined ? [...DEFAULT_EXPLICIT_AUTH_FLOWS] : strings(input.ExplicitAuthFlows, "ExplicitAuthFlows");
-  if (!flows.length || flows.some(flow => ![
-    "ALLOW_USER_PASSWORD_AUTH",
-    "ALLOW_REFRESH_TOKEN_AUTH",
-    "ALLOW_USER_SRP_AUTH",
-    "ALLOW_ADMIN_USER_PASSWORD_AUTH",
-    // The pinned default Amplify client emits this alongside SRP/refresh.
-    // Custom-challenge invocation remains rejected by InitiateAuth.
-    "ALLOW_CUSTOM_AUTH",
-  ].includes(flow))) {
+  if (!flows.length || flows.some(flow => !EXPLICIT_AUTH_FLOWS.has(flow))) {
     throw new AwsError(
       "InvalidParameterException",
-      "ExplicitAuthFlows contains an unsupported authentication flow.",
+      "ExplicitAuthFlows contains an invalid authentication flow.",
+    );
+  }
+  if (flows.some(flow => LEGACY_AUTH_FLOWS.has(flow)) && flows.some(flow => !LEGACY_AUTH_FLOWS.has(flow))) {
+    throw new AwsError(
+      "InvalidParameterException",
+      "ExplicitAuthFlows cannot combine legacy values with values that begin with ALLOW_.",
     );
   }
   const rotationInput = input.RefreshTokenRotation === undefined
@@ -975,8 +1056,8 @@ export function clientConfiguration(
     accessTokenValidity: validity(input.AccessTokenValidity, "AccessTokenValidity", units.accessToken, 1, 300, 86_400),
     idTokenValidity: validity(input.IdTokenValidity, "IdTokenValidity", units.idToken, 1, 300, 86_400),
     tokenValidityUnits: units,
-    readAttributes: clientAttributes(input.ReadAttributes, "ReadAttributes"),
-    writeAttributes: clientAttributes(input.WriteAttributes, "WriteAttributes"),
+    ...optionalList("readAttributes", clientAttributes(input.ReadAttributes, "ReadAttributes")),
+    ...optionalList("writeAttributes", clientAttributes(input.WriteAttributes, "WriteAttributes")),
     preventUserExistenceErrors: prevent,
     enableTokenRevocation: input.EnableTokenRevocation ?? true,
     authSessionValidity: input.AuthSessionValidity === undefined
