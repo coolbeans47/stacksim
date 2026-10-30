@@ -573,6 +573,17 @@ export class CognitoIdentityService {
     };
   }
 
+  /** Console editors run official Identity Pools control operations through this allowlist. */
+  async localAction(operation: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!LOCAL_IDENTITY_ACTIONS.has(operation)) {
+      throw new AwsError("InvalidParameterException", `${operation} is not available from the console.`, 400);
+    }
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new AwsError("InvalidParameterException", "The console action body is invalid.", 400);
+    }
+    return (await this.dispatch(operation, { ...input })) ?? {};
+  }
+
   localIdentityPools(): { identityPools: Array<Record<string, unknown>> } {
     return {
       identityPools: Object.values(this.state.pools)
@@ -597,8 +608,24 @@ export class CognitoIdentityService {
       Arn: this.arn(pool.id),
       Roles: { ...(pool.roles ?? {}) },
       IdentityCount: Object.keys(pool.identities).length,
+      // Identity browser rows: identity IDs and linked provider names only; provider subjects are not shown.
+      Identities: Object.values(pool.identities)
+        .sort((left, right) => right.createdAt - left.createdAt)
+        .slice(0, 200)
+        .map(identity => ({
+          IdentityId: identity.identityId,
+          Logins: Object.keys(identity.logins),
+          AuthClass: identity.authClass,
+          CreationDate: identity.createdAt,
+          LastModifiedDate: identity.updatedAt,
+        })),
       CreatedAt: pool.createdAt,
       UpdatedAt: pool.updatedAt,
     };
   }
 }
+
+const LOCAL_IDENTITY_ACTIONS: ReadonlySet<string> = new Set([
+  "CreateIdentityPool", "DescribeIdentityPool", "UpdateIdentityPool", "DeleteIdentityPool",
+  "GetIdentityPoolRoles", "SetIdentityPoolRoles", "TagResource", "UntagResource", "ListTagsForResource",
+]);

@@ -1481,6 +1481,13 @@ export class StackSim {
                 : path.endsWith("/continue-update-rollback") ? "ContinueUpdateRollback"
                   : method === "PUT" ? "UpdateStack" : method === "DELETE" ? "DeleteStack" : "ConsoleMutation";
       action = `cloudformation:${operation}`;
+    } else if (/^\/_stacksim\/api\/cognito(?:-identity)?\/actions\/[A-Za-z]+$/.test(pathname)) {
+      // Console action routes run one official operation; the body is not parsed here, so the action is evaluated
+      // against every resource ("*"), which never grants more than a pool-scoped policy would.
+      const identity = pathname.startsWith("/_stacksim/api/cognito-identity/");
+      operation = pathname.slice(pathname.lastIndexOf("/") + 1);
+      resource = "*";
+      action = `${identity ? "cognito-identity" : "cognito-idp"}:${operation}`;
     } else if (pathname.startsWith("/_stacksim/api/cognito-identity/")) {
       const path = pathname.slice("/_stacksim/api/cognito-identity/".length);
       const poolId = path.match(/^identity-pools\/([^/]+)/)?.[1];
@@ -2029,6 +2036,37 @@ export class StackSim {
     return new Promise((resolve, reject) => { server.once("error", reject); server.listen(port, this.host, () => { server.off("error", reject); resolve(); }); });
   }
 
+  private validateConsoleMutation(req: import("node:http").IncomingMessage): void {
+    if (req.headers["x-stacksim-console-request"] !== "1") {
+      throw new AwsError("InvalidConsoleRequest", "The console mutation header is required.", 403);
+    }
+    if (typeof req.headers.origin !== "string" || typeof req.headers.host !== "string") {
+      throw new AwsError("InvalidConsoleRequest", "A same-origin Origin header is required.", 403);
+    }
+    let origin: URL;
+    let expected: URL;
+    try {
+      origin = new URL(req.headers.origin);
+      expected = new URL(`${(req.socket as any).encrypted ? "https" : "http"}://${req.headers.host}`);
+    } catch {
+      throw new AwsError("InvalidConsoleRequest", "The Origin or Host header is invalid.", 403);
+    }
+    const loopback = (hostname: string): boolean =>
+      hostname === "localhost"
+      || hostname === "::1"
+      || hostname === "[::1]"
+      || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+    if (!loopback(origin.hostname) || !loopback(expected.hostname) || origin.origin !== expected.origin) {
+      throw new AwsError("InvalidConsoleRequest", "The request Origin is not the bound loopback console origin.", 403);
+    }
+    if (req.headers["sec-fetch-site"] && req.headers["sec-fetch-site"] !== "same-origin") {
+      throw new AwsError("InvalidConsoleRequest", "Cross-site console mutations are not allowed.", 403);
+    }
+    if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+      throw new AwsError("InvalidConsoleRequest", "The request must use application/json.", 415);
+    }
+  }
+
   private async localCognitoIdentityApi(
     req: import("node:http").IncomingMessage,
     res: import("node:http").ServerResponse,
@@ -2051,6 +2089,11 @@ export class StackSim {
         }
       };
       if (path === "identity-pools" && req.method === "GET") return json(res, identity.localIdentityPools());
+      const identityAction = path.match(/^actions\/([A-Za-z]+)$/);
+      if (identityAction && req.method === "POST") {
+        this.validateConsoleMutation(req);
+        return json(res, await identity.localAction(identityAction[1], await readJson(req) as Record<string, unknown>));
+      }
       const detail = path.match(/^identity-pools\/([^/]+)$/);
       if (detail && req.method === "GET") return json(res, { identityPool: identity.localIdentityPool(decode(detail[1])) });
       return json(res, { message: "Unknown local Cognito Identity console route." }, 404);
@@ -2084,36 +2127,12 @@ export class StackSim {
           throw new AwsError("InvalidParameterException", "A Cognito console path segment is invalid.", 400);
         }
       };
-      const validateMutation = (): void => {
-        if (req.headers["x-stacksim-console-request"] !== "1") {
-          throw new AwsError("InvalidConsoleRequest", "The console mutation header is required.", 403);
-        }
-        if (typeof req.headers.origin !== "string" || typeof req.headers.host !== "string") {
-          throw new AwsError("InvalidConsoleRequest", "A same-origin Origin header is required.", 403);
-        }
-        let origin: URL;
-        let expected: URL;
-        try {
-          origin = new URL(req.headers.origin);
-          expected = new URL(`${(req.socket as any).encrypted ? "https" : "http"}://${req.headers.host}`);
-        } catch {
-          throw new AwsError("InvalidConsoleRequest", "The Origin or Host header is invalid.", 403);
-        }
-        const loopback = (hostname: string): boolean =>
-          hostname === "localhost"
-          || hostname === "::1"
-          || hostname === "[::1]"
-          || /^127(?:\.\d{1,3}){3}$/.test(hostname);
-        if (!loopback(origin.hostname) || !loopback(expected.hostname) || origin.origin !== expected.origin) {
-          throw new AwsError("InvalidConsoleRequest", "The request Origin is not the bound loopback console origin.", 403);
-        }
-        if (req.headers["sec-fetch-site"] && req.headers["sec-fetch-site"] !== "same-origin") {
-          throw new AwsError("InvalidConsoleRequest", "Cross-site console mutations are not allowed.", 403);
-        }
-        if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-          throw new AwsError("InvalidConsoleRequest", "The request must use application/json.", 415);
-        }
-      };
+      const validateMutation = (): void => this.validateConsoleMutation(req);
+      const action = path.match(/^actions\/([A-Za-z]+)$/);
+      if (action && req.method === "POST") {
+        validateMutation();
+        return json(res, await cognito.localAction(action[1], await readJson(req) as Record<string, unknown>));
+      }
       if (path === "user-pools") {
         if (req.method === "GET") return json(res, cognito.localUserPools());
         if (req.method === "POST") {

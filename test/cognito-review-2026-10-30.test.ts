@@ -489,3 +489,32 @@ test("COG-09 TOTP waits for SetUserMFAPreference, extra NEW_PASSWORD_REQUIRED at
   } finally { await close(); }
 });
 
+
+test("COG-10 console action routes run allowlisted official operations, require console intent, and redact secrets", async () => {
+  const { cognito, endpoint, close } = await fixture("console-actions");
+  try {
+    const pool = (await cognito.send(new CreateUserPoolCommand({ PoolName: "console" }))).UserPool!;
+    const headers = { "content-type": "application/json", "x-stacksim-console-request": "1", origin: endpoint };
+    const call = async (path: string, body: unknown, extra: Record<string, string> = headers) => {
+      const response = await fetch(`${endpoint}/_stacksim/api/${path}`, { method: "POST", headers: extra, body: JSON.stringify(body) });
+      return { status: response.status, text: await response.text() };
+    };
+    const created = await call("cognito/actions/CreateUserPoolClient", { UserPoolId: pool.Id, ClientName: "confidential", GenerateSecret: true });
+    assert.equal(created.status, 200, created.text);
+    assert.doesNotMatch(created.text, /ClientSecret/);
+    const clientId = JSON.parse(created.text).UserPoolClient.ClientId;
+    const described = await call("cognito/actions/DescribeUserPoolClient", { UserPoolId: pool.Id, ClientId: clientId });
+    assert.equal(described.status, 200);
+    assert.doesNotMatch(described.text, /ClientSecret/);
+    assert.ok((await cognito.send(new DescribeUserPoolClientCommand({ UserPoolId: pool.Id, ClientId: clientId }))).UserPoolClient?.ClientSecret, "the official API still returns the secret");
+    assert.equal((await call("cognito/actions/InitiateAuth", { ClientId: clientId, AuthFlow: "USER_PASSWORD_AUTH" })).status, 400, "user-auth operations are not console actions");
+    assert.equal((await call("cognito/actions/UpdateUserPool", { UserPoolId: pool.Id }, { "content-type": "application/json" })).status, 403, "the console intent header is required");
+    const identity = await call("cognito-identity/actions/CreateIdentityPool", { IdentityPoolName: "console_pool", AllowUnauthenticatedIdentities: false });
+    assert.equal(identity.status, 200, identity.text);
+    assert.equal((await call("cognito-identity/actions/GetCredentialsForIdentity", { IdentityId: "x" })).status, 400);
+    const local = await fetch(`${endpoint}/_stacksim/api/cognito/user-pools/${pool.Id}`);
+    const view = await local.json() as { userPool: { tags: unknown; boundaries: { tags: unknown } } };
+    assert.deepEqual(view.userPool.tags, {});
+    assert.deepEqual(view.userPool.boundaries.tags, {}, "tags are always an object, never the string None");
+  } finally { await close(); }
+});

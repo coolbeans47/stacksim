@@ -198,7 +198,7 @@ Panel-by-panel references for every StackSim service console (what each setting 
 | [CloudFormation](docs/cloudformation-console-guide.md) | Stacks, change sets, exports, events, and local CDK setup |
 | [CloudFront](docs/cloudfront-console-guide.md) | Canonical distribution identity, local HTTPS viewers, Functions, OAC, response policies, invalidations, and cache diagnostics |
 | [CloudWatch](docs/cloudwatch-console-guide.md) | Metrics, alarms, dashboards, log groups, Logs Insights, and Contributor Insights |
-| [Cognito](docs/cognito-console-guide.md) | User pools, Identity Pools, app clients, hosted UI, and triggers |
+| [Cognito](docs/cognito-console-guide.md) | The AWS-style grouped user-pool menu (application wizard, users, groups, app clients, sign-in and sign-up settings, providers, domain, managed login, triggers, settings) and Identity pools create/edit |
 | [DynamoDB](docs/dynamodb-console-guide.md) | Tables, items, streams, backups, PartiQL, and global tables |
 | [EventBridge](docs/eventbridge-console-guide.md) | Event buses, rules, Sandbox, and Scheduler |
 | [IAM](docs/iam-console-guide.md) | Users, groups, roles, policies, and authorization decisions |

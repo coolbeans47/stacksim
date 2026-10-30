@@ -481,6 +481,28 @@ function accessTokenFailureMessage(token: string, now: number): string {
   return "Invalid Access Token";
 }
 
+const CONSOLE_ACTIONS: ReadonlySet<string> = new Set([
+  "CreateUserPool", "DescribeUserPool", "UpdateUserPool", "DeleteUserPool",
+  "CreateUserPoolClient", "DescribeUserPoolClient", "UpdateUserPoolClient",
+  "ListUsers", "AdminCreateUser", "AdminGetUser", "AdminConfirmSignUp", "AdminDeleteUser", "AdminDisableUser", "AdminEnableUser",
+  "AdminResetUserPassword", "AdminUserGlobalSignOut", "AdminListUserAuthEvents", "AdminListGroupsForUser",
+  "ListUsersInGroup", "AdminAddUserToGroup", "AdminRemoveUserFromGroup",
+  "CreateGroup", "GetGroup", "UpdateGroup", "DeleteGroup",
+  "GetUserPoolMfaConfig", "SetUserPoolMfaConfig",
+  "CreateResourceServer", "DescribeResourceServer", "UpdateResourceServer", "DeleteResourceServer",
+  "CreateIdentityProvider", "DescribeIdentityProvider", "UpdateIdentityProvider",
+  "CreateUserPoolDomain", "UpdateUserPoolDomain", "DeleteUserPoolDomain",
+  "TagResource", "UntagResource", "ListTagsForResource",
+]);
+
+function redactConsoleSecrets(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactConsoleSecrets);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => !["ClientSecret", "client_secret", "SecretCode", "TemporaryPassword"].includes(key))
+    .map(([key, item]) => [key, redactConsoleSecrets(item)]));
+}
+
 function schemaAttributeView(attribute: CognitoSchemaAttributeState, name: string): Record<string, unknown> {
   return {
     Name: name,
@@ -8829,6 +8851,23 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
     };
   }
 
+  /**
+   * Console editors run official administrator operations through this allowlist so the console never gains a
+   * second write path. Responses are redacted: client secrets and identity-provider secrets are never returned.
+   */
+  async localAction(operation: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!CONSOLE_ACTIONS.has(operation)) {
+      throw new AwsError("InvalidParameterException", `${operation} is not available from the console.`, 400);
+    }
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new AwsError("InvalidParameterException", "The console action body is invalid.", 400);
+    }
+    this.secrets.assertAvailable();
+    const output = (await this.dispatch(operation, { ...input })) ?? {};
+    await this.store.save();
+    return redactConsoleSecrets(output) as Record<string, unknown>;
+  }
+
   localUserPools(): { userPools: Array<Record<string, unknown>> } {
     return {
       userPools: Object.values(this.state.pools)
@@ -8870,6 +8909,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
           : undefined,
         resourceServerCount: Object.keys(pool.resourceServers).length,
         inboxPath: "#/ses/inbox?originService=cognito-idp",
+        tags: { ...pool.tags },
         userCount: Object.keys(pool.usersBySub).length,
         appClientCount: Object.keys(pool.clients).length,
         configuration: {
@@ -8926,7 +8966,7 @@ export class CognitoService implements CognitoIssuerKeySource, CognitoRestAuthor
             .map(attribute => ({ ...attribute })),
         },
         boundaries: {
-          tags: Object.keys(pool.tags).length ? { ...pool.tags } : "None",
+          tags: { ...pool.tags },
           groupsAndAdminActions: "Available",
           mfa: "Software token and eligible email OTP",
           oauthAndManagedLogin: "Available",
