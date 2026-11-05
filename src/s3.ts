@@ -2277,7 +2277,7 @@ export class S3Service {
       const match = item.arn.match(/^arn:aws:sqs:([^:]+):(\d{12}):([^:]+)$/); if (!match || match[1] !== bucket.region) throw new AwsError("InvalidArgument", "SQS notification destinations must be in the bucket Region", 400);
       if (!this.sqs) throw new AwsError("InvalidArgument", "The SQS notification dependency is unavailable", 400);
     }
-    if (/<TopicConfiguration(?:\s|>)/i.test(xml)) throw new AwsError("InvalidArgument", "SNS notification destinations require the planned S3/SNS integration", 400);
+    if (/<TopicConfiguration(?:\s|>)/i.test(xml)) throw new AwsError("InvalidArgument", "SNS notification destinations are not supported by StackSim", 400);
     return { lambda, queue, eventBridge };
   }
 
@@ -2306,7 +2306,14 @@ export class S3Service {
   }
 
   private async applyNotificationConfiguration(located: LocatedBucket, value: NonNullable<S3BucketState["notificationConfiguration"]>): Promise<void> {
-    for (const item of value.queue) await this.sqs!.assertAuthorizedMessageDestination(item.arn, { kind: "service", principal: "s3.amazonaws.com", sourceArn: located.bucket.arn, sourceAccount: located.accountId });
+    for (const item of value.queue) {
+      // As on S3, a queue that is missing or whose policy does not let s3.amazonaws.com send fails destination validation.
+      try { await this.sqs!.assertAuthorizedMessageDestination(item.arn, { kind: "service", principal: "s3.amazonaws.com", sourceArn: located.bucket.arn, sourceAccount: located.accountId }); }
+      catch (error) {
+        if (error instanceof AwsError && ["AccessDeniedException", "AccessDenied", "QueueDoesNotExist", "AWS.SimpleQueueService.NonExistentQueue"].includes(error.code)) throw new AwsError("InvalidArgument", "Unable to validate the following destination configurations", 400);
+        throw error;
+      }
+    }
     located.bucket.notificationConfiguration = value; await this.store.save();
     const index = await this.bucketIndex(located); const testPayload = JSON.stringify({ Service: "Amazon S3", Event: "s3:TestEvent", Time: iso(this.clock.now()), Bucket: located.bucket.name, RequestId: randomUUID(), HostId: createHash("sha256").update(located.bucket.arn).digest("base64") });
     for (const item of value.lambda) await this.addNotificationDelivery(located, index, "lambda", item.arn, item.id, "s3:TestEvent", testPayload, []);

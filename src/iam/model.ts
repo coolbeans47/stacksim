@@ -19,6 +19,8 @@ const managed: Array<{ name: string; path: string; id: string; document: PolicyD
   ] } },
   { name: "AmazonDynamoDBFullAccess", path: "/", id: "ANPAIDDBFULLACCESS01", document: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "dynamodb:*", Resource: "*" }] } },
   { name: "AdministratorAccess", path: "/", id: "ANPAIADMINACCESS001", document: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "*", Resource: "*" }] } },
+  { name: "AmazonSQSFullAccess", path: "/", id: "ANPAISQSFULLACCESS01", document: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["sqs:*"], Resource: "*" }] } },
+  { name: "AmazonSQSReadOnlyAccess", path: "/", id: "ANPAISQSREADONLY001", document: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["sqs:GetQueueAttributes", "sqs:GetQueueUrl", "sqs:ListDeadLetterSourceQueues", "sqs:ListQueues", "sqs:ListMessageMoveTasks", "sqs:ListQueueTags"], Resource: "*" }] } },
   // Referenced by the AWS SAM transform (SAM-02): Tracing: Active, and common
   // Policies entries in SAM quick starts and golden fixtures.
   { name: "AWSXRayDaemonWriteAccess", path: "/", id: "ANPAIXRAYDAEMONW001", document: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["xray:PutTraceSegments", "xray:PutTelemetryRecords", "xray:GetSamplingRules", "xray:GetSamplingTargets", "xray:GetSamplingStatisticSummaries"], Resource: ["*"] }] } },

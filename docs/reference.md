@@ -27,7 +27,7 @@ This reference describes the current repository implementation. StackSim is a bo
 - CloudWatch account-global dashboards with lossless definitions, metric/log/alarm/explorer/text widgets backed by real data, variables, time and refresh controls, and a responsive editable grid.
 - Amazon S3 general-purpose buckets and everyday object I/O through REST-XML, with encrypted content-addressed payloads, listings/waiters, ranges and conditions, current checksum families, presigned requests, atomic copy, multipart uploads, versioning, delete markers, bulk deletion, tags, SSE-C, Object Lock/retention/legal holds, annotations, lifecycle/storage classes/archive restore, durable SQS/Lambda/EventBridge notifications, request/delivery telemetry, and responsive governance/management/metrics workflows; plus bounded CloudFormation/CDK public React delivery profiles with exact public-read policy, exact TLS-only and generated TLS/auto-delete companions, index-document hosting, and the exact one-rule abort-incomplete-multipart lifecycle profile.
 - Amazon CloudFront CFR-01 provides account-global Distribution, Function, Origin Access Control, and Response Headers Policy APIs and CloudFormation providers. One private simulator-owned S3 origin is served through genuine service-principal policy authorization, a bounded isolated `cloudfront-js-1.0` viewer-request Function, the two opening AWS-managed cache policies, compression, security headers, and durable invalidation. Canonical `d<label>.cloudfront.net` outputs remain AWS-shaped; local traffic uses a separately reported, persisted `https://d<label>.localhost:<port>/` endpoint and installation CA.
-- Amazon SQS durable Standard, fair, and FIFO queues through AWS JSON 1.0 and Query/XML, with everyday message I/O, FIFO ordering/deduplication/receive replay, delays, visibility, long polling, retention, partial batches, purge, tags, IAM checks, group-aware queue metrics, encrypted payload storage, DLQ/redrive policies, Lambda workers and destinations, API Gateway producers, and responsive queue/message/DLQ/trigger workflows.
+- Amazon SQS durable Standard, fair, and FIFO queues through AWS JSON 1.0 and Query/XML, with everyday message I/O, FIFO ordering/deduplication/receive replay, delays, visibility, long polling, retention, partial batches, purge, tags, IAM checks, group-aware queue metrics, encrypted payload storage, DLQ/redrive policies and start/list/cancel redrive tasks, queue policies and labelled permissions, SSE-SQS, Lambda workers and destinations, API Gateway, SNS, EventBridge, S3 and Step Functions producers, and queue/message/DLQ/trigger console workflows.
 - Amazon SNS provides 18 official Query/XML actions, durable encrypted Standard-topic fan-out to SQS and Lambda, filters, raw delivery, policies, managed retries, Standard SQS DLQs, signature versions 1 and 2, delivery metrics and logs, four CloudFormation providers, pinned CDK L1/L2 deployment, and policy-aware Lambda, DynamoDB Streams, CloudWatch alarm, EventBridge, and CloudFormation notification producers.
 - Amazon SES v1 Query/XML and SES v2 REST-JSON everyday sending with verified identities, simple/raw/templated MIME, shared stored templates, sending-enabled configuration sets, regional quotas, a durable SQLite mailbox, and a responsive local Inbox. Accepted mail is captured locally before `MessageId` is returned and is never submitted to an external SMTP server.
 - Amazon Cognito User Pools provide pool and app-client lifecycle, email self-sign-up and administration, password, administrator, SRP, and choice-based (`USER_AUTH`) authentication with the AWS failed-sign-in lockout, groups, MFA, Lambda triggers, refresh and revocation, RS256 tokens, resource servers and custom scopes, local user-pool domains, managed login, OAuth grants, external OIDC authorization-code and signed SAML POST federation, attribute mapping and account linking, deployed REST/HTTP API Gateway authorization, ten CloudFormation/CDK resource providers, and a console that follows the current AWS user-pool menu (application wizard, users, groups, app clients, sign-in and sign-up settings, providers, domain, managed login, triggers, settings) plus Identity pools create and edit.
@@ -475,7 +475,7 @@ aws dynamodb list-tables --endpoint-url http://127.0.0.1:4566 --region eu-west-1
 
 ## Deploy with AWS CDK and CloudFormation
 
-The same global environment configures an unmodified standard AWS CDK v2 CLI because CDK uses several service clients during one deployment. The public registry contains exactly 115 resource types:
+The same global environment configures an unmodified standard AWS CDK v2 CLI because CDK uses several service clients during one deployment. The public registry contains exactly 116 resource types:
 
 <details>
 <summary>Complete CloudFormation resource-type list</summary>
@@ -499,7 +499,7 @@ The same global environment configures an unmodified standard AWS CDK v2 CLI bec
 | Secrets Manager | `AWS::SecretsManager::Secret`, `ResourcePolicy`, `RotationSchedule`, `SecretTargetAttachment` |
 | SES | `AWS::SES::ConfigurationSet`, `ConfigurationSetEventDestination`, `ContactList`, `CustomVerificationEmailTemplate`, `EmailIdentity`, `Template` |
 | SNS | `AWS::SNS::Subscription`, `Topic`, `TopicInlinePolicy`, `TopicPolicy` |
-| SQS | `AWS::SQS::Queue`, `QueuePolicy` |
+| SQS | `AWS::SQS::Queue`, `QueueInlinePolicy`, `QueuePolicy` |
 | Systems Manager Parameter Store | `AWS::SSM::Parameter` |
 | Step Functions | `AWS::StepFunctions::StateMachine`, `AWS::StepFunctions::Activity` |
 | StackSim CDK helpers | `Custom::CDKBucketDeployment`, `Custom::S3BucketNotifications` |
@@ -1699,15 +1699,15 @@ Broadly, StackSim does not provide production availability, scaling, billing, co
 - `docs/` — public guides and technical reference material
 
 
-## SQS dead-letter recovery tasks (learning gap 2)
+## SQS dead-letter recovery tasks
 
-`StartMessageMoveTask`, `ListMessageMoveTasks` and `CancelMessageMoveTask` work through both AWS JSON and Query/XML, including the official SQS SDK. The [action inventory](sqs-action-inventory.md) freezes the fields, error mapping, task states, limits, FIFO transformations, IAM dependencies and local boundaries. This completes the message-move portion of SQS-05; it does not declare the entire phase complete.
+`StartMessageMoveTask`, `ListMessageMoveTasks` and `CancelMessageMoveTask` work through both AWS JSON and Query/XML, including the official SQS SDK. The [action inventory](sqs-action-inventory.md) freezes the fields, error mapping, task states, limits, FIFO transformations, IAM dependencies and local boundaries.
 
 Use the DLQ's ARN as `SourceArn`; omit `DestinationArn` to route each message to its recorded original source, or specify a different same-type local queue. Set `MaxNumberOfMessagesPerSecond` to 1–500, or omit it for a local backlog-based ceiling. List returns the most recent task by default, or up to ten with `MaxResults`. Approximate moved counts describe queue acceptance, not application success. Cancellation retains prior committed moves. Ordinary restart resumes durable tasks and reconciles interrupted transfers without using a new send to repeat committed work.
 
 The initiating caller needs the task operation and source receive/delete/get-attributes permissions; start additionally needs destination SendMessage. List needs GetQueueAttributes. Permissions are rechecked during execution. KMS, VPC endpoint dependencies, cross-account/Region moves and non-SQS DLQ sources fail explicitly. Older messages without source metadata require a custom destination. SQS telemetry failures produce bounded diagnostics without changing successful queue results.
 
-Follow [Scenario H](../examples/sqs-recovery-lab/README.md) to deploy, break, diagnose, repair, redrive, verify application processing and reset through public SDK calls.
+Follow the [SQS recovery lab](../examples/sqs-recovery-lab/README.md) to deploy, break, diagnose, repair, redrive, verify application processing and reset through public SDK calls.
 
 ## Pinned authenticated application learning slice
 

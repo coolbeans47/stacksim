@@ -32,6 +32,16 @@ export interface ProviderPropertyDeclaration {
   readonly updateBehavior: ProviderPropertyUpdateBehavior;
   readonly sensitive?: boolean;
   readonly description?: string;
+  /**
+   * An object-valued property whose CloudFormation type is Json: a string
+   * holding a JSON object is accepted and parsed before provider validation.
+   */
+  readonly acceptsJsonString?: boolean;
+  /**
+   * Primitive members of an object-valued property. A numeric string or
+   * "true"/"false" supplied for one of them is coerced like a top-level value.
+   */
+  readonly members?: Readonly<Record<string, "number" | "boolean">>;
 }
 
 export interface ProviderRefDeclaration {
@@ -83,6 +93,11 @@ export interface ProviderSchema {
   /** General Lambda custom resources are the sole production exception. */
   readonly unknownProperties: "REJECT" | "ALLOW";
   readonly properties: Readonly<Record<string, ProviderPropertyDeclaration>>;
+  /**
+   * Real CloudFormation properties this provider deliberately refuses, with the
+   * reason and the local alternative shown instead of the generic refusal.
+   */
+  readonly unsupportedProperties?: Readonly<Record<string, string>>;
   readonly ref: ProviderRefDeclaration;
   readonly attributes: Readonly<Record<string, ProviderAttributeDeclaration>>;
   /** Custom-resource response Data keys are determined by provider code. */
@@ -269,12 +284,69 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function matchesValueType(value: unknown, type: ProviderPropertyValueType): boolean {
-  switch (type) {
+const NUMERIC_STRING = /^-?\d+(?:\.\d+)?$/;
+
+/**
+ * CloudFormation resolves parameters and quoted template values to strings and
+ * converts them to the property's declared primitive type. Only a numeric
+ * string becomes a number and only "true"/"false" become booleans; any other
+ * value is returned unchanged so validation still rejects it.
+ */
+function coercePrimitive(value: unknown, type: ProviderPropertyValueType): unknown {
+  if (typeof value !== "string") return value;
+  if (type === "number" && NUMERIC_STRING.test(value)) return Number(value);
+  if (type === "boolean" && (value === "true" || value === "false")) return value === "true";
+  return value;
+}
+
+function parseJsonObjectString(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isRecord(parsed) ? parsed : value;
+  } catch { return value; }
+}
+
+function coerceDeclaredValue(value: unknown, declaration: ProviderPropertyDeclaration): unknown {
+  if (declaration.valueType === "number" || declaration.valueType === "boolean") return coercePrimitive(value, declaration.valueType);
+  if (declaration.valueType !== "object") return value;
+  const object = declaration.acceptsJsonString ? parseJsonObjectString(value) : value;
+  if (!declaration.members || !isRecord(object)) return object;
+  let coerced: Record<string, unknown> | undefined;
+  for (const [member, type] of Object.entries(declaration.members)) {
+    if (!Object.hasOwn(object, member)) continue;
+    const next = coercePrimitive(object[member], type);
+    if (next !== object[member]) (coerced ??= { ...object })[member] = next;
+  }
+  return coerced ?? object;
+}
+
+/**
+ * Convert string-typed numbers and booleans in resolved properties to the
+ * primitive type the provider schema declares. The executor applies this once
+ * to evaluated template properties, so providers always receive real numbers
+ * and booleans. The input is never mutated; it is returned as-is when nothing
+ * needs converting.
+ */
+export function coerceDeclaredProperties<T>(properties: T, schema: ProviderSchema): T {
+  if (!isRecord(properties)) return properties;
+  let coerced: Record<string, unknown> | undefined;
+  for (const [name, value] of Object.entries(properties)) {
+    const declaration = schema.properties[name];
+    if (!declaration) continue;
+    const next = coerceDeclaredValue(value, declaration);
+    if (next !== value) (coerced ??= { ...properties })[name] = next;
+  }
+  return (coerced ?? properties) as T;
+}
+
+function matchesValueType(value: unknown, declaration: ProviderPropertyDeclaration): boolean {
+  const candidate = coerceDeclaredValue(value, declaration);
+  switch (declaration.valueType) {
     case "any": return true;
-    case "array": return Array.isArray(value);
-    case "object": return isRecord(value);
-    default: return typeof value === type;
+    case "array": return Array.isArray(candidate);
+    case "object": return isRecord(candidate);
+    default: return typeof candidate === declaration.valueType;
   }
 }
 
@@ -288,10 +360,10 @@ export function validateDeclaredProperties(properties: unknown, schema: Provider
   for (const name of Object.keys(properties).sort()) {
     const declaration = schema.properties[name];
     if (!declaration && schema.unknownProperties === "REJECT") {
-      issues.push(providerValidationIssue("UnsupportedProperty", `Properties.${name}`, ["Properties", name], `${schema.typeName} does not support property ${name}`));
+      issues.push(providerValidationIssue("UnsupportedProperty", `Properties.${name}`, ["Properties", name], `${schema.typeName} does not support property ${name}${schema.unsupportedProperties?.[name] ? `: ${schema.unsupportedProperties[name]}` : ""}`));
       continue;
     }
-    if (declaration && !matchesValueType(properties[name], declaration.valueType)) {
+    if (declaration && !matchesValueType(properties[name], declaration)) {
       issues.push(providerValidationIssue("InvalidType", `Properties.${name}`, ["Properties", name], `${schema.typeName} property ${name} must be ${declaration.valueType}`));
     }
   }

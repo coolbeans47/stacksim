@@ -53,7 +53,7 @@ test("SQS policy permissions and truthful SSE-SQS attributes survive restart whi
     assert.equal(queryRemove.status, 200);
     assert.doesNotMatch((await sqs.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ["Policy"] }))).Attributes!.Policy!, /query_send/);
 
-    await assert.rejects(sqs.send(new SetQueueAttributesCommand({ QueueUrl, Attributes: { Policy: policy([{ Effect: "Allow", Principal: "*", Action: "sqs:SendMessage", Resource: `arn:aws:sqs:${region}:${account}:other` }]) } })), (error: any) => error.name === "InvalidParameterValue");
+    await assert.rejects(sqs.send(new SetQueueAttributesCommand({ QueueUrl, Attributes: { Policy: policy([{ Effect: "Allow", Principal: "*", Action: "sqs:SendMessage", Resource: `arn:aws:sqs:${region}:${account}:other` }]) } })), (error: any) => error.name === "InvalidAttributeValue");
     await assert.rejects(sqs.send(new SetQueueAttributesCommand({ QueueUrl, Attributes: { SqsManagedSseEnabled: "false", KmsMasterKeyId: "alias/development" } })), (error: any) => error.name === "UnsupportedOperation");
     assert.equal((await sqs.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ["SqsManagedSseEnabled"] }))).Attributes!.SqsManagedSseEnabled, "true", "a dependency failure is atomic");
 
@@ -98,8 +98,8 @@ test("same-account queue policies authorize role sessions, explicit deny wins, a
       { Sid: "RoleSend", Effect: "Allow", Principal: { AWS: roleArn }, Action: "sqs:SendMessage", Resource: queueArn },
       { Sid: "DenyRole", Effect: "Deny", Principal: { AWS: roleArn }, Action: "sqs:SendMessage", Resource: queueArn },
     ]) } }));
-    await assert.rejects(worker.send(new SendMessageCommand({ QueueUrl, MessageBody: "denied" })), (error: any) => error.name === "AccessDeniedException");
-    await assert.rejects(worker.send(new RemovePermissionCommand({ QueueUrl, Label: "RoleSend" })), (error: any) => error.name === "AccessDeniedException", "administrative policy changes still require owner authorization");
+    await assert.rejects(worker.send(new SendMessageCommand({ QueueUrl, MessageBody: "denied" })), (error: any) => error.name === "AccessDenied");
+    await assert.rejects(worker.send(new RemovePermissionCommand({ QueueUrl, Label: "RoleSend" })), (error: any) => error.name === "AccessDenied", "administrative policy changes still require owner authorization");
   } finally {
     for (const client of clients) client.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true });
   }
@@ -136,11 +136,11 @@ test("cross-account callers need identity and queue allows while owner-only acti
 
     const external = new SQSClient({ endpoint, region, credentials: { accessKeyId, secretAccessKey, sessionToken } }); clients.push(external);
     assert.ok((await external.send(new SendMessageCommand({ QueueUrl, MessageBody: "both sides allow" }))).MessageId);
-    await assert.rejects(external.send(new SetQueueAttributesCommand({ QueueUrl, Attributes: { VisibilityTimeout: "31" } })), (error: any) => error.name === "AccessDeniedException", "queue administration cannot be delegated cross-account");
+    await assert.rejects(external.send(new SetQueueAttributesCommand({ QueueUrl, Attributes: { VisibilityTimeout: "31" } })), (error: any) => error.name === "AccessDenied", "queue administration cannot be delegated cross-account");
 
     externalIam.roles[roleName].inlinePolicies.queue = JSON.parse(policy([{ Effect: "Allow", Action: "sqs:SetQueueAttributes", Resource: queueArn }]));
     await simulator.store.save();
-    await assert.rejects(external.send(new SendMessageCommand({ QueueUrl, MessageBody: "resource policy alone is insufficient" })), (error: any) => error.name === "AccessDeniedException");
+    await assert.rejects(external.send(new SendMessageCommand({ QueueUrl, MessageBody: "resource policy alone is insufficient" })), (error: any) => error.name === "AccessDenied");
 
     const anonymous = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/x-amz-json-1.0", "x-amz-target": "AmazonSQS.SendMessage" }, body: JSON.stringify({ QueueUrl, MessageBody: "anonymous" }) });
     assert.equal(anonymous.status, 403);

@@ -8,7 +8,7 @@ import { StackSim } from "../src/server.js";
 import { TestClock } from "../src/core/clock.js";
 import { RecoveryLab } from "../examples/sqs-recovery-lab/lab.js";
 
-test("Scenario H deploys, retries, diagnoses, fixes, redrives, verifies application processing, cancels and resets using SDKs", { timeout: 60000 }, async () => {
+test("SQS recovery lab deploys, retries, diagnoses, fixes, redrives, verifies application processing, cancels and resets using SDKs", { timeout: 60000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-recovery-lab-")); const clock = new TestClock(Date.now());
   const sim = new StackSim({ port: 0, invokePort: 0, dataDir: root, region: "eu-west-1", authMode: "enforce", cdkBootstrap: true, clock });
   let lab: RecoveryLab | undefined;

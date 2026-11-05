@@ -2,6 +2,7 @@ import { AwsError } from "./errors.js";
 import type { Clock } from "./core/clock.js";
 import type { TelemetryBus } from "./core/telemetry.js";
 import { evaluateRoleAuthorization } from "./iam/evaluator.js";
+import { EventPatternValidationError, matchesEventPattern, parseEventJson, parseEventPattern, type EventPattern } from "./eventbridge/pattern.js";
 import type { StateStore } from "./state.js";
 import { randomUUID } from "node:crypto";
 
@@ -70,6 +71,8 @@ export interface LambdaSqsMappingState {
   functionResponseTypes: Array<"ReportBatchItemFailures">;
   filterCriteria?: { Filters: Array<{ Pattern: string }> };
   scalingMaximumConcurrency?: number;
+  /** Stored and returned as configured; the simulator does not publish the extra metrics. */
+  metricsConfig?: { Metrics: Array<"EventCount"> };
   tags: Record<string, string>;
   createdAt: number;
   lastModified: number;
@@ -82,6 +85,7 @@ export interface LambdaSqsConfiguration {
   functionResponseTypes: Array<"ReportBatchItemFailures">;
   filterCriteria?: LambdaSqsMappingState["filterCriteria"];
   scalingMaximumConcurrency?: number;
+  metricsConfig?: LambdaSqsMappingState["metricsConfig"];
 }
 
 interface LambdaSqsInvokeResult {
@@ -133,31 +137,26 @@ function integer(value: unknown, field: string, minimum: number, maximum: number
   return Number(value);
 }
 
-function scalarMatch(candidate: unknown, expected: unknown): boolean {
-  if (expected && typeof expected === "object" && !Array.isArray(expected)) {
-    const operator = expected as Record<string, unknown>;
-    if (Object.hasOwn(operator, "exists")) return Boolean(operator.exists) === (candidate !== undefined);
-    if (Object.hasOwn(operator, "prefix")) return typeof candidate === "string" && candidate.startsWith(String(operator.prefix));
-    if (Object.hasOwn(operator, "suffix")) return typeof candidate === "string" && candidate.endsWith(String(operator.suffix));
-    if (Object.hasOwn(operator, "equals-ignore-case")) return typeof candidate === "string" && candidate.toLowerCase() === String(operator["equals-ignore-case"]).toLowerCase();
-    if (Object.hasOwn(operator, "anything-but")) {
-      const excluded = Array.isArray(operator["anything-but"]) ? operator["anything-but"] as unknown[] : [operator["anything-but"]];
-      return !excluded.some(value => scalarMatch(candidate, value));
-    }
-    if (Array.isArray(operator.numeric)) {
-      const values = operator.numeric; const number = Number(candidate); if (!Number.isFinite(number)) return false;
-      for (let index = 0; index + 1 < values.length; index += 2) { const op = values[index]; const bound = Number(values[index + 1]); if (!Number.isFinite(bound) || !(op === "=" ? number === bound : op === ">" ? number > bound : op === ">=" ? number >= bound : op === "<" ? number < bound : op === "<=" ? number <= bound : false)) return false; }
-      return values.length >= 2;
-    }
-  }
-  return candidate === expected || (typeof candidate === "number" && typeof expected === "string" && String(candidate) === expected);
+/** SQS filters may only test the message body; $or alternatives are held to the same rule. */
+function usesOnlyBody(pattern: unknown): boolean {
+  if (!pattern || typeof pattern !== "object" || Array.isArray(pattern)) return false;
+  return Object.entries(pattern as Record<string, unknown>).every(([key, value]) => key === "body" || (key === "$or" && Array.isArray(value) && value.every(usesOnlyBody)));
 }
 
-function eventPatternMatch(candidate: unknown, pattern: unknown): boolean {
-  if (Array.isArray(pattern)) return pattern.some(expected => scalarMatch(candidate, expected));
-  if (!pattern || typeof pattern !== "object" || Array.isArray(candidate)) return scalarMatch(candidate, pattern);
-  if (!candidate || typeof candidate !== "object") return false;
-  return Object.entries(pattern as Record<string, unknown>).every(([key, value]) => eventPatternMatch((candidate as Record<string, unknown>)[key], value));
+/**
+ * Lambda event filters follow the EventBridge event-pattern rules, so the
+ * EventBridge matcher validates and evaluates them. A pattern that uses an
+ * operator the matcher does not implement is refused, because a filter that
+ * silently matches nothing would delete every message.
+ */
+function sqsFilterPattern(pattern: string): EventPattern {
+  let parsed: unknown; try { parsed = JSON.parse(pattern); } catch { throw new AwsError("InvalidParameterValueException", "Filter Pattern must contain valid JSON"); }
+  if (!usesOnlyBody(parsed)) throw new AwsError("InvalidParameterValueException", "SQS filter patterns may only use the body event key");
+  try { return parseEventPattern(pattern); }
+  catch (error) {
+    if (error instanceof EventPatternValidationError) throw new AwsError("InvalidParameterValueException", `Invalid filter pattern definition: ${error.message}`);
+    throw error;
+  }
 }
 
 function filterCriteria(value: unknown, fallback?: LambdaSqsMappingState["filterCriteria"]): LambdaSqsMappingState["filterCriteria"] {
@@ -167,10 +166,17 @@ function filterCriteria(value: unknown, fallback?: LambdaSqsMappingState["filter
   if (!Array.isArray(filters) || filters.length < 1 || filters.length > 5) throw new AwsError("InvalidParameterValueException", "FilterCriteria.Filters must contain between 1 and 5 filters");
   return { Filters: filters.map((filter: any) => {
     if (!filter || typeof filter.Pattern !== "string" || Buffer.byteLength(filter.Pattern) > 4096) throw new AwsError("InvalidParameterValueException", "Each filter Pattern must be a JSON string no larger than 4096 bytes");
-    let parsed: any; try { parsed = JSON.parse(filter.Pattern); } catch { throw new AwsError("InvalidParameterValueException", "Filter Pattern must contain valid JSON"); }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.keys(parsed).some(key => key !== "body")) throw new AwsError("InvalidParameterValueException", "SQS filter patterns may only use the body event key");
+    sqsFilterPattern(filter.Pattern);
     return { Pattern: filter.Pattern };
   }) };
+}
+
+function metricsConfig(value: unknown, fallback?: LambdaSqsMappingState["metricsConfig"]): LambdaSqsMappingState["metricsConfig"] {
+  if (value === undefined) return fallback ? structuredClone(fallback) : undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => key !== "Metrics")) throw new AwsError("InvalidParameterValueException", "MetricsConfig must contain only Metrics");
+  const metrics = (value as { Metrics?: unknown }).Metrics ?? [];
+  if (!Array.isArray(metrics) || metrics.some(metric => metric !== "EventCount")) throw new AwsError("InvalidParameterValueException", "MetricsConfig.Metrics only supports EventCount");
+  return metrics.length ? { Metrics: ["EventCount"] } : undefined;
 }
 
 function responseTypes(value: unknown, fallback: Array<"ReportBatchItemFailures">): Array<"ReportBatchItemFailures"> {
@@ -195,6 +201,8 @@ export class LambdaSqsEventSource {
   private readonly pending = new Map<string, PendingBatch>();
   private readonly activeCounts = new Map<string, number>();
   private readonly activeGroups = new Map<string, Set<string>>();
+  /** The running batch of each FIFO message group, keyed by mapping and group. */
+  private readonly groupTasks = new Map<string, Promise<void>>();
   private readonly tasks = new Set<Promise<void>>();
   private readonly polls = new Map<string, { controller: AbortController; promise: Promise<void> }>();
   private stopped = true;
@@ -228,13 +236,21 @@ export class LambdaSqsEventSource {
   }
 
   validateFunction(target: LambdaSqsFunction, queue: LambdaSqsQueueDescriptor): void {
-    if (target.timeout > queue.visibilityTimeoutSeconds) throw new AwsError("InvalidParameterValueException", `The function timeout (${target.timeout} seconds) exceeds the queue visibility timeout (${queue.visibilityTimeoutSeconds} seconds)`);
-    if (this.authMode !== "enforce") return;
+    if (target.timeout > queue.visibilityTimeoutSeconds) throw new AwsError("InvalidParameterValueException", `Queue visibility timeout: ${queue.visibilityTimeoutSeconds} seconds is less than Function timeout: ${target.timeout} seconds`);
+    if (!this.enforcesRole()) return;
     const iam = this.store.ensureAccount().iam;
     // The execution-role permissions AWS documents for SQS event sources (and AWSLambdaSQSQueueExecutionRole grants).
     const actions = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"];
-    if (actions.some(action => evaluateRoleAuthorization(iam, target.role, action, queue.queueArn).decision !== "allowed")) throw new AwsError("InvalidParameterValueException", `The function execution role is not authorized to consume SQS queue ${queue.queueArn}`);
+    const denied = actions.find(action => evaluateRoleAuthorization(iam, target.role, action, queue.queueArn).decision !== "allowed");
+    if (denied) throw new AwsError("InvalidParameterValueException", `The provided execution role does not have permissions to call ${denied.slice("sqs:".length)} on SQS`);
   }
+
+  /**
+   * The execution role is checked only when authorization is enforced, both
+   * when a mapping is created and when the poller consumes the queue.
+   */
+  private enforcesRole(): boolean { return this.authMode === "enforce"; }
+  private consumerRole(mapping: LambdaSqsMappingState): string | undefined { return this.enforcesRole() ? this.callbacks.resolveFunction(mapping.functionArn).role : undefined; }
 
   configuration(input: any, previous?: LambdaSqsMappingState, suppliedQueue?: LambdaSqsQueueDescriptor): LambdaSqsConfiguration {
     for (const field of SOURCE_ONLY_FIELDS) if (input[field] !== undefined) throw new AwsError("InvalidParameterValueException", `${field} is not supported for SQS event source mappings in this simulator`);
@@ -250,12 +266,14 @@ export class LambdaSqsEventSource {
       if (scaling.MaximumConcurrency === undefined) scalingMaximumConcurrency = undefined;
       else scalingMaximumConcurrency = integer(scaling.MaximumConcurrency, "ScalingConfig.MaximumConcurrency", 2, 1_000, 2);
     }
+    const metrics = metricsConfig(input.MetricsConfig, previous?.metricsConfig);
     return {
       batchSize,
       maximumBatchingWindowInSeconds,
       functionResponseTypes: responseTypes(input.FunctionResponseTypes, previous?.functionResponseTypes ?? []),
       filterCriteria: filterCriteria(input.FilterCriteria, previous?.filterCriteria),
       ...(scalingMaximumConcurrency !== undefined ? { scalingMaximumConcurrency } : {}),
+      ...(metrics ? { metricsConfig: metrics } : {}),
     };
   }
 
@@ -273,6 +291,7 @@ export class LambdaSqsEventSource {
       FunctionResponseTypes: mapping.functionResponseTypes,
       ...(mapping.filterCriteria ? { FilterCriteria: structuredClone(mapping.filterCriteria) } : {}),
       ...(mapping.scalingMaximumConcurrency !== undefined ? { ScalingConfig: { MaximumConcurrency: mapping.scalingMaximumConcurrency } } : {}),
+      ...(mapping.metricsConfig ? { MetricsConfig: structuredClone(mapping.metricsConfig) } : {}),
       EventSourceMappingArn: mapping.eventSourceMappingArn,
     };
   }
@@ -309,22 +328,28 @@ export class LambdaSqsEventSource {
     };
   }
 
-  private matches(mapping: LambdaSqsMappingState, message: NormalizedMessage): boolean {
-    if (!mapping.filterCriteria) return true;
-    let body: unknown = message.body; try { body = JSON.parse(message.body); } catch { /* Plain strings remain strings. */ }
-    return mapping.filterCriteria.Filters.some(filter => { try { return eventPatternMatch({ body }, JSON.parse(filter.Pattern)); } catch { return false; } });
+  /** The mapping's filters, validated. A stored pattern the matcher cannot evaluate throws rather than dropping messages. */
+  private filterPatterns(mapping: LambdaSqsMappingState): EventPattern[] | undefined {
+    return mapping.filterCriteria?.Filters.map(filter => sqsFilterPattern(filter.Pattern));
   }
 
-  private async receive(mapping: LambdaSqsMappingState, count: number, visibilityTimeoutSeconds: number, abortSignal: AbortSignal): Promise<NormalizedMessage[]> {
+  private matches(patterns: EventPattern[] | undefined, message: NormalizedMessage): boolean {
+    if (!patterns) return true;
+    let body: unknown = message.body; try { body = parseEventJson(message.body); } catch { /* Plain strings remain strings. */ }
+    return patterns.some(pattern => matchesEventPattern(pattern, { body }));
+  }
+
+  private async receive(mapping: LambdaSqsMappingState, count: number, visibilityTimeoutSeconds: number, abortSignal: AbortSignal, waitTimeSeconds = 20): Promise<NormalizedMessage[]> {
     if (!this.service || count <= 0) return [];
-    const roleArn = this.callbacks.resolveFunction(mapping.functionArn).role;
-    const result = await this.service.receiveForConsumer({ queueArn: mapping.eventSourceArn, maxNumberOfMessages: Math.min(10, count), visibilityTimeoutSeconds, waitTimeSeconds: 20, roleArn, abortSignal });
+    const patterns = this.filterPatterns(mapping);
+    const roleArn = this.consumerRole(mapping);
+    const result = await this.service.receiveForConsumer({ queueArn: mapping.eventSourceArn, maxNumberOfMessages: Math.min(10, count), visibilityTimeoutSeconds, waitTimeSeconds, ...(roleArn ? { roleArn } : {}), abortSignal });
     const messages = result.messages.map(message => this.normalize(message)).filter((message): message is NormalizedMessage => Boolean(message));
     if (messages.length) await this.metric(mapping, "EventSourceMappingPolled", messages.length);
     const retried = messages.filter(message => Number(message.attributes.ApproximateReceiveCount ?? "1") > 1).length;
     if (retried) await this.metric(mapping, "EventSourceMappingRetried", retried);
     if (!this.callbacks.isCurrent(mapping)) return [];
-    const matching = new Set(messages.filter(message => this.matches(mapping, message)).map(message => message.messageId));
+    const matching = new Set(messages.filter(message => this.matches(patterns, message)).map(message => message.messageId));
     let included = messages.filter(message => matching.has(message.messageId));
     let acknowledged = messages.filter(message => !matching.has(message.messageId));
     if (this.resolveQueue(mapping.eventSourceArn).fifo) {
@@ -340,7 +365,7 @@ export class LambdaSqsEventSource {
         acknowledged.push(message);
       }
     }
-    if (acknowledged.length && this.callbacks.isCurrent(mapping)) await this.service.acknowledge({ queueArn: mapping.eventSourceArn, receiptHandles: acknowledged.map(message => message.receiptHandle), roleArn });
+    if (acknowledged.length && this.callbacks.isCurrent(mapping)) await this.service.acknowledge({ queueArn: mapping.eventSourceArn, receiptHandles: acknowledged.map(message => message.receiptHandle), ...(roleArn ? { roleArn } : {}) });
     return included;
   }
 
@@ -377,7 +402,7 @@ export class LambdaSqsEventSource {
   private async processOnce(mapping: LambdaSqsMappingState, abortSignal: AbortSignal): Promise<void> {
     if (this.stopped || !this.service || !mapping.enabled || mapping.state !== "Enabled") return;
     let queue: LambdaSqsQueueDescriptor; let target: LambdaSqsFunction;
-    try { queue = this.resolveQueue(mapping.eventSourceArn); target = this.callbacks.resolveFunction(mapping.functionArn); this.validateFunction(target, queue); }
+    try { queue = this.resolveQueue(mapping.eventSourceArn); target = this.callbacks.resolveFunction(mapping.functionArn); this.validateFunction(target, queue); this.filterPatterns(mapping); }
     catch (error) {
       if (error instanceof AwsError && error.code === "ResourceNotFoundException") { mapping.enabled = false; mapping.state = "Disabled"; mapping.stateTransitionReason = "Event source queue no longer exists"; this.pending.delete(mapping.uuid); }
       mapping.lastProcessingResult = error instanceof Error ? error.message : String(error); mapping.lastModified = this.clock.now(); await this.store.save().catch(() => undefined); return;
@@ -387,13 +412,16 @@ export class LambdaSqsEventSource {
     let pending = this.pending.get(mapping.uuid);
     if (pending) {
       const remaining = mapping.batchSize - pending.messages.length;
-      if (!pending.ready && remaining > 0) pending.messages.push(...await this.receive(mapping, remaining, queue.visibilityTimeoutSeconds, abortSignal));
+      // The batch is invoked when it fills or its batching window ends, so the top-up poll never waits past the window.
+      const windowRemainingMs = pending.startedAt + mapping.maximumBatchingWindowInSeconds * 1000 - this.clock.now();
+      if (!pending.ready && remaining > 0 && windowRemainingMs > 0) pending.messages.push(...await this.receive(mapping, remaining, queue.visibilityTimeoutSeconds, abortSignal, Math.min(20, Math.ceil(windowRemainingMs / 1000))));
       if (!this.callbacks.isCurrent(mapping)) return;
       if (pending.messages.length >= mapping.batchSize || this.clock.now() - pending.startedAt >= mapping.maximumBatchingWindowInSeconds * 1000) pending.ready = true;
       if (!pending.ready) return;
       this.pending.delete(mapping.uuid);
       const chunks = this.chunks(mapping.eventSourceArn, pending.messages);
       for (let index = 0; index < chunks.length; index++) {
+        if (available > 0) await this.groupsIdle(mapping, chunks[index]);
         if (available <= 0 || !this.launch(mapping, chunks[index])) { this.pending.set(mapping.uuid, { queueArn: mapping.eventSourceArn, messages: chunks.slice(index).flat(), startedAt: pending.startedAt, ready: true }); break; }
         available -= 1;
       }
@@ -401,7 +429,8 @@ export class LambdaSqsEventSource {
     while (available > 0 && this.callbacks.isCurrent(mapping)) {
       const messages: NormalizedMessage[] = [];
       while (messages.length < mapping.batchSize) {
-        const received = await this.receive(mapping, mapping.batchSize - messages.length, queue.visibilityTimeoutSeconds, abortSignal); messages.push(...received);
+        // Only an empty batch long-polls; once messages are held, further pages are taken without waiting.
+        const received = await this.receive(mapping, mapping.batchSize - messages.length, queue.visibilityTimeoutSeconds, abortSignal, messages.length ? 0 : 20); messages.push(...received);
         if (received.length < Math.min(10, mapping.batchSize - messages.length + received.length)) break;
         if (this.payload(mapping.eventSourceArn, messages).length >= SIX_MIB) break;
       }
@@ -410,6 +439,7 @@ export class LambdaSqsEventSource {
       if (messages.length < mapping.batchSize && mapping.maximumBatchingWindowInSeconds > 0) { this.pending.set(mapping.uuid, { queueArn: mapping.eventSourceArn, messages, startedAt: this.clock.now(), ready: false }); break; }
       const chunks = this.chunks(mapping.eventSourceArn, messages);
       for (let index = 0; index < chunks.length; index++) {
+        if (available > 0) await this.groupsIdle(mapping, chunks[index]);
         if (available <= 0 || !this.launch(mapping, chunks[index])) { this.pending.set(mapping.uuid, { queueArn: mapping.eventSourceArn, messages: chunks.slice(index).flat(), startedAt: this.clock.now(), ready: true }); break; }
         available -= 1;
       }
@@ -419,6 +449,18 @@ export class LambdaSqsEventSource {
   private messageGroups(mapping: LambdaSqsMappingState, messages: NormalizedMessage[]): Set<string> {
     if (!this.resolveQueue(mapping.eventSourceArn).fifo) return new Set();
     return new Set(messages.map(message => message.attributes.MessageGroupId ?? message.messageId));
+  }
+
+  /**
+   * Wait for the running batch of each message group in the next batch. The
+   * queue releases a group as soon as its messages are deleted, which is just
+   * before the previous batch finishes its bookkeeping; starting the next
+   * batch then, instead of parking it behind another long poll, keeps a FIFO
+   * group flowing batch after batch.
+   */
+  private async groupsIdle(mapping: LambdaSqsMappingState, messages: NormalizedMessage[]): Promise<void> {
+    const running = [...this.messageGroups(mapping, messages)].map(group => this.groupTasks.get(`${mapping.uuid}\0${group}`)).filter((task): task is Promise<void> => task !== undefined);
+    if (running.length) await Promise.allSettled(running);
   }
 
   private launch(mapping: LambdaSqsMappingState, messages: NormalizedMessage[]): boolean {
@@ -433,8 +475,10 @@ export class LambdaSqsEventSource {
       const remaining = Math.max(0, this.active(mapping.uuid) - 1); if (remaining) this.activeCounts.set(mapping.uuid, remaining); else this.activeCounts.delete(mapping.uuid);
       const currentGroups = this.activeGroups.get(mapping.uuid);
       if (currentGroups) { for (const group of groups) currentGroups.delete(group); if (!currentGroups.size) this.activeGroups.delete(mapping.uuid); }
+      for (const group of groups) if (this.groupTasks.get(`${mapping.uuid}\0${group}`) === task) this.groupTasks.delete(`${mapping.uuid}\0${group}`);
       this.tasks.delete(task); if (!this.stopped) this.callbacks.wake();
     });
+    for (const group of groups) this.groupTasks.set(`${mapping.uuid}\0${group}`, task);
     this.tasks.add(task); void task.catch(() => undefined);
     return true;
   }
@@ -450,7 +494,8 @@ export class LambdaSqsEventSource {
       if (mapping.functionResponseTypes.includes("ReportBatchItemFailures")) {
         let response: any; try { response = JSON.parse(invocation.payload.toString("utf8")); } catch { result = "Invalid partial batch response"; metricName = "EventSourceMappingFailed"; return; }
         const failures = response?.batchItemFailures;
-        if (failures !== undefined && !Array.isArray(failures)) { result = "Invalid partial batch response"; metricName = "EventSourceMappingFailed"; return; }
+        // A missing, null or empty list is a complete success.
+        if (failures !== undefined && failures !== null && !Array.isArray(failures)) { result = "Invalid partial batch response"; metricName = "EventSourceMappingFailed"; return; }
         const identifiers = (failures ?? []).map((failure: any) => failure?.itemIdentifier);
         const known = new Set(messages.map(message => message.messageId));
         if (identifiers.some((identifier: unknown) => typeof identifier !== "string" || !known.has(identifier))) { result = "Invalid partial batch item identifier"; metricName = "EventSourceMappingFailed"; return; }
@@ -465,7 +510,7 @@ export class LambdaSqsEventSource {
         } else successful = messages.filter(message => !failed.has(message.messageId));
         if (failed.size) { result = "Partial batch failure"; metricName = "EventSourceMappingPartialFailure"; }
       }
-      if (successful.length && this.callbacks.isCurrent(mapping) && this.service) await this.service.acknowledge({ queueArn: mapping.eventSourceArn, receiptHandles: successful.map(message => message.receiptHandle), roleArn: this.callbacks.resolveFunction(mapping.functionArn).role });
+      if (successful.length && this.callbacks.isCurrent(mapping) && this.service) { const roleArn = this.consumerRole(mapping); await this.service.acknowledge({ queueArn: mapping.eventSourceArn, receiptHandles: successful.map(message => message.receiptHandle), ...(roleArn ? { roleArn } : {}) }); }
     } catch (error) {
       result = error instanceof Error ? error.message : String(error); metricName = error instanceof AwsError && error.code === "TooManyRequestsException" ? "EventSourceMappingThrottled" : "EventSourceMappingFailed";
     } finally {
@@ -477,5 +522,5 @@ export class LambdaSqsEventSource {
   }
 
   start(): void { this.stopped = false; this.callbacks.wake(); }
-  async stop(): Promise<void> { this.stopped = true; this.pending.clear(); for (const poll of this.polls.values()) poll.controller.abort(); await Promise.allSettled([...this.polls.values()].map(poll => poll.promise)); this.polls.clear(); await Promise.allSettled([...this.tasks]); this.activeGroups.clear(); }
+  async stop(): Promise<void> { this.stopped = true; this.pending.clear(); for (const poll of this.polls.values()) poll.controller.abort(); await Promise.allSettled([...this.polls.values()].map(poll => poll.promise)); this.polls.clear(); await Promise.allSettled([...this.tasks]); this.activeGroups.clear(); this.groupTasks.clear(); }
 }

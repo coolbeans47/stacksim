@@ -112,7 +112,7 @@ export const DYNAMODB_TABLE_SCHEMA: ProviderSchema = Object.freeze({
     LocalSecondaryIndexes: Object.freeze({ valueType: "array", updateBehavior: "REPLACEMENT" }),
     OnDemandThroughput: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
     PointInTimeRecoverySpecification: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
-    ProvisionedThroughput: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
+    ProvisionedThroughput: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE", members: Object.freeze({ ReadCapacityUnits: "number", WriteCapacityUnits: "number" }) }),
     ResourcePolicy: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
     SSESpecification: Object.freeze({ valueType: "object", updateBehavior: "NOT_SUPPORTED" }),
     StreamSpecification: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),

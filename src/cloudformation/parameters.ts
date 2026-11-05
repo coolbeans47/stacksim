@@ -54,7 +54,7 @@ function normalizedValue(name: string, declaration: CloudFormationParameter, sup
   if (type === "List<Number>") {
     const values = supplied.split(",").map(value => value.trim()); if (values.some(value => !Number.isFinite(Number(value)))) fail(`Parameter ${name} must be a comma-delimited list of numbers`, `$.Parameters.${name}`); return { value: values };
   }
-  if (/^List<AWS::[^>]+>$/.test(type) || /^AWS::[^:]+::[^:]+::/.test(type)) fail(`Parameter type ${type} requires an AWS-specific resolver assigned to a later CloudFormation phase`, `$.Parameters.${name}.Type`);
+  if (/^List<AWS::[^>]+>$/.test(type) || /^AWS::[^:]+::[^:]+::/.test(type)) fail(`Parameter type ${type} is not supported by StackSim`, `$.Parameters.${name}.Type`);
   fail(`Unsupported parameter type ${type}`, `$.Parameters.${name}.Type`);
 }
 

@@ -364,6 +364,7 @@ export class LambdaEventSourceMappings {
     if (input.Enabled !== undefined && typeof input.Enabled !== "boolean") throw new AwsError("InvalidParameterValueException", "Enabled must be a boolean");
     Object.assign(mapping, configuration);
     if (input.ScalingConfig !== undefined && configuration.scalingMaximumConcurrency === undefined) delete mapping.scalingMaximumConcurrency;
+    if (input.MetricsConfig !== undefined && configuration.metricsConfig === undefined) delete mapping.metricsConfig;
     if (target) { mapping.functionName = target.functionName; mapping.functionArn = target.functionArn; if (target.qualifier) mapping.functionQualifier = target.qualifier; else delete mapping.functionQualifier; }
     if (input.Enabled !== undefined) mapping.enabled = input.Enabled;
     mapping.state = transientUpdateState(input); mapping.stateTransitionReason = "USER_INITIATED"; mapping.lastModified = this.clock.now(); this.sqsSource.forget(mapping.uuid);

@@ -40,13 +40,13 @@ test("enforce-mode requires each source and destination permission, rechecks pol
     await set(all); const creds = (await sts.send(new AssumeRoleCommand({ RoleArn: role.Role!.Arn, RoleSessionName: "recovery" }))).Credentials!;
     const sqs = new SQSClient({ ...options, credentials: { accessKeyId: creds.AccessKeyId!, secretAccessKey: creds.SecretAccessKey!, sessionToken: creds.SessionToken! } }); clients.push(sqs);
     const start = () => sqs.send(new StartMessageMoveTaskCommand({ SourceArn: deadArn, DestinationArn: targetArn, MaxNumberOfMessagesPerSecond: 1 }));
-    for (const missing of ["StartMessageMoveTask", "ReceiveMessage", "DeleteMessage", "GetQueueAttributes"]) { await set(all.filter(a => a !== missing)); await assert.rejects(start(), { name: "AccessDeniedException" }); }
-    await set(all, false); await assert.rejects(start(), { name: "AccessDeniedException" });
+    for (const missing of ["StartMessageMoveTask", "ReceiveMessage", "DeleteMessage", "GetQueueAttributes"]) { await set(all.filter(a => a !== missing)); await assert.rejects(start(), { name: "AccessDenied" }); }
+    await set(all, false); await assert.rejects(start(), { name: "AccessDenied" });
     await set(all); for (let i = 0; i < 3; i++) await sim.sqs.SendMessage({ QueueUrl: dead.QueueUrl, MessageBody: "private-payload" });
     const started = await start(); await sim.sqs.runMessageMoveTasks();
     assert.equal((await sqs.send(new ListMessageMoveTasksCommand({ SourceArn: deadArn }))).Results?.[0].ApproximateNumberOfMessagesMoved, 1);
-    await set(all.filter(a => a !== "GetQueueAttributes")); await assert.rejects(sqs.send(new ListMessageMoveTasksCommand({ SourceArn: deadArn })), { name: "AccessDeniedException" });
-    await assert.rejects(sqs.send(new CancelMessageMoveTaskCommand({ TaskHandle: started.TaskHandle! })), { name: "AccessDeniedException" });
+    await set(all.filter(a => a !== "GetQueueAttributes")); await assert.rejects(sqs.send(new ListMessageMoveTasksCommand({ SourceArn: deadArn })), { name: "AccessDenied" });
+    await assert.rejects(sqs.send(new CancelMessageMoveTaskCommand({ TaskHandle: started.TaskHandle! })), { name: "AccessDenied" });
     await set(all, false); clock.advance(1000); await sim.sqs.runMessageMoveTasks();
     await set(all); const failed = (await sqs.send(new ListMessageMoveTasksCommand({ SourceArn: deadArn }))).Results![0]; assert.equal(failed.Status, "FAILED"); assert.equal(failed.ApproximateNumberOfMessagesMoved, 1); assert.match(failed.FailureReason!, /AccessDenied/);
     const retry = await start(); const cancelled = await sqs.send(new CancelMessageMoveTaskCommand({ TaskHandle: retry.TaskHandle! })); assert.equal(cancelled.ApproximateNumberOfMessagesMoved, 0); await sim.sqs.runMessageMoveTasks();

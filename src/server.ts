@@ -22,7 +22,7 @@ import { assertSingleImageSource } from "./lambda-images.js";
 import { IamService } from "./iam.js";
 import { StsService } from "./sts.js";
 import { S3Service } from "./s3.js";
-import { SQS_ACTIONS, SqsService } from "./sqs.js";
+import { SQS_ACTIONS, SqsService, sqsQueryErrorCode, sqsQueryErrorXml } from "./sqs.js";
 import { StepFunctionsService } from "./step-functions.js";
 import { SNS_02_ACTIONS, SnsService } from "./sns.js";
 import { SsmService, sendSsmError, ssmParameterArn } from "./ssm.js";
@@ -67,6 +67,7 @@ import {
   createSecretsManagerRotationScheduleProvider,
   createSecretsManagerSecretTargetAttachmentProvider,
   createSesCloudFormationProviders,
+  createSqsQueueInlinePolicyProvider,
   createSqsQueuePolicyProvider,
   createSnsCloudFormationProviders,
   createStepFunctionsStateMachineProvider,
@@ -1166,6 +1167,7 @@ export class StackSim {
         createCloudWatchMetricStreamProvider(metrics),
         ...createCfn09CloudFormationProviders(sqs, eventbridge, lambda),
         createSqsQueuePolicyProvider(sqs),
+        createSqsQueueInlinePolicyProvider(sqs),
         ...createApiGatewayRestCloudFormationProviders(apigateway, {
           resolveBodyS3Location: async location => (await s3.readObjectBytes(location.Bucket, location.Key, location.Version)).body,
         }),
@@ -1712,11 +1714,20 @@ export class StackSim {
   }
 
   /**
-   * Name the HTTPS endpoint when only a bucket policy's aws:SecureTransport
-   * condition denied a plain-HTTP request; the denial itself stays as evaluated.
+   * Name the HTTPS endpoint when only a bucket or queue policy's
+   * aws:SecureTransport condition denied a plain-HTTP request; the denial
+   * itself stays as evaluated.
    */
   private async insecureTransportHint(principal: PrincipalContext, target: AuthorizationTarget, result: AuthorizationResult): Promise<string> {
-    if (result.decision !== "explicitDeny" || !target.action.startsWith("s3:") || target.context["aws:SecureTransport"] !== false) return "";
+    if (result.decision !== "explicitDeny" || target.context["aws:SecureTransport"] !== false) return "";
+    if (target.action.startsWith("sqs:")) {
+      const document = this.sqsResourcePolicy(target)?.document;
+      if (!document) return "";
+      const secure = evaluateSqsQueuePolicy(document, { type: "AWS", arn: principal.principalArn, accountId: principal.accountId, roleArn: principal.roleArn }, target.action, target.resource, { ...target.context, "aws:SecureTransport": true });
+      if (secure.decision === "explicitDeny") return "";
+      return ` The queue policy denies requests that do not use TLS (aws:SecureTransport is false over plain HTTP). Send SQS requests to the StackSim HTTPS endpoint https://127.0.0.1:${this.s3TlsPort} (for example AWS_ENDPOINT_URL_SQS) and trust the StackSim CA (AWS_CA_BUNDLE=${this.customResourceCallbacks.caCertificatePath}).`;
+    }
+    if (!target.action.startsWith("s3:")) return "";
     const secure = await this.services(String(target.context["aws:RequestedRegion"])).s3.resourceAuthorization(principal, target.action, target.resource, { ...target.context, "aws:SecureTransport": true });
     if (!secure || secure.result.decision === "explicitDeny") return "";
     return ` The bucket policy denies requests that do not use TLS (aws:SecureTransport is false over plain HTTP). Send S3 requests to the StackSim HTTPS endpoint https://127.0.0.1:${this.s3TlsPort} (for example AWS_ENDPOINT_URL_S3) and trust the StackSim CA (AWS_CA_BUNDLE=${this.customResourceCallbacks.caCertificatePath}).`;
@@ -1850,7 +1861,7 @@ export class StackSim {
     if (service === "s3") { const hostId = createHash("sha256").update(`${this.store.state.installation.id}:${currentRequestId}`).digest("base64"); res.setHeader("x-amz-id-2", hostId); return sendS3Error(res, aws, String(req?.url ?? "/").split("?", 1)[0], currentRequestId, hostId); }
     if (service === "cognito-idp" || service === "cognito-identity") return sendCognitoError(res, aws);
     if (service === "ses") return String(req?.url ?? "").startsWith("/v2/email/") ? sendSesV2Error(res, aws, currentRequestId) : sendSesV1Error(res, aws, currentRequestId);
-    if (service === "sqs") { const jsonProtocol = req?.headers["x-amz-target"]?.toString().startsWith("AmazonSQS.") || String(req?.headers["content-type"] ?? "").includes("amz-json"); if (jsonProtocol) { res.setHeader("x-amzn-query-error", `${aws.code};${aws.status >= 500 ? "Server" : "Sender"}`); return sendAwsError(res, aws, "json", "com.amazonaws.sqs#"); } res.statusCode = aws.status; res.setHeader("content-type", "text/xml; charset=utf-8"); res.end(awsQueryErrorXml(aws.code.replace(/Exception$/, ""), aws.message, currentRequestId)); return; }
+    if (service === "sqs") { const jsonProtocol = req?.headers["x-amz-target"]?.toString().startsWith("AmazonSQS.") || String(req?.headers["content-type"] ?? "").includes("amz-json"); if (jsonProtocol) { res.setHeader("x-amzn-query-error", `${sqsQueryErrorCode(aws.code)};${aws.status >= 500 ? "Receiver" : "Sender"}`); return sendAwsError(res, aws, "json", "com.amazonaws.sqs#"); } res.statusCode = aws.status; res.setHeader("content-type", "text/xml; charset=utf-8"); res.end(sqsQueryErrorXml(aws.code, aws.message, currentRequestId, aws.status >= 500)); return; }
     if (service === "ssm") return sendSsmError(res, aws);
     if (service === "secretsmanager") return sendSecretsManagerError(res, aws);
     if (service === "monitoring" && req?.headers["x-amz-target"]?.toString().startsWith("GraniteServiceVersion20100801.")) return sendAwsError(res, aws, "json", "com.amazonaws.cloudwatch#");

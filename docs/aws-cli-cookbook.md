@@ -848,6 +848,34 @@ This command permanently removes the local message:
 aws sqs delete-message --queue-url QUEUE_URL --receipt-handle RECEIPT_HANDLE
 ```
 
+### How to inspect a queue's settings
+
+`get-queue-attributes` returns nothing unless you name the attributes you want:
+
+```console
+aws sqs get-queue-attributes --queue-url QUEUE_URL --attribute-names All
+```
+
+### How to add a dead-letter queue and redrive it
+
+These commands modify queues. Create the dead-letter queue, read its ARN, and point the source queue at it:
+
+```console
+aws sqs create-queue --queue-name QUEUE_NAME-dlq
+aws sqs get-queue-attributes --queue-url DLQ_URL --attribute-names QueueArn
+aws sqs set-queue-attributes --queue-url QUEUE_URL --attributes '{"RedrivePolicy":"{\"deadLetterTargetArn\":\"DLQ_ARN\",\"maxReceiveCount\":\"3\"}"}'
+```
+
+A message moves to the dead-letter queue when it is received more than `maxReceiveCount` times without being deleted. After fixing the consumer, move the messages back to the queue they came from and watch the task:
+
+```console
+aws sqs start-message-move-task --source-arn DLQ_ARN
+aws sqs list-message-move-tasks --source-arn DLQ_ARN
+aws sqs cancel-message-move-task --task-handle TASK_HANDLE
+```
+
+Add `--destination-arn` to send them to a different queue of the same type, and `--max-number-of-messages-per-second` to limit the rate.
+
 ## SNS
 
 ### How to list topics and subscriptions

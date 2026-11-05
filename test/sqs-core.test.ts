@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import {
+  AddPermissionCommand,
   ChangeMessageVisibilityCommand,
   CreateQueueCommand,
   DeleteMessageBatchCommand,
@@ -18,6 +19,7 @@ import {
   ListQueuesCommand,
   PurgeQueueCommand,
   ReceiveMessageCommand,
+  RemovePermissionCommand,
   SendMessageBatchCommand,
   SendMessageCommand,
   SetQueueAttributesCommand,
@@ -120,7 +122,9 @@ test("official SQS client covers control plane, MD5s, visibility, partial batche
   assert(h.events.some(event => event.metricName === "ApproximateNumberOfMessagesVisible" && event.aggregation === "gauge"));
   assert.equal(h.events.some(event => event.metricName.includes("QuietGroups")), false, "ordinary standard queues do not emit fair-queue gauges");
   assert.equal((await h.client.send(new CreateQueueCommand({ QueueName: "orders", Attributes: { VisibilityTimeout: "2", MessageRetentionPeriod: "60" } }))).QueueUrl, QueueUrl, "CreateQueue is idempotent only for the same effective attributes");
-  await assert.rejects(h.client.send(new CreateQueueCommand({ QueueName: "orders" })), (error: any) => error.name === "QueueNameExists");
+  assert.equal((await h.client.send(new CreateQueueCommand({ QueueName: "orders" }))).QueueUrl, QueueUrl, "a name-only CreateQueue returns the existing queue");
+  assert.equal((await h.client.send(new CreateQueueCommand({ QueueName: "orders", Attributes: { DelaySeconds: "0" } }))).QueueUrl, QueueUrl, "only the supplied attributes are compared");
+  await assert.rejects(h.client.send(new CreateQueueCommand({ QueueName: "orders", Attributes: { VisibilityTimeout: "3" } })), (error: any) => error.name === "QueueNameExists" && error.Code === "QueueAlreadyExists" && /attribute VisibilityTimeout/.test(error.message));
   assert.equal((await h.client.send(new GetQueueUrlCommand({ QueueName: "orders" }))).QueueUrl, QueueUrl);
   assert.deepEqual((await h.client.send(new ListQueuesCommand({ QueueNamePrefix: "ord" }))).QueueUrls, [QueueUrl]);
   await h.client.send(new CreateQueueCommand({ QueueName: "orders-archive" }));
@@ -151,11 +155,10 @@ test("official SQS client covers control plane, MD5s, visibility, partial batche
   await assert.rejects(h.client.send(new SendMessageCommand({ QueueUrl, MessageBody: "" })), (error: any) => error.name === "InvalidParameterValue");
   const staleReceipt = first.ReceiptHandle!;
   h.clock.advance(2_001);
-  await assert.rejects(h.client.send(new ChangeMessageVisibilityCommand({ QueueUrl, ReceiptHandle: staleReceipt, VisibilityTimeout: 30 })), (error: any) => error.name === "ReceiptHandleIsInvalid", "an expired lease cannot be hidden again without a new receive");
-  await assert.rejects(h.client.send(new DeleteMessageCommand({ QueueUrl, ReceiptHandle: staleReceipt })), (error: any) => error.name === "ReceiptHandleIsInvalid", "an expired lease cannot acknowledge a visible message");
+  await assert.rejects(h.client.send(new ChangeMessageVisibilityCommand({ QueueUrl, ReceiptHandle: staleReceipt, VisibilityTimeout: 30 })), (error: any) => error.name === "MessageNotInflight" && error.Code === "AWS.SimpleQueueService.MessageNotInflight", "an expired lease cannot be hidden again without a new receive");
   const second = (await h.client.send(new ReceiveMessageCommand({ QueueUrl, VisibilityTimeout: 30 }))).Messages![0];
   assert.notEqual(second.ReceiptHandle, staleReceipt);
-  await assert.rejects(h.client.send(new DeleteMessageCommand({ QueueUrl, ReceiptHandle: staleReceipt })), (error: any) => error.name === "ReceiptHandleIsInvalid");
+  await h.client.send(new DeleteMessageCommand({ QueueUrl, ReceiptHandle: staleReceipt })); // a handle from an earlier receive succeeds without deleting
   await h.client.send(new ChangeMessageVisibilityCommand({ QueueUrl, ReceiptHandle: second.ReceiptHandle!, VisibilityTimeout: 0 }));
   const third = (await h.client.send(new ReceiveMessageCommand({ QueueUrl }))).Messages![0];
   await h.client.send(new DeleteMessageCommand({ QueueUrl, ReceiptHandle: third.ReceiptHandle! }));
@@ -352,10 +355,116 @@ test("raw AWS Query/XML and AWS JSON 1.0 share the queue engine", async () => {
   assert.match(await queriedByGet.text(), /<GetQueueUrlResult><QueueUrl>[^<]+<\/QueueUrl><\/GetQueueUrlResult>/);
   const missing = await fetch(`${h.endpoint}?${new URLSearchParams({ Action: "GetQueueUrl", Version: "2012-11-05", QueueName: "missing" })}`);
   assert.equal(missing.status, 400);
-  assert.match(await missing.text(), /<Code>QueueDoesNotExist<\/Code>/);
+  const missingXml = await missing.text();
+  assert.match(missingXml, /<ErrorResponse xmlns="http:\/\/queue\.amazonaws\.com\/doc\/2012-11-05\/"><Error><Type>Sender<\/Type><Code>AWS\.SimpleQueueService\.NonExistentQueue<\/Code><Message>The specified queue does not exist\.<\/Message><Detail\/><\/Error>/);
+  const missingJson = await fetch(h.endpoint, { method: "POST", headers: { "content-type": "application/x-amz-json-1.0", "x-amz-target": "AmazonSQS.GetQueueUrl" }, body: JSON.stringify({ QueueName: "missing" }) });
+  assert.equal(missingJson.headers.get("x-amzn-query-error"), "AWS.SimpleQueueService.NonExistentQueue;Sender");
+  assert.deepEqual(await missingJson.json(), { __type: "com.amazonaws.sqs#QueueDoesNotExist", message: "The specified queue does not exist." });
   const malformed = await fetch(h.endpoint, { method: "POST", headers: { "content-type": "application/x-amz-json-1.0", "x-amz-target": "AmazonSQS.ReceiveMessage" }, body: "{" });
   assert.equal(malformed.status, 400);
   assert.match(JSON.stringify(await malformed.json()), /InvalidParameterValue/);
   const jsonResponse = await fetch(h.endpoint, { method: "POST", headers: { "content-type": "application/x-amz-json-1.0", "x-amz-target": "AmazonSQS.ReceiveMessage" }, body: JSON.stringify({ QueueUrl }) });
   assert.equal((await jsonResponse.json() as any).Messages[0].Body, "from-query");
+});
+
+test("errors carry the legacy query codes that SDKs and the AWS CLI report", async () => {
+  const h = await harness();
+  const { QueueUrl } = await h.client.send(new CreateQueueCommand({ QueueName: "codes" }));
+  const codeOf = async (operation: Promise<unknown>) => { try { await operation; return "no error"; } catch (error: any) { return `${error.name}|${error.Code}`; } };
+  assert.equal(await codeOf(h.client.send(new GetQueueUrlCommand({ QueueName: "absent" }))), "QueueDoesNotExist|AWS.SimpleQueueService.NonExistentQueue");
+  assert.equal(await codeOf(h.client.send(new SendMessageBatchCommand({ QueueUrl, Entries: [] }))), "EmptyBatchRequest|AWS.SimpleQueueService.EmptyBatchRequest");
+  assert.equal(await codeOf(h.client.send(new SendMessageBatchCommand({ QueueUrl, Entries: Array.from({ length: 11 }, (_, index) => ({ Id: `e${index}`, MessageBody: "x" })) }))), "TooManyEntriesInBatchRequest|AWS.SimpleQueueService.TooManyEntriesInBatchRequest");
+  assert.equal(await codeOf(h.client.send(new SendMessageBatchCommand({ QueueUrl, Entries: [{ Id: "a", MessageBody: "x" }, { Id: "a", MessageBody: "y" }] }))), "BatchEntryIdsNotDistinct|AWS.SimpleQueueService.BatchEntryIdsNotDistinct");
+  assert.equal(await codeOf(h.client.send(new SendMessageBatchCommand({ QueueUrl, Entries: [{ Id: "a b", MessageBody: "x" }] }))), "InvalidBatchEntryId|AWS.SimpleQueueService.InvalidBatchEntryId");
+  assert.equal(await codeOf(h.client.send(new SendMessageBatchCommand({ QueueUrl, Entries: [{ Id: "a", MessageBody: "x".repeat(600_000) }, { Id: "b", MessageBody: "x".repeat(600_000) }] }))), "BatchRequestTooLong|AWS.SimpleQueueService.BatchRequestTooLong");
+  await h.client.send(new PurgeQueueCommand({ QueueUrl }));
+  assert.equal(await codeOf(h.client.send(new PurgeQueueCommand({ QueueUrl }))), "PurgeQueueInProgress|AWS.SimpleQueueService.PurgeQueueInProgress");
+  await h.client.send(new DeleteQueueCommand({ QueueUrl }));
+  assert.equal(await codeOf(h.client.send(new CreateQueueCommand({ QueueName: "codes" }))), "QueueDeletedRecently|AWS.SimpleQueueService.QueueDeletedRecently");
+  assert.equal(await codeOf(h.client.send(new CreateQueueCommand({ QueueName: "kms", Attributes: { KmsMasterKeyId: "alias/aws/sqs" } }))), "UnsupportedOperation|AWS.SimpleQueueService.UnsupportedOperation");
+  assert.equal(await codeOf(h.client.send(new CreateQueueCommand({ QueueName: "range", Attributes: { VisibilityTimeout: "99999" } }))), "InvalidAttributeValue|InvalidAttributeValue");
+  assert.equal(await codeOf(h.client.send(new CreateQueueCommand({ QueueName: "unknown", Attributes: { Frob: "1" } as any }))), "InvalidAttributeName|InvalidAttributeName");
+  const noUrl = await fetch(h.endpoint, { method: "POST", headers: { "content-type": "application/x-amz-json-1.0", "x-amz-target": "AmazonSQS.SendMessage" }, body: JSON.stringify({ MessageBody: "x" }) });
+  assert.match(JSON.stringify(await noUrl.json()), /MissingParameter.*QueueUrl/);
+});
+
+test("GetQueueAttributes returns only what was asked for and omits attributes the queue does not have", async () => {
+  const h = await harness();
+  const { QueueUrl } = await h.client.send(new CreateQueueCommand({ QueueName: "attributes" }));
+  assert.equal((await h.client.send(new GetQueueAttributesCommand({ QueueUrl }))).Attributes, undefined, "no attribute names, no attributes");
+  assert.equal((await h.client.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ["RedrivePolicy", "Policy", "RedriveAllowPolicy", "FifoQueue", "KmsMasterKeyId"] }))).Attributes, undefined, "valid names with no value are left out");
+  assert.deepEqual((await h.client.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ["RedrivePolicy", "VisibilityTimeout"] }))).Attributes, { VisibilityTimeout: "30" });
+  assert.equal((await h.client.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ["All"] }))).Attributes?.QueueArn, "arn:aws:sqs:eu-west-1:000000000000:attributes");
+  await assert.rejects(h.client.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ["Frob" as any] })), (error: any) => error.name === "InvalidAttributeName");
+  assert.equal((await h.client.send(new ListQueueTagsCommand({ QueueUrl }))).Tags, undefined);
+});
+
+test("receipt handles follow the Standard and FIFO rules for late, repeated and stale deletes", async () => {
+  const h = await harness();
+  const { QueueUrl } = await h.client.send(new CreateQueueCommand({ QueueName: "late-deletes", Attributes: { VisibilityTimeout: "5" } }));
+  await h.client.send(new SendMessageCommand({ QueueUrl, MessageBody: "slow work", MessageAttributes: { a: { DataType: "String", StringValue: "1" }, b: { DataType: "String", StringValue: "2" } } }));
+  const received = (await h.client.send(new ReceiveMessageCommand({ QueueUrl, MessageAttributeNames: ["a"] }))).Messages![0];
+  assert.deepEqual(Object.keys(received.MessageAttributes!), ["a"]);
+  assert.equal(received.MD5OfMessageAttributes, md5OfMessageAttributes({ a: { DataType: "String", StringValue: "1" } }), "the digest covers the attributes that were returned");
+  h.clock.advance(6_000);
+  await h.client.send(new DeleteMessageCommand({ QueueUrl, ReceiptHandle: received.ReceiptHandle! }));
+  assert.equal((await h.client.send(new GetQueueAttributesCommand({ QueueUrl, AttributeNames: ["ApproximateNumberOfMessages"] }))).Attributes?.ApproximateNumberOfMessages, "0", "the most recent handle deletes after its visibility timeout");
+  await h.client.send(new DeleteMessageCommand({ QueueUrl, ReceiptHandle: received.ReceiptHandle! })); // deleting again succeeds
+  await assert.rejects(h.client.send(new DeleteMessageCommand({ QueueUrl, ReceiptHandle: "not-a-handle" })), (error: any) => error.name === "ReceiptHandleIsInvalid");
+  await assert.rejects(h.client.send(new ChangeMessageVisibilityCommand({ QueueUrl, ReceiptHandle: received.ReceiptHandle!, VisibilityTimeout: 5 })), (error: any) => error.name === "MessageNotInflight");
+
+  await h.client.send(new SendMessageCommand({ QueueUrl, MessageBody: "no attributes requested", MessageAttributes: { a: { DataType: "String", StringValue: "1" } } }));
+  const plain = (await h.client.send(new ReceiveMessageCommand({ QueueUrl, VisibilityTimeout: 43_200 }))).Messages![0];
+  assert.equal(plain.MD5OfMessageAttributes, undefined);
+  h.clock.advance(3_600_000);
+  await assert.rejects(h.client.send(new ChangeMessageVisibilityCommand({ QueueUrl, ReceiptHandle: plain.ReceiptHandle!, VisibilityTimeout: 43_200 })), (error: any) => error.name === "InvalidParameterValue" && /beyond the limit/.test(error.message), "one receive cannot stay invisible for more than 12 hours in total");
+  await h.client.send(new ChangeMessageVisibilityCommand({ QueueUrl, ReceiptHandle: plain.ReceiptHandle!, VisibilityTimeout: 39_600 }));
+
+  const fifo = (await h.client.send(new CreateQueueCommand({ QueueName: "late-deletes.fifo", Attributes: { FifoQueue: "true", ContentBasedDeduplication: "true", VisibilityTimeout: "5" } }))).QueueUrl!;
+  const sent = await h.client.send(new SendMessageCommand({ QueueUrl: fifo, MessageBody: "ordered", MessageGroupId: "g" }));
+  assert.match(sent.SequenceNumber!, /^\d{20}$/);
+  const ordered = (await h.client.send(new ReceiveMessageCommand({ QueueUrl: fifo, MessageSystemAttributeNames: ["SequenceNumber"] }))).Messages![0];
+  assert.equal(ordered.Attributes?.SequenceNumber, sent.SequenceNumber);
+  h.clock.advance(6_000);
+  await assert.rejects(h.client.send(new DeleteMessageCommand({ QueueUrl: fifo, ReceiptHandle: ordered.ReceiptHandle! })), (error: any) => error.name === "InvalidParameterValue" && /The receipt handle has expired/.test(error.message));
+  const fifoNoDedup = (await h.client.send(new CreateQueueCommand({ QueueName: "explicit.fifo", Attributes: { FifoQueue: "true" } }))).QueueUrl!;
+  await assert.rejects(h.client.send(new SendMessageCommand({ QueueUrl: fifoNoDedup, MessageBody: "x", MessageGroupId: "g" })), (error: any) => error.name === "InvalidParameterValue" && /ContentBasedDeduplication/.test(error.message));
+});
+
+test("deleting the head of a FIFO group wakes a waiting receiver", async () => {
+  const h = await harness();
+  const QueueUrl = (await h.client.send(new CreateQueueCommand({ QueueName: "wake.fifo", Attributes: { FifoQueue: "true", ContentBasedDeduplication: "true" } }))).QueueUrl!;
+  await h.client.send(new SendMessageCommand({ QueueUrl, MessageBody: "first", MessageGroupId: "g" }));
+  await h.client.send(new SendMessageCommand({ QueueUrl, MessageBody: "second", MessageGroupId: "g" }));
+  const head = (await h.client.send(new ReceiveMessageCommand({ QueueUrl, MaxNumberOfMessages: 1 }))).Messages![0];
+  let next: string | undefined;
+  const waiting = h.client.send(new ReceiveMessageCommand({ QueueUrl, WaitTimeSeconds: 20 })).then(result => { next = result.Messages?.[0]?.Body; });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(next, undefined, "the group is blocked while its head is in flight");
+  await h.client.send(new DeleteMessageCommand({ QueueUrl, ReceiptHandle: head.ReceiptHandle! }));
+  await waitUntil(() => next !== undefined);
+  await waiting;
+  assert.equal(next, "second");
+});
+
+test("dead-letter queues can be deleted, keep their own retention, and labelled permissions are strict", async () => {
+  const h = await harness();
+  const dlq = (await h.client.send(new CreateQueueCommand({ QueueName: "retained-dlq", Attributes: { MessageRetentionPeriod: "1209600" } }))).QueueUrl!;
+  const dlqArn = "arn:aws:sqs:eu-west-1:000000000000:retained-dlq";
+  const source = (await h.client.send(new CreateQueueCommand({ QueueName: "short-lived", Attributes: { MessageRetentionPeriod: "120", RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn, maxReceiveCount: 1 }) } }))).QueueUrl!;
+  await h.client.send(new SendMessageCommand({ QueueUrl: source, MessageBody: "poison" }));
+  await h.client.send(new ReceiveMessageCommand({ QueueUrl: source, VisibilityTimeout: 0 }));
+  await h.client.send(new ReceiveMessageCommand({ QueueUrl: source, VisibilityTimeout: 0 }));
+  h.clock.advance(150_000);
+  const depth = async () => (await h.client.send(new GetQueueAttributesCommand({ QueueUrl: dlq, AttributeNames: ["ApproximateNumberOfMessages"] }))).Attributes?.ApproximateNumberOfMessages;
+  assert.equal(await depth(), "1", "a dead-lettered message expires on the dead-letter queue's retention period");
+
+  await h.client.send(new AddPermissionCommand({ QueueUrl: dlq, Label: "share", AWSAccountIds: ["111122223333"], Actions: ["SendMessage"] }));
+  await assert.rejects(h.client.send(new AddPermissionCommand({ QueueUrl: dlq, Label: "share", AWSAccountIds: ["111122223333"], Actions: ["ReceiveMessage"] })), (error: any) => error.name === "InvalidParameterValue" && /Already exists/.test(error.message));
+  await assert.rejects(h.client.send(new RemovePermissionCommand({ QueueUrl: dlq, Label: "absent" })), (error: any) => error.name === "InvalidParameterValue" && /can't find label/.test(error.message));
+  await h.client.send(new RemovePermissionCommand({ QueueUrl: dlq, Label: "share" }));
+
+  await h.client.send(new DeleteQueueCommand({ QueueUrl: dlq })); // allowed while another queue still names it
+  await h.client.send(new SendMessageCommand({ QueueUrl: source, MessageBody: "after" }));
+  assert.equal((await h.client.send(new ReceiveMessageCommand({ QueueUrl: source, VisibilityTimeout: 0 }))).Messages?.[0].Body, "after");
 });

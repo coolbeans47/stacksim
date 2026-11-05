@@ -28,8 +28,23 @@ const help = {
   },
   messages: {
     level: "Supported locally",
-    description: "Send message adds a body and optional routing metadata to the queue. Polling receives up to the selected maximum, waits for the chosen long-poll duration, and hides returned messages for the visibility timeout; poll attempts repeat that bounded receive when no message is immediately available. Delete a successfully processed message or change its visibility when it needs more time or should be retried now.",
+    description: "Poll for messages keeps receiving for the polling duration, or until the maximum message count is listed, and shows each message in the Messages table. Received messages are hidden from other consumers while they are listed and become visible again when you poll again or leave the page, unless you set an explicit visibility timeout. Open a message to read its body, attributes and details, change its visibility, or select messages and delete them.",
     support: "Single and batch send, receive and delete, delays, long polling, visibility changes, receipt handles, receive counts, message and system attributes, binary attribute values, FIFO metadata, MD5s, durable leases, IAM checks, and restart recovery are active. Receiving mutates queue state, Standard delivery is at least once, and the console inspection limit does not change the stored payload.",
+  },
+  sendMessage: {
+    level: "Supported locally",
+    description: "Send message adds a body and optional metadata to the queue. A Standard queue accepts a per-message delivery delay and an optional message group ID for fair-queue scheduling; a FIFO queue needs a message group ID and, unless content-based deduplication is on, a deduplication ID. Message attributes carry typed metadata beside the body: add a row for each name, type and value.",
+    support: "SendMessage with String, Number and Binary attributes, custom type suffixes, delays, FIFO identifiers, the trace header system attribute, size limits, MD5 digests and sequence numbers is active. The console sends one message at a time; batch sends are available through the SDK and CLI.",
+  },
+  snsSubscriptions: {
+    level: "Supported locally",
+    description: "An SNS subscription delivers every message published to a topic into this queue, so one publisher can fan out to several queues. Subscribing needs two things: the subscription on the topic, and a statement in the queue access policy that lets the topic send messages.",
+    support: "Standard topic to Standard queue fan-out, the SNS message envelope, raw message delivery, filter policies and the queue-policy check are active. Subscribing here creates the subscription and adds the policy statement. SNS FIFO topics are not available in StackSim.",
+  },
+  redriveTasks: {
+    level: "Supported locally",
+    description: "A redrive task moves the messages in a dead-letter queue back to their source queues, or to one queue you choose, so they can be processed again after the consumer is fixed. Only a queue that another queue uses as its dead-letter queue can be redriven, and one task runs at a time.",
+    support: "Starting, listing and cancelling tasks, source or custom destinations, a custom maximum velocity, approximate progress, failure reasons, a bounded history of ten tasks and restart recovery are active. Completion confirms movement, not successful processing. KMS and VPC endpoint dependencies are unavailable.",
   },
   accessPolicy: {
     level: "Supported locally",
@@ -38,7 +53,7 @@ const help = {
   },
   encryption: {
     level: "Partial",
-    description: "SQS-managed server-side encryption records whether new queue writes use the SSE-SQS mode. This setting is separate from StackSim's private payload store, which always authenticates and encrypts message bodies on disk even when the queue's SSE-SQS descriptor is disabled.",
+    description: "Server-side encryption with an Amazon SQS key (SSE-SQS) records whether new queue writes use the SQS-managed mode. This setting is separate from StackSim's private payload store, which always authenticates and encrypts message bodies on disk even when the queue's SSE-SQS descriptor is disabled.",
     support: "SqsManagedSseEnabled creation, updates, per-message mode metadata, durable reads across setting changes, SDK reporting, and installation-local authenticated payload encryption are active. Customer-managed KMS identifiers are validated but fail atomically as unsupported; StackSim never claims that an AWS KMS key encrypted local data.",
   },
   redrive: {
@@ -48,8 +63,8 @@ const help = {
   },
   redriveAllow: {
     level: "Supported locally",
-    description: "A redrive allow policy belongs to the dead-letter queue and controls which source queues may target it. Allow all accepts same-account queues in this Region, deny all blocks new redrive relationships, and allow selected limits use to the listed queue ARNs.",
-    support: "Allow-all, deny-all, and up to ten selected same-account source queues, relationship validation, source discovery, Standard/FIFO compatibility, authorization, and persistence are active. It does not grant unrelated queue API access or enable cross-Region redrive.",
+    description: "A redrive allow policy belongs to the dead-letter queue and controls which source queues may target it. Allow all accepts same-account queues in this Region, Deny all blocks new redrive relationships, and By queue limits use to the listed queue ARNs.",
+    support: "Allow all, Deny all, and By queue with up to ten same-account source queues, relationship validation, source discovery, Standard/FIFO compatibility, authorization, and persistence are active. It does not grant unrelated queue API access or enable cross-Region redrive.",
   },
   lambdaTriggers: {
     level: "Supported locally",
@@ -64,13 +79,23 @@ const targets = [
   [".sqs-detail .card", "FIFO configuration", "fifo"],
   [".sqs-detail .card", "Fair queue behavior", "fairQueue"],
   [".sqs-detail .card", "Tags", "tags"],
+  [".sqs-queue-form .card", "Configuration", "configuration"],
+  [".sqs-queue-form .card", "Access policy", "accessPolicy"],
+  [".sqs-queue-form .card", "Redrive allow policy", "redriveAllow"],
+  [".sqs-queue-form .card", "Encryption", "encryption"],
+  [".sqs-queue-form .card", "Dead-letter queue", "redrive"],
+  [".sqs-queue-form .card", "Tags", "tags"],
+  [".sqs-messages-page .card", "Send message", "sendMessage"],
   [".sqs-messages-page .card", "Receive messages", "messages"],
-  [".page-width .card", "Tags", "tags"],
-  [".sqs-access-policy .card", "Resource-based queue policy", "accessPolicy"],
-  [".sqs-encryption .card", "SQS-managed SSE", "encryption"],
-  [".sqs-dead-letter .card", "Redrive policy", "redrive"],
+  [".sqs-sns-subscriptions .card", "SNS subscriptions", "snsSubscriptions"],
+  [".sqs-tagging .card", "Tags", "tags"],
+  [".sqs-access-policy .card", "Access policy", "accessPolicy"],
+  [".sqs-access-policy .card", "Redrive allow policy", "redriveAllow"],
+  [".sqs-encryption .card", "Encryption", "encryption"],
+  [".sqs-dead-letter .card", "Dead-letter queue", "redrive"],
   [".sqs-dead-letter .card", "Redrive allow policy", "redriveAllow"],
-  [".sqs-lambda-triggers .card", "Event source mappings", "lambdaTriggers"],
+  [".sqs-redrive-tasks .card", "Dead-letter queue redrive tasks", "redriveTasks"],
+  [".sqs-lambda-triggers .card", "Lambda triggers", "lambdaTriggers"],
 ];
 
 export function decorateSqsPanelHelp(root = document) {
@@ -79,7 +104,7 @@ export function decorateSqsPanelHelp(root = document) {
       const heading = panel.querySelector(":scope > .card-header h2");
       if (!heading || heading.closest(".panel-title-row")) continue;
       const text = heading.textContent.trim();
-      if (text !== title && !text.startsWith(`${title} (`)) continue;
+      if (text !== title && !text.startsWith(`${title} (`) && !text.startsWith(`${title} -`)) continue;
       const meta = heading.querySelector(".muted")?.textContent.trim() ?? "";
       heading.outerHTML = panelHeading(title, help[helpKey], meta);
     }

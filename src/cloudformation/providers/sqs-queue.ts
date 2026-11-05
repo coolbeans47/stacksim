@@ -61,6 +61,8 @@ export interface SqsQueueModel {
   readonly VisibilityTimeout: number;
 }
 
+const KMS_NOT_EMULATED = "StackSim does not emulate KMS; remove the property or use SqsManagedSseEnabled for server-side encryption";
+
 export const SQS_QUEUE_SCHEMA: ProviderSchema = Object.freeze({
   typeName: SQS_QUEUE_TYPE,
   unknownProperties: "REJECT",
@@ -74,11 +76,15 @@ export const SQS_QUEUE_SCHEMA: ProviderSchema = Object.freeze({
     MessageRetentionPeriod: Object.freeze({ valueType: "number", updateBehavior: "MUTABLE" }),
     QueueName: Object.freeze({ valueType: "string", updateBehavior: "REPLACEMENT" }),
     ReceiveMessageWaitTimeSeconds: Object.freeze({ valueType: "number", updateBehavior: "MUTABLE" }),
-    RedriveAllowPolicy: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
-    RedrivePolicy: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
-    SqsManagedSseEnabled: Object.freeze({ valueType: "boolean", updateBehavior: "MUTABLE", description: "SSE-SQS only; SSE-KMS properties remain unsupported." }),
+    RedriveAllowPolicy: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE", acceptsJsonString: true }),
+    RedrivePolicy: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE", acceptsJsonString: true, members: Object.freeze({ maxReceiveCount: "number" }) }),
+    SqsManagedSseEnabled: Object.freeze({ valueType: "boolean", updateBehavior: "MUTABLE", description: "SSE-SQS only; StackSim does not emulate KMS." }),
     Tags: Object.freeze({ valueType: "array", updateBehavior: "MUTABLE" }),
     VisibilityTimeout: Object.freeze({ valueType: "number", updateBehavior: "MUTABLE" }),
+  }),
+  unsupportedProperties: Object.freeze({
+    KmsDataKeyReusePeriodSeconds: KMS_NOT_EMULATED,
+    KmsMasterKeyId: KMS_NOT_EMULATED,
   }),
   ref: Object.freeze({ supported: true, valueType: "string", description: "Queue URL" }),
   attributes: Object.freeze({
@@ -257,13 +263,23 @@ function parseJsonObject(value: string | undefined): Record<string, unknown> | u
   return isRecord(parsed) ? parsed : undefined;
 }
 
+/** The template's tags, the tags CloudFormation adds to every queue it creates, and the private ownership marker. */
+function queueTags(tags: Parameters<typeof tagMap>[0], context: ProviderContext): Record<string, string> {
+  return {
+    ...tagMap(tags, context),
+    "aws:cloudformation:stack-name": context.stackId.match(/:stack\/([^/]+)\//)?.[1] ?? "stack",
+    "aws:cloudformation:stack-id": context.stackId,
+    "aws:cloudformation:logical-id": context.logicalId,
+  };
+}
+
 export function createSqsQueueProvider(sqs: SqsService): ProductionResourceProvider<SqsQueueModel> {
   const describe = async (name: string): Promise<QueueSnapshot> => {
     const url = (await sqs.GetQueueUrl({ QueueName: name })).QueueUrl;
     const attributes = (await sqs.GetQueueAttributes({ QueueUrl: url, AttributeNames: ["All"] })).Attributes ?? {};
-    const tags = (await sqs.ListQueueTags({ QueueUrl: url })).Tags ?? {};
+    const tags = (await sqs.ListQueueTags({ QueueUrl: url }, { systemTags: true })).Tags ?? {};
     const fifo = attributes.FifoQueue === "true";
-    if (attributes.KmsMasterKeyId || attributes.KmsDataKeyReusePeriodSeconds) throw new Error(`Queue ${name} uses SSE-KMS, which is not supported by the local CloudFormation provider`);
+    if (attributes.KmsMasterKeyId || attributes.KmsDataKeyReusePeriodSeconds) throw new Error(`Queue ${name} uses SSE-KMS, but StackSim does not emulate KMS; use SqsManagedSseEnabled instead`);
     const redrive = parseJsonObject(attributes.RedrivePolicy);
     const allow = parseJsonObject(attributes.RedriveAllowPolicy);
     const current: SqsQueueModel = {
@@ -281,7 +297,7 @@ export function createSqsQueueProvider(sqs: SqsService): ProductionResourceProvi
       ...(allow ? { RedriveAllowPolicy: canonicalRedriveAllowPolicy(allow)! } : {}),
       ...(redrive ? { RedrivePolicy: canonicalRedrivePolicy(redrive)! } : {}),
       SqsManagedSseEnabled: attributes.SqsManagedSseEnabled === "true",
-      Tags: visibleTags(tags),
+      Tags: visibleTags(Object.fromEntries(Object.entries(tags).filter(([key]) => !key.startsWith("aws:")))),
       VisibilityTimeout: Number(attributes.VisibilityTimeout),
     };
     return { model: current, arn: String(attributes.QueueArn), url, tags };
@@ -303,11 +319,11 @@ export function createSqsQueueProvider(sqs: SqsService): ProductionResourceProvi
     }
     if (Object.keys(updates).length) await sqs.SetQueueAttributes({ QueueUrl: current.url, Attributes: updates });
 
-    const wantedTags = tagMap(desired.Tags, context);
+    const wantedTags = queueTags(desired.Tags, context);
     const removals = Object.keys(current.tags).filter(key => key !== "stacksim:cloudformation:owner" && !Object.hasOwn(wantedTags, key));
-    if (removals.length) await sqs.UntagQueue({ QueueUrl: current.url, TagKeys: removals });
+    if (removals.length) await sqs.UntagQueue({ QueueUrl: current.url, TagKeys: removals }, { systemTags: true });
     const additions = Object.fromEntries(Object.entries(wantedTags).filter(([key, value]) => current.tags[key] !== value));
-    if (Object.keys(additions).length) await sqs.TagQueue({ QueueUrl: current.url, Tags: additions });
+    if (Object.keys(additions).length) await sqs.TagQueue({ QueueUrl: current.url, Tags: additions }, { systemTags: true });
     return success(await describe(physicalId));
   };
 
@@ -351,7 +367,7 @@ export function createSqsQueueProvider(sqs: SqsService): ProductionResourceProvi
           if (!owns(existing.tags, context)) return { status: "FAILED", errorCode: "AlreadyExists", message: `Queue ${desired.QueueName} already exists and is not owned by this stack resource` };
           return await reconcile(desired.QueueName, desired, context);
         } catch (error) { if (!isNotFound(error, ["QueueDoesNotExist", "AWS.SimpleQueueService.NonExistentQueue"])) throw error; }
-        await sqs.CreateQueue({ QueueName: desired.QueueName, Attributes: attributeInput(desired), Tags: tagMap(desired.Tags, context) });
+        await sqs.CreateQueue({ QueueName: desired.QueueName, Attributes: attributeInput(desired), Tags: queueTags(desired.Tags, context) }, { systemTags: true });
         return success(await describe(desired.QueueName));
       } catch (error) { return providerFailure(error); }
     },

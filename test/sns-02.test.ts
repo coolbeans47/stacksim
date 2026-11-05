@@ -245,7 +245,7 @@ test("SNS-02 official SDK covers policies, filters, raw SQS, signatures, termina
       SubscriptionArn: rawSubscription,
       AttributeName: "DeliveryPolicy",
       AttributeValue: "{}",
-    })), /later SNS phase/);
+    })), /Subscription attribute DeliveryPolicy is not supported by StackSim/);
     assert.equal((await sns.send(new GetSubscriptionAttributesCommand({ SubscriptionArn: rawSubscription }))).Attributes!.RawMessageDelivery, "true");
 
     const eleven = {

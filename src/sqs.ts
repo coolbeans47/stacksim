@@ -8,7 +8,7 @@ import type { Scheduler } from "./core/scheduler.js";
 import type { TelemetryBus } from "./core/telemetry.js";
 import { AwsError, sendAwsError } from "./errors.js";
 import { combineIdentityAndResourceAuthorization, evaluateRoleAuthorization, type AuthorizationContext, type AuthorizationResult } from "./iam/evaluator.js";
-import { awsQueryErrorXml, escapeXml, parseAwsQuery } from "./protocols/query-xml.js";
+import { escapeXml, parseAwsQuery } from "./protocols/query-xml.js";
 import type { StateStore } from "./state.js";
 import type { SqsQueueAttributesState, SqsQueueState } from "./types.js";
 import { json, readBody } from "./util.js";
@@ -29,12 +29,70 @@ const QUEUE_DELETE_COOLDOWN_MS = 60_000;
 const PURGE_COOLDOWN_MS = 60_000;
 const FIFO_DEDUPLICATION_WINDOW_MS = 5 * 60_000;
 const RECEIVE_ATTEMPT_WINDOW_MS = 5 * 60_000;
+const MAX_TOTAL_VISIBILITY_SECONDS = 43_200;
+/** FIFO sequence numbers are large and non-consecutive on the wire; the stored counter stays small. */
+const SEQUENCE_NUMBER_BASE = 18_849_496_460_467_696_128n;
+const SEQUENCE_NUMBER_STEP = 256n;
+
+/**
+ * Legacy AWS Query error codes that differ from the modelled error name. SDKs and the AWS CLI
+ * read them from the x-amzn-query-error header (JSON protocol) or the Code element (Query protocol).
+ */
+const SQS_QUERY_ERROR_CODES: Record<string, string> = {
+  QueueDoesNotExist: "AWS.SimpleQueueService.NonExistentQueue",
+  QueueNameExists: "QueueAlreadyExists",
+  QueueDeletedRecently: "AWS.SimpleQueueService.QueueDeletedRecently",
+  PurgeQueueInProgress: "AWS.SimpleQueueService.PurgeQueueInProgress",
+  UnsupportedOperation: "AWS.SimpleQueueService.UnsupportedOperation",
+  MessageNotInflight: "AWS.SimpleQueueService.MessageNotInflight",
+  EmptyBatchRequest: "AWS.SimpleQueueService.EmptyBatchRequest",
+  TooManyEntriesInBatchRequest: "AWS.SimpleQueueService.TooManyEntriesInBatchRequest",
+  BatchEntryIdsNotDistinct: "AWS.SimpleQueueService.BatchEntryIdsNotDistinct",
+  BatchRequestTooLong: "AWS.SimpleQueueService.BatchRequestTooLong",
+  InvalidBatchEntryId: "AWS.SimpleQueueService.InvalidBatchEntryId",
+};
+
+/** The legacy error code for a modelled SQS error name. */
+export function sqsQueryErrorCode(code: string): string {
+  return SQS_QUERY_ERROR_CODES[code] ?? code.replace(/Exception$/, "");
+}
+
+/** The Query-protocol error document. */
+export function sqsQueryErrorXml(code: string, message: string, requestId: string, serverFault = false): string {
+  return `<?xml version="1.0"?><ErrorResponse xmlns="${SQS_NAMESPACE}"><Error><Type>${serverFault ? "Receiver" : "Sender"}</Type><Code>${escapeXml(sqsQueryErrorCode(code))}</Code><Message>${escapeXml(message)}</Message><Detail/></Error><RequestId>${escapeXml(requestId)}</RequestId></ErrorResponse>`;
+}
+
+function publicSequenceNumber(stored: string | undefined): string | undefined {
+  return stored === undefined ? undefined : (SEQUENCE_NUMBER_BASE + BigInt(stored) * SEQUENCE_NUMBER_STEP).toString();
+}
+
+function queueAttributeNumber(value: unknown, name: string, minimum: number, maximum: number): string {
+  const parsed = typeof value === "number" ? value : Number(String(value ?? ""));
+  if (value === undefined || value === null || value === "" || !Number.isInteger(parsed) || parsed < minimum || parsed > maximum) throw new AwsError("InvalidAttributeValue", `Invalid value for the parameter ${name}.`, 400);
+  return String(parsed);
+}
+
+/** Decodes a receipt handle issued by this service; undefined when the text is not one. */
+function decodeReceiptHandle(receipt: string): { queueArn: string; messageId: string } | undefined {
+  if (!receipt.startsWith("AQEB")) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(receipt.slice(4), "base64url").toString("utf8")) as { q?: unknown; m?: unknown };
+    return typeof parsed.q === "string" && typeof parsed.m === "string" ? { queueArn: parsed.q, messageId: parsed.m } : undefined;
+  } catch { return undefined; }
+}
 export const SQS_ACTIONS = new Set([
   ...SQS_MOVE_ACTIONS,
   "CreateQueue", "DeleteQueue", "GetQueueUrl", "ListQueues", "GetQueueAttributes", "SetQueueAttributes",
   "TagQueue", "UntagQueue", "ListQueueTags", "SendMessage", "ReceiveMessage", "DeleteMessage",
   "ChangeMessageVisibility", "SendMessageBatch", "DeleteMessageBatch", "ChangeMessageVisibilityBatch", "PurgeQueue",
   "ListDeadLetterSourceQueues", "AddPermission", "RemovePermission",
+]);
+
+const QUEUE_ATTRIBUTE_NAMES = new Set([
+  "Policy", "VisibilityTimeout", "MaximumMessageSize", "MessageRetentionPeriod", "ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible",
+  "CreatedTimestamp", "LastModifiedTimestamp", "QueueArn", "ApproximateNumberOfMessagesDelayed", "DelaySeconds", "ReceiveMessageWaitTimeSeconds",
+  "RedrivePolicy", "FifoQueue", "ContentBasedDeduplication", "KmsMasterKeyId", "KmsDataKeyReusePeriodSeconds", "DeduplicationScope", "FifoThroughputLimit",
+  "RedriveAllowPolicy", "SqsManagedSseEnabled",
 ]);
 
 const DEFAULT_QUEUE_ATTRIBUTES: SqsQueueAttributesState = {
@@ -148,7 +206,7 @@ export type SqsAuthorizedMessageCaller =
 interface RedrivePolicy { deadLetterTargetArn: string; maxReceiveCount: number }
 interface RedriveAllowPolicy { redrivePermission: "allowAll" | "denyAll" | "byQueue"; sourceQueueArns?: string[] }
 interface PageCursor { after: string; fingerprint: string }
-interface SqsRequestContext { abortSignal?: AbortSignal; moveCaller?: SqsMoveCaller }
+export interface SqsRequestContext { abortSignal?: AbortSignal; moveCaller?: SqsMoveCaller; /** Set only by in-process services such as CloudFormation: allows aws:cloudformation:* tags and shows private ownership tags. Never set from a request. */ systemTags?: boolean; /** Unique ID of the calling IAM user or role session. */ senderId?: string }
 type XmlRecord = Record<string, unknown>;
 
 class SqsRequestAbortedError extends Error {
@@ -203,12 +261,18 @@ function booleanAttribute(value: unknown, name: string): "true" | "false" {
   return String(value) as "true" | "false";
 }
 
-function tagMap(value: unknown): Record<string, string> {
+/** Tags that a service writes about a queue; they are not user tags and do not count toward the tag limit. */
+const PRIVATE_TAG_PREFIX = "stacksim:cloudformation:";
+function isSystemTag(key: string): boolean { return key.toLowerCase().startsWith("aws:") || key.startsWith(PRIVATE_TAG_PREFIX); }
+function userTagCount(tags: Record<string, string>): number { return Object.keys(tags).filter(key => !isSystemTag(key)).length; }
+
+function tagMap(value: unknown, systemTags = false): Record<string, string> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const result: Record<string, string> = {};
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
     const item = String(raw ?? "");
-    if (!key || [...key].length > 128 || [...item].length > 256 || key.toLowerCase().startsWith("aws:")) throw new AwsError("InvalidParameterValue", "Tag keys and values must satisfy the SQS tag restrictions.", 400);
+    const reserved = key.toLowerCase().startsWith("aws:") && !(systemTags && key.startsWith("aws:cloudformation:"));
+    if (!key || [...key].length > 128 || [...item].length > 256 || reserved) throw new AwsError("InvalidParameterValue", "Tag keys and values must satisfy the SQS tag restrictions.", 400);
     result[key] = item;
   }
   return result;
@@ -418,7 +482,8 @@ export class SqsService {
       const moveCaller: SqsMoveCaller | undefined = principal ? { ...(principal.principalType === "roleSession" ? { sessionFingerprint: createHash("sha256").update(principal.accessKeyId).digest("hex") } : {}), principal: Object.fromEntries(Object.entries(principal).filter(([key]) => key !== "accessKeyId" && key !== "sessionToken")) as SqsMoveCaller["principal"], context: {
         "aws:SourceIp": req.socket.remoteAddress?.replace(/^::ffff:/, ""), "aws:SecureTransport": Boolean((req.socket as any).encrypted), "aws:UserAgent": req.headers["user-agent"] ?? "",
       } } : undefined;
-      const result = await operation.call(this, input, { abortSignal: requestAbort.signal, moveCaller });
+      const senderId = principal && principal.principalType !== "anonymous" && typeof principal.principalId === "string" && principal.principalId ? principal.principalId : undefined;
+      const result = await operation.call(this, input, { abortSignal: requestAbort.signal, moveCaller, senderId });
       if (requestAbort.signal.aborted || res.destroyed) return;
       res.setHeader("x-amzn-requestid", requestId);
       if (jsonProtocol) json(res, result, 200, "application/x-amz-json-1.0");
@@ -428,10 +493,10 @@ export class SqsService {
       const aws = error instanceof AwsError ? error : new AwsError("InternalError", error instanceof Error ? error.message : String(error), 500);
       res.setHeader("x-amzn-requestid", requestId);
       if (jsonProtocol) {
-        res.setHeader("x-amzn-query-error", `${aws.code};${aws.status >= 500 ? "Server" : "Sender"}`);
+        res.setHeader("x-amzn-query-error", `${sqsQueryErrorCode(aws.code)};${aws.status >= 500 ? "Receiver" : "Sender"}`);
         sendAwsError(res, aws, "json", "com.amazonaws.sqs#");
       } else {
-        res.statusCode = aws.status; res.setHeader("content-type", "text/xml; charset=utf-8"); res.end(awsQueryErrorXml(aws.code, aws.message, requestId));
+        res.statusCode = aws.status; res.setHeader("content-type", "text/xml; charset=utf-8"); res.end(sqsQueryErrorXml(aws.code, aws.message, requestId, aws.status >= 500));
       }
     } finally {
       req.removeListener("aborted", onRequestAborted);
@@ -640,6 +705,7 @@ export class SqsService {
   }
 
   resolveQueueUrl(url: string): ResolvedSqsQueue {
+    if (url === undefined || url === null || url === "") throw new AwsError("MissingParameter", "The request must contain the parameter QueueUrl.", 400);
     let parsed: URL;
     try { parsed = new URL(String(url)); } catch { throw this.missingQueue(); }
     const components = parsed.pathname.split("/").filter(Boolean).map(part => { try { return decodeURIComponent(part); } catch { throw this.missingQueue(); } });
@@ -650,7 +716,7 @@ export class SqsService {
     return { queueArn: state.queueArn, queueUrl: this.queueUrl(state.queueName, ownerAccountId), queueName: state.queueName, visibilityTimeoutSeconds: Number(state.attributes.VisibilityTimeout), fifo: state.attributes.FifoQueue === "true", ownerAccountId, state };
   }
 
-  async CreateQueue(input: CreateQueueInput): Promise<CreateQueueOutput> {
+  async CreateQueue(input: CreateQueueInput, context?: SqsRequestContext): Promise<CreateQueueOutput> {
     await this.ensureStarted();
     const name = queueName(input.QueueName);
     const rawAttributes = input.Attributes ?? {};
@@ -662,24 +728,19 @@ export class SqsService {
     const arn = this.queueArn(name);
     const supplied = await this.normalizedQueueAttributeUpdates(rawAttributes, arn, { creating: true, fifo: fifoRequested });
     if (existing) {
-      const expected: SqsQueueAttributesState = {
-        ...DEFAULT_QUEUE_ATTRIBUTES,
-        ...(fifoRequested ? { FifoQueue: "true", ContentBasedDeduplication: "false", DeduplicationScope: "queue", FifoThroughputLimit: "perQueue" } : {}),
-        ...supplied,
-      } as SqsQueueAttributesState;
-      const names = new Set<keyof SqsQueueAttributesState>([
-        ...Object.keys(existing.attributes) as Array<keyof SqsQueueAttributesState>,
-        ...Object.keys(expected) as Array<keyof SqsQueueAttributesState>,
-      ]);
-      for (const attribute of names) if (existing.attributes[attribute] !== expected[attribute]) throw new AwsError("QueueNameExists", "A queue already exists with the same name and a different value for an attribute.", 400);
+      // A request that names an existing queue succeeds when every attribute it supplies
+      // matches; attributes it leaves out are not compared, so a name-only call is a lookup.
+      for (const attribute of Object.keys(supplied) as Array<keyof SqsQueueAttributesState>) {
+        if (existing.attributes[attribute] !== supplied[attribute]) throw new AwsError("QueueNameExists", `A queue already exists with the same name and a different value for attribute ${attribute}`, 400);
+      }
       if (prunedDeletionTimes) await this.store.save();
       return { QueueUrl: this.queueUrl(name) };
     }
     const deletedAt = region.sqsQueueDeletionTimes[name];
     if (deletedAt !== undefined && this.clock.now() - deletedAt < QUEUE_DELETE_COOLDOWN_MS) throw new AwsError("QueueDeletedRecently", "You must wait 60 seconds after deleting a queue before you can create another with the same name.", 400);
     delete region.sqsQueueDeletionTimes[name];
-    const tags = tagMap(input.Tags ?? input.tags);
-    if (Object.keys(tags).length > 50) throw new AwsError("InvalidParameterValue", "A queue cannot have more than 50 tags.", 400);
+    const tags = tagMap(input.Tags ?? input.tags, context?.systemTags);
+    if (userTagCount(tags) > 50) throw new AwsError("InvalidParameterValue", "A queue cannot have more than 50 tags.", 400);
     const now = this.clock.now();
     region.sqsQueues[name] = {
       queueName: name,
@@ -702,8 +763,6 @@ export class SqsService {
   async DeleteQueue(input: DeleteQueueInput): Promise<Record<string, never>> {
     await this.ensureStarted();
     const queue = this.resolveQueueUrl(input.QueueUrl);
-    const sources = this.deadLetterSources(queue.queueArn);
-    if (sources.length) throw new AwsError("ResourceInUse", "The queue is in use as a dead-letter queue. Remove the source queue redrive policies first.", 400);
     const region = this.regionState();
     this.pruneQueueDeletionTimes();
     delete region.sqsQueues[queue.queueName];
@@ -747,10 +806,11 @@ export class SqsService {
       ApproximateNumberOfMessagesDelayed: String(live.filter(message => message.availableAt > now).length),
     };
     const names = asArray(input.AttributeNames);
-    const selected = !names.length || names.includes("All") ? available : Object.fromEntries(names.filter(name => available[name] !== undefined).map(name => [name, available[name]]));
-    for (const name of names) if (name !== "All" && available[name] === undefined) throw new AwsError("InvalidAttributeName", `Unknown Attribute ${name}.`, 400);
+    for (const name of names) if (name !== "All" && !QUEUE_ATTRIBUTE_NAMES.has(name)) throw new AwsError("InvalidAttributeName", `Unknown Attribute ${name}.`, 400);
+    // Without attribute names the result is empty; a valid name the queue has no value for is left out.
+    const selected = names.includes("All") ? available : Object.fromEntries(names.filter(name => available[name] !== undefined).map(name => [name, available[name]]));
     await this.publishGauges(queue.state, data);
-    return { Attributes: selected };
+    return Object.keys(selected).length ? { Attributes: selected } : {};
   }
 
   async SetQueueAttributes(input: SetQueueAttributesInput): Promise<Record<string, never>> {
@@ -779,6 +839,7 @@ export class SqsService {
     const target = this.resolveQueueUrl(input.QueueUrl);
     return this.serializeAttributeUpdate(target.queueArn, async () => {
       const queue = this.resolveQueueUrl(input.QueueUrl);
+      if (this.policyStatementLabels(queue.state.attributes.Policy).includes(String(input.Label ?? ""))) throw new AwsError("InvalidParameterValue", `Value ${String(input.Label)} for parameter Label is invalid. Reason: Already exists.`, 400);
       try {
         const policy = upsertSqsPermission(queue.state.attributes.Policy, {
           queueArn: queue.queueArn,
@@ -799,6 +860,7 @@ export class SqsService {
     const target = this.resolveQueueUrl(input.QueueUrl);
     return this.serializeAttributeUpdate(target.queueArn, async () => {
       const queue = this.resolveQueueUrl(input.QueueUrl);
+      if (!this.policyStatementLabels(queue.state.attributes.Policy).includes(String(input.Label ?? ""))) throw new AwsError("InvalidParameterValue", `Value ${String(input.Label ?? "")} for parameter Label is invalid. Reason: can't find label.`, 400);
       try {
         const policy = removeSqsPermission(queue.state.attributes.Policy, String(input.Label ?? ""));
         if (policy) queue.state.attributes.Policy = policy.normalized;
@@ -810,27 +872,32 @@ export class SqsService {
     });
   }
 
-  async TagQueue(input: TagQueueInput): Promise<Record<string, never>> {
+  async TagQueue(input: TagQueueInput, context?: SqsRequestContext): Promise<Record<string, never>> {
     const queue = this.resolveQueueUrl(input.QueueUrl);
-    const tags = tagMap(input.Tags);
-    if (Object.keys({ ...queue.state.tags, ...tags }).length > 50) throw new AwsError("InvalidParameterValue", "A queue cannot have more than 50 tags.", 400);
+    const tags = tagMap(input.Tags, context?.systemTags);
+    if (userTagCount({ ...queue.state.tags, ...tags }) > 50) throw new AwsError("InvalidParameterValue", "A queue cannot have more than 50 tags.", 400);
     Object.assign(queue.state.tags, tags); queue.state.lastModified = this.clock.now(); await this.store.save(); return {};
   }
 
-  async UntagQueue(input: UntagQueueInput): Promise<Record<string, never>> {
+  async UntagQueue(input: UntagQueueInput, context?: SqsRequestContext): Promise<Record<string, never>> {
     const queue = this.resolveQueueUrl(input.QueueUrl);
-    for (const key of asArray(input.TagKeys).map(String)) delete queue.state.tags[key];
+    const keys = asArray(input.TagKeys).map(String);
+    if (!context?.systemTags && keys.some(key => key.toLowerCase().startsWith("aws:"))) throw new AwsError("InvalidParameterValue", "Tag keys and values must satisfy the SQS tag restrictions.", 400);
+    for (const key of keys) if (context?.systemTags || !key.startsWith(PRIVATE_TAG_PREFIX)) delete queue.state.tags[key];
     queue.state.lastModified = this.clock.now(); await this.store.save(); return {};
   }
 
-  async ListQueueTags(input: ListQueueTagsInput): Promise<ListQueueTagsOutput> {
-    const queue = this.resolveQueueUrl(input.QueueUrl); return { Tags: { ...queue.state.tags } };
+  async ListQueueTags(input: ListQueueTagsInput, context?: SqsRequestContext): Promise<ListQueueTagsOutput> {
+    const queue = this.resolveQueueUrl(input.QueueUrl);
+    // Private ownership tags are bookkeeping, not queue tags.
+    const tags = Object.fromEntries(Object.entries(queue.state.tags).filter(([key]) => context?.systemTags || !key.startsWith(PRIVATE_TAG_PREFIX)));
+    return Object.keys(tags).length ? { Tags: tags } : {};
   }
 
-  async SendMessage(input: SendMessageInput): Promise<SendMessageOutput> {
+  async SendMessage(input: SendMessageInput, context?: SqsRequestContext): Promise<SendMessageOutput> {
     await this.ensureStarted();
     const queue = this.resolveQueueUrl(input.QueueUrl);
-    return this.sendMessage(queue, input);
+    return this.sendMessage(queue, input, { senderId: context?.senderId });
   }
 
   async sendMessageToArn(queueArn: string, input: Omit<SendMessageInput, "QueueUrl">, attempt?: ServiceIntegrationAttempt): Promise<SendMessageOutput> {
@@ -914,14 +981,27 @@ export class SqsService {
     const queue = this.resolveQueueUrl(input.QueueUrl);
     const receipt = String(input.ReceiptHandle ?? "");
     if (!receipt) throw new AwsError("ReceiptHandleIsInvalid", "The input receipt handle is invalid.", 400);
-    const deleted = await this.storage.mutateQueue(queue.queueArn, data => {
+    const handle = decodeReceiptHandle(receipt);
+    if (!handle || handle.queueArn !== queue.queueArn) throw new AwsError("ReceiptHandleIsInvalid", `The input receipt handle "${receipt}" is not a valid receipt handle.`, 400);
+    const outcome = await this.storage.mutateQueue(queue.queueArn, data => {
       this.removeExpired(data);
-      const found = Object.values(data.messages).find(message => message.currentReceiptHandle === receipt && (message.invisibleUntil ?? 0) > this.clock.now());
-      if (!found) return false;
+      const found = data.messages[handle.messageId];
+      // Deleting a message that is already gone succeeds.
+      if (!found) return "absent" as const;
+      const current = found.currentReceiptHandle === receipt;
+      const inFlight = (found.invisibleUntil ?? 0) > this.clock.now();
+      // A FIFO receipt handle stops working when its visibility timeout ends.
+      if (queue.fifo && !(current && inFlight)) return "expired" as const;
+      // On a Standard queue the most recent handle deletes the message even after its
+      // visibility timeout; a handle from an earlier receive succeeds without deleting.
+      if (!current) return "stale" as const;
       delete data.messages[found.messageId];
-      return true;
+      return "deleted" as const;
     });
-    if (!deleted) throw new AwsError("ReceiptHandleIsInvalid", "The input receipt handle is invalid or has expired.", 400);
+    if (outcome === "expired") throw new AwsError("InvalidParameterValue", `Value ${receipt} for parameter ReceiptHandle is invalid. Reason: The receipt handle has expired.`, 400);
+    if (outcome !== "deleted") return {};
+    // A delete can release a FIFO message group, so waiting receivers must look again.
+    this.notify(queue.queueArn);
     await this.metric(queue.queueName, "NumberOfMessagesDeleted", 1, "Count");
     await this.publishGauges(queue.state);
     return {};
@@ -932,27 +1012,34 @@ export class SqsService {
     const queue = this.resolveQueueUrl(input.QueueUrl);
     const visibility = numeric(input.VisibilityTimeout, "VisibilityTimeout", 0, 43_200);
     const receipt = String(input.ReceiptHandle ?? "");
-    const changed = await this.storage.mutateQueue(queue.queueArn, data => {
+    const handle = receipt ? decodeReceiptHandle(receipt) : undefined;
+    if (!handle || handle.queueArn !== queue.queueArn) throw new AwsError("ReceiptHandleIsInvalid", receipt ? `The input receipt handle "${receipt}" is not a valid receipt handle.` : "The input receipt handle is invalid.", 400);
+    const outcome = await this.storage.mutateQueue(queue.queueArn, data => {
       this.removeExpired(data);
-      const found = Object.values(data.messages).find(message => message.currentReceiptHandle === receipt && (message.invisibleUntil ?? 0) > this.clock.now());
-      if (!found) return false;
-      found.invisibleUntil = this.clock.now() + visibility * 1000;
+      const now = this.clock.now();
+      const found = data.messages[handle.messageId];
+      if (!found || found.currentReceiptHandle !== receipt || (found.invisibleUntil ?? 0) <= now) return "notInFlight" as const;
+      // The visibility timeout of one receive cannot extend past 12 hours from that receive.
+      const elapsedSeconds = Math.floor((now - (found.leaseStartedAt ?? now)) / 1000);
+      if (elapsedSeconds + visibility > MAX_TOTAL_VISIBILITY_SECONDS) return "beyondLimit" as const;
+      found.invisibleUntil = now + visibility * 1000;
       found.leaseMutationVersion = (found.leaseMutationVersion ?? 0) + 1;
-      return true;
+      return "changed" as const;
     });
-    if (!changed) throw new AwsError("ReceiptHandleIsInvalid", "The input receipt handle is invalid or has expired.", 400);
+    if (outcome === "notInFlight") throw new AwsError("MessageNotInflight", `Value ${receipt} for parameter ReceiptHandle is invalid. Reason: Message does not exist or is not available for visibility timeout change.`, 400);
+    if (outcome === "beyondLimit") throw new AwsError("InvalidParameterValue", `Value ${visibility} for parameter VisibilityTimeout is invalid. Reason: Total VisibilityTimeout for the message is beyond the limit [${MAX_TOTAL_VISIBILITY_SECONDS} seconds].`, 400);
     if (visibility === 0) this.notify(queue.queueArn);
     await this.publishGauges(queue.state);
     return {};
   }
 
-  async SendMessageBatch(input: SendMessageBatchInput): Promise<SendMessageBatchOutput> {
+  async SendMessageBatch(input: SendMessageBatchInput, context?: SqsRequestContext): Promise<SendMessageBatchOutput> {
     await this.ensureStarted();
     const queue = this.resolveQueueUrl(input.QueueUrl);
-    return this.sendMessageBatch(queue, input.Entries);
+    return this.sendMessageBatch(queue, input.Entries, undefined, context?.senderId);
   }
 
-  private async sendMessageBatch(queue: ResolvedSqsQueue, rawEntries: SendMessageBatchRequestEntry[], deliveryLineage?: string[]): Promise<SendMessageBatchOutput> {
+  private async sendMessageBatch(queue: ResolvedSqsQueue, rawEntries: SendMessageBatchRequestEntry[], deliveryLineage?: string[], senderId?: string): Promise<SendMessageBatchOutput> {
     const entries = this.batchEntries<SendMessageBatchRequestEntry>(rawEntries);
     const rawBytes = entries.reduce((total, entry) => {
       let attributeBytes = 0;
@@ -967,7 +1054,7 @@ export class SqsService {
     for (const entry of entries) {
       try {
         const { Id, ...message } = entry;
-        const result = await this.sendMessage(queue, { ...message, QueueUrl: queue.queueUrl }, { deliveryLineage });
+        const result = await this.sendMessage(queue, { ...message, QueueUrl: queue.queueUrl }, { deliveryLineage, senderId });
         Successful.push({ Id, ...result });
       } catch (error) { Failed.push(this.batchFailure(entry.Id, error)); }
     }
@@ -1054,7 +1141,7 @@ export class SqsService {
     await this.acknowledge({ queueArn, receiptHandles });
   }
 
-  private async sendMessage(queue: ResolvedSqsQueue, input: SendMessageInput, internal: { deliveryLineage?: string[]; integrationAttempt?: ServiceIntegrationAttempt } = {}): Promise<SendMessageOutput> {
+  private async sendMessage(queue: ResolvedSqsQueue, input: SendMessageInput, internal: { deliveryLineage?: string[]; integrationAttempt?: ServiceIntegrationAttempt; senderId?: string } = {}): Promise<SendMessageOutput> {
     if (internal.integrationAttempt) { const prior = await this.reconcileIntegrationAttempt(queue.queueArn, internal.integrationAttempt); if (prior !== undefined) return prior; }
     const isFifo = queue.state.attributes.FifoQueue === "true";
     let messageGroupId: string | undefined;
@@ -1065,7 +1152,7 @@ export class SqsService {
       messageGroupId = fifoIdentifier(input.MessageGroupId, "MessageGroupId");
       if (input.MessageDeduplicationId !== undefined) messageDeduplicationId = fifoIdentifier(input.MessageDeduplicationId, "MessageDeduplicationId");
       else if (queue.state.attributes.ContentBasedDeduplication === "true") messageDeduplicationId = createHash("sha256").update(String(input.MessageBody ?? ""), "utf8").digest("hex");
-      else throw new AwsError("MissingParameter", "The request must contain the parameter MessageDeduplicationId.", 400);
+      else throw new AwsError("InvalidParameterValue", "The queue should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly", 400);
     } else {
       if (input.MessageDeduplicationId !== undefined) throw new AwsError("InvalidParameterValue", "MessageDeduplicationId is valid only for FIFO queues.", 400);
       if (input.MessageGroupId !== undefined) messageGroupId = fifoIdentifier(input.MessageGroupId, "MessageGroupId");
@@ -1086,7 +1173,7 @@ export class SqsService {
     const md5Body = md5OfMessageBody(input.MessageBody);
     const md5Attributes = md5OfMessageAttributes(messageAttributes);
     const md5SystemAttributes = md5OfMessageAttributes(messageSystemAttributes);
-    const response = (acceptedMessageId: string, sequenceNumber?: string): SendMessageOutput => ({ MD5OfMessageBody: md5Body, ...(md5Attributes ? { MD5OfMessageAttributes: md5Attributes } : {}), ...(md5SystemAttributes ? { MD5OfMessageSystemAttributes: md5SystemAttributes } : {}), MessageId: acceptedMessageId, ...(sequenceNumber ? { SequenceNumber: sequenceNumber } : {}) });
+    const response = (acceptedMessageId: string, sequenceNumber?: string): SendMessageOutput => ({ MD5OfMessageBody: md5Body, ...(md5Attributes ? { MD5OfMessageAttributes: md5Attributes } : {}), ...(md5SystemAttributes ? { MD5OfMessageSystemAttributes: md5SystemAttributes } : {}), MessageId: acceptedMessageId, ...(sequenceNumber ? { SequenceNumber: publicSequenceNumber(sequenceNumber) } : {}) });
     const payload: SqsStoredMessagePayload = { body: input.MessageBody, messageAttributes, messageSystemAttributes };
     const blobId = await this.storage.putPayload(messageId, payload);
     const now = this.clock.now();
@@ -1117,6 +1204,7 @@ export class SqsService {
         ...(messageDeduplicationId ? { messageDeduplicationId } : {}),
         ...(sequenceNumber ? { sequenceNumber } : {}),
         sqsManagedSse: queue.state.attributes.SqsManagedSseEnabled === "true",
+        ...(internal.senderId ? { senderId: internal.senderId } : {}),
         ...(internal.deliveryLineage?.length ? { deliveryLineage: internal.deliveryLineage.slice(-32) } : {}),
       };
       const output = response(messageId, sequenceNumber); if (internal.integrationAttempt) { data.integrationAttempts ??= {}; data.integrationAttempts[internal.integrationAttempt.attemptId] = acceptedIntegrationAttempt(internal.integrationAttempt, output, now); } return { duplicate: false, messageId, sequenceNumber, integrationOutput: output };
@@ -1168,6 +1256,7 @@ export class SqsService {
           message.receiptVersion += 1;
           message.leaseMutationVersion = (message.leaseMutationVersion ?? 0) + 1;
           message.firstReceivedAt ??= now;
+          message.leaseStartedAt = now;
           message.currentReceiptHandle = `AQEB${Buffer.from(JSON.stringify({ q: queue.queueArn, m: message.messageId, v: message.receiptVersion, r: randomUUID() })).toString("base64url")}`;
           message.invisibleUntil = now + visibility * 1000;
         }
@@ -1200,6 +1289,7 @@ export class SqsService {
             queueOrder,
             deadLetteredAt: now,
             deadLetterSourceArn: queue.queueArn,
+            retentionUntil: message.sentAt + Number(redriveTarget!.state.attributes.MessageRetentionPeriod) * 1000,
             availableAt: now,
             invisibleUntil: undefined,
             currentReceiptHandle: undefined,
@@ -1309,14 +1399,14 @@ export class SqsService {
     const systemNames = asArray(input.MessageSystemAttributeNames).map(String);
     const requestedSystem = [...attributeNames, ...systemNames];
     const availableSystem: Record<string, string> = {
-      SenderId: this.store.accountId,
+      SenderId: message.senderId ?? this.store.accountId,
       SentTimestamp: String(message.sentAt),
       ApproximateReceiveCount: String(message.receiveCount),
       ...(message.firstReceivedAt === undefined ? {} : { ApproximateFirstReceiveTimestamp: String(message.firstReceivedAt) }),
       ...(message.deadLetterSourceArn === undefined ? {} : { DeadLetterQueueSourceArn: message.deadLetterSourceArn }),
       ...(message.messageGroupId === undefined ? {} : { MessageGroupId: message.messageGroupId }),
       ...(message.messageDeduplicationId === undefined ? {} : { MessageDeduplicationId: message.messageDeduplicationId }),
-      ...(message.sequenceNumber === undefined ? {} : { SequenceNumber: message.sequenceNumber }),
+      ...(message.sequenceNumber === undefined ? {} : { SequenceNumber: publicSequenceNumber(message.sequenceNumber)! }),
       ...Object.fromEntries(Object.entries(payload.messageSystemAttributes).filter(([, value]) => value.StringValue !== undefined).map(([name, value]) => [name, value.StringValue!])),
     };
     const Attributes = Object.fromEntries(Object.entries(availableSystem).filter(([name]) => requested(name, requestedSystem)));
@@ -1325,8 +1415,7 @@ export class SqsService {
     const result: SqsMessage = {
       MessageId: message.messageId, ReceiptHandle: message.currentReceiptHandle, MD5OfBody: message.md5OfBody, Body: payload.body,
       ...(Object.keys(Attributes).length ? { Attributes } : {}),
-      ...(message.md5OfMessageAttributes ? { MD5OfMessageAttributes: message.md5OfMessageAttributes } : {}),
-      ...(Object.keys(MessageAttributes).length ? { MessageAttributes } : {}),
+      ...(Object.keys(MessageAttributes).length ? { MD5OfMessageAttributes: md5OfMessageAttributes(MessageAttributes), MessageAttributes } : {}),
     };
     if (message.deliveryLineage?.length) Object.defineProperty(result, "deliveryLineage", { value: message.deliveryLineage.slice(-32), enumerable: false });
     return result;
@@ -1379,10 +1468,18 @@ export class SqsService {
     await this.store.save();
   }
 
+  private policyStatementLabels(policy: string | undefined): string[] {
+    if (!policy) return [];
+    try {
+      const statements = (JSON.parse(policy) as { Statement?: unknown }).Statement;
+      return asArray(statements as Array<{ Sid?: unknown }> | { Sid?: unknown } | undefined).map(statement => statement?.Sid).filter((sid): sid is string => typeof sid === "string");
+    } catch { return []; }
+  }
+
   private throwPolicyError(error: unknown, addPermission: boolean): never {
     if (error instanceof SqsPolicyValidationError) {
       if (error.kind === "limit") throw new AwsError(addPermission ? "OverLimit" : "InvalidAttributeValue", error.message, 400);
-      throw new AwsError("InvalidParameterValue", error.message, 400);
+      throw new AwsError(addPermission ? "InvalidParameterValue" : "InvalidAttributeValue", error.message, 400);
     }
     throw error;
   }
@@ -1396,7 +1493,7 @@ export class SqsService {
   }
 
   private missingQueue(): AwsError {
-    return new AwsError("QueueDoesNotExist", "The specified queue does not exist or you do not have access to it.", 400);
+    return new AwsError("QueueDoesNotExist", "The specified queue does not exist.", 400);
   }
 
   private removeExpired(data: SqsQueueData): void {
@@ -1544,11 +1641,11 @@ export class SqsService {
     const result: Partial<Record<keyof SqsQueueAttributesState, string | undefined>> = {};
     for (const [name, value] of Object.entries(raw)) {
       switch (name) {
-        case "DelaySeconds": result.DelaySeconds = String(numeric(value, name, 0, 900)); break;
-        case "MaximumMessageSize": result.MaximumMessageSize = String(numeric(value, name, 1024, MAX_MESSAGE_BYTES)); break;
-        case "MessageRetentionPeriod": result.MessageRetentionPeriod = String(numeric(value, name, 60, 1_209_600)); break;
-        case "ReceiveMessageWaitTimeSeconds": result.ReceiveMessageWaitTimeSeconds = String(numeric(value, name, 0, 20)); break;
-        case "VisibilityTimeout": result.VisibilityTimeout = String(numeric(value, name, 0, 43_200)); break;
+        case "DelaySeconds": result.DelaySeconds = queueAttributeNumber(value, name, 0, 900); break;
+        case "MaximumMessageSize": result.MaximumMessageSize = queueAttributeNumber(value, name, 1024, MAX_MESSAGE_BYTES); break;
+        case "MessageRetentionPeriod": result.MessageRetentionPeriod = queueAttributeNumber(value, name, 60, 1_209_600); break;
+        case "ReceiveMessageWaitTimeSeconds": result.ReceiveMessageWaitTimeSeconds = queueAttributeNumber(value, name, 0, 20); break;
+        case "VisibilityTimeout": result.VisibilityTimeout = queueAttributeNumber(value, name, 0, 43_200); break;
         case "Policy": {
           try { result.Policy = parseSqsQueuePolicy(value, { queueArn: sourceArn })?.normalized; }
           catch (error) { this.throwPolicyError(error, false); }

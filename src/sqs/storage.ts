@@ -25,6 +25,10 @@ export interface SqsStoredMessage {
   receiveCount: number;
   receiptVersion: number;
   firstReceivedAt?: number;
+  /** When the current receipt handle was issued; bounds the total visibility timeout of one receive. */
+  leaseStartedAt?: number;
+  /** Unique ID of the IAM user or role session that sent the message; the owning account when unknown. */
+  senderId?: string;
   currentReceiptHandle?: string;
   invisibleUntil?: number;
   deadLetteredAt?: number;

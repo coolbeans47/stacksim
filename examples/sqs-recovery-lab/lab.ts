@@ -1,4 +1,4 @@
-/** Scenario H. Every resource and mutation uses ordinary public AWS SDK calls. */
+/** SQS recovery lab. Every resource and mutation uses ordinary public AWS SDK calls. */
 import { pathToFileURL } from "node:url";
 import { SQSClient, CreateQueueCommand, GetQueueUrlCommand, GetQueueAttributesCommand, SetQueueAttributesCommand, SendMessageCommand, ReceiveMessageCommand, PurgeQueueCommand, DeleteQueueCommand, StartMessageMoveTaskCommand, ListMessageMoveTasksCommand, CancelMessageMoveTaskCommand } from "@aws-sdk/client-sqs";
 import { IAMClient, CreateRoleCommand, PutRolePolicyCommand, DeleteRolePolicyCommand, DeleteRoleCommand } from "@aws-sdk/client-iam";

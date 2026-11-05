@@ -4,19 +4,36 @@ Verified 2026-09-22 against installed `@aws-sdk/client-sqs@3.1090.0` (23 command
 
 | Actions | Implemented inputs and behavior | Boundaries |
 | --- | --- | --- |
-| CreateQueue, DeleteQueue, GetQueueUrl, ListQueues | QueueName, QueueUrl, owner lookup, prefix, MaxResults/NextToken, create Attributes/tags; lifecycle, immutable type, cooldown | Local account catalog; no remote infrastructure |
-| GetQueueAttributes, SetQueueAttributes | AttributeNames/Attributes; delay, visibility, retention, size, receive wait, redrive/allow policies, Policy, FIFO/dedup/throughput attributes, SSE-SQS; derived counts/ARN/timestamps | KmsMasterKeyId and KmsDataKeyReusePeriodSeconds validate but reject unsupported KMS; production FIFO throughput is not simulated |
+| CreateQueue, DeleteQueue, GetQueueUrl, ListQueues | QueueName, QueueUrl, owner lookup, prefix, MaxResults/NextToken, create Attributes/tags; lifecycle, immutable type, cooldown. CreateQueue for an existing name returns its URL when every attribute the request supplies matches (a name-only call is a lookup). DeleteQueue succeeds even when another queue names the queue as its dead-letter queue | Local account catalog; no remote infrastructure |
+| GetQueueAttributes, SetQueueAttributes | AttributeNames/Attributes; delay, visibility, retention, size, receive wait, redrive/allow policies, Policy, FIFO/dedup/throughput attributes, SSE-SQS; derived counts/ARN/timestamps. GetQueueAttributes returns nothing unless AttributeNames is given (use `All`), and leaves out a valid attribute the queue has no value for, such as RedrivePolicy on a queue without a dead-letter queue | KmsMasterKeyId and KmsDataKeyReusePeriodSeconds validate but reject unsupported KMS; production FIFO throughput is not simulated |
 | TagQueue, UntagQueue, ListQueueTags | QueueUrl, Tags/TagKeys; 50 tags, condition context | No billing behavior |
-| SendMessage, SendMessageBatch | Body, DelaySeconds, MessageAttributes, AWSTraceHeader, MessageGroupId, MessageDeduplicationId; MD5s and partial batch results | 1 MiB, ten entries/attributes; list-valued attributes unsupported; FIFO per-message delay rejected |
-| ReceiveMessage | QueueUrl, MaxNumberOfMessages, VisibilityTimeout, WaitTimeSeconds, AttributeNames/MessageSystemAttributeNames, MessageAttributeNames, ReceiveRequestAttemptId | Standard at least once; deterministic local fairness; no distributed throughput claims |
-| DeleteMessage, DeleteMessageBatch | ReceiptHandle; batch entry Id and handles | Batch IAM uses DeleteMessage |
-| ChangeMessageVisibility, ChangeMessageVisibilityBatch | ReceiptHandle, VisibilityTimeout; batch entry Id | Batch IAM uses ChangeMessageVisibility |
+| SendMessage, SendMessageBatch | MessageBody, DelaySeconds, MessageAttributes, AWSTraceHeader, MessageGroupId, MessageDeduplicationId; MD5s and partial batch results | 1 MiB, ten entries/attributes; list-valued attributes unsupported; FIFO per-message delay rejected |
+| ReceiveMessage | QueueUrl, MaxNumberOfMessages, VisibilityTimeout, WaitTimeSeconds, AttributeNames/MessageSystemAttributeNames (including DeadLetterQueueSourceArn on dead-lettered messages), MessageAttributeNames, ReceiveRequestAttemptId. MD5OfMessageAttributes covers the attributes returned and is absent when none is returned | Standard at least once; deterministic local fairness; no distributed throughput claims |
+| DeleteMessage, DeleteMessageBatch | ReceiptHandle; batch entry Id and handles. On a Standard queue the most recent handle deletes the message even after its visibility timeout; an older handle, or a second delete, succeeds without effect. On a FIFO queue a handle whose visibility timeout has ended is rejected as expired | Batch IAM uses DeleteMessage |
+| ChangeMessageVisibility, ChangeMessageVisibilityBatch | ReceiptHandle, VisibilityTimeout; batch entry Id. A message that is not in flight answers MessageNotInflight; one receive cannot stay invisible for more than 12 hours in total | Batch IAM uses ChangeMessageVisibility |
 | PurgeQueue | QueueUrl; all message states, cooldown | Purge can intentionally remove work while a task is running |
 | ListDeadLetterSourceQueues | QueueUrl, MaxResults, NextToken | Current configured relationships; not a substitute for per-message original-source metadata |
-| AddPermission, RemovePermission | QueueUrl, Label, AWSAccountIds/Actions | Existing policy quotas and nondelegable actions preserved |
+| AddPermission, RemovePermission | QueueUrl, Label, AWSAccountIds/Actions. Adding a label that exists, or removing one that does not, is rejected | Existing policy quotas and nondelegable actions preserved |
 | StartMessageMoveTask | SourceArn required; DestinationArn and MaxNumberOfMessagesPerSecond optional | SQS DLQ sources only; same local account/Region/type |
 | ListMessageMoveTasks | SourceArn required; MaxResults optional (default 1, range 1–10) | Ten most recent tasks per source; no pagination token |
 | CancelMessageMoveTask | TaskHandle required | Exact retained RUNNING handle only; committed moves remain |
+
+## Error codes
+
+Every error has a modelled name, returned as `__type` in the JSON protocol, and a legacy code, returned in the `x-amzn-query-error` header (JSON) and the `Code` element (Query/XML). SDKs and the AWS CLI report the legacy code, so match on it the way you would against AWS:
+
+| Modelled name | Legacy code |
+| --- | --- |
+| QueueDoesNotExist | AWS.SimpleQueueService.NonExistentQueue |
+| QueueNameExists | QueueAlreadyExists |
+| QueueDeletedRecently | AWS.SimpleQueueService.QueueDeletedRecently |
+| PurgeQueueInProgress | AWS.SimpleQueueService.PurgeQueueInProgress |
+| UnsupportedOperation | AWS.SimpleQueueService.UnsupportedOperation |
+| MessageNotInflight | AWS.SimpleQueueService.MessageNotInflight |
+| EmptyBatchRequest, TooManyEntriesInBatchRequest, BatchEntryIdsNotDistinct, BatchRequestTooLong, InvalidBatchEntryId | The same name with the `AWS.SimpleQueueService.` prefix |
+| AccessDeniedException | AccessDenied |
+
+Other errors (`InvalidParameterValue`, `MissingParameter`, `InvalidAttributeName`, `InvalidAttributeValue`, `InvalidMessageContents`, `ReceiptHandleIsInvalid`, `OverLimit`) use one name for both. An out-of-range queue attribute answers `InvalidAttributeValue`. FIFO `SequenceNumber` values are large and non-consecutive; compare them, do not count with them. A message moved to a Standard dead-letter queue keeps its original enqueue time and expires on the dead-letter queue's retention period.
 
 ## Frozen message-move wire contract
 
@@ -55,6 +72,6 @@ A bounded encrypted cross-queue intent records the new identity, destination FIF
 
 Telemetry subscriber failures are caught at the SQS publication boundary. Consumers are notified after durable send acceptance; failures retain only a rolling 32-entry diagnostic of code/time. Queue storage failures are not swallowed, and failed metrics are not replayed as queue writes.
 
-## Remaining SQS-05 scope
+## Not included
 
-This closes the authorized message-move slice and inventories the 23 installed SQS commands. It does **not** declare the whole SQS-05 phase complete. Provisioned Lambda pollers, further mapping-field closure, production fleets/quotas, KMS, VPC endpoints, billing, S3 extended-client payload conventions and EventBridge Pipes remain outside this work. See the [closeout](gap-2-sqs-redrive-closeout.md) and [repeatable learning exercise](../examples/sqs-recovery-lab/README.md).
+All 23 SQS commands in the installed SDK are implemented. Outside the simulator: provisioned Lambda pollers, production fleets and quotas (including the in-flight message limit), KMS, VPC endpoints, billing, the S3 extended-client payload convention and EventBridge Pipes. See the [repeatable recovery exercise](../examples/sqs-recovery-lab/README.md).

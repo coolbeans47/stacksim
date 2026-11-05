@@ -2,6 +2,7 @@ import type { SqsService } from "../../sqs.js";
 import { normalizeSqsQueuePolicy, validateSqsQueuePolicyTarget } from "../../sqs/policy.js";
 import type { PolicyDocument } from "../../types.js";
 import {
+  ProviderReferenceError,
   type ProductionResourceProvider,
   type ProviderContext,
   type ProviderDeleteResult,
@@ -26,12 +27,24 @@ import {
 } from "./cfn10-common.js";
 
 export const SQS_QUEUE_POLICY_TYPE = "AWS::SQS::QueuePolicy";
-const POLICY_ID_PREFIX = "stacksim-cloudformation:";
+export const SQS_QUEUE_INLINE_POLICY_TYPE = "AWS::SQS::QueueInlinePolicy";
+/**
+ * Earlier releases marked a stack-managed queue policy by writing this prefix
+ * and the resource owner into the stored document's Id. The user's document is
+ * now stored unchanged; the marker is still recognised so queues deployed by
+ * those releases can be updated and cleaned up.
+ */
+const LEGACY_POLICY_ID_PREFIX = "stacksim-cloudformation:";
 const PHYSICAL_PREFIX = "sqs-queue-policy:";
 
 export interface SqsQueuePolicyModel {
   readonly PolicyDocument: Readonly<Record<string, unknown>>;
   readonly Queues: readonly string[];
+}
+
+export interface SqsQueueInlinePolicyModel {
+  readonly PolicyDocument: Readonly<Record<string, unknown>>;
+  readonly Queue: string;
 }
 
 export const SQS_QUEUE_POLICY_SCHEMA: ProviderSchema = Object.freeze({
@@ -50,6 +63,20 @@ export const SQS_QUEUE_POLICY_SCHEMA: ProviderSchema = Object.freeze({
   tags: CFN10_NO_TAGS,
 });
 
+export const SQS_QUEUE_INLINE_POLICY_SCHEMA: ProviderSchema = Object.freeze({
+  typeName: SQS_QUEUE_INLINE_POLICY_TYPE,
+  unknownProperties: "REJECT",
+  properties: Object.freeze({
+    PolicyDocument: Object.freeze({ valueType: "object", required: true, updateBehavior: "MUTABLE" }),
+    Queue: Object.freeze({ valueType: "string", required: true, updateBehavior: "REPLACEMENT", description: "Queue URL" }),
+  }),
+  ref: Object.freeze({ supported: true, valueType: "string", description: "Queue URL" }),
+  attributes: Object.freeze({}),
+  replacement: Object.freeze({ defaultOrder: "CREATE_BEFORE_DELETE" }),
+  retention: CFN10_RETENTION,
+  tags: CFN10_NO_TAGS,
+});
+
 interface QueueTarget {
   readonly url: string;
   readonly arn: string;
@@ -60,8 +87,8 @@ function physicalId(context: ProviderContext): string {
   return `${PHYSICAL_PREFIX}${cfn10Owner(context)}`;
 }
 
-function policyId(context: ProviderContext): string {
-  return `${POLICY_ID_PREFIX}${cfn10Owner(context)}`;
+function legacyPolicyId(context: ProviderContext): string {
+  return `${LEGACY_POLICY_ID_PREFIX}${cfn10Owner(context)}`;
 }
 
 function parseQueueUrl(value: unknown, context: ProviderContext): { url: string; arn: string } | undefined {
@@ -86,6 +113,22 @@ function parseQueueArn(value: unknown, context: ProviderContext): { arn: string;
   return { arn: value, name };
 }
 
+/** The public template contract is queue URLs; a persisted model carries the local queue ARNs emitted by canonicalize. */
+function publicQueueUrl(value: unknown, context: ProviderContext): unknown {
+  const parsed = parseQueueArn(value, context);
+  return parsed ? `https://sqs.${context.region}.amazonaws.com/${context.accountId}/${parsed.name}` : value;
+}
+
+function validatePolicyDocument(document: unknown, targets: readonly { arn: string }[], issues: ProviderValidationIssue[]): void {
+  if (!cfn10Record(document)) return;
+  try {
+    const normalized = normalizeSqsQueuePolicy(document as unknown as PolicyDocument);
+    for (const target of targets) validateSqsQueuePolicyTarget(normalized.document, target.arn);
+  } catch (error) {
+    cfn10Issue(issues, "Properties.PolicyDocument", error instanceof Error ? error.message : String(error));
+  }
+}
+
 function validation(properties: unknown, context: ProviderContext): ProviderValidationIssue[] {
   const issues = validateDeclaredProperties(properties ?? {}, SQS_QUEUE_POLICY_SCHEMA);
   if (!cfn10Record(properties)) return issues;
@@ -101,15 +144,16 @@ function validation(properties: unknown, context: ProviderContext): ProviderVali
       cfn10Issue(issues, "Properties.Queues", "Queues must identify distinct queue resources; URL aliases for the same queue are not allowed");
     }
   }
-  if (cfn10Record(properties.PolicyDocument)) {
-    if (properties.PolicyDocument.Id !== undefined) cfn10Issue(issues, "Properties.PolicyDocument.Id", "PolicyDocument.Id is reserved for CloudFormation ownership in the local QueuePolicy provider");
-    try {
-      const normalized = normalizeSqsQueuePolicy(properties.PolicyDocument as unknown as PolicyDocument);
-      for (const target of targets) validateSqsQueuePolicyTarget(normalized.document, target.arn);
-    } catch (error) {
-      cfn10Issue(issues, "Properties.PolicyDocument", error instanceof Error ? error.message : String(error));
-    }
-  }
+  validatePolicyDocument(properties.PolicyDocument, targets, issues);
+  return issues;
+}
+
+function inlineValidation(properties: unknown, context: ProviderContext): ProviderValidationIssue[] {
+  const issues = validateDeclaredProperties(properties ?? {}, SQS_QUEUE_INLINE_POLICY_SCHEMA);
+  if (!cfn10Record(properties)) return issues;
+  const target = parseQueueUrl(properties.Queue, context);
+  if (typeof properties.Queue === "string" && !target) cfn10Issue(issues, "Properties.Queue", "Queue must be the URL of a queue in this simulator account and Region");
+  validatePolicyDocument(properties.PolicyDocument, target ? [target] : [], issues);
   return issues;
 }
 
@@ -117,39 +161,29 @@ function canonicalPolicy(value: Record<string, unknown>): Readonly<Record<string
   return Object.freeze(normalizeSqsQueuePolicy(value as unknown as PolicyDocument).document as unknown as Record<string, unknown>);
 }
 
-function model(properties: Record<string, unknown>, context: ProviderContext): SqsQueuePolicyModel {
-  return Object.freeze({
-    PolicyDocument: canonicalPolicy(properties.PolicyDocument as Record<string, unknown>),
-    Queues: Object.freeze((properties.Queues as unknown[]).map(value =>
-      parseQueueUrl(value, context)?.arn ?? parseQueueArn(value, context)!.arn).sort()),
-  });
+function throwIssues(issues: readonly ProviderValidationIssue[]): void {
+  if (issues.length) throw new TypeError(issues.map(item => `${item.path}: ${item.message}`).join("; "));
 }
 
-function attachedPolicy(desired: SqsQueuePolicyModel, context: ProviderContext): string {
-  return normalizeSqsQueuePolicy({
-    ...(desired.PolicyDocument as unknown as PolicyDocument),
-    Id: policyId(context),
-  }).normalized;
+/** The document exactly as the user wrote it, in the form SQS stores a policy set through its API. */
+function attachedPolicy(document: Readonly<Record<string, unknown>>): string {
+  return normalizeSqsQueuePolicy(document as unknown as PolicyDocument).normalized;
 }
 
-function visiblePolicy(raw: string, context: ProviderContext): Readonly<Record<string, unknown>> {
-  const parsed = normalizeSqsQueuePolicy(JSON.parse(raw) as PolicyDocument);
-  const document = parsed.document as unknown as Record<string, unknown>;
-  if (document.Id !== policyId(context)) throw new Error("Queue policy is not owned by this stack resource");
-  const { Id: _ownership, ...visible } = document;
-  return canonicalPolicy(visible);
-}
-
-function success(currentPhysicalId: string, current: SqsQueuePolicyModel): ProviderSuccess<SqsQueuePolicyModel> {
-  return {
-    status: "SUCCESS",
-    physicalId: currentPhysicalId,
-    model: {
-      physicalId: currentPhysicalId,
-      properties: current,
-      attributes: { Id: currentPhysicalId },
-    },
-  };
+/**
+ * True when the queue still carries the policy this stack resource wrote:
+ * either the document from the resource's last applied model, or a document
+ * with the ownership marker written by an earlier release.
+ */
+function writtenByResource(raw: string | undefined, lastApplied: Readonly<Record<string, unknown>> | undefined, context: ProviderContext): boolean {
+  if (!raw) return false;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (parsed.Id === legacyPolicyId(context)) return true;
+    return lastApplied !== undefined && normalizeSqsQueuePolicy(parsed as unknown as PolicyDocument).normalized === attachedPolicy(lastApplied);
+  } catch {
+    return false;
+  }
 }
 
 function missingQueue(error: unknown): boolean {
@@ -157,18 +191,8 @@ function missingQueue(error: unknown): boolean {
   return code === "QueueDoesNotExist" || code === "AWS.SimpleQueueService.NonExistentQueue";
 }
 
-export function createSqsQueuePolicyProvider(sqs: SqsService): ProductionResourceProvider<SqsQueuePolicyModel> {
-  const allQueueUrls = async (): Promise<string[]> => {
-    const urls: string[] = [];
-    let nextToken: string | undefined;
-    do {
-      const page = await sqs.ListQueues({ MaxResults: 1_000, ...(nextToken ? { NextToken: nextToken } : {}) });
-      urls.push(...(page.QueueUrls ?? []));
-      nextToken = page.NextToken;
-    } while (nextToken);
-    return urls.sort();
-  };
-
+/** Queue-policy operations shared by AWS::SQS::QueuePolicy and AWS::SQS::QueueInlinePolicy. */
+function queuePolicyOperations(sqs: SqsService) {
   const target = async (identity: string): Promise<QueueTarget> => {
     const url = identity.startsWith("arn:")
       ? (await sqs.GetQueueUrl({ QueueName: identity.slice(identity.lastIndexOf(":") + 1) })).QueueUrl
@@ -177,37 +201,9 @@ export function createSqsQueuePolicyProvider(sqs: SqsService): ProductionResourc
     return { url, arn: String(attributes.QueueArn), ...(attributes.Policy ? { policy: String(attributes.Policy) } : {}) };
   };
 
-  const ownedTargets = async (context: ProviderContext): Promise<QueueTarget[]> => {
-    const result: QueueTarget[] = [];
-    for (const url of await allQueueUrls()) {
-      let current: QueueTarget;
-      try {
-        current = await target(url);
-      } catch (error) {
-        if (missingQueue(error)) continue;
-        throw error;
-      }
-      if (!current.policy) continue;
-      try {
-        const document = JSON.parse(current.policy) as Record<string, unknown>;
-        if (document.Id === policyId(context)) result.push(current);
-      } catch {
-        // SetQueueAttributes guarantees valid JSON, but an unrelated malformed value is not this provider's resource.
-      }
-    }
-    return result.sort((left, right) => left.url.localeCompare(right.url));
-  };
-
-  const describe = async (currentPhysicalId: string, context: ProviderContext): Promise<SqsQueuePolicyModel | undefined> => {
-    if (currentPhysicalId !== physicalId(context)) throw new Error("QueuePolicy physical ID is not owned by this stack resource");
-    const queues = await ownedTargets(context);
-    if (!queues.length) return undefined;
-    const policy = visiblePolicy(queues[0].policy!, context);
-    const expected = JSON.stringify(policy);
-    for (const queue of queues.slice(1)) {
-      if (JSON.stringify(visiblePolicy(queue.policy!, context)) !== expected) throw new Error("Owned queues contain inconsistent QueuePolicy documents");
-    }
-    return Object.freeze({ PolicyDocument: policy, Queues: Object.freeze(queues.map(queue => queue.arn)) });
+  const existingTarget = async (identity: string): Promise<QueueTarget | undefined> => {
+    try { return await target(identity); }
+    catch (error) { if (missingQueue(error)) return undefined; throw error; }
   };
 
   const mutate = async (
@@ -236,23 +232,112 @@ export function createSqsQueuePolicyProvider(sqs: SqsService): ProductionResourc
     }
   };
 
-  const reconcile = async (currentPhysicalId: string, desired: SqsQueuePolicyModel, context: ProviderContext): Promise<ProviderUpdateResult<SqsQueuePolicyModel>> => {
-    if (currentPhysicalId !== physicalId(context)) return { status: "FAILED", errorCode: "OwnershipConflict", message: "QueuePolicy physical ID is not owned by this stack resource" };
-    const existing = await ownedTargets(context);
-    const existingByArn = new Map(existing.map(item => [item.arn, item]));
+  /**
+   * Apply the document to every desired queue, replacing whatever policy the
+   * queue has (the last writer wins, as with SetQueueAttributes on AWS), and
+   * clear it from queues this resource no longer names when they still carry
+   * the policy this resource wrote.
+   */
+  const apply = async (
+    desiredQueues: readonly string[],
+    document: Readonly<Record<string, unknown>>,
+    previous: { readonly queues: readonly string[]; readonly document: Readonly<Record<string, unknown>> } | undefined,
+    context: ProviderContext,
+  ): Promise<QueueTarget[]> => {
     const desiredTargets: QueueTarget[] = [];
-    for (const arn of desired.Queues) {
-      const current = await target(arn);
-      if (current.policy && !existingByArn.has(arn)) return { status: "FAILED", errorCode: "AlreadyExists", message: `Queue ${arn} already has a policy not owned by this stack resource` };
-      desiredTargets.push(current);
+    for (const arn of desiredQueues) desiredTargets.push(await target(arn));
+    const desiredArns = new Set(desiredTargets.map(item => item.arn));
+    const released: QueueTarget[] = [];
+    for (const arn of previous?.queues ?? []) {
+      if (desiredArns.has(arn)) continue;
+      const current = await existingTarget(arn);
+      if (current && writtenByResource(current.policy, previous!.document, context)) released.push(current);
     }
-    const wantedPolicy = attachedPolicy(desired, context);
-    const desiredArns = new Set(desired.Queues);
+    const wanted = attachedPolicy(document);
     await mutate([
-      ...desiredTargets.map(item => ({ target: item, policy: wantedPolicy })),
-      ...existing.filter(item => !desiredArns.has(item.arn)).map(item => ({ target: item, policy: "" })),
+      ...desiredTargets.map(item => ({ target: item, policy: wanted })),
+      ...released.map(item => ({ target: item, policy: "" })),
     ]);
-    return success(currentPhysicalId, (await describe(currentPhysicalId, context))!);
+    return desiredTargets;
+  };
+
+  /** Remove the policy from each queue that still carries the one this resource wrote. Returns how many queues still exist. */
+  const release = async (queues: readonly string[], document: Readonly<Record<string, unknown>>, context: ProviderContext): Promise<number> => {
+    const owned: QueueTarget[] = [];
+    let found = 0;
+    for (const arn of queues) {
+      const current = await existingTarget(arn);
+      if (!current) continue;
+      found++;
+      if (writtenByResource(current.policy, document, context)) owned.push(current);
+    }
+    await mutate(owned.map(item => ({ target: item, policy: "" })), true);
+    return found;
+  };
+
+  return { target, existingTarget, apply, release };
+}
+
+function success(currentPhysicalId: string, current: SqsQueuePolicyModel): ProviderSuccess<SqsQueuePolicyModel> {
+  return {
+    status: "SUCCESS",
+    physicalId: currentPhysicalId,
+    model: {
+      physicalId: currentPhysicalId,
+      properties: current,
+      attributes: { Id: currentPhysicalId },
+    },
+  };
+}
+
+export function createSqsQueuePolicyProvider(sqs: SqsService): ProductionResourceProvider<SqsQueuePolicyModel> {
+  const operations = queuePolicyOperations(sqs);
+  // The stack's resource record holds the queue list, and update and delete
+  // receive it as the previous model. Only read has no model, so the last
+  // model applied by this process is remembered for it.
+  const applied = new Map<string, SqsQueuePolicyModel>();
+
+  const allQueueUrls = async (): Promise<string[]> => {
+    const urls: string[] = [];
+    let nextToken: string | undefined;
+    do {
+      const page = await sqs.ListQueues({ MaxResults: 1_000, ...(nextToken ? { NextToken: nextToken } : {}) });
+      urls.push(...(page.QueueUrls ?? []));
+      nextToken = page.NextToken;
+    } while (nextToken);
+    return urls.sort();
+  };
+
+  /** Queues whose stored policy carries the ownership marker written by an earlier release. */
+  const legacyModel = async (context: ProviderContext): Promise<SqsQueuePolicyModel | undefined> => {
+    const queues: QueueTarget[] = [];
+    for (const url of await allQueueUrls()) {
+      const current = await operations.existingTarget(url);
+      if (current?.policy && writtenByResource(current.policy, undefined, context)) queues.push(current);
+    }
+    if (!queues.length) return undefined;
+    const { Id: _marker, ...visible } = JSON.parse(queues[0].policy!) as Record<string, unknown>;
+    return Object.freeze({ PolicyDocument: canonicalPolicy(visible), Queues: Object.freeze(queues.map(queue => queue.arn).sort()) });
+  };
+
+  const describe = async (currentPhysicalId: string, context: ProviderContext): Promise<SqsQueuePolicyModel | undefined> => {
+    if (currentPhysicalId !== physicalId(context)) throw new Error("QueuePolicy physical ID is not owned by this stack resource");
+    const remembered = applied.get(currentPhysicalId);
+    if (!remembered) return legacyModel(context);
+    const queues: string[] = [];
+    for (const arn of remembered.Queues) {
+      const current = await operations.existingTarget(arn);
+      if (current && writtenByResource(current.policy, remembered.PolicyDocument, context)) queues.push(arn);
+    }
+    return queues.length ? Object.freeze({ PolicyDocument: remembered.PolicyDocument, Queues: Object.freeze(queues) }) : undefined;
+  };
+
+  const reconcile = async (currentPhysicalId: string, previous: SqsQueuePolicyModel | undefined, desired: SqsQueuePolicyModel, context: ProviderContext): Promise<ProviderUpdateResult<SqsQueuePolicyModel>> => {
+    if (currentPhysicalId !== physicalId(context)) return { status: "FAILED", errorCode: "OwnershipConflict", message: "QueuePolicy physical ID is not owned by this stack resource" };
+    const targets = await operations.apply(desired.Queues, desired.PolicyDocument, previous ? { queues: previous.Queues, document: previous.PolicyDocument } : undefined, context);
+    const current: SqsQueuePolicyModel = Object.freeze({ PolicyDocument: desired.PolicyDocument, Queues: Object.freeze(targets.map(item => item.arn).sort()) });
+    applied.set(currentPhysicalId, current);
+    return success(currentPhysicalId, current);
   };
 
   return {
@@ -266,42 +351,26 @@ export function createSqsQueuePolicyProvider(sqs: SqsService): ProductionResourc
       // CloudFormation persists provider models and canonicalizes them again for
       // later update, delete, and rollback operations. The public template
       // contract remains queue URLs (enforced by validate), while this private
-      // path accepts only the exact local queue ARNs emitted by model().
+      // path accepts only the exact local queue ARNs emitted below.
       const internalQueues = Array.isArray(properties.Queues)
         && properties.Queues.length > 0
         && properties.Queues.every(value => parseQueueArn(value, context) !== undefined);
       const validationInput = internalQueues
-        ? {
-            ...properties,
-            Queues: (properties.Queues as unknown[]).map(value => {
-              const parsed = parseQueueArn(value, context)!;
-              return `https://sqs.${context.region}.amazonaws.com/${context.accountId}/${parsed.name}`;
-            }),
-          }
+        ? { ...properties, Queues: (properties.Queues as unknown[]).map(value => publicQueueUrl(value, context)) }
         : properties;
-      const issues = validation(validationInput, context);
-      if (issues.length) throw new TypeError(issues.map(item => `${item.path}: ${item.message}`).join("; "));
-      return model(properties, context);
+      throwIssues(validation(validationInput, context));
+      return Object.freeze({
+        PolicyDocument: canonicalPolicy(properties.PolicyDocument as Record<string, unknown>),
+        Queues: Object.freeze((properties.Queues as unknown[]).map(value =>
+          parseQueueUrl(value, context)?.arn ?? parseQueueArn(value, context)!.arn).sort()),
+      });
     },
     plan(previous: SqsQueuePolicyModel | undefined, desired: SqsQueuePolicyModel): ProviderPlan<SqsQueuePolicyModel> {
       return cfn10Plan(previous as SqsQueuePolicyModel & Record<string, unknown> | undefined, desired as SqsQueuePolicyModel & Record<string, unknown>, SQS_QUEUE_POLICY_SCHEMA) as ProviderPlan<SqsQueuePolicyModel>;
     },
     async create(desired: SqsQueuePolicyModel, context: ProviderContext) {
-      try {
-        const id = physicalId(context);
-        const existing = await describe(id, context);
-        if (existing) return await reconcile(id, desired, context);
-        const targets: QueueTarget[] = [];
-        for (const arn of desired.Queues) {
-          const current = await target(arn);
-          if (current.policy) return { status: "FAILED", errorCode: "AlreadyExists", message: `Queue ${arn} already has a policy not owned by this stack resource` };
-          targets.push(current);
-        }
-        await mutate(targets.map(item => ({ target: item, policy: attachedPolicy(desired, context) })));
-        return success(id, (await describe(id, context))!);
-      } catch (error) {
-        return cfn10Failure(error);
-      }
+      try { return await reconcile(physicalId(context), undefined, desired, context); }
+      catch (error) { return cfn10Failure(error); }
     },
     async read(currentPhysicalId: string, context: ProviderContext): Promise<ProviderReadResult<SqsQueuePolicyModel>> {
       try {
@@ -311,17 +380,16 @@ export function createSqsQueuePolicyProvider(sqs: SqsService): ProductionResourc
         return cfn10Failure(error);
       }
     },
-    async update(currentPhysicalId: string, _previous: SqsQueuePolicyModel, desired: SqsQueuePolicyModel, context: ProviderContext): Promise<ProviderUpdateResult<SqsQueuePolicyModel>> {
-      try { return await reconcile(currentPhysicalId, desired, context); }
+    async update(currentPhysicalId: string, previous: SqsQueuePolicyModel, desired: SqsQueuePolicyModel, context: ProviderContext): Promise<ProviderUpdateResult<SqsQueuePolicyModel>> {
+      try { return await reconcile(currentPhysicalId, previous, desired, context); }
       catch (error) { return cfn10Failure(error); }
     },
-    async delete(currentPhysicalId: string, _previous: SqsQueuePolicyModel, context: ProviderContext): Promise<ProviderDeleteResult> {
+    async delete(currentPhysicalId: string, previous: SqsQueuePolicyModel, context: ProviderContext): Promise<ProviderDeleteResult> {
       try {
         if (currentPhysicalId !== physicalId(context)) return { status: "FAILED", errorCode: "OwnershipConflict", message: "QueuePolicy physical ID is not owned by this stack resource" };
-        const targets = await ownedTargets(context);
-        if (!targets.length) return { status: "NOT_FOUND", physicalId: currentPhysicalId };
-        await mutate(targets.map(item => ({ target: item, policy: "" })), true);
-        return { status: "SUCCESS", physicalId: currentPhysicalId };
+        applied.delete(currentPhysicalId);
+        const found = await operations.release(previous.Queues, previous.PolicyDocument, context);
+        return found ? { status: "SUCCESS", physicalId: currentPhysicalId } : { status: "NOT_FOUND", physicalId: currentPhysicalId };
       } catch (error) {
         return missingQueue(error) ? { status: "NOT_FOUND", physicalId: currentPhysicalId } : cfn10Failure(error) as ProviderDeleteResult;
       }
@@ -329,6 +397,78 @@ export function createSqsQueuePolicyProvider(sqs: SqsService): ProductionResourc
     ref(current: ProviderReadModel<SqsQueuePolicyModel>): unknown { return current.physicalId; },
     getAtt(current: ProviderReadModel<SqsQueuePolicyModel>, attribute: string): unknown {
       return cfn10GetAtt(SQS_QUEUE_POLICY_TYPE, SQS_QUEUE_POLICY_SCHEMA, current, attribute);
+    },
+  };
+}
+
+/**
+ * AWS::SQS::QueueInlinePolicy attaches one policy document to one queue. Its
+ * physical ID and Ref value are the queue URL.
+ */
+export function createSqsQueueInlinePolicyProvider(sqs: SqsService): ProductionResourceProvider<SqsQueueInlinePolicyModel> {
+  const operations = queuePolicyOperations(sqs);
+
+  const success = (queue: QueueTarget, document: Readonly<Record<string, unknown>>): ProviderSuccess<SqsQueueInlinePolicyModel> => ({
+    status: "SUCCESS",
+    physicalId: queue.url,
+    model: {
+      physicalId: queue.url,
+      properties: Object.freeze({ PolicyDocument: document, Queue: queue.arn }),
+      attributes: { QueueUrl: queue.url },
+    },
+  });
+
+  const reconcile = async (desired: SqsQueueInlinePolicyModel, context: ProviderContext): Promise<ProviderUpdateResult<SqsQueueInlinePolicyModel>> => {
+    const [queue] = await operations.apply([desired.Queue], desired.PolicyDocument, undefined, context);
+    return success(queue, desired.PolicyDocument);
+  };
+
+  return {
+    typeName: SQS_QUEUE_INLINE_POLICY_TYPE,
+    providerVersion: 1,
+    visibility: "production",
+    schema: SQS_QUEUE_INLINE_POLICY_SCHEMA,
+    validate(properties: unknown, context: ProviderContext): readonly ProviderValidationIssue[] { return inlineValidation(properties, context); },
+    canonicalize(properties: unknown, context: ProviderContext): SqsQueueInlinePolicyModel {
+      if (!cfn10Record(properties)) throw new TypeError(`${SQS_QUEUE_INLINE_POLICY_TYPE} Properties must be an object`);
+      // A persisted model carries the local queue ARN emitted below.
+      throwIssues(inlineValidation({ ...properties, Queue: publicQueueUrl(properties.Queue, context) }, context));
+      return Object.freeze({
+        PolicyDocument: canonicalPolicy(properties.PolicyDocument as Record<string, unknown>),
+        Queue: parseQueueUrl(properties.Queue, context)?.arn ?? parseQueueArn(properties.Queue, context)!.arn,
+      });
+    },
+    plan(previous: SqsQueueInlinePolicyModel | undefined, desired: SqsQueueInlinePolicyModel): ProviderPlan<SqsQueueInlinePolicyModel> {
+      return cfn10Plan(previous as SqsQueueInlinePolicyModel & Record<string, unknown> | undefined, desired as SqsQueueInlinePolicyModel & Record<string, unknown>, SQS_QUEUE_INLINE_POLICY_SCHEMA) as ProviderPlan<SqsQueueInlinePolicyModel>;
+    },
+    async create(desired: SqsQueueInlinePolicyModel, context: ProviderContext) {
+      try { return await reconcile(desired, context); }
+      catch (error) { return cfn10Failure(error); }
+    },
+    async read(currentPhysicalId: string): Promise<ProviderReadResult<SqsQueueInlinePolicyModel>> {
+      try {
+        const queue = await operations.existingTarget(currentPhysicalId);
+        if (!queue?.policy) return { status: "NOT_FOUND", physicalId: currentPhysicalId };
+        return success(queue, canonicalPolicy(JSON.parse(queue.policy) as Record<string, unknown>));
+      } catch (error) {
+        return cfn10Failure(error);
+      }
+    },
+    async update(_currentPhysicalId: string, _previous: SqsQueueInlinePolicyModel, desired: SqsQueueInlinePolicyModel, context: ProviderContext): Promise<ProviderUpdateResult<SqsQueueInlinePolicyModel>> {
+      try { return await reconcile(desired, context); }
+      catch (error) { return cfn10Failure(error); }
+    },
+    async delete(currentPhysicalId: string, previous: SqsQueueInlinePolicyModel, context: ProviderContext): Promise<ProviderDeleteResult> {
+      try {
+        const found = await operations.release([previous.Queue], previous.PolicyDocument, context);
+        return found ? { status: "SUCCESS", physicalId: currentPhysicalId } : { status: "NOT_FOUND", physicalId: currentPhysicalId };
+      } catch (error) {
+        return missingQueue(error) ? { status: "NOT_FOUND", physicalId: currentPhysicalId } : cfn10Failure(error) as ProviderDeleteResult;
+      }
+    },
+    ref(current: ProviderReadModel<SqsQueueInlinePolicyModel>): unknown { return current.attributes.QueueUrl; },
+    getAtt(_current: ProviderReadModel<SqsQueueInlinePolicyModel>, attribute: string): unknown {
+      throw new ProviderReferenceError(SQS_QUEUE_INLINE_POLICY_TYPE, `Fn::GetAtt ${attribute}`);
     },
   };
 }

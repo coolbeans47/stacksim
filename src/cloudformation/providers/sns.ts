@@ -211,7 +211,7 @@ function exact(value: Record<string, unknown>, allowed: readonly string[], path:
   for (const key of Object.keys(value)) if (!allowed.includes(key)) issue(issues, `${path}.${key}`, `${path} does not support property ${key}`, "UnsupportedProperty");
 }
 function unsupported(properties: Record<string, unknown>, names: readonly string[], issues: ProviderValidationIssue[]): void {
-  for (const name of names) if (properties[name] !== undefined) issue(issues, `Properties.${name}`, `${name} requires a later SNS phase and is not accepted`);
+  for (const name of names) if (properties[name] !== undefined) issue(issues, `Properties.${name}`, `${name} is not supported by StackSim`);
 }
 function tags(value: unknown, issues?: ProviderValidationIssue[]): readonly Tag[] | undefined {
   if (value === undefined) return undefined;
@@ -270,7 +270,7 @@ function validateTopic(properties: unknown): ProviderValidationIssue[] {
   if (Array.isArray(properties.DeliveryStatusLogging)) properties.DeliveryStatusLogging.forEach((item, index) => {
     if (!record(item)) return issue(issues, `Properties.DeliveryStatusLogging[${index}]`, "Delivery logging entries must be objects");
     exact(item, ["Protocol", "FailureFeedbackRoleArn", "SuccessFeedbackRoleArn", "SuccessFeedbackSampleRate"], `Properties.DeliveryStatusLogging[${index}]`, issues);
-    if (!["sqs", "lambda"].includes(String(item.Protocol))) issue(issues, `Properties.DeliveryStatusLogging[${index}].Protocol`, "Only sqs and lambda logging protocols are active");
+    if (!["sqs", "lambda"].includes(String(item.Protocol))) issue(issues, `Properties.DeliveryStatusLogging[${index}].Protocol`, "Only the sqs and lambda logging protocols are supported by StackSim");
   });
   return issues;
 }
@@ -406,7 +406,7 @@ function validateSubscription(properties: unknown, context: ProviderContext): Pr
   const issues = validateDeclaredProperties(properties ?? {}, SNS_SUBSCRIPTION_SCHEMA);
   if (!record(properties)) return issues;
   unsupported(properties, ["DeliveryPolicy", "ReplayPolicy", "SubscriptionRoleArn"], issues);
-  if (properties.Protocol !== undefined && !["sqs", "lambda"].includes(String(properties.Protocol))) issue(issues, "Properties.Protocol", "Only sqs and lambda protocols are active in SNS-03");
+  if (properties.Protocol !== undefined && !["sqs", "lambda"].includes(String(properties.Protocol))) issue(issues, "Properties.Protocol", "Only the sqs and lambda protocols are supported by StackSim");
   if (properties.FilterPolicyScope !== undefined && !["MessageAttributes", "MessageBody"].includes(String(properties.FilterPolicyScope))) issue(issues, "Properties.FilterPolicyScope", "FilterPolicyScope must be MessageAttributes or MessageBody");
   if (properties.Region !== undefined && properties.Region !== context.region) issue(issues, "Properties.Region", "Cross-Region subscriptions are not available");
   return issues;

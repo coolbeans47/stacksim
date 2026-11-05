@@ -49,6 +49,7 @@ export interface LambdaEventSourceMappingModel {
   readonly MaximumBatchingWindowInSeconds: number;
   readonly MaximumRecordAgeInSeconds?: number;
   readonly MaximumRetryAttempts?: number;
+  readonly MetricsConfig?: { readonly Metrics: readonly "EventCount"[] };
   readonly ParallelizationFactor?: number;
   readonly ScalingConfig?: { readonly MaximumConcurrency: number };
   readonly StartingPosition?: "TRIM_HORIZON" | "LATEST";
@@ -81,6 +82,7 @@ export const LAMBDA_EVENT_SOURCE_MAPPING_SCHEMA: ProviderSchema = Object.freeze(
     MaximumBatchingWindowInSeconds: Object.freeze({ valueType: "number", updateBehavior: "MUTABLE" }),
     MaximumRecordAgeInSeconds: Object.freeze({ valueType: "number", updateBehavior: "MUTABLE" }),
     MaximumRetryAttempts: Object.freeze({ valueType: "number", updateBehavior: "MUTABLE" }),
+    MetricsConfig: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE", description: "SQS event sources only; stored and returned." }),
     ParallelizationFactor: Object.freeze({ valueType: "number", updateBehavior: "MUTABLE" }),
     ScalingConfig: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
     StartingPosition: Object.freeze({ valueType: "string", updateBehavior: "REPLACEMENT" }),
@@ -193,7 +195,7 @@ function validateDiscardDestination(value: unknown, context: ProviderContext, is
   exactKeys(value, ["OnFailure"], path, issues);
   if (!isRecord(value.OnFailure)) { issue(issues, `${path}.OnFailure`, "DestinationConfig must contain an OnFailure object"); return; }
   exactKeys(value.OnFailure, ["Destination"], `${path}.OnFailure`, issues);
-  if (!sqsDestination(value.OnFailure.Destination, context)) issue(issues, `${path}.OnFailure.Destination`, "CFN-09 DynamoDB discarded-record destinations must identify an SQS queue (standard or FIFO) in this simulator account and Region");
+  if (!sqsDestination(value.OnFailure.Destination, context)) issue(issues, `${path}.OnFailure.Destination`, "DynamoDB discarded-record destinations must identify an SQS queue (standard or FIFO) in this simulator account and Region");
 }
 
 function validateScaling(value: unknown, issues: ProviderValidationIssue[]): void {
@@ -201,6 +203,17 @@ function validateScaling(value: unknown, issues: ProviderValidationIssue[]): voi
   if (!isRecord(value)) return;
   exactKeys(value, ["MaximumConcurrency"], path, issues);
   if (value.MaximumConcurrency !== undefined) integer(value.MaximumConcurrency, `${path}.MaximumConcurrency`, 2, 1_000, issues);
+}
+
+function validateMetrics(value: unknown, issues: ProviderValidationIssue[]): void {
+  const path = "Properties.MetricsConfig";
+  if (!isRecord(value)) return;
+  exactKeys(value, ["Metrics"], path, issues);
+  if (value.Metrics !== undefined && (!Array.isArray(value.Metrics) || value.Metrics.some(metric => metric !== "EventCount"))) issue(issues, `${path}.Metrics`, "Metrics only supports EventCount");
+}
+
+function canonicalMetrics(value: unknown): LambdaEventSourceMappingModel["MetricsConfig"] {
+  return isRecord(value) && Array.isArray(value.Metrics) && value.Metrics.length ? { Metrics: ["EventCount"] } : undefined;
 }
 
 const DYNAMODB_ONLY = ["BisectBatchOnFunctionError", "DestinationConfig", "MaximumRecordAgeInSeconds", "MaximumRetryAttempts", "ParallelizationFactor", "StartingPosition", "TumblingWindowInSeconds"] as const;
@@ -211,7 +224,7 @@ function validateEventSourceMapping(properties: unknown, context: ProviderContex
   const type = sourceType(properties.EventSourceArn, context);
   if (!type) {
     const service = typeof properties.EventSourceArn === "string" && properties.EventSourceArn.startsWith("arn:") ? properties.EventSourceArn.split(":")[2] : "unknown";
-    issue(issues, "Properties.EventSourceArn", `CFN-09 supports only same-account, same-Region DynamoDB Streams and SQS (standard or FIFO) event sources; ${service} belongs to another source family or phase`);
+    issue(issues, "Properties.EventSourceArn", `StackSim supports only same-account, same-Region DynamoDB Streams and SQS (standard or FIFO) event sources; ${service} event sources are not supported`);
   }
   if (!localFunctionTarget(properties.FunctionName, context, true)) issue(issues, "Properties.FunctionName", "FunctionName must identify a Lambda function or qualifier in this simulator account and Region");
   if (properties.Enabled !== undefined && typeof properties.Enabled !== "boolean") issue(issues, "Properties.Enabled", "Enabled must be a boolean");
@@ -221,8 +234,9 @@ function validateEventSourceMapping(properties: unknown, context: ProviderContex
   if (type === "sqs") {
     if (properties.BatchSize !== undefined) integer(properties.BatchSize, "Properties.BatchSize", 1, 10_000, issues);
     if (Number(properties.BatchSize ?? 10) > 10 && Number(properties.MaximumBatchingWindowInSeconds ?? 0) < 1) issue(issues, "Properties.MaximumBatchingWindowInSeconds", "MaximumBatchingWindowInSeconds must be at least 1 when SQS BatchSize is greater than 10");
-    for (const field of DYNAMODB_ONLY) if (properties[field] !== undefined) issue(issues, `Properties.${field}`, `${field} is not supported for SQS event source mappings in CFN-09`);
+    for (const field of DYNAMODB_ONLY) if (properties[field] !== undefined) issue(issues, `Properties.${field}`, `${field} is not supported for SQS event source mappings`);
     if (properties.ScalingConfig !== undefined) validateScaling(properties.ScalingConfig, issues);
+    if (properties.MetricsConfig !== undefined) validateMetrics(properties.MetricsConfig, issues);
   }
   if (type === "dynamodb") {
     if (properties.BatchSize !== undefined) integer(properties.BatchSize, "Properties.BatchSize", 1, 10_000, issues);
@@ -235,6 +249,7 @@ function validateEventSourceMapping(properties: unknown, context: ProviderContex
     if (properties.TumblingWindowInSeconds !== undefined) integer(properties.TumblingWindowInSeconds, "Properties.TumblingWindowInSeconds", 0, 900, issues);
     if (properties.DestinationConfig !== undefined) validateDiscardDestination(properties.DestinationConfig, context, issues);
     if (properties.ScalingConfig !== undefined) issue(issues, "Properties.ScalingConfig", "ScalingConfig is supported only for SQS event source mappings");
+    if (properties.MetricsConfig !== undefined) issue(issues, "Properties.MetricsConfig", "MetricsConfig is supported only for SQS event source mappings");
   }
   return issues;
 }
@@ -259,7 +274,8 @@ function canonicalEventSourceMapping(properties: Record<string, unknown>, contex
   };
   if (type === "sqs") {
     const scaling = isRecord(properties.ScalingConfig) && properties.ScalingConfig.MaximumConcurrency !== undefined ? { MaximumConcurrency: Number(properties.ScalingConfig.MaximumConcurrency) } : undefined;
-    return { ...common, ...(scaling ? { ScalingConfig: scaling } : {}) };
+    const metrics = canonicalMetrics(properties.MetricsConfig);
+    return { ...common, ...(metrics ? { MetricsConfig: metrics } : {}), ...(scaling ? { ScalingConfig: scaling } : {}) };
   }
   const destination = isRecord(properties.DestinationConfig) && isRecord(properties.DestinationConfig.OnFailure) ? { OnFailure: { Destination: String(properties.DestinationConfig.OnFailure.Destination) } } : undefined;
   return {
@@ -285,6 +301,7 @@ function mappingUpdateInput(model: LambdaEventSourceMappingModel, type: SourceTy
   };
   return type === "sqs" ? {
     ...common,
+    MetricsConfig: { Metrics: [...(model.MetricsConfig?.Metrics ?? [])] },
     ScalingConfig: model.ScalingConfig ? structuredClone(model.ScalingConfig) : {},
   } : {
     ...common,
@@ -308,7 +325,7 @@ function mappingCreateInput(model: LambdaEventSourceMappingModel, type: SourceTy
 
 function mappingModelFromView(view: any, context: ProviderContext): LambdaEventSourceMappingModel {
   const type = sourceType(view.EventSourceArn, context);
-  if (!type) throw new AwsError("UnsupportedResourceState", `Event source mapping ${view.UUID} uses a source outside CFN-09`, 409);
+  if (!type) throw new AwsError("UnsupportedResourceState", `Event source mapping ${view.UUID} uses an event source that StackSim does not support in CloudFormation`, 409);
   const target = localFunctionTarget(view.FunctionArn, context, true);
   if (!target) throw new AwsError("UnsupportedResourceState", `Event source mapping ${view.UUID} uses a function outside this simulator account and Region`, 409);
   const filter = canonicalFilter(view.FilterCriteria);
@@ -318,9 +335,10 @@ function mappingModelFromView(view: any, context: ProviderContext): LambdaEventS
     FunctionResponseTypes: [...(view.FunctionResponseTypes ?? [])] as "ReportBatchItemFailures"[],
     MaximumBatchingWindowInSeconds: Number(view.MaximumBatchingWindowInSeconds),
   };
-  if (type === "sqs") return { ...common, ...(view.ScalingConfig?.MaximumConcurrency !== undefined ? { ScalingConfig: { MaximumConcurrency: Number(view.ScalingConfig.MaximumConcurrency) } } : {}) };
+  const metrics = canonicalMetrics(view.MetricsConfig);
+  if (type === "sqs") return { ...common, ...(metrics ? { MetricsConfig: metrics } : {}), ...(view.ScalingConfig?.MaximumConcurrency !== undefined ? { ScalingConfig: { MaximumConcurrency: Number(view.ScalingConfig.MaximumConcurrency) } } : {}) };
   const destination = view.DestinationConfig?.OnFailure?.Destination;
-  if (destination && !sqsDestination(destination, context)) throw new AwsError("UnsupportedResourceState", `Event source mapping ${view.UUID} uses a discarded-record destination outside CFN-09`, 409);
+  if (destination && !sqsDestination(destination, context)) throw new AwsError("UnsupportedResourceState", `Event source mapping ${view.UUID} uses a discarded-record destination that StackSim does not support in CloudFormation`, 409);
   return {
     ...common,
     BisectBatchOnFunctionError: Boolean(view.BisectBatchOnFunctionError),
@@ -438,7 +456,7 @@ export function createLambdaEventSourceMappingProvider(lambda: LambdaService): P
 function validateInvokeDestination(value: unknown, path: string, context: ProviderContext, issues: ProviderValidationIssue[]): void {
   if (!isRecord(value)) { issue(issues, path, `${path.split(".").at(-1)} must be an object`); return; }
   exactKeys(value, ["Destination"], path, issues);
-  if (!asyncInvokeDestination(value.Destination, context)) issue(issues, `${path}.Destination`, "CFN-09 async destinations must identify a local Lambda function, SQS queue, Standard SNS topic, or EventBridge event bus");
+  if (!asyncInvokeDestination(value.Destination, context)) issue(issues, `${path}.Destination`, "Async destinations must identify a local Lambda function, SQS queue, Standard SNS topic, or EventBridge event bus");
 }
 
 function validateEventInvokeConfig(properties: unknown, context: ProviderContext): ProviderValidationIssue[] {
@@ -453,8 +471,8 @@ function validateEventInvokeConfig(properties: unknown, context: ProviderContext
     if (isRecord(properties.DestinationConfig)) {
       exactKeys(properties.DestinationConfig, ["OnFailure", "OnSuccess"], path, issues);
       if (properties.DestinationConfig.OnFailure !== undefined) validateInvokeDestination(properties.DestinationConfig.OnFailure, `${path}.OnFailure`, context, issues);
+      // An empty DestinationConfig is valid: the SAM transform always emits the property, even when only retries are configured.
       if (properties.DestinationConfig.OnSuccess !== undefined) validateInvokeDestination(properties.DestinationConfig.OnSuccess, `${path}.OnSuccess`, context, issues);
-      if (properties.DestinationConfig.OnFailure === undefined && properties.DestinationConfig.OnSuccess === undefined) issue(issues, path, "DestinationConfig must contain OnFailure or OnSuccess");
     }
   }
   return issues;
@@ -494,7 +512,7 @@ function invokeConfigFromView(view: any, identity: { FunctionName: string; Quali
   for (const condition of ["OnFailure", "OnSuccess"] as const) {
     const target = view.DestinationConfig?.[condition]?.Destination;
     if (target && !asyncInvokeDestination(target, context)) {
-      throw new AwsError("UnsupportedResourceState", `Async invocation ${condition} destination is outside the CFN-09 local Lambda/SQS/SNS/EventBridge boundary`, 409);
+      throw new AwsError("UnsupportedResourceState", `Async invocation ${condition} destination is not a local Lambda function, SQS queue, SNS topic, or EventBridge event bus`, 409);
     }
   }
   const destination = view.DestinationConfig ? {

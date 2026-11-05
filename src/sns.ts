@@ -35,7 +35,7 @@ const LEASE_MS = 30_000;
 const MANAGED_DELIVERY_ATTEMPTS = 100_015;
 
 export const SNS_02_ACTIONS = new Set(SNS_02_IMPLEMENTED_ACTIONS);
-/** Compatibility alias for callers compiled against the SNS-01 export. */
+/** Compatibility alias for callers compiled against the earlier export name. */
 export const SNS_01_ACTIONS = SNS_02_ACTIONS;
 
 interface SqsPort {
@@ -95,7 +95,7 @@ function validUnicode(value: string): boolean {
 function topicName(value: unknown): string {
   const name = String(value ?? "");
   if (!/^[A-Za-z0-9_-]{1,256}$/.test(name)) {
-    if (name.endsWith(".fifo")) throw new AwsError("InvalidParameter", "FIFO topics are not available until SNS-04.", 400);
+    if (name.endsWith(".fifo")) throw new AwsError("InvalidParameter", "FIFO topics are not supported by StackSim.", 400);
     throw new AwsError("InvalidParameter", "Topic Name must be 1 to 256 characters containing only letters, numbers, hyphens, and underscores.", 400);
   }
   return name;
@@ -138,11 +138,11 @@ function createTopicAttributes(value: unknown): { displayName?: string } {
   const unsupported = Object.keys(source).find(key => !allowed.has(key));
   if (unsupported) {
     if (["DeliveryPolicy", "KmsMasterKeyId", "TracingConfig", "ArchivePolicy", "ContentBasedDeduplication", "FifoThroughputScope"].includes(unsupported)) {
-      throw new AwsError("InvalidParameter", `Topic attribute ${unsupported} requires a later SNS phase and was not applied.`, 400);
+      throw new AwsError("InvalidParameter", `Topic attribute ${unsupported} is not supported by StackSim and was not applied.`, 400);
     }
     throw new AwsError("InvalidParameter", `Topic attribute ${unsupported} is unsupported.`, 400);
   }
-  if (source.FifoTopic !== undefined && source.FifoTopic !== "false") throw new AwsError("InvalidParameter", "FIFO topics are not available until SNS-04.", 400);
+  if (source.FifoTopic !== undefined && source.FifoTopic !== "false") throw new AwsError("InvalidParameter", "FIFO topics are not supported by StackSim.", 400);
   if (source.DisplayName !== undefined) displayName(source.DisplayName);
   return source as any;
 }
@@ -669,15 +669,15 @@ export class SnsService {
   async Subscribe(input: any): Promise<{ SubscriptionArn: string }> {
     const topic = this.requireTopic(input.TopicArn);
     const protocol = String(input.Protocol ?? "");
-    if (protocol !== "sqs" && protocol !== "lambda") throw new AwsError("InvalidParameter", `Protocol ${protocol || "(empty)"} is unavailable in SNS-01; only sqs and lambda are active.`, 400);
+    if (protocol !== "sqs" && protocol !== "lambda") throw new AwsError("InvalidParameter", `Protocol ${protocol || "(empty)"} is not supported by StackSim; only sqs and lambda subscriptions are supported.`, 400);
     const attributes = stringMap(input.Attributes, "Subscription attribute");
     const endpoint = String(input.Endpoint ?? "");
     if (!endpoint) throw new AwsError("InvalidParameter", "Endpoint is required.", 400);
     const match = endpoint.match(/^arn:(aws):(sqs|lambda):([^:]+):(\d{12}):(.+)$/);
-    if (!match || match[2] !== protocol || match[3] !== this.region || match[4] !== this.store.accountId) throw new AwsError("InvalidParameter", "SNS-01 subscriptions must target the same simulator account and Region using a matching SQS or Lambda ARN.", 400);
+    if (!match || match[2] !== protocol || match[3] !== this.region || match[4] !== this.store.accountId) throw new AwsError("InvalidParameter", "Subscriptions must target the same simulator account and Region using a matching SQS or Lambda ARN.", 400);
     if (protocol === "sqs") {
       const queue = this.sqs.resolveQueueArn(endpoint);
-      if (queue.fifo) throw new AwsError("InvalidParameter", "FIFO queue subscriptions require SNS-04.", 400);
+      if (queue.fifo) throw new AwsError("InvalidParameter", "Invalid parameter: Endpoint Reason: FIFO SQS Queues can not be subscribed to standard SNS topics", 400);
     } else this.lambda.assertFunctionExists(endpoint);
     return this.store.withMutationLock(`sns:${this.store.accountId}:${this.region}:control`, async () => {
       const currentTopic = this.requireTopic(topic.arn);
@@ -1043,8 +1043,8 @@ export class SnsService {
   private async accept(input: any, principal?: PrincipalContext, attempt?: ServiceIntegrationAttempt): Promise<{ messageId: string }> {
     if (attempt) { const prior = await this.reconcileIntegrationAttempt(attempt); if (prior !== undefined) return { messageId: String(prior.MessageId) }; }
     const topic = this.requireTopic(input.TopicArn);
-    if (input.TargetArn !== undefined || input.PhoneNumber !== undefined) throw new AwsError("InvalidParameter", "SNS-01 Publish accepts TopicArn only; mobile and SMS targets are unavailable.", 400);
-    if (input.MessageDeduplicationId !== undefined) throw new AwsError("InvalidParameter", "MessageDeduplicationId is valid only for FIFO topics in SNS-04.", 400);
+    if (input.TargetArn !== undefined || input.PhoneNumber !== undefined) throw new AwsError("InvalidParameter", "Publish accepts TopicArn only; mobile and SMS targets are not supported by StackSim.", 400);
+    if (input.MessageDeduplicationId !== undefined) throw new AwsError("InvalidParameter", "MessageDeduplicationId is valid only for FIFO topics, which are not supported by StackSim.", 400);
     const message = String(input.Message ?? "");
     if (!message || !validUnicode(message)) throw new AwsError("InvalidParameter", "Message must be a non-empty valid UTF-8 string.", 400);
     const subject = input.Subject === undefined ? undefined : String(input.Subject);
@@ -1163,12 +1163,12 @@ export class SnsService {
     for (const [name, value] of Object.entries(attributes)) {
       if (!supported.has(name)) {
         if (["DeliveryPolicy", "KmsMasterKeyId", "TracingConfig", "ArchivePolicy", "ContentBasedDeduplication", "FifoThroughputScope"].includes(name)) {
-          throw new AwsError("InvalidParameter", `Topic attribute ${name} requires a later SNS phase and was not applied.`, 400);
+          throw new AwsError("InvalidParameter", `Topic attribute ${name} is not supported by StackSim and was not applied.`, 400);
         }
         throw new AwsError("InvalidParameter", `Topic attribute ${name} is unsupported.`, 400);
       }
       if (name === "FifoTopic") {
-        if (value !== "false") throw new AwsError("InvalidParameter", "FIFO topics are not available until SNS-04.", 400);
+        if (value !== "false") throw new AwsError("InvalidParameter", "FIFO topics are not supported by StackSim.", 400);
       } else if (name === "DisplayName") {
         topic.displayName = displayName(value);
       } else if (name === "Policy") {
@@ -1201,7 +1201,7 @@ export class SnsService {
       if (trust.decision !== "allowed") throw new AwsError("InvalidParameter", `Delivery feedback role ${roleArn} does not trust sns.amazonaws.com.`, 400);
     }
     if (creating && attributes.FifoTopic === undefined) {
-      // Standard topics are the only topic type active in SNS-02.
+      // Standard topics are the only supported topic type.
     }
   }
 
@@ -1210,7 +1210,7 @@ export class SnsService {
     const unknown = Object.keys(attributes).find(name => !supported.has(name));
     if (unknown) {
       if (["DeliveryPolicy", "SubscriptionRoleArn", "ReplayPolicy"].includes(unknown)) {
-        throw new AwsError("InvalidParameter", `Subscription attribute ${unknown} requires a later SNS phase and was not applied.`, 400);
+        throw new AwsError("InvalidParameter", `Subscription attribute ${unknown} is not supported by StackSim and was not applied.`, 400);
       }
       throw new AwsError("InvalidParameter", `Subscription attribute ${unknown} is unsupported.`, 400);
     }
@@ -1235,7 +1235,7 @@ export class SnsService {
     if (attributes.RawMessageDelivery !== undefined) {
       if (!["true", "false"].includes(attributes.RawMessageDelivery)) throw new AwsError("InvalidParameter", "RawMessageDelivery must be true or false.", 400);
       const value = attributes.RawMessageDelivery === "true";
-      if (value && subscription.protocol !== "sqs") throw new AwsError("InvalidParameter", "RawMessageDelivery is available only for SQS subscriptions in SNS-02.", 400);
+      if (value && subscription.protocol !== "sqs") throw new AwsError("InvalidParameter", "RawMessageDelivery is supported only for SQS subscriptions.", 400);
       if (subscription.rawMessageDelivery !== value) {
         subscription.rawMessageDelivery = value;
         deliveryChanged = true;

@@ -74,11 +74,18 @@ import {
   type ProviderOperationCheckpoint,
   type ProviderProgress,
   type ProviderValidationIssue,
+  coerceDeclaredProperties,
   validateDeclaredProperties,
 } from "./cloudformation/providers/index.js";
 
 const NAMESPACE = "http://cloudformation.amazonaws.com/doc/2010-05-15/";
 const STACK_NAME = /^[A-Za-z][A-Za-z0-9-]{0,127}$/;
+/** Extra guidance appended to the unrecognized-resource-type error for types with a known local alternative. */
+function unsupportedTypeHint(typeNames: readonly string[]): string {
+  return typeNames.some(typeName => typeName.startsWith("AWS::KMS::"))
+    ? ". StackSim does not emulate KMS: remove the key and use service-managed encryption (for an SQS queue, SqsManagedSseEnabled)"
+    : "";
+}
 export const CLOUDFORMATION_SUPPORTED_ACTIONS = Object.freeze([
   "ValidateTemplate", "CreateStack", "DescribeStacks", "ListStacks", "DescribeStackEvents",
   "DescribeStackResource", "DescribeStackResources", "ListStackResources", "GetTemplate",
@@ -2323,8 +2330,8 @@ export class CloudFormationService {
 
   private collectOpeningResourceIssues(template: CloudFormationTemplate, sortLogicalIds = false, stopAtFirstIssue = false): ContextualProviderValidationIssue[] {
     const unknownTypes = [...new Set(Object.values<any>(template.Resources ?? {}).map(definition => String(definition.Type)).filter(typeName => !this.providers.get(typeName)))].sort();
-    if (unknownTypes.length === 1) throw new AwsError("ValidationError", `Unrecognized resource type ${unknownTypes[0]}; support is assigned to a later CloudFormation phase`, 400);
-    if (unknownTypes.length > 1) throw new AwsError("ValidationError", `Unrecognized resource types: ${unknownTypes.join(", ")}; support is assigned to later CloudFormation phases`, 400);
+    if (unknownTypes.length === 1) throw new AwsError("ValidationError", `Unrecognized resource type ${unknownTypes[0]}; StackSim does not support it${unsupportedTypeHint(unknownTypes)}`, 400);
+    if (unknownTypes.length > 1) throw new AwsError("ValidationError", `Unrecognized resource types: ${unknownTypes.join(", ")}; StackSim does not support them${unsupportedTypeHint(unknownTypes)}`, 400);
     const entries = Object.entries<any>(template.Resources ?? {});
     if (sortLogicalIds) entries.sort(([left], [right]) => left.localeCompare(right));
     const collected: ContextualProviderValidationIssue[] = [];
@@ -2498,7 +2505,14 @@ export class CloudFormationService {
     if (missing.length) throw new AwsError("InsufficientCapabilitiesException", `Requires capabilities : [${missing.join(", ")}]`, 400);
   }
 
-  private mergeStackTags(provider: CloudFormationResourceProvider<any>, properties: Record<string, unknown>, stackTags: Readonly<Record<string, string>>): Record<string, unknown> {
+  /**
+   * Prepare evaluated template properties for a provider. A number or boolean
+   * that arrives as a string (a Ref to a Number parameter, a quoted YAML value)
+   * is converted to its declared primitive type here, once, for the preflight,
+   * create and update paths; stack tags are then merged.
+   */
+  private mergeStackTags(provider: CloudFormationResourceProvider<any>, evaluated: Record<string, unknown>, stackTags: Readonly<Record<string, string>>): Record<string, unknown> {
+    const properties = coerceDeclaredProperties(evaluated, provider.schema);
     if (provider.schema.tags.behavior !== "STACK_AND_RESOURCE") return properties;
     const propertyName = provider.schema.tags.propertyName!;
     const current = properties[propertyName];
@@ -3599,7 +3613,7 @@ export class CloudFormationService {
       if (create) add("sqs:CreateQueue", "sqs:SetQueueAttributes", "sqs:TagQueue", "sqs:UntagQueue");
       if (update) add("sqs:SetQueueAttributes", "sqs:TagQueue", "sqs:UntagQueue");
       if (operation === "DELETE") add("sqs:DeleteQueue");
-    } else if (typeName === "AWS::SQS::QueuePolicy") {
+    } else if (typeName === "AWS::SQS::QueuePolicy" || typeName === "AWS::SQS::QueueInlinePolicy") {
       add("sqs:ListQueues", "sqs:GetQueueAttributes");
       if (create || update) add("sqs:GetQueueUrl");
       if (create || update || operation === "DELETE") add("sqs:SetQueueAttributes");
@@ -4012,14 +4026,17 @@ export class CloudFormationService {
       } else if (typeName === "AWS::SQS::Queue") {
         const queueName = properties.QueueName ?? physicalId;
         if (typeof queueName === "string" && queueName) resources.push(`arn:aws:sqs:${this.region}:${accountId}:${queueName}`);
-      } else if (typeName === "AWS::SQS::QueuePolicy") {
+      } else if (typeName === "AWS::SQS::QueuePolicy" || typeName === "AWS::SQS::QueueInlinePolicy") {
         if (action === "sqs:ListQueues" || action === "sqs:GetQueueAttributes") {
           resources.push("*");
         }
-        const previousQueues = stack.resources[logicalId]?.properties.Queues;
+        const previousProperties = stack.resources[logicalId]?.properties;
+        const previousQueues = previousProperties?.Queues;
         const queues = [
           ...(Array.isArray(properties.Queues) ? properties.Queues : []),
           ...(Array.isArray(previousQueues) ? previousQueues : []),
+          properties.Queue,
+          previousProperties?.Queue,
         ];
         for (const queue of queues) {
           if (typeof queue !== "string" || !queue) continue;

@@ -1,4 +1,4 @@
-# Scenario H — break, inspect, fix and redrive a queue worker
+# SQS recovery lab — break, inspect, fix and redrive a queue worker
 
 This lab deploys a Standard queue, a DLQ, a Lambda consumer with partial batch responses, three scoped IAM roles, an API Gateway producer and a DynamoDB result ledger. It uses ordinary AWS SDK commands. No simulator state edits or private queue shortcuts are needed.
 

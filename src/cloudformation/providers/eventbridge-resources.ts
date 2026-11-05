@@ -62,6 +62,8 @@ export interface EventRuleTargetModel {
   readonly DeadLetterConfig?: { readonly Arn: string };
   /** The role EventBridge assumes to start a Step Functions target. */
   readonly RoleArn?: string;
+  /** The message group for a FIFO queue target. */
+  readonly SqsParameters?: { readonly MessageGroupId: string };
 }
 
 export interface EventRuleModel {
@@ -120,7 +122,7 @@ function eventTags(tags: readonly Cfn09Tag[], context: ProviderContext): Array<{
 function validateEventBus(properties: unknown): ProviderValidationIssue[] {
   const issues = validateDeclaredProperties(properties ?? {}, EVENT_BUS_SCHEMA);
   if (!isRecord(properties)) return issues;
-  if (typeof properties.Name === "string" && (!/^[._A-Za-z0-9-]{1,256}$/.test(properties.Name) || properties.Name === "default")) issue(issues, "Properties.Name", "Name must be a valid custom event-bus name other than default; partner buses belong to a later EventBridge phase");
+  if (typeof properties.Name === "string" && (!/^[._A-Za-z0-9-]{1,256}$/.test(properties.Name) || properties.Name === "default")) issue(issues, "Properties.Name", "Name must be a valid custom event-bus name other than default; partner buses are not supported by StackSim");
   if (properties.Tags !== undefined) validateTags(properties.Tags, "Properties.Tags", issues);
   return issues;
 }
@@ -238,21 +240,31 @@ function validateRetryPolicy(value: unknown, path: string, issues: ProviderValid
 
 function validateTargets(value: unknown, context: ProviderContext, issues: ProviderValidationIssue[]): void {
   if (!Array.isArray(value)) return;
-  if (value.length > 5) issue(issues, "Properties.Targets", "A CFN-09 EventBridge rule can contain at most five targets");
+  if (value.length > 5) issue(issues, "Properties.Targets", "A rule can contain at most five targets");
   const ids = new Set<string>();
   for (const [index, raw] of value.entries()) {
     const path = `Properties.Targets.${index}`;
     if (!isRecord(raw)) { issue(issues, path, "Each target must be an object"); continue; }
-    exactKeys(raw, ["Arn", "DeadLetterConfig", "Id", "Input", "InputPath", "InputTransformer", "RetryPolicy", "RoleArn"], path, issues);
+    exactKeys(raw, ["Arn", "DeadLetterConfig", "Id", "Input", "InputPath", "InputTransformer", "RetryPolicy", "RoleArn", "SqsParameters"], path, issues);
     if (typeof raw.Id !== "string" || !/^[._A-Za-z0-9-]{1,64}$/.test(raw.Id)) issue(issues, `${path}.Id`, "Id must contain 1-64 supported characters");
     else if (ids.has(raw.Id)) issue(issues, `${path}.Id`, "Target IDs must be unique"); else ids.add(raw.Id);
     const arn = typeof raw.Arn === "string" ? /^arn:aws:lambda:([^:]+):(\d{12}):function:[A-Za-z0-9-_]{1,64}(?::[A-Za-z0-9-_.$]+)?$/.exec(raw.Arn) : undefined;
     const stateMachine = typeof raw.Arn === "string" ? STATE_MACHINE_TARGET.exec(raw.Arn) : undefined;
-    // Queues and topics authorize EventBridge through their resource policies (SAM-06 connectors generate them).
+    // Queues and topics authorize EventBridge through their resource policies (SAM connectors generate them).
     const queueOrTopic = typeof raw.Arn === "string" ? QUEUE_OR_TOPIC_TARGET.exec(raw.Arn) : undefined;
-    const target = arn ?? stateMachine ?? queueOrTopic;
-    if (typeof raw.Arn === "string" && /^arn:aws:(?:sqs|sns):[^:]+:\d{12}:[^:]+\.fifo$/.test(raw.Arn)) issue(issues, `${path}.Arn`, "FIFO queue and topic targets need SqsParameters, which this simulator's AWS::Events::Rule does not support yet");
-    else if (!target || target[1] !== context.region || target[2] !== context.accountId) issue(issues, `${path}.Arn`, "Rule targets must identify a Lambda function, a Step Functions state machine, a standard SQS queue, or a standard SNS topic in this simulator account and Region; other target families belong to later EventBridge phases");
+    const fifoQueue = typeof raw.Arn === "string" ? FIFO_QUEUE_TARGET.exec(raw.Arn) : undefined;
+    const target = arn ?? stateMachine ?? queueOrTopic ?? fifoQueue;
+    if (typeof raw.Arn === "string" && /^arn:aws:sns:[^:]+:\d{12}:[^:]+\.fifo$/.test(raw.Arn)) issue(issues, `${path}.Arn`, "FIFO topic targets are not supported by StackSim");
+    else if (!target || target[1] !== context.region || target[2] !== context.accountId) issue(issues, `${path}.Arn`, "Rule targets must identify a Lambda function, a Step Functions state machine, an SQS queue, or a standard SNS topic in this simulator account and Region; other target types are not supported by StackSim");
+    // The EventBridge PutTargets call validates the message group itself; only the shape is checked here.
+    if (raw.SqsParameters !== undefined) {
+      if (!queueOrTopic?.[0].startsWith("arn:aws:sqs:") && !fifoQueue) issue(issues, `${path}.SqsParameters`, "SqsParameters applies only to SQS queue targets");
+      else if (!isRecord(raw.SqsParameters)) issue(issues, `${path}.SqsParameters`, "SqsParameters must be an object");
+      else {
+        exactKeys(raw.SqsParameters, ["MessageGroupId"], `${path}.SqsParameters`, issues);
+        if (typeof raw.SqsParameters.MessageGroupId !== "string" || !raw.SqsParameters.MessageGroupId) issue(issues, `${path}.SqsParameters.MessageGroupId`, "MessageGroupId must be a nonempty string");
+      }
+    } else if (fifoQueue) issue(issues, `${path}.SqsParameters`, "A FIFO queue target requires SqsParameters.MessageGroupId");
     // EventBridge assumes RoleArn to call StartExecution; Lambda, queue, and topic targets use resource policies instead.
     if (stateMachine && (typeof raw.RoleArn !== "string" || !/^arn:[^:]+:iam::\d{12}:role\/.+$/.test(raw.RoleArn))) issue(issues, `${path}.RoleArn`, "A Step Functions target requires the ARN of an IAM role that EventBridge can assume");
     if (!stateMachine && raw.RoleArn !== undefined) issue(issues, `${path}.RoleArn`, "RoleArn applies only to Step Functions targets");
@@ -318,19 +330,21 @@ function canonicalTarget(value: Record<string, unknown>): EventRuleTargetModel {
     ...(retry ? { RetryPolicy: retry } : {}),
     ...(isRecord(value.DeadLetterConfig) ? { DeadLetterConfig: { Arn: String(value.DeadLetterConfig.Arn) } } : {}),
     ...(value.RoleArn !== undefined ? { RoleArn: String(value.RoleArn) } : {}),
+    ...(isRecord(value.SqsParameters) ? { SqsParameters: { MessageGroupId: String(value.SqsParameters.MessageGroupId) } } : {}),
   };
 }
 
 const STATE_MACHINE_TARGET = /^arn:aws:states:([^:]+):(\d{12}):stateMachine:[A-Za-z0-9-_]{1,80}$/;
 const QUEUE_OR_TOPIC_TARGET = /^arn:aws:(?:sqs|sns):([^:]+):(\d{12}):[A-Za-z0-9-_]{1,256}$/;
+const FIFO_QUEUE_TARGET = /^arn:aws:sqs:([^:]+):(\d{12}):[A-Za-z0-9-_]{1,75}\.fifo$/;
 
 function targetFromView(value: Record<string, unknown>, context: ProviderContext): EventRuleTargetModel {
-  const supported = new Set(["Arn", "DeadLetterConfig", "Id", "Input", "InputPath", "InputTransformer", "RetryPolicy", "RoleArn"]);
+  const supported = new Set(["Arn", "DeadLetterConfig", "Id", "Input", "InputPath", "InputTransformer", "RetryPolicy", "RoleArn", "SqsParameters"]);
   const unsupported = Object.keys(value).filter(key => !supported.has(key)).sort();
   if (unsupported.length) throw new AwsError("UnsupportedResourceState", `EventBridge target ${String(value.Id)} uses unsupported fields: ${unsupported.join(", ")}`, 409);
-  const arn = typeof value.Arn === "string" ? /^arn:([^:]+):(?:lambda:([^:]+):(\d{12}):function:[A-Za-z0-9-_]{1,64}(?::[A-Za-z0-9-_.$]+)?|states:([^:]+):(\d{12}):stateMachine:[A-Za-z0-9-_]{1,80}|(?:sqs|sns):([^:]+):(\d{12}):[A-Za-z0-9-_]{1,256})$/.exec(value.Arn) : undefined;
-  if (!arn || arn[1] !== context.partition || (arn[2] ?? arn[4] ?? arn[6]) !== context.region || (arn[3] ?? arn[5] ?? arn[7]) !== context.accountId) {
-    throw new AwsError("UnsupportedResourceState", `EventBridge target ${String(value.Id)} is not a local Lambda, Step Functions, standard SQS, or standard SNS target`, 409);
+  const arn = typeof value.Arn === "string" ? /^arn:([^:]+):(?:lambda:([^:]+):(\d{12}):function:[A-Za-z0-9-_]{1,64}(?::[A-Za-z0-9-_.$]+)?|states:([^:]+):(\d{12}):stateMachine:[A-Za-z0-9-_]{1,80}|(?:sqs|sns):([^:]+):(\d{12}):[A-Za-z0-9-_]{1,256}|sqs:([^:]+):(\d{12}):[A-Za-z0-9-_]{1,75}\.fifo)$/.exec(value.Arn) : undefined;
+  if (!arn || arn[1] !== context.partition || (arn[2] ?? arn[4] ?? arn[6] ?? arn[8]) !== context.region || (arn[3] ?? arn[5] ?? arn[7] ?? arn[9]) !== context.accountId) {
+    throw new AwsError("UnsupportedResourceState", `EventBridge target ${String(value.Id)} is not a local Lambda, Step Functions, SQS, or standard SNS target`, 409);
   }
   return canonicalTarget(value);
 }

@@ -350,6 +350,9 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
     const queueName = operation === "CreateQueue" || operation === "GetQueueUrl" ? input.QueueName : supplied.name ?? pathIdentity.name;
     const owner = String(input.QueueOwnerAWSAccountId ?? supplied.owner ?? pathIdentity.owner ?? accountId);
     if (queueName && operation !== "ListQueues") resource = `arn:aws:sqs:${region}:${owner}:${queueName}`;
+    // ListQueues is authorized against every queue of the account and Region, so a policy
+    // Resource of arn:aws:sqs:<region>:<account>:* grants it as well as "*".
+    if (operation === "ListQueues") resource = `arn:aws:sqs:${region}:${accountId}:*`;
     if (operation === "StartMessageMoveTask" || operation === "ListMessageMoveTasks") resource = typeof input.SourceArn === "string" ? input.SourceArn : "*";
     if (operation === "CancelMessageMoveTask") resource = moveTaskSource(input.TaskHandle) || "*";
     if (operation === "CreateQueue") {
