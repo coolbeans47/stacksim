@@ -446,7 +446,7 @@ test.describe("Cognito console", () => {
     await dialog.getByLabel("openid", { exact: true }).check();
     await dialog.getByLabel("https://browser-api.example.test/read").check();
     await dialog.getByRole("button", { name: "Save changes" }).click();
-    await expect(page.getByText("https://browser-api.example.test/read", { exact: true })).toBeVisible();
+    await expect(page.locator("#main").getByText("https://browser-api.example.test/read", { exact: true })).toBeVisible();
 
     await page.goto(`${consoleUrl}#/cognito/user-pools/${poolId}/managed-login`);
     await expect(page.getByRole("link", { name: "Open managed login" })).toBeVisible();
