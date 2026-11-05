@@ -256,7 +256,7 @@ export function createStepFunctionsStateMachineProvider(stepFunctions: StepFunct
           || logging.Level !== undefined && logging.Level !== "OFF"
           || logging.IncludeExecutionData !== undefined && logging.IncludeExecutionData !== false
           || logging.Destinations !== undefined && (!Array.isArray(logging.Destinations) || logging.Destinations.length > 0)) {
-          unsupported("Properties.LoggingConfiguration", "Execution logging requires SFN-05; only the disabled OFF configuration is accepted");
+          unsupported("Properties.LoggingConfiguration", "Execution logging is not available in StackSim; Level must be OFF");
         }
       }
       if (properties.TracingConfiguration !== undefined) {

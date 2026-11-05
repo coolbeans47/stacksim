@@ -159,7 +159,7 @@ test("SFN-04 asset access and PassRole use the stack execution role; failed serv
     const stack = await stackStatus(f, "atomic", "CREATE_COMPLETE"); const arn = stack.Outputs![0].OutputValue!;
     await assert.rejects(f.sfn.send(new UpdateStateMachineCommand({ stateMachineArn: arn, definition: definition("must-not-commit"), roleArn: "arn:aws:iam::000000000000:role/missing" })), /does not exist/);
     assert.equal(await run(f, arn), "original");
-    await assert.rejects(f.sfn.send(new UpdateStateMachineCommand({ stateMachineArn: arn, definition: definition("must-not-commit"), loggingConfiguration: { level: "ALL" } })), /SFN-05/);
+    await assert.rejects(f.sfn.send(new UpdateStateMachineCommand({ stateMachineArn: arn, definition: definition("must-not-commit"), loggingConfiguration: { level: "ALL" } })), /Execution logging is not available/);
     assert.equal(await run(f, arn), "original");
   } finally { await f.close(); }
 });

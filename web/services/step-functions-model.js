@@ -195,14 +195,14 @@ export const STUDIO_STATE_TYPES = [
   { type: "Wait", label: "Wait", hint: "Delay for a fixed duration", glyph: "◷" },
   { type: "Parallel", label: "Parallel", hint: "Run branches concurrently", glyph: "∥" },
   { type: "Map", label: "Map", hint: "Iterate an array inline", glyph: "▦" },
-  { type: "Succeed", label: "Succeed", hint: "End the workflow successfully", glyph: "✓" },
+  { type: "Succeed", label: "Success", hint: "End the workflow successfully", glyph: "✓" },
   { type: "Fail", label: "Fail", hint: "Fail with an error and cause", glyph: "✕" },
 ];
 
 export function defaultStateForType(type) {
   switch (type) {
     case "Pass": return { Type: "Pass", Result: {}, End: true };
-    case "Task": return { Type: "Task", Resource: "arn:aws:states:::lambda:invoke", Parameters: { FunctionName: "my-function", Payload: { "input.$": "$" } }, End: true };
+    case "Task": return { Type: "Task", Resource: "arn:aws:states:::lambda:invoke", Parameters: { FunctionName: "", "Payload.$": "$" }, End: true };
     case "Choice": return { Type: "Choice", Choices: [{ Variable: "$.status", StringEquals: "ok", Next: "Done" }], Default: "Done" };
     case "Wait": return { Type: "Wait", Seconds: 5, End: true };
     case "Parallel": return { Type: "Parallel", Branches: [{ StartAt: "BranchPass", States: { BranchPass: { Type: "Pass", End: true } } }], End: true };
@@ -214,7 +214,7 @@ export function defaultStateForType(type) {
 }
 
 export function uniqueStateName(states, preferred = "State") {
-  const base = String(preferred || "State").replace(/[^A-Za-z0-9_]/g, "") || "State";
+  const base = String(preferred || "State").trim().slice(0, 76) || "State";
   if (!own(states, base)) return base;
   let index = 2;
   while (own(states, `${base}${index}`)) index++;
@@ -250,7 +250,16 @@ function makeTerminal(state) {
   state.End = true;
 }
 
-export function addStudioState(definition, type, { afterName, preferredName } = {}) {
+function choiceTargets(states, choiceName, forward) {
+  // A new Choice must not loop back to the state that leads into it. Use the
+  // state that already followed, or add a terminal Success state to branch to.
+  if (forward && forward !== choiceName && states[forward]) return forward;
+  const terminal = uniqueStateName(states, "Success");
+  states[terminal] = defaultStateForType("Succeed");
+  return terminal;
+}
+
+export function addStudioState(definition, type, { afterName, preferredName, state: suppliedState } = {}) {
   const root = parseStateMachineDefinition(definition);
   if (!root) throw new Error("The definition could not be parsed.");
   const next = structuredClone(root);
@@ -258,35 +267,32 @@ export function addStudioState(definition, type, { afterName, preferredName } = 
   const meta = STUDIO_STATE_TYPES.find(item => item.type === type);
   if (!meta) throw new Error(`Unsupported studio state type '${type}'`);
   const name = uniqueStateName(next.States, preferredName ?? meta.type);
-  const state = defaultStateForType(type);
+  const state = suppliedState ? structuredClone(suppliedState) : defaultStateForType(type);
   next.States[name] = state;
   if (!next.StartAt) next.StartAt = name;
   const after = afterName && next.States[afterName] ? afterName : null;
+  let forward;
   if (after) {
     const prior = next.States[after];
-    if (!["Succeed", "Fail", "Choice"].includes(prior.Type)) {
-      const previousNext = prior.Next;
+    if (prior.Type === "Choice") {
+      // Adding after a Choice makes the new state a branch target so it is reachable.
+      if (!prior.Default) prior.Default = name;
+      else prior.Choices = [...(prior.Choices ?? []), { Variable: "$.choice", StringEquals: name, Next: name }];
+    } else if (!["Succeed", "Fail"].includes(prior.Type)) {
+      forward = prior.Next;
       clearTerminal(prior);
       prior.Next = name;
-      if (previousNext && !["Succeed", "Fail", "Choice"].includes(state.Type)) {
+      if (forward && !["Succeed", "Fail", "Choice"].includes(state.Type)) {
         clearTerminal(state);
-        state.Next = previousNext;
+        state.Next = forward;
         delete state.End;
       }
-      if (type === "Choice") {
-        const fallback = previousNext && previousNext !== name ? previousNext : Object.keys(next.States).find(item => item !== name) ?? name;
-        state.Choices = [{ Variable: "$.status", StringEquals: "ok", Next: fallback }];
-        state.Default = fallback;
-      }
-    } else if (type === "Choice") {
-      const fallback = Object.keys(next.States).find(item => item !== name) ?? name;
-      state.Choices = [{ Variable: "$.status", StringEquals: "ok", Next: fallback }];
-      state.Default = fallback;
     }
-  } else if (type === "Choice") {
-    const fallback = Object.keys(next.States).find(item => item !== name) ?? name;
-    state.Choices = [{ Variable: "$.status", StringEquals: "ok", Next: fallback }];
-    state.Default = fallback;
+  }
+  if (type === "Choice" && !suppliedState) {
+    const target = choiceTargets(next.States, name, forward);
+    state.Choices = [{ Variable: "$.status", StringEquals: "ok", Next: target }];
+    state.Default = target;
   }
   return { definition: next, name };
 }
@@ -317,7 +323,8 @@ export function renameStudioState(definition, from, to) {
   const root = parseStateMachineDefinition(definition);
   if (!root?.States?.[from]) throw new Error(`State '${from}' was not found.`);
   const target = String(to || "").trim();
-  if (!/^[A-Za-z0-9_]+$/.test(target)) throw new Error("State names may contain only letters, numbers, and underscores.");
+  const problem = stateNameProblem(target);
+  if (problem) throw new Error(problem);
   if (from === target) return structuredClone(root);
   if (own(root.States, target)) throw new Error(`State '${target}' already exists.`);
   const next = structuredClone(root);
@@ -408,4 +415,286 @@ export function studioFlow(definition) {
     };
   });
   return { startAt: root.StartAt ?? null, nodes, edges, orphans };
+}
+
+// ---------------------------------------------------------------------------
+// Names
+
+const FORBIDDEN_NAME_CHARACTERS = /[\s<>{}\[\]?*"#%\\^|~`$&,;:/\u0000-\u001f\u007f-\u009f]/;
+
+/** Returns a message when a state machine, execution or activity name breaks the AWS naming rules. */
+export function resourceNameProblem(name, label = "Name") {
+  const value = String(name ?? "");
+  if (!value) return `${label} is required.`;
+  if ([...value].length > 80) return `${label} must not exceed 80 characters.`;
+  if (FORBIDDEN_NAME_CHARACTERS.test(value)) return `${label} must not contain white space, brackets < > { } [ ], wildcards ? *, or the special characters " # % \\ ^ | ~ \` $ & , ; : /.`;
+  return null;
+}
+
+/** State names may be any string up to 80 characters, unique within the state machine. */
+export function stateNameProblem(name) {
+  const value = String(name ?? "");
+  if (!value.trim()) return "State name is required.";
+  if ([...value].length > 80) return "State names must not exceed 80 characters.";
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Time
+
+/** The Step Functions API returns epoch seconds; the browser clock uses milliseconds. */
+export function epochMilliseconds(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number") return value < 1e12 ? value * 1000 : value;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric < 1e12 ? numeric * 1000 : numeric;
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+export function formatElapsed(milliseconds) {
+  if (milliseconds === undefined || milliseconds === null || Number.isNaN(milliseconds)) return "–";
+  const total = Math.max(0, Math.round(milliseconds));
+  const pad = (value, width = 2) => String(value).padStart(width, "0");
+  return `${pad(Math.floor(total / 3_600_000))}:${pad(Math.floor(total % 3_600_000 / 60_000))}:${pad(Math.floor(total % 60_000 / 1000))}.${pad(total % 1000, 3)}`;
+}
+
+export function formatDuration(start, stop, now = Date.now()) {
+  const from = epochMilliseconds(start);
+  if (from === undefined) return "–";
+  const to = epochMilliseconds(stop) ?? now;
+  return formatElapsed(to - from);
+}
+
+export function formatTimestamp(value) {
+  const milliseconds = epochMilliseconds(value);
+  if (milliseconds === undefined) return "–";
+  const date = new Date(milliseconds);
+  const day = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
+  const pad = (number, width = 2) => String(number).padStart(width, "0");
+  return `${day}, ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Display labels
+
+const STATUS_LABELS = {
+  RUNNING: "Running", SUCCEEDED: "Succeeded", FAILED: "Failed", TIMED_OUT: "Timed out", ABORTED: "Aborted", PENDING_REDRIVE: "Pending redrive",
+  ACTIVE: "Active", DELETING: "Deleting", STANDARD: "Standard", EXPRESS: "Express",
+  NOT_STARTED: "Not started", IN_PROGRESS: "In progress", CAUGHT_ERROR: "Caught error", CANCELLED: "Cancelled",
+};
+
+export function displayLabel(value) {
+  if (value === undefined || value === null || value === "") return "Unknown";
+  return STATUS_LABELS[value] ?? String(value);
+}
+
+export function statusVariant(value) {
+  if (["FAILED", "TIMED_OUT", "ABORTED"].includes(value)) return "error";
+  if (["RUNNING", "IN_PROGRESS", "PENDING_REDRIVE", "DELETING", "CAUGHT_ERROR"].includes(value)) return "pending";
+  if (["SUCCEEDED", "ACTIVE"].includes(value)) return "success";
+  return "inactive";
+}
+
+// ---------------------------------------------------------------------------
+// Per-state execution results
+
+const TASK_FAILURE_EVENT = /^(?:Task|LambdaFunction|Activity)(?:Failed|TimedOut|ScheduleFailed|StartFailed|SubmitFailed)$|^(?:Parallel|Map)StateFailed$|^MapIterationFailed$/;
+const TASK_SUCCESS_EVENT = /^(?:Task|LambdaFunction|Activity)(?:Succeeded|SubmitSucceeded)$|^(?:Parallel|Map)StateSucceeded$/;
+
+export function stateResourceLabel(state) {
+  if (!state || state.Type !== "Task" || typeof state.Resource !== "string") return "";
+  const optimized = state.Resource.match(/^arn:aws:states:::([a-z0-9-]+):([A-Za-z0-9]+)(\.[A-Za-z0-9:]+)?$/);
+  if (optimized) return `${optimized[1]}:${optimized[2]}${optimized[3] ?? ""}`;
+  const lambda = lambdaFunctionName(state.Resource);
+  if (lambda) return `lambda:${lambda}`;
+  const activity = state.Resource.match(/:activity:(.+)$/);
+  if (activity) return `activity:${activity[1]}`;
+  return state.Resource;
+}
+
+/**
+ * Summarizes what the history says about every state: its status, each visit's
+ * input and output, timing, and the events that belong to it.
+ */
+export function stateResults(model, execution = {}) {
+  const startedAt = epochMilliseconds(execution.startDate);
+  const stoppedAt = epochMilliseconds(execution.stopDate);
+  const executionStatus = execution.status;
+  const results = new Map();
+  for (const scope of model.scopes) for (const item of scope.states) {
+    results.set(item.name, { name: item.name, type: item.state.Type, state: item.state, scopePath: scope.path, scopeLabel: scope.label, resource: stateResourceLabel(item.state), events: [], visits: [], status: "NOT_STARTED", waitingForCallback: false });
+  }
+  for (const item of model.history.events) {
+    const result = results.get(item.stateName);
+    if (!result) continue;
+    result.events.push(item);
+    const type = item.event.type;
+    const at = epochMilliseconds(item.event.timestamp);
+    if (/StateEntered$/.test(type)) result.visits.push({ enteredId: item.event.id, enteredAt: at, input: payloadField(item.details, "input"), output: { state: "absent", value: undefined }, exitedAt: undefined, lastOutcome: null });
+    const visit = result.visits.at(-1);
+    if (!visit) continue;
+    if (/StateExited$/.test(type)) { visit.exitedAt = at; visit.exitedId = item.event.id; visit.output = payloadField(item.details, "output"); }
+    if (TASK_FAILURE_EVENT.test(type)) { visit.lastOutcome = "failure"; visit.error = item.details.error; visit.cause = item.details.cause; }
+    else if (TASK_SUCCESS_EVENT.test(type)) visit.lastOutcome = "success";
+  }
+  for (const result of results.values()) {
+    const visit = result.visits.at(-1);
+    if (!visit) continue;
+    // A Fail state always fails the execution, whatever exit event the history carries.
+    if (result.type === "Fail") result.status = "FAILED";
+    else if (visit.exitedAt !== undefined) result.status = visit.lastOutcome === "failure" ? "CAUGHT_ERROR" : "SUCCEEDED";
+    else if (executionStatus === "RUNNING") result.status = "IN_PROGRESS";
+    else if (executionStatus === "ABORTED") result.status = "CANCELLED";
+    else if (executionStatus === "SUCCEEDED") result.status = "SUCCEEDED";
+    else result.status = "FAILED";
+    result.startedAfter = startedAt !== undefined && visit.enteredAt !== undefined ? visit.enteredAt - startedAt : undefined;
+    const finished = visit.exitedAt ?? (executionStatus === "RUNNING" ? undefined : stoppedAt);
+    result.duration = visit.enteredAt !== undefined && finished !== undefined ? finished - visit.enteredAt : undefined;
+    result.error = visit.error; result.cause = visit.cause;
+  }
+  if (model.history.active?.waitingForCallback) {
+    const active = results.get(model.history.active.stateName);
+    if (active) active.waitingForCallback = true;
+  }
+  return results;
+}
+
+export function stateTransitionCount(model) {
+  return model.history.events.filter(item => /StateEntered$/.test(item.event.type)).length;
+}
+
+// ---------------------------------------------------------------------------
+// Workflow Studio catalog
+
+const lambdaInvoke = () => ({ Type: "Task", Resource: "arn:aws:states:::lambda:invoke", Parameters: { FunctionName: "", "Payload.$": "$" }, OutputPath: "$.Payload", End: true });
+
+/** Task actions the simulator can run, shown on the Actions tab of the states browser. */
+export const STUDIO_ACTIONS = [
+  { id: "task", group: "General", label: "Task", name: "Task", hint: "Any supported Task resource", glyph: "λ", state: () => defaultStateForType("Task") },
+  { id: "lambda-invoke", group: "AWS Lambda", label: "AWS Lambda Invoke", name: "Lambda Invoke", hint: "Invoke a Lambda function", glyph: "λ", state: lambdaInvoke },
+  { id: "dynamodb-get", group: "Amazon DynamoDB", label: "DynamoDB GetItem", name: "DynamoDB GetItem", hint: "Read one item", glyph: "D", state: () => ({ Type: "Task", Resource: "arn:aws:states:::dynamodb:getItem", Parameters: { TableName: "", Key: { id: { "S.$": "$.id" } } }, End: true }) },
+  { id: "dynamodb-put", group: "Amazon DynamoDB", label: "DynamoDB PutItem", name: "DynamoDB PutItem", hint: "Write one item", glyph: "D", state: () => ({ Type: "Task", Resource: "arn:aws:states:::dynamodb:putItem", Parameters: { TableName: "", Item: { id: { "S.$": "$.id" } } }, End: true }) },
+  { id: "dynamodb-update", group: "Amazon DynamoDB", label: "DynamoDB UpdateItem", name: "DynamoDB UpdateItem", hint: "Update attributes of one item", glyph: "D", state: () => ({ Type: "Task", Resource: "arn:aws:states:::dynamodb:updateItem", Parameters: { TableName: "", Key: { id: { "S.$": "$.id" } }, UpdateExpression: "SET #s = :s", ExpressionAttributeNames: { "#s": "status" }, ExpressionAttributeValues: { ":s": { S: "done" } } }, End: true }) },
+  { id: "dynamodb-delete", group: "Amazon DynamoDB", label: "DynamoDB DeleteItem", name: "DynamoDB DeleteItem", hint: "Delete one item", glyph: "D", state: () => ({ Type: "Task", Resource: "arn:aws:states:::dynamodb:deleteItem", Parameters: { TableName: "", Key: { id: { "S.$": "$.id" } } }, End: true }) },
+  { id: "sqs-send", group: "Amazon SQS", label: "SQS SendMessage", name: "SQS SendMessage", hint: "Send a message to a queue", glyph: "Q", state: () => ({ Type: "Task", Resource: "arn:aws:states:::sqs:sendMessage", Parameters: { QueueUrl: "", "MessageBody.$": "States.JsonToString($)" }, End: true }) },
+  { id: "sns-publish", group: "Amazon SNS", label: "SNS Publish", name: "SNS Publish", hint: "Publish a message to a topic", glyph: "N", state: () => ({ Type: "Task", Resource: "arn:aws:states:::sns:publish", Parameters: { TopicArn: "", "Message.$": "States.JsonToString($)" }, End: true }) },
+  { id: "events-put", group: "Amazon EventBridge", label: "EventBridge PutEvents", name: "EventBridge PutEvents", hint: "Send custom events to a bus", glyph: "E", state: () => ({ Type: "Task", Resource: "arn:aws:states:::events:putEvents", Parameters: { Entries: [{ Source: "my.application", DetailType: "MyDetailType", EventBusName: "default", "Detail.$": "States.JsonToString($)" }] }, End: true }) },
+  { id: "states-start", group: "AWS Step Functions", label: "Step Functions StartExecution", name: "Step Functions StartExecution", hint: "Start another state machine", glyph: "S", state: () => ({ Type: "Task", Resource: "arn:aws:states:::states:startExecution", Parameters: { StateMachineArn: "", "Input.$": "$" }, End: true }) },
+  { id: "activity", group: "AWS Step Functions", label: "Step Functions Run Activity", name: "Run Activity", hint: "Wait for an Activity worker", glyph: "A", state: () => ({ Type: "Task", Resource: "", TimeoutSeconds: 300, End: true }) },
+];
+
+export const STUDIO_FLOW_TYPES = ["Choice", "Parallel", "Map", "Pass", "Wait", "Succeed", "Fail"].map(type => STUDIO_STATE_TYPES.find(item => item.type === type));
+
+export const BLANK_DEFINITION = { Comment: "A description of my state machine", StartAt: "Hello", States: { Hello: { Type: "Pass", Result: { message: "hello" }, End: true } } };
+
+export const HELLO_WORLD_DEFINITION = {
+  Comment: "A Hello World example that demonstrates Pass, Choice, Wait, Parallel, Success and Fail states",
+  StartAt: "Pass",
+  States: {
+    Pass: { Type: "Pass", Next: "Hello World example?", Comment: "A Pass state passes its input to its output, without performing work." },
+    "Hello World example?": { Comment: "A Choice state adds branching logic to a state machine.", Type: "Choice", Choices: [{ Variable: "$.IsHelloWorldExample", BooleanEquals: true, Next: "Yes" }, { Variable: "$.IsHelloWorldExample", BooleanEquals: false, Next: "No" }], Default: "Yes" },
+    Yes: { Type: "Pass", Next: "Wait 3 sec" },
+    No: { Type: "Fail", Cause: "Not Hello World" },
+    "Wait 3 sec": { Comment: "A Wait state delays the state machine from continuing for a specified time.", Type: "Wait", Seconds: 3, Next: "Parallel State" },
+    "Parallel State": { Comment: "A Parallel state can be used to create parallel branches of execution in your state machine.", Type: "Parallel", Next: "Hello World", Branches: [{ StartAt: "Hello", States: { Hello: { Type: "Pass", End: true } } }, { StartAt: "World", States: { World: { Type: "Pass", End: true } } }] },
+    "Hello World": { Type: "Pass", End: true },
+  },
+};
+
+export const HELLO_WORLD_INPUT = { IsHelloWorldExample: true };
+
+// ---------------------------------------------------------------------------
+// Execution role generated by "Create new role"
+
+/** Least-privilege statements for the Task resources a definition names. */
+export function executionRoleStatements(definition) {
+  const grants = new Map();
+  const grant = (actions, resource) => {
+    const key = actions.join(",");
+    const resources = grants.get(key) ?? new Set();
+    resources.add(resource);
+    grants.set(key, resources);
+  };
+  const literal = value => typeof value === "string" && value !== "" && !value.startsWith("$");
+  const functionArn = value => value.replace(/^(arn:[^:]+:lambda:[^:]*:[^:]*:function:[^:]+).*$/, "$1");
+  for (const scope of definitionScopes(definition)) for (const { state } of scope.states) {
+    if (state.Type !== "Task" || typeof state.Resource !== "string") continue;
+    const resource = state.Resource;
+    const parameters = state.Parameters ?? {};
+    if (resource.startsWith("arn:aws:states:::lambda:invoke")) {
+      const target = parameters.FunctionName;
+      if (!literal(target)) grant(["lambda:InvokeFunction"], "*");
+      else {
+        const arn = target.startsWith("arn:") ? functionArn(target) : `arn:aws:lambda:*:*:function:${target.split(":")[0]}`;
+        grant(["lambda:InvokeFunction"], arn);
+        grant(["lambda:InvokeFunction"], `${arn}:*`);
+      }
+    } else if (/^arn:[^:]+:lambda:/.test(resource)) {
+      const arn = functionArn(resource);
+      grant(["lambda:InvokeFunction"], arn);
+      grant(["lambda:InvokeFunction"], `${arn}:*`);
+    } else if (resource.startsWith("arn:aws:states:::dynamodb:")) {
+      const action = resource.split(":").at(-1);
+      grant([`dynamodb:${action[0].toUpperCase()}${action.slice(1)}`], literal(parameters.TableName) ? `arn:aws:dynamodb:*:*:table/${parameters.TableName}` : "*");
+    } else if (resource.startsWith("arn:aws:states:::sqs:sendMessage")) {
+      const name = literal(parameters.QueueUrl) ? parameters.QueueUrl.match(/\/([^/?#]+)$/)?.[1] : null;
+      grant(["sqs:SendMessage"], name ? `arn:aws:sqs:*:*:${name}` : "*");
+    } else if (resource.startsWith("arn:aws:states:::sns:publish")) {
+      grant(["sns:Publish"], literal(parameters.TopicArn) ? parameters.TopicArn : "*");
+    } else if (resource.startsWith("arn:aws:states:::events:putEvents")) {
+      grant(["events:PutEvents"], "*");
+    } else if (resource.startsWith("arn:aws:states:::states:startExecution")) {
+      grant(["states:StartExecution"], literal(parameters.StateMachineArn) ? parameters.StateMachineArn : "*");
+      if (/\.sync(?::2)?$/.test(resource)) grant(["states:DescribeExecution", "states:StopExecution"], "*");
+    }
+  }
+  return [...grants].map(([actions, resources]) => ({ Effect: "Allow", Action: actions.split(","), Resource: [...resources] }));
+}
+
+export function executionRoleTrustPolicy() {
+  return { Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { Service: "states.amazonaws.com" }, Action: "sts:AssumeRole" }] };
+}
+
+export function generatedRoleName(machineName, suffix = Math.random().toString(36).slice(2, 11)) {
+  const safe = String(machineName ?? "").replace(/[^A-Za-z0-9+=,.@_-]/g, "").slice(0, 36) || "StateMachine";
+  return `StepFunctions-${safe}-role-${suffix}`;
+}
+
+// ---------------------------------------------------------------------------
+// Tags
+
+export function tagsToRows(tags = []) {
+  return tags.filter(tag => !String(tag.key).startsWith("aws:")).map(tag => ({ key: tag.key, value: tag.value ?? "" }));
+}
+
+/** Validates tag rows and returns { tags } or { problem }. */
+export function rowsToTags(rows = []) {
+  const tags = [];
+  const seen = new Set();
+  for (const row of rows) {
+    const key = String(row.key ?? "").trim();
+    const value = String(row.value ?? "");
+    if (!key && !value) continue;
+    if (!key) return { problem: "Every tag needs a key." };
+    if (key.toLowerCase().startsWith("aws:")) return { problem: "Tag keys must not start with aws:." };
+    if ([...key].length > 128) return { problem: "Tag keys must not exceed 128 characters." };
+    if ([...value].length > 256) return { problem: "Tag values must not exceed 256 characters." };
+    if (seen.has(key)) return { problem: `Tag key '${key}' is used more than once.` };
+    seen.add(key);
+    tags.push({ key, value });
+  }
+  if (tags.length > 50) return { problem: "A resource can have at most 50 tags." };
+  return { tags };
+}
+
+/** The TagResource and UntagResource calls that turn one tag set into another. */
+export function tagChanges(current = [], next = []) {
+  const before = new Map(tagsToRows(current).map(tag => [tag.key, tag.value]));
+  const after = new Map(next.map(tag => [tag.key, tag.value]));
+  return {
+    changed: next.filter(tag => before.get(tag.key) !== tag.value),
+    removed: [...before.keys()].filter(key => !after.has(key)),
+  };
 }

@@ -200,7 +200,7 @@ export class StepFunctionsService {
       if (!String(req.headers["content-type"] ?? "").toLowerCase().includes("application/x-amz-json-1.0")) throw new AwsError("UnsupportedMediaTypeException", "Step Functions requires application/x-amz-json-1.0.", 415);
       const input = await parseAwsJson(req);
       for (const field of Object.keys(input)) if (!ACTION_FIELDS[action].has(field)) throw new AwsError("SerializationException", `Unrecognized field '${field}'.`);
-      if (action === "ListExecutions" && (input.mapRunArn !== undefined || input.redriveFilter !== undefined)) throw new AwsError("ValidationException", "Map Run and redrive filters are not available in P0.");
+      if (action === "ListExecutions" && (input.mapRunArn !== undefined || input.redriveFilter !== undefined)) throw new AwsError("ValidationException", "Map Run and redrive filters are not available in StackSim.");
       const operation = (this as any)[action];
       const output = await operation.call(this, input);
       sendAwsJson(res, output ?? {}, "1.0");
@@ -222,15 +222,15 @@ export class StepFunctionsService {
   }
 
   private configuration(input: any): { loggingConfiguration: StepFunctionsStateMachineState["loggingConfiguration"]; tracingConfiguration: StepFunctionsStateMachineState["tracingConfiguration"]; encryptionConfiguration: StepFunctionsStateMachineState["encryptionConfiguration"] } {
-    if (input.type !== undefined && input.type !== "STANDARD") throw new AwsError("StateMachineTypeNotSupported", "P0 supports STANDARD state machines only.");
+    if (input.type !== undefined && input.type !== "STANDARD") throw new AwsError("StateMachineTypeNotSupported", "Express workflows are not available in StackSim; type must be STANDARD.");
     const logging = input.loggingConfiguration;
     const object = (value: unknown): value is Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value);
-    if (logging !== undefined && (!object(logging) || Object.keys(logging).some(key => !["level", "includeExecutionData", "destinations"].includes(key)) || logging.level !== undefined && logging.level !== "OFF" || logging.includeExecutionData !== undefined && logging.includeExecutionData !== false || logging.destinations !== undefined && (!Array.isArray(logging.destinations) || logging.destinations.length > 0))) throw new AwsError("ValidationException", "Execution logging requires SFN-05; only disabled OFF configuration is supported.");
+    if (logging !== undefined && (!object(logging) || Object.keys(logging).some(key => !["level", "includeExecutionData", "destinations"].includes(key)) || logging.level !== undefined && logging.level !== "OFF" || logging.includeExecutionData !== undefined && logging.includeExecutionData !== false || logging.destinations !== undefined && (!Array.isArray(logging.destinations) || logging.destinations.length > 0))) throw new AwsError("ValidationException", "Execution logging is not available in StackSim; level must be OFF.");
     const tracing = input.tracingConfiguration;
     if (tracing !== undefined && (!object(tracing) || Object.keys(tracing).some(key => key !== "enabled") || tracing.enabled !== undefined && tracing.enabled !== false)) throw new AwsError("ValidationException", "X-Ray tracing is not available; enabled must be false.");
     const encryption = input.encryptionConfiguration;
     if (encryption !== undefined && (!object(encryption) || Object.keys(encryption).some(key => key !== "type") || encryption.type !== "AWS_OWNED_KEY")) throw new AwsError("ValidationException", "Only AWS_OWNED_KEY encryption is supported; customer-managed encryption is not available.");
-    if (input.publish !== undefined || input.versionDescription !== undefined) throw new AwsError("ValidationException", "State machine versions require SFN-06.");
+    if (input.publish !== undefined || input.versionDescription !== undefined) throw new AwsError("ValidationException", "State machine versions are not available in StackSim.");
     return { loggingConfiguration: { level: "OFF", includeExecutionData: false, destinations: [] }, tracingConfiguration: { enabled: false }, encryptionConfiguration: { type: "AWS_OWNED_KEY" } };
   }
 
@@ -257,7 +257,7 @@ export class StepFunctionsService {
   }
 
   async ValidateStateMachineDefinition(input: any): Promise<any> {
-    if (input.type !== undefined && input.type !== "STANDARD") return { result: "FAIL", diagnostics: [{ severity: "ERROR", code: "UNSUPPORTED_FEATURE", message: "P0 supports STANDARD state machines only.", location: "$.type" }], truncated: false };
+    if (input.type !== undefined && input.type !== "STANDARD") return { result: "FAIL", diagnostics: [{ severity: "ERROR", code: "UNSUPPORTED_FEATURE", message: "Express workflows are not available in StackSim; type must be STANDARD.", location: "$.type" }], truncated: false };
     const result = validateDefinition(input.definition, this.region, this.store.accountId); const max = input.maxResults === undefined ? 100 : Math.max(0, Math.min(100, Number(input.maxResults)));
     const diagnostics = result.diagnostics.filter(item => input.severity === "ERROR" ? item.severity === "ERROR" : true);
     return { result: diagnostics.some(item => item.severity === "ERROR") ? "FAIL" : "OK", diagnostics: diagnostics.slice(0, max), truncated: diagnostics.length > max };
@@ -390,7 +390,7 @@ export class StepFunctionsService {
   }
   async StopExecution(input: any): Promise<any> {
     const execution = this.requireExecution(input.executionArn);
-    if (execution.status === "RUNNING") await this.terminal(execution, "ABORTED", undefined, String(input.error ?? "States.TaskFailed"), String(input.cause ?? "Execution was aborted"));
+    if (execution.status === "RUNNING") await this.terminal(execution, "ABORTED", undefined, input.error === undefined ? undefined : String(input.error), input.cause === undefined ? undefined : String(input.cause));
     return { stopDate: timestamp(execution.stopDate ?? this.clock.now()) };
   }
   async GetExecutionHistory(input: any): Promise<any> {
@@ -741,7 +741,7 @@ export class StepFunctionsService {
     const resource = String(state.Resource);
     if (resource === OPTIMIZED_LAMBDA || resource.startsWith(`${OPTIMIZED_LAMBDA}.`) || /^arn:aws:lambda:/.test(resource)) return this.invokeLambda(execution, { ...state, Resource: resource.replace(CALLBACK_SUFFIX, "") }, effective, context, entryId, child);
     if (resource.startsWith("arn:aws:states:::states:startExecution")) { const callback = execution.callbackTasks?.[entryId]; const parameters = context.Task?.Token && callback ? this.replaceTaskToken(effective, context.Task.Token, callback.tokenId) : effective; const seconds = state.TimeoutSecondsPath ? Number(getPath(effective, state.TimeoutSecondsPath, context)) : state.TimeoutSeconds; const retainedDeadline = execution.nestedExecutions?.[entryId]?.timeoutDeadline; const deadline = retainedDeadline ?? (seconds === undefined ? undefined : this.clock.now() + seconds * 1000); let timedOut = false; const invocation = this.invokeNestedExecution(execution, resource, parameters as any, entryId, child, deadline, () => timedOut); if (deadline === undefined) return invocation; let cancel: () => void = () => {}; try { return await Promise.race([invocation, new Promise<never>((_resolve, reject) => { cancel = this.scheduler.schedule(() => { timedOut = true; reject(new WorkflowError("States.Timeout", `Task timed out after ${seconds} seconds`, false)); }, Math.max(0, deadline - this.clock.now())); })]); } finally { cancel(); } }
-    if (!this.integrations) throw new WorkflowError("States.Runtime", "The SFN-03 service integration registry is unavailable.");
+    if (!this.integrations) throw new WorkflowError("States.Runtime", "The service integration registry is unavailable.");
     execution.taskJournal ??= {}; const prior = execution.taskJournal[entryId];
     if (prior?.status === "SUCCEEDED") return structuredClone(prior.output);
     if (prior?.status === "FAILED") throw new WorkflowError(prior.error ?? "States.TaskFailed", prior.cause ?? "The integration task failed.");

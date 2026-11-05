@@ -136,7 +136,7 @@ function validateCatchers(value: unknown, location: string, states: Record<strin
 function validateGraph(definition: any, location: string, diagnostics: ValidationDiagnostic[], region: string, accountId: string): void {
   if (!object(definition)) { diagnostics.push(error(location, "The state machine definition must be an object.")); return; }
   for (const field of Object.keys(definition)) if (!["Comment", "Version", "TimeoutSeconds", "StartAt", "States", "QueryLanguage"].includes(field)) diagnostics.push(error(`${location}.${field}`, `Unsupported top-level field '${field}'.`));
-  if (definition.QueryLanguage !== undefined && definition.QueryLanguage !== "JSONPath") diagnostics.push(error(`${location}.QueryLanguage`, "JSONata requires SFN-05; P0 supports JSONPath only.", "UNSUPPORTED_FEATURE"));
+  if (definition.QueryLanguage !== undefined && definition.QueryLanguage !== "JSONPath") diagnostics.push(error(`${location}.QueryLanguage`, "JSONata is not available in StackSim; use QueryLanguage JSONPath.", "UNSUPPORTED_FEATURE"));
   if (definition.Version !== undefined && definition.Version !== "1.0") diagnostics.push(error(`${location}.Version`, "Version must be '1.0'."));
   if (definition.TimeoutSeconds !== undefined && (!Number.isInteger(definition.TimeoutSeconds) || definition.TimeoutSeconds < 1 || definition.TimeoutSeconds > 31_536_000)) diagnostics.push(error(`${location}.TimeoutSeconds`, "TimeoutSeconds must be between 1 and 31536000."));
   if (typeof definition.StartAt !== "string") diagnostics.push(error(`${location}.StartAt`, "StartAt is required."));
@@ -199,7 +199,7 @@ function validateGraph(definition: any, location: string, diagnostics: Validatio
       } else if (state.Resource !== LAMBDA_OPTIMIZED) {
         const match = state.Resource.match(LAMBDA_DIRECT);
         const activity = state.Resource.match(ACTIVITY);
-        if (!match && !activity) diagnostics.push(error(`${at}.Resource`, "The Task resource or integration pattern is not supported by SFN-03.", "UNSUPPORTED_FEATURE"));
+        if (!match && !activity) diagnostics.push(error(`${at}.Resource`, "This Task resource or integration pattern is not available in StackSim. Supported: Lambda invoke, DynamoDB getItem/putItem/updateItem/deleteItem, SQS sendMessage, SNS publish, EventBridge putEvents, Step Functions startExecution, Lambda function ARNs, and Activity ARNs.", "UNSUPPORTED_FEATURE"));
         else if (match && (match[1] !== region || match[2] !== accountId)) diagnostics.push(error(`${at}.Resource`, "Lambda tasks must target the same account and Region."));
         else if (activity && (activity[1] !== region || activity[2] !== accountId)) diagnostics.push(error(`${at}.Resource`, "Activities must target the same account and Region."));
         else if (activity && /[\s<>{}\[\]?*"#%\\^|~`$&,;:/\u0000-\u001f\u007f-\u009f]/u.test(activity[3])) diagnostics.push(error(`${at}.Resource`, "Activity name is invalid."));
@@ -223,7 +223,7 @@ function validateGraph(definition: any, location: string, diagnostics: Validatio
       const processor = state.ItemProcessor ?? state.Iterator;
       if (!processor) diagnostics.push(error(at, "Map requires ItemProcessor or Iterator."));
       else {
-        if (processor.ProcessorConfig?.Mode && processor.ProcessorConfig.Mode !== "INLINE") diagnostics.push(error(`${at}.ItemProcessor.ProcessorConfig.Mode`, "Distributed Map requires SFN-07.", "UNSUPPORTED_FEATURE"));
+        if (processor.ProcessorConfig?.Mode && processor.ProcessorConfig.Mode !== "INLINE") diagnostics.push(error(`${at}.ItemProcessor.ProcessorConfig.Mode`, "Distributed Map is not available in StackSim; use INLINE mode.", "UNSUPPORTED_FEATURE"));
         const graph = { ...processor }; delete graph.ProcessorConfig; validateGraph(graph, `${at}.${state.ItemProcessor ? "ItemProcessor" : "Iterator"}`, diagnostics, region, accountId);
       }
       if (state.MaxConcurrency !== undefined && (!Number.isInteger(state.MaxConcurrency) || state.MaxConcurrency < 0 || state.MaxConcurrency > 40)) diagnostics.push(error(`${at}.MaxConcurrency`, "Inline Map MaxConcurrency must be between 0 and 40."));

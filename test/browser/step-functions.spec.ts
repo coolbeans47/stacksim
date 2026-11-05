@@ -30,9 +30,42 @@ async function openDefinitionJson(page: Page) {
   await page.keyboard.press("Escape");
   await page.locator(".arn-combobox[data-open='true']").evaluateAll(nodes => nodes.forEach(node => node.setAttribute("data-open", "false")));
   await page.locator(".arn-combobox-list").evaluateAll(nodes => nodes.forEach(node => { (node as HTMLElement).hidden = true; }));
-  await page.getByRole("tab", { name: "JSON" }).click();
+  await page.getByRole("tab", { name: "Code", exact: true }).click();
   await expect(page.getByLabel("Definition (States Language JSON)")).toBeVisible();
 }
+
+// The create flow starts with a template and a name, then opens Workflow Studio in Design mode.
+async function continueToStudio(page: Page, name: string) {
+  await page.getByLabel("State machine name").fill(name);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("tab", { name: "Design", exact: true })).toHaveAttribute("aria-selected", "true");
+}
+
+async function chooseExistingRole(page: Page, roleArn: string) {
+  await page.getByRole("tab", { name: "Config", exact: true }).click();
+  await page.getByRole("radio", { name: /Choose an existing role/ }).check();
+  await page.getByLabel("Execution role ARN").fill(roleArn);
+  await page.keyboard.press("Escape");
+}
+
+// A new state machine offers to start an execution straight away.
+async function dismissStartOffer(page: Page) {
+  const offer = page.getByRole("dialog");
+  await expect(offer.getByRole("heading", { name: "Start execution" })).toBeVisible();
+  await offer.getByRole("button", { name: "Cancel" }).click();
+  await expect(offer).not.toBeVisible();
+}
+
+async function startExecution(page: Page, name: string, input?: string) {
+  await page.getByRole("button", { name: "Start execution" }).first().click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Name - optional").fill(name);
+  if (input !== undefined) await dialog.getByLabel("Input - optional").fill(input);
+  await dialog.getByRole("button", { name: "Start execution" }).click();
+  await expect(page).toHaveURL(executionUrl);
+}
+
+const executionUrl = /#\/step-functions\/state-machines\/[^/]+\/executions\//;
 
 async function expectPanelHelp(page: Page, name: string, copy: string) {
   const button = page.getByRole("button", { name: `About ${name}` });
@@ -67,7 +100,7 @@ async function waitTerminal(client: SFNClient, executionArn: string) {
   throw new Error("execution did not become terminal");
 }
 
-test.describe("Step Functions SFN-01 through SFN-04 console", () => {
+test.describe("Step Functions console", () => {
   test.beforeEach(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "stacksim-sfn-browser-"));
     simulator = new StackSim({ port: 0, invokePort: 0, dataDir, region: "eu-west-1", authMode: "off", cdkBootstrap: false });
@@ -80,7 +113,7 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
-  test("SFN-04 navigates deployed workflows, Activities, stack ownership, roles and execution destinations", async ({ page }) => {
+  test("navigates deployed workflows, Activities, stack ownership, roles and execution destinations", async ({ page }) => {
     const errors = browserErrors(page);
     const fixture = await rolesAndFunction();
     const cfn = new CloudFormationClient(sdkOptions());
@@ -112,10 +145,12 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       }
       await page.goto(`${consoleUrl}#/step-functions/state-machines/${encodeURIComponent(machineArn)}/tags`);
-      await page.getByRole("button", { name: "Edit tags", exact: true }).click();
+      await page.getByRole("button", { name: "Manage tags", exact: true }).click();
+      await page.getByRole("dialog").getByText("Edit as JSON").click();
       const tagEditor = page.getByRole("dialog").getByLabel("Tags (JSON object)");
       await expect(tagEditor).not.toHaveValue(/aws:cloudformation/);
       await tagEditor.fill('{"team":"updated-orders"}');
+      await tagEditor.blur();
       await page.getByRole("button", { name: "Save tags", exact: true }).click();
       await expect.poll(async () => (await sfn.send(new ListTagsForResourceCommand({ resourceArn: machineArn }))).tags?.find(tag => tag.key === "team")?.value).toBe("updated-orders");
       expect((await sfn.send(new ListTagsForResourceCommand({ resourceArn: machineArn }))).tags?.find(tag => tag.key === "aws:cloudformation:stack-id")?.value).toBe(stack.StackId);
@@ -124,7 +159,7 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
       await page.goto(`${consoleUrl}#/step-functions/executions/${encodeURIComponent(started.executionArn!)}`);
       await expect(page.getByRole("link", { name: fixture.workflowRoleArn, exact: true })).toHaveAttribute("href", "#/iam/roles/browser-sfn-workflow");
       await expect(page.getByRole("link", { name: "browser-sfn-worker logs and metrics" })).toHaveAttribute("href", "#/lambda/functions/browser-sfn-worker/monitor");
-      await expect(page.getByRole("tab", { name: "Event history" })).toBeVisible();
+      await expect(page.getByRole("tab", { name: "Event view" })).toBeVisible();
       await page.getByRole("link", { name: fixture.workflowRoleArn, exact: true }).click();
       await expect(page.getByRole("heading", { name: "browser-sfn-workflow", exact: true })).toBeVisible();
       await page.goto(`${consoleUrl}#/step-functions/executions/${encodeURIComponent(started.executionArn!)}`);
@@ -145,7 +180,7 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
       await page.setViewportSize({ width: 390, height: 844 });
 
       await page.goto(`${consoleUrl}#/step-functions/state-machines`);
-      const catalogTooltip = await expectPanelHelp(page, "State machine catalog", "durable workflow definition");
+      const catalogTooltip = await expectPanelHelp(page, "State machines", "durable workflow definition");
       await expect(catalogTooltip).toContainText("Express workflows");
       const bounds = await catalogTooltip.boundingBox();
       expect(bounds).not.toBeNull();
@@ -153,6 +188,7 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
       expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
 
       await page.goto(`${consoleUrl}#/step-functions/state-machines/create`);
+      await continueToStudio(page, "tooltip-create");
       await expectPanelHelp(page, "Workflow configuration", "execution role");
       await page.goto(`${consoleUrl}${machineRoute}/edit`);
       await expectPanelHelp(page, "Definition and role", "affects only executions started afterward");
@@ -163,12 +199,7 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
       await page.goto(`${consoleUrl}${machineRoute}`);
       await expectPanelHelp(page, "Executions", "one run of a state machine");
 
-      await page.getByRole("button", { name: "Start execution" }).click();
-      const dialog = page.getByRole("dialog");
-      await dialog.getByLabel("Name (optional)").fill("tooltip-run");
-      await dialog.getByLabel("Input JSON").fill('{"source":"tooltip-test"}');
-      await dialog.getByRole("button", { name: "Start execution" }).click();
-      await expect(page).toHaveURL(/#\/step-functions\/executions\//);
+      await startExecution(page, "tooltip-run", '{"source":"tooltip-test"}');
       await expectPanelHelp(page, "Execution inspection", "filter and search typed history");
       expect(errors).toEqual([]);
     } finally { sfn.destroy(); }
@@ -183,52 +214,69 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
     page.on("request", request => { if (request.headers()["x-amz-target"] === "AWSStepFunctions.DescribeExecution") describeRequests++; });
     try {
       await page.goto(`${consoleUrl}#/step-functions/state-machines/create`);
-      await page.getByLabel("Name", { exact: true }).fill("browser-workflow");
-      await page.getByLabel("Execution role ARN").fill(fixture.workflowRoleArn);
+      await continueToStudio(page, "browser-workflow");
+      await chooseExistingRole(page, fixture.workflowRoleArn);
+      await page.getByRole("button", { name: "Add new tag" }).click();
+      await page.getByLabel("Key", { exact: true }).fill("team");
+      await page.getByLabel("Value - optional").fill("console");
       await openDefinitionJson(page);
       await page.getByLabel("Definition (States Language JSON)").fill('{"StartAt":"Missing","States":{}}');
-      await page.getByRole("button", { name: "Validate" }).click();
+      await page.getByRole("button", { name: "Validate", exact: true }).click();
       await expect(page.getByRole("alert")).toContainText("diagnostic");
       const waitingDefinition = JSON.stringify({ StartAt: "Hold", States: { Hold: { Type: "Wait", Seconds: 60, End: true } } }, null, 2);
       await page.getByLabel("Definition (States Language JSON)").fill(waitingDefinition);
-      await page.getByLabel("Tags (JSON object)").fill('{"team":"console"}');
-      await page.getByRole("button", { name: "Create state machine" }).click();
+      await page.getByRole("button", { name: "Create", exact: true }).click();
+      await dismissStartOffer(page);
       await expect(page.getByRole("heading", { name: "browser-workflow" })).toBeVisible();
+      await expect(page.getByRole("tab", { name: "Executions" })).toHaveAttribute("aria-selected", "true");
       const machineArn = decodeURIComponent(new URL(page.url()).hash.split("/").at(-1)!);
 
       await page.getByRole("tab", { name: "Tags" }).click();
-      await page.getByRole("button", { name: "Edit tags" }).click();
+      await expect(page.getByRole("cell", { name: "team" })).toBeVisible();
+      await page.getByRole("button", { name: "Manage tags" }).click();
       let dialog = page.getByRole("dialog");
-      await dialog.getByLabel("Tags (JSON object)").fill('{"owner":"browser","stage":"test"}');
+      await dialog.getByRole("button", { name: "Remove" }).click();
+      await dialog.getByRole("button", { name: "Add new tag" }).click();
+      await dialog.getByLabel("Key", { exact: true }).fill("owner");
+      await dialog.getByLabel("Value - optional").fill("browser");
+      await dialog.getByRole("button", { name: "Add new tag" }).click();
+      await dialog.getByLabel("Key", { exact: true }).nth(1).fill("stage");
+      await dialog.getByLabel("Value - optional").nth(1).fill("test");
       await dialog.getByRole("button", { name: "Save tags" }).click();
       await expect(page.getByRole("cell", { name: "owner" })).toBeVisible();
+      await expect(page.getByRole("cell", { name: "team" })).toHaveCount(0);
       expect((await sfn.send(new ListTagsForResourceCommand({ resourceArn: machineArn }))).tags).toEqual([{ key: "owner", value: "browser" }, { key: "stage", value: "test" }]);
 
-      await page.getByRole("button", { name: "Start execution" }).click();
-      dialog = page.getByRole("dialog");
-      await dialog.getByLabel("Name (optional)").fill("running-inspection");
-      await dialog.getByLabel("Input JSON").fill('{"request":"running"}');
-      await dialog.getByRole("button", { name: "Start execution" }).click();
-      await expect(page).toHaveURL(/#\/step-functions\/executions\//);
+      await startExecution(page, "running-inspection", '{"request":"running"}');
       await expect(page.getByRole("heading", { name: "running-inspection" })).toBeVisible();
       const runningArn = decodeURIComponent(new URL(page.url()).hash.split("/").at(-1)!);
-      await expect(page.getByText("RUNNING", { exact: true }).first()).toBeVisible();
+      await expect(page.getByText("Running", { exact: true }).first()).toBeVisible();
+      await expect(page.getByText("00:00:", { exact: false }).first()).toBeVisible();
       await expect(page.getByRole("button", { name: "Inspect Hold state" })).toHaveClass(/active/);
       const beforePoll = describeRequests;
       await expect.poll(() => describeRequests, { timeout: 5000 }).toBeGreaterThan(beforePoll);
       await page.getByRole("button", { name: "Refresh execution" }).click();
-      await page.getByRole("tab", { name: "Event history" }).click();
+      await page.getByRole("tab", { name: "Event view" }).click();
       await expect(page.locator("[data-event-table]").getByRole("button", { name: "WaitStateEntered", exact: true })).toBeVisible();
       await page.locator("[data-event-table]").getByRole("button", { name: "WaitStateEntered", exact: true }).click();
       await expect(page.getByRole("heading", { name: /^Event \d+$/ })).toBeVisible();
       await expect(page.getByText("Previous event", { exact: true })).toBeVisible();
       await page.getByRole("button", { name: "Stop execution" }).click();
-      await expect(page.getByText("ABORTED", { exact: true }).first()).toBeVisible();
-      await page.getByRole("tab", { name: "Graph" }).click();
+      dialog = page.getByRole("dialog");
+      await expect(dialog.getByLabel("Error - optional")).toHaveValue("");
+      await dialog.getByLabel("Cause - optional").fill("Stopped by the browser test");
+      await dialog.getByRole("button", { name: "Stop execution" }).click();
+      await expect(page.getByText("Aborted", { exact: true }).first()).toBeVisible();
+      const stopped = await sfn.send(new DescribeExecutionCommand({ executionArn: runningArn }));
+      expect(stopped.error).toBeUndefined();
+      expect(stopped.cause).toBe("Stopped by the browser test");
+      await page.getByRole("tab", { name: "Graph view" }).click();
       await expect(page.getByRole("button", { name: "Inspect Hold state" })).not.toHaveClass(/active/);
 
-      await page.goto(`${consoleUrl}${new URL(page.url()).hash.replace(/executions\/.+$/, `state-machines/${encodeURIComponent(machineArn)}/edit`)}`);
+      await page.goto(`${consoleUrl}#/step-functions/state-machines/${encodeURIComponent(machineArn)}/edit`);
+      await page.getByRole("tab", { name: "Config", exact: true }).click();
       await page.getByLabel("Execution role ARN").fill(`${fixture.workflowRoleArn}-dirty`);
+      await page.keyboard.press("Escape");
       await page.getByRole("link", { name: "Cancel" }).click();
       dialog = page.getByRole("dialog");
       await expect(dialog.getByRole("heading", { name: "Discard unsaved changes?" })).toBeVisible();
@@ -236,7 +284,7 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
       await page.getByLabel("Execution role ARN").fill(fixture.workflowRoleArn);
       await openDefinitionJson(page);
       await page.getByLabel("Definition (States Language JSON)").fill('{"StartAt":"Nope","States":{}}');
-      await page.getByRole("button", { name: "Validate without saving" }).click();
+      await page.getByRole("button", { name: "Validate", exact: true }).click();
       await expect(page.getByRole("alert")).toContainText("diagnostic");
       const nestedDefinition = JSON.stringify({
         StartAt: "Invoke",
@@ -255,7 +303,7 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
         },
       }, null, 2);
       await page.getByLabel("Definition (States Language JSON)").fill(nestedDefinition);
-      await page.getByRole("button", { name: "Save changes" }).click();
+      await page.getByRole("button", { name: "Save", exact: true }).click();
       await expect(page.getByText(/existing execution snapshots are unchanged/i)).toBeVisible();
       await expect(page.getByText("Latest update", { exact: true })).toBeVisible();
       await page.getByRole("tab", { name: "Definition" }).click();
@@ -263,20 +311,15 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
       await expect(page.getByRole("heading", { name: "Branches · branch 1" })).toBeVisible();
       await expect(page.getByRole("heading", { name: "Items · item processor" })).toBeVisible();
 
-      await page.getByRole("button", { name: "Start execution" }).click();
-      dialog = page.getByRole("dialog");
-      await dialog.getByLabel("Name (optional)").fill("nested-success");
-      await dialog.getByLabel("Input JSON").fill('{"items":["x","y"]}');
-      await dialog.getByRole("button", { name: "Start execution" }).click();
-      await expect(page).toHaveURL(/#\/step-functions\/executions\//);
+      await startExecution(page, "nested-success", '{"items":["x","y"]}');
       const successArn = decodeURIComponent(new URL(page.url()).hash.split("/").at(-1)!);
       await waitTerminal(sfn, successArn);
       await page.getByRole("button", { name: "Refresh execution" }).click();
-      await expect(page.getByText("SUCCEEDED", { exact: true }).first()).toBeVisible();
+      await expect(page.getByText("Succeeded", { exact: true }).first()).toBeVisible();
       await expect(page.getByRole("heading", { name: "Retry-attempt timeline (1)" })).toBeVisible();
       await expect(page.getByText("Iteration 0", { exact: true })).toBeVisible();
       await expect(page.getByText("Iteration 1", { exact: true })).toBeVisible();
-      await page.getByRole("tab", { name: "Event history" }).click();
+      await page.getByRole("tab", { name: "Event view" }).click();
       await page.getByLabel("Event filter").selectOption("nested");
       await expect(page.locator("[data-event-table]").getByRole("button", { name: "ParallelStateStarted", exact: true })).toBeVisible();
       await page.getByLabel("Order").selectOption("reverse");
@@ -289,17 +332,14 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
       const failedDefinition = JSON.stringify({ StartAt: "Broken", States: { Broken: { Type: "Fail", Error: "ExpectedFailure", Cause: "browser failure" } } }, null, 2);
       await openDefinitionJson(page);
       await page.getByLabel("Definition (States Language JSON)").fill(failedDefinition);
-      await page.getByRole("button", { name: "Save changes" }).click();
-      await page.getByRole("button", { name: "Start execution" }).click();
-      dialog = page.getByRole("dialog");
-      await dialog.getByLabel("Name (optional)").fill("expected-failure");
-      await dialog.getByLabel("Input JSON").fill('{"safe":"visible"}');
-      await dialog.getByRole("button", { name: "Start execution" }).click();
-      await expect(page).toHaveURL(/#\/step-functions\/executions\//);
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await startExecution(page, "expected-failure", '{"safe":"visible"}');
       const failedArn = decodeURIComponent(new URL(page.url()).hash.split("/").at(-1)!);
       await waitTerminal(sfn, failedArn);
       await page.getByRole("button", { name: "Refresh execution" }).click();
-      await expect(page.getByText("FAILED", { exact: true }).first()).toBeVisible();
+      await expect(page.getByText("Failed", { exact: true }).first()).toBeVisible();
+      await expect(page.getByRole("button", { name: "View step details" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Inspect Broken state" })).toHaveClass(/status-failed/);
       await expect(page.getByRole("heading", { name: "Failure summary" })).toBeVisible();
       await expect(page.getByText("ExpectedFailure", { exact: true }).first()).toBeVisible();
       await expect(page.locator("main")).toContainText('"safe": "visible"');
@@ -328,19 +368,15 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
       await page.setViewportSize({ width: 390, height: 844 });
       for (const hash of ["#/step-functions/state-machines", `#/step-functions/state-machines/${encodeURIComponent(machine.stateMachineArn!)}`, `#/step-functions/state-machines/${encodeURIComponent(machine.stateMachineArn!)}/definition`, `#/step-functions/state-machines/${encodeURIComponent(machine.stateMachineArn!)}/edit`]) {
         await page.goto(`${consoleUrl}${hash}`);
-        await expect(page.getByRole("heading", { name: hash.endsWith("/edit") ? "Edit mobile-workflow" : hash.endsWith("state-machines") ? "State machines" : "mobile-workflow" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: hash.endsWith("/edit") ? "Edit mobile-workflow" : hash.endsWith("state-machines") ? "State machines" : "mobile-workflow", exact: true })).toBeVisible();
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
       }
       await page.goto(`${consoleUrl}#/step-functions/state-machines/${encodeURIComponent(machine.stateMachineArn!)}`);
-      await page.getByRole("button", { name: "Start execution" }).click();
-      const dialog = page.getByRole("dialog");
-      await dialog.getByLabel("Name (optional)").fill("mobile-run");
-      await dialog.getByRole("button", { name: "Start execution" }).click();
-      await expect(page).toHaveURL(/#\/step-functions\/executions\//);
+      await startExecution(page, "mobile-run");
       const executionArn = decodeURIComponent(new URL(page.url()).hash.split("/").at(-1)!);
       await waitTerminal(sfn, executionArn);
       await page.getByRole("button", { name: "Refresh execution" }).click();
-      await page.getByRole("tab", { name: "Event history" }).click();
+      await page.getByRole("tab", { name: "Event view" }).click();
       await expect(page.getByLabel("Event filter")).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
       expect(errors).toEqual([]);
@@ -354,7 +390,7 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
     const sfn = new SFNClient(sdkOptions());
     try {
       await page.goto(`${consoleUrl}#/step-functions/state-machines/create`);
-      await expect(page.getByRole("tab", { name: "Visual" })).toHaveAttribute("aria-selected", "true");
+      await continueToStudio(page, "visual-workflow");
       await expect(page.getByRole("button", { name: "Edit Hello state" })).toBeVisible();
       await page.getByRole("button", { name: "Add Task state" }).click();
       await expect(page.getByRole("button", { name: "Edit Task state" })).toBeVisible();
@@ -375,12 +411,11 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
           InvokeWorker: { Type: "Task", Resource: fixture.functionArn, End: true },
         },
       });
-      await page.getByRole("tab", { name: "Visual" }).click();
+      await page.getByRole("tab", { name: "Design", exact: true }).click();
       await expect(page.getByRole("button", { name: "Edit InvokeWorker state" })).toBeVisible();
-      await page.getByLabel("Name", { exact: true }).fill("visual-workflow");
-      await page.getByLabel("Execution role ARN").fill(fixture.workflowRoleArn);
-      await page.keyboard.press("Escape");
-      await page.getByRole("button", { name: "Create state machine" }).click();
+      await chooseExistingRole(page, fixture.workflowRoleArn);
+      await page.getByRole("button", { name: "Create", exact: true }).click();
+      await dismissStartOffer(page);
       await expect(page.getByRole("heading", { name: "visual-workflow" })).toBeVisible();
       const machineArn = decodeURIComponent(new URL(page.url()).hash.split("/").at(-1)!);
       const described = await sfn.send(new DescribeStateMachineCommand({ stateMachineArn: machineArn }));
@@ -414,7 +449,7 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
       const machine = await sfn.send(new CreateStateMachineCommand({ name: "imported-workflow", roleArn: fixture.workflowRoleArn, definition: JSON.stringify(original) }));
 
       await page.goto(`${consoleUrl}#/step-functions/state-machines/${encodeURIComponent(machine.stateMachineArn!)}/edit`);
-      await expect(page.getByRole("tab", { name: "Visual" })).toHaveAttribute("aria-selected", "true");
+      await expect(page.getByRole("tab", { name: "Design", exact: true })).toHaveAttribute("aria-selected", "true");
       await expect(page.getByRole("button", { name: "Edit Prepare state" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Edit Delay state" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Edit Finish state" })).toBeVisible();
@@ -426,7 +461,7 @@ test.describe("Step Functions SFN-01 through SFN-04 console", () => {
       await expect(page.getByLabel("Wait timing")).toHaveValue("SecondsPath · $.delaySeconds");
       await page.getByLabel("Comment", { exact: true }).fill("Delay supplied by input");
       await page.getByLabel("Comment", { exact: true }).blur();
-      await page.getByRole("button", { name: "Save changes" }).click();
+      await page.getByRole("button", { name: "Save", exact: true }).click();
       await expect(page.getByText(/existing execution snapshots are unchanged/i)).toBeVisible();
 
       const described = await sfn.send(new DescribeStateMachineCommand({ stateMachineArn: machine.stateMachineArn! }));
