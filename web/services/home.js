@@ -58,6 +58,7 @@ async function home() {
   ui.summary = summary;
   ui.environment = environment;
   const services = [
+    { key: "opensearch", cls: "db", name: "OpenSearch Service", label: "Domains", count: summary.opensearchDomainCount ?? 0, text: "Index and search documents with the embedded search engine.", href: "#/opensearch/domains" },
     { key: "lambda", cls: "lambda", name: "Lambda", label: "Functions", count: summary.counts.functions, text: "Build and run code without thinking about servers.", href: "#/lambda/functions" },
     { key: "dynamodb", cls: "db", name: "DynamoDB", label: "Tables", count: summary.counts.tables, text: "Fast, flexible NoSQL data for your applications.", href: "#/dynamodb/tables" },
     { key: "eventbridge", cls: "eventbridge", name: "EventBridge", label: "Event buses", count: summary.counts.eventBuses ?? 0, text: "Route custom and scheduled development events to local targets.", href: "#/eventbridge/event-buses" },

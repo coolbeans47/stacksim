@@ -125,6 +125,7 @@ export interface S3InternalObject {
   versionId: string;
   etag: string;
   size: number;
+  lastModified: number;
   sha256: string;
   contentType?: string;
   contentEncoding?: string;
@@ -550,6 +551,7 @@ function internalObjectView(bucket: string, key: string, object: S3ObjectVersion
     versionId: object.versionId,
     etag: object.etag,
     size: object.size,
+    lastModified: object.lastModified,
     sha256: object.blobId,
     contentType: object.contentType,
     contentEncoding: object.contentEncoding,
@@ -1049,12 +1051,16 @@ export class S3Service {
     });
   }
 
-  async readObjectBytes(bucketName: string, key: string, versionId?: string, maximumBytes = this.maximumObjectBytes): Promise<S3InternalObject> {
+  async readObjectBytes(bucketName: string, key: string, versionId?: string, maximumBytes = this.maximumObjectBytes, enforceReadRestrictions = false): Promise<S3InternalObject> {
     if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) throw new RangeError("maximumBytes must be a non-negative safe integer");
     await this.start();
     const located = this.requireBucket(bucketName);
     const index = await this.bucketIndex(located);
     const object = selectObject(index, key, versionId).version;
+    if (enforceReadRestrictions) {
+      if (object.sseCustomerKeyMd5) throw new AwsError("InvalidRequest", "Service reads cannot supply an SSE-C customer key", 400);
+      this.refreshRestore(object); this.ensureArchiveReadable(object);
+    }
     if (object.size > maximumBytes) throw new AwsError("EntityTooLarge", `Object ${bucketName}/${key} exceeds the ${maximumBytes} byte internal read limit`, 400);
     const chunks: Buffer[] = [];
     let size = 0;

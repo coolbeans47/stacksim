@@ -108,6 +108,7 @@ const dataSourceSchema: ProviderSchema = Object.freeze({
     Description: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
     ServiceRoleArn: Object.freeze({ valueType: "string", updateBehavior: "MUTABLE" }),
     DynamoDBConfig: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
+    OpenSearchServiceConfig: Object.freeze({ valueType: "object", updateBehavior: "MUTABLE" }),
   }),
   ref: Object.freeze({ supported: true, valueType: "string", description: "Data source name" }),
   attributes: Object.freeze({
@@ -275,7 +276,16 @@ function validateSchemaResource(properties: unknown): ProviderValidationIssue[] 
 function validateDataSource(properties: unknown): ProviderValidationIssue[] {
   const issues = validateTop(properties, dataSourceSchema);
   if (!cfn10Record(properties)) return issues;
-  if (!["NONE", "AMAZON_DYNAMODB"].includes(String(properties.Type))) cfn10Issue(issues, "Properties.Type", "Only NONE and AMAZON_DYNAMODB data sources are supported");
+  if (!["NONE", "AMAZON_DYNAMODB", "AMAZON_OPENSEARCH_SERVICE"].includes(String(properties.Type))) cfn10Issue(issues, "Properties.Type", "Only NONE, AMAZON_DYNAMODB and AMAZON_OPENSEARCH_SERVICE data sources are supported");
+  if (properties.OpenSearchServiceConfig !== undefined && properties.Type !== "AMAZON_OPENSEARCH_SERVICE") cfn10Issue(issues, "Properties.OpenSearchServiceConfig", "Requires AMAZON_OPENSEARCH_SERVICE");
+  if (properties.Type === "AMAZON_OPENSEARCH_SERVICE") {
+    if (properties.DynamoDBConfig !== undefined) cfn10Issue(issues, "Properties.DynamoDBConfig", "Not valid for OpenSearch");
+    if (typeof properties.ServiceRoleArn !== "string") cfn10Issue(issues, "Properties.ServiceRoleArn", "ServiceRoleArn is required for OpenSearch");
+    if (exactObject(properties.OpenSearchServiceConfig, "Properties.OpenSearchServiceConfig", ["Endpoint", "AwsRegion"], issues)) {
+      if (typeof properties.OpenSearchServiceConfig.Endpoint !== "string") cfn10Issue(issues, "Properties.OpenSearchServiceConfig.Endpoint", "Endpoint is required");
+      if (typeof properties.OpenSearchServiceConfig.AwsRegion !== "string") cfn10Issue(issues, "Properties.OpenSearchServiceConfig.AwsRegion", "AwsRegion is required");
+    }
+  }
   if (properties.Type === "NONE" && (properties.ServiceRoleArn !== undefined || properties.DynamoDBConfig !== undefined)) cfn10Issue(issues, "Properties", "NONE data sources do not accept ServiceRoleArn or DynamoDBConfig");
   if (properties.Type === "AMAZON_DYNAMODB") {
     if (typeof properties.ServiceRoleArn !== "string") cfn10Issue(issues, "Properties.ServiceRoleArn", "ServiceRoleArn is required for DynamoDB");
@@ -397,6 +407,7 @@ function dataSourceInput(model: Model): Model {
     type: model.Type,
     ...(model.Description === undefined ? {} : { description: model.Description }),
     ...(model.ServiceRoleArn === undefined ? {} : { serviceRoleArn: model.ServiceRoleArn }),
+    ...(model.OpenSearchServiceConfig === undefined ? {} : { openSearchServiceConfig: { endpoint: model.OpenSearchServiceConfig.Endpoint, awsRegion: model.OpenSearchServiceConfig.AwsRegion } }),
     ...(model.DynamoDBConfig === undefined ? {} : {
       dynamodbConfig: {
         tableName: model.DynamoDBConfig.TableName,
@@ -415,6 +426,7 @@ function dataSourceModel(apiId: string, value: Model): Model {
     Type: value.type,
     ...(value.description === undefined ? {} : { Description: value.description }),
     ...(value.serviceRoleArn === undefined ? {} : { ServiceRoleArn: value.serviceRoleArn }),
+    ...(value.openSearchServiceConfig === undefined ? {} : { OpenSearchServiceConfig: { Endpoint: value.openSearchServiceConfig.endpoint, AwsRegion: value.openSearchServiceConfig.awsRegion } }),
     ...(value.dynamodbConfig === undefined ? {} : {
       DynamoDBConfig: {
         TableName: value.dynamodbConfig.tableName,

@@ -22,6 +22,8 @@ import {
   QueryResourceLimitError,
 } from "./cloudwatch-insights-executor.js";
 import { discoverLogFields, logFieldType } from "./cloudwatch-log-discovery.js";
+import { executeLogLanguage, parseLogLanguage, LOG_LANGUAGE_MAX_BYTES, LOG_LANGUAGE_MAX_EVENTS, type LogLanguageFields } from "./cloudwatch-logs-query-languages.js";
+import { SearchError } from "./opensearch/query.js";
 import { LogFilterSyntaxError, matchLogFilterPattern, regexCount, resolveExtractedValue, validateLogFilterPattern } from "./cloudwatch-log-filter.js";
 import type { CloudWatchMetricsService } from "./cloudwatch-metrics.js";
 import type { LambdaService } from "./lambda.js";
@@ -57,6 +59,8 @@ function streamView(stream: LogStreamState): any {
 }
 
 export class CloudWatchLogsService {
+  private ownedQueryGuard?: (job: LogQueryJobState) => Promise<void>;
+  setOwnedQueryGuard(guard: (job: LogQueryJobState) => Promise<void>): void { this.ownedQueryGuard = guard; }
   private readonly locks = new Map<string, Promise<void>>();
   private readonly querySchedules = new Map<string, Set<() => void>>();
   private readonly subscriptionLocks = new Set<string>();
@@ -91,7 +95,7 @@ export class CloudWatchLogsService {
   async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const operation = String(req.headers["x-amz-target"] ?? "").split(".").pop(); const input = await readJson(req);
-      if (!operation || typeof (this as any)[operation] !== "function") throw new AwsError("UnknownOperationException", `Unknown operation: ${operation}`);
+      if (!operation || !/^[A-Z][A-Za-z0-9]+$/.test(operation) || typeof (this as any)[operation] !== "function") throw new AwsError("UnknownOperationException", `Unknown operation: ${operation}`);
       if (operation === "GetLogObject") {
         const data = await this.GetLogObject(input);
         res.statusCode = 200; res.setHeader("content-type", "application/vnd.amazon.eventstream"); res.setHeader("x-amzn-requestid", randomUUID()); res.flushHeaders();
@@ -395,10 +399,9 @@ export class CloudWatchLogsService {
     return new AwsError("MalformedQueryException", message, 400, { queryCompileError: { message, location } });
   }
 
-  private queryLanguage(value: unknown, allowUnsupported = false): "CWLI" | "SQL" | "PPL" {
+  private queryLanguage(value: unknown): "CWLI" | "SQL" | "PPL" {
     const language = String(value ?? "CWLI").toUpperCase();
     if (!QUERY_LANGUAGES.has(language)) throw new AwsError("InvalidParameterException", `Unsupported query language: ${language}`);
-    if (!allowUnsupported && language !== "CWLI") throw this.malformed(`${language} queries are recognized but are not implemented by stacksim`, 0, 1);
     return language as "CWLI" | "SQL" | "PPL";
   }
 
@@ -487,6 +490,31 @@ export class CloudWatchLogsService {
     }
   }
 
+  private async executeLanguageJob(job: QueryJob) {
+    const plan = parseLogLanguage({ queryLanguage: job.queryLanguage, queryString: job.queryString, ...(job.queryLanguage === "PPL" ? { logGroupName: job.logGroupNames[0] } : {}) }, this.region, this.store.accountId);
+    if (job.logGroupNames.length !== 1 || plan.source !== job.logGroupNames[0]) throw new Error("The persisted SQL/PPL source does not match its query job");
+    const group = this.group(plan.source), records: LogLanguageFields[] = [], control = this.queryControl(job), deadline = performance.now() + 30_000;
+    if ((group.logGroupClass ?? "STANDARD") !== "STANDARD") throw new Error("SQL/PPL requires a Standard log group");
+    let scanned = 0, scannedBytes = 0, materializedBytes = 0;
+    try {
+      for (const stream of Object.values(group.streams)) for await (const event of this.events(group.logGroupName, stream.logStreamName).iterate()) {
+        if (control.cancelled()) throw new QueryCancelledError();
+        if (control.deadline() || performance.now() > deadline) throw new QueryTimedOutError("SQL/PPL exceeded its 30-second local execution deadline");
+        if (event.timestamp < job.startTime * 1000 || event.timestamp > job.endTime * 1000 + 999) continue;
+        scanned++; scannedBytes += Buffer.byteLength(event.message);
+        if (scanned > LOG_LANGUAGE_MAX_EVENTS || scannedBytes > LOG_LANGUAGE_MAX_BYTES) throw new QueryResourceLimitError("SQL/PPL exceeds 50000 events or 64 MiB of scanned messages; narrow the time range");
+        const fields = { ...this.discoveredFields(event.message, group.logGroupName), "@timestamp": event.timestamp, "@ingestionTime": event.ingestionTime, "@message": event.message, "@logStream": stream.logStreamName, "@log": `${this.store.accountId}:${group.logGroupName}`, "@ptr": this.pointer(group.logGroupName, stream.logStreamName, event.eventId) } as LogLanguageFields;
+        materializedBytes += Buffer.byteLength(JSON.stringify(fields));
+        if (materializedBytes > LOG_LANGUAGE_MAX_BYTES) throw new QueryResourceLimitError("SQL/PPL discovered rows exceed 64 MiB; narrow the time range");
+        records.push(fields);
+        if (scanned % 1000 === 0) { job.statistics = { ...this.emptyQueryStatistics(1), recordsScanned: scanned, bytesScanned: scannedBytes }; await this.store.save(); await new Promise<void>(resolve => setImmediate(resolve)); }
+      }
+      if (control.cancelled()) throw new QueryCancelledError();
+      if (control.deadline() || performance.now() > deadline) throw new QueryTimedOutError("SQL/PPL exceeded its 30-second local execution deadline");
+      return { result: executeLogLanguage(plan, records, job.limit, deadline), scanned, scannedBytes };
+    } catch (error) { job.statistics = { ...this.emptyQueryStatistics(1), recordsScanned: scanned, bytesScanned: scannedBytes }; await this.store.save(); if (error instanceof SearchError && error.type === "timeout_exception") throw new QueryTimedOutError(error.message); throw error; }
+  }
+
   async runLogAlarmQuery(configuration: any, start: number, end: number, lineCount = 0): Promise<LogAlarmQueryResult> {
     this.validateLogAlarmQuery(configuration); const queryString = String(configuration.queryString ?? configuration.QueryString); const identifiers = configuration.logGroupIdentifiers ?? configuration.LogGroupIdentifiers; const groups = this.resolveQueryGroups({ logGroupIdentifiers: identifiers }); const aggregation = this.alarmAggregation(configuration.aggregationExpression ?? configuration.AggregationExpression);
     const job = { logGroupNames: groups, startTime: Math.floor(start / 1000), endTime: Math.floor((Math.max(start, end - 1)) / 1000), status: "Running" as const, startedAt: this.clock.now() } as QueryJob;
@@ -532,7 +560,8 @@ export class CloudWatchLogsService {
     if (job.status !== "Scheduled") return; job.status = "Running"; job.startedAt = this.clock.now(); await this.store.save();
     let cancelTimeout!: () => void; cancelTimeout = this.scheduler.schedule(async () => { this.querySchedules.get(job.queryId)?.delete(cancelTimeout); if (job.status !== "Running") return; delete job.finalResults; job.status = "Timeout"; job.completedAt = this.clock.now(); job.expiresAt = job.completedAt + 7 * 24 * 60 * 60 * 1000; await this.store.save(); }, QUERY_TIMEOUT_MS); this.trackQuerySchedule(job.queryId, cancelTimeout);
     try {
-      const executed = await this.executeInsightsJob(job, job.queryString, job.limit); if (job.status !== "Running") return;
+      if (job.sourceOwner) { if (!this.ownedQueryGuard) throw new Error("The query source owner is unavailable"); await this.ownedQueryGuard(job); if (job.status !== "Running") return; }
+      const executed = job.queryLanguage === "CWLI" ? await this.executeInsightsJob(job, job.queryString, job.limit) : await this.executeLanguageJob(job); if (job.status !== "Running") return;
       job.finalResults = executed.result.rows;
       job.results = executed.result.rows.slice(0, executed.result.rows.length ? Math.max(1, Math.ceil(executed.result.rows.length / 2)) : 0);
       job.statistics = { recordsMatched: executed.result.recordsMatched, recordsScanned: executed.scanned, estimatedRecordsSkipped: 0, bytesScanned: executed.scannedBytes, estimatedBytesSkipped: 0, logGroupsScanned: job.logGroupNames.length };
@@ -549,17 +578,29 @@ export class CloudWatchLogsService {
     if (changed) await this.store.save();
   }
 
-  async StartQuery(input: any, principal?: any): Promise<any> {
+  async StartQuery(input: any, principal?: any, sourceOwner?: LogQueryJobState["sourceOwner"]): Promise<any> {
     await this.pruneQueryJobs(); const language = this.queryLanguage(input.queryLanguage); const queryString = String(input.queryString ?? "");
     if (queryString.length > 10_000) throw new AwsError("InvalidParameterException", "queryString must not exceed 10000 characters");
-    let plan: ReturnType<typeof parseInsightsQuery>; try { plan = parseInsightsQuery(queryString); } catch (error) { if (error instanceof InsightsSyntaxError) throw this.malformed(error); throw error; }
-    const groups = this.resolveQueryGroups(input); if (groups.some(name => this.groups[name].logGroupClass === "INFREQUENT_ACCESS") && plan.stages.filter(stage => stage.kind === "stats").length > 2) throw this.malformed("An Infrequent Access log query can contain no more than 2 stats commands", 0, queryString.length);
+    let groups: string[];
+    if (language === "CWLI") {
+      let plan: ReturnType<typeof parseInsightsQuery>; try { plan = parseInsightsQuery(queryString); } catch (error) { if (error instanceof InsightsSyntaxError) throw this.malformed(error); throw error; }
+      groups = this.resolveQueryGroups(input); if (groups.some(name => this.groups[name].logGroupClass === "INFREQUENT_ACCESS") && plan.stages.filter(stage => stage.kind === "stats").length > 2) throw this.malformed("An Infrequent Access log query can contain no more than 2 stats commands", 0, queryString.length);
+    } else {
+      const plan = parseLogLanguage(input, this.region, this.store.accountId); groups = this.resolveQueryGroups({ logGroupName: plan.source });
+      if (groups.some(name => (this.groups[name].logGroupClass ?? "STANDARD") !== "STANDARD")) throw new AwsError("InvalidParameterException", "SQL/PPL requires a Standard log group");
+    }
     const startTime = Number(input.startTime); const endTime = Number(input.endTime);
     if (!Number.isInteger(startTime) || !Number.isInteger(endTime) || startTime < 0 || endTime < startTime) throw new AwsError("InvalidParameterException", "startTime and endTime must be integer epoch seconds and endTime must not precede startTime");
     const limit = input.limit === undefined ? 10_000 : Number(input.limit); if (!Number.isInteger(limit) || limit < 1 || limit > 100_000) throw new AwsError("InvalidParameterException", "limit must be between 1 and 100000");
+    if (language !== "CWLI" && limit > 10_000) throw new AwsError("InvalidParameterException", "SQL/PPL limit must not exceed 10000");
     if (Object.values(this.queryJobs).filter(job => job.status === "Scheduled" || job.status === "Running").length >= 100) throw new AwsError("LimitExceededException", "No more than 100 concurrent Logs Insights queries are allowed");
-    const queryId = randomUUID(); const job: QueryJob = { queryId, queryString, queryLanguage: language as "CWLI", logGroupNames: groups, startTime, endTime, limit, status: "Scheduled", createTime: this.clock.now(), expiresAt: this.clock.now() + 7 * 24 * 60 * 60 * 1000, results: [], statistics: this.emptyQueryStatistics(groups.length), userIdentity: principal?.principalArn };
-    this.queryJobs[queryId] = job; await this.store.save(); this.scheduleQuery(job, 1); return { queryId };
+    if (sourceOwner) {
+      const owned = Object.values(this.queryJobs).filter(job => job.sourceOwner?.generation === sourceOwner.generation);
+      if (owned.filter(job => job.status === "Scheduled" || job.status === "Running").length >= 30 || owned.length >= 1000) throw new AwsError("LimitExceededException", "Direct query sources support 30 concurrent queries and 1000 retained query jobs");
+    }
+    const queryId = randomUUID(); const job: QueryJob = { queryId, queryString, queryLanguage: language, logGroupNames: groups, startTime, endTime, limit, status: "Scheduled", createTime: this.clock.now(), expiresAt: this.clock.now() + 7 * 24 * 60 * 60 * 1000, results: [], statistics: this.emptyQueryStatistics(groups.length), userIdentity: principal?.principalArn };
+    if (sourceOwner) job.sourceOwner = structuredClone(sourceOwner);
+    this.queryJobs[queryId] = job; try { await this.store.save(); } catch (error) { delete this.queryJobs[queryId]; throw error; } this.scheduleQuery(job, 1); return { queryId };
   }
 
   private queryJob(queryId: unknown): QueryJob {
@@ -583,7 +624,7 @@ export class CloudWatchLogsService {
   }
 
   async DescribeQueries(input: any): Promise<any> {
-    await this.pruneQueryJobs(); if (input.status !== undefined && !QUERY_STATUSES.has(String(input.status))) throw new AwsError("InvalidParameterException", "Invalid query status"); if (input.queryLanguage !== undefined) this.queryLanguage(input.queryLanguage, true);
+    await this.pruneQueryJobs(); if (input.status !== undefined && !QUERY_STATUSES.has(String(input.status))) throw new AwsError("InvalidParameterException", "Invalid query status"); if (input.queryLanguage !== undefined) this.queryLanguage(input.queryLanguage);
     let jobs = Object.values(this.queryJobs).sort((left, right) => right.createTime - left.createTime || left.queryId.localeCompare(right.queryId));
     if (input.logGroupName) jobs = jobs.filter(job => job.logGroupNames.includes(input.logGroupName)); if (input.status) jobs = jobs.filter(job => job.status === input.status); if (input.queryLanguage) jobs = jobs.filter(job => job.queryLanguage === input.queryLanguage);
     const maxResults = input.maxResults === undefined ? 100 : Number(input.maxResults); if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 1000) throw new AwsError("InvalidParameterException", "maxResults must be between 1 and 1000");
@@ -625,7 +666,7 @@ export class CloudWatchLogsService {
   }
 
   private validateQueryDefinition(input: any): { name: string; queryString: string; queryLanguage: "CWLI" | "SQL" | "PPL"; logGroupNames?: string[]; parameters?: Array<{ name: string; defaultValue?: string; description?: string }> } {
-    const name = String(input.name ?? ""); const queryString = String(input.queryString ?? ""); const queryLanguage = this.queryLanguage(input.queryLanguage, true);
+    const name = String(input.name ?? ""); const queryString = String(input.queryString ?? ""); const queryLanguage = this.queryLanguage(input.queryLanguage);
     if (!name || name.length > 255) throw new AwsError("InvalidParameterException", "name must contain between 1 and 255 characters"); if (!queryString || queryString.length > 10_000) throw new AwsError("InvalidParameterException", "queryString must contain between 1 and 10000 characters");
     let logGroupNames: string[] | undefined; if (input.logGroupNames !== undefined) { if (queryLanguage === "SQL") throw new AwsError("InvalidParameterException", "SQL query definitions specify log groups in queryString"); if (!Array.isArray(input.logGroupNames) || input.logGroupNames.length < 1 || input.logGroupNames.length > 50 || input.logGroupNames.some((value: unknown) => !/^[.\-_/#A-Za-z0-9]+$/.test(String(value)))) throw new AwsError("InvalidParameterException", "logGroupNames must contain between 1 and 50 valid log group names"); logGroupNames = input.logGroupNames.map(String); }
     let parameters: Array<{ name: string; defaultValue?: string; description?: string }> | undefined; if (input.parameters !== undefined) { if (queryLanguage !== "CWLI") throw new AwsError("InvalidParameterException", "Query parameters are supported only for CWLI definitions"); if (!Array.isArray(input.parameters) || input.parameters.length > 20) throw new AwsError("InvalidParameterException", "A query definition can contain no more than 20 parameters"); const names = new Set<string>(); parameters = input.parameters.map((parameter: any) => { const parameterName = String(parameter?.name ?? ""); const defaultValue = parameter?.defaultValue === undefined ? undefined : String(parameter.defaultValue); const description = parameter?.description === undefined ? undefined : String(parameter.description); if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(parameterName) || parameterName.length > 128 || names.has(parameterName)) throw new AwsError("InvalidParameterException", "Query parameter names must be unique identifiers of at most 128 characters"); if ((defaultValue?.length ?? 0) > 1024 || (description?.length ?? 0) > 512) throw new AwsError("InvalidParameterException", "Query parameter default values and descriptions exceed their documented limits"); names.add(parameterName); return { name: parameterName, ...(defaultValue !== undefined ? { defaultValue } : {}), ...(description !== undefined ? { description } : {}) }; }); }
@@ -643,7 +684,7 @@ export class CloudWatchLogsService {
   }
 
   async DescribeQueryDefinitions(input: any): Promise<any> {
-    if (input.queryLanguage !== undefined) this.queryLanguage(input.queryLanguage, true); let definitions = Object.values(this.queryDefinitions).sort((left, right) => left.name.localeCompare(right.name) || left.queryDefinitionId.localeCompare(right.queryDefinitionId));
+    if (input.queryLanguage !== undefined) this.queryLanguage(input.queryLanguage); let definitions = Object.values(this.queryDefinitions).sort((left, right) => left.name.localeCompare(right.name) || left.queryDefinitionId.localeCompare(right.queryDefinitionId));
     if (input.queryLanguage) definitions = definitions.filter(definition => definition.queryLanguage === input.queryLanguage); if (input.queryDefinitionNamePrefix) definitions = definitions.filter(definition => definition.name.startsWith(input.queryDefinitionNamePrefix));
     const maxResults = input.maxResults === undefined ? 100 : Number(input.maxResults); if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 1000) throw new AwsError("InvalidParameterException", "maxResults must be between 1 and 1000"); const filter = JSON.stringify({ queryLanguage: input.queryLanguage ?? null, queryDefinitionNamePrefix: input.queryDefinitionNamePrefix ?? null }); const cursor = this.decode<{ index: number; filter: string }>("DescribeQueryDefinitions", input.nextToken); if (cursor && cursor.filter !== filter) throw new AwsError("InvalidParameterException", "The specified nextToken is invalid"); const start = cursor?.index ?? 0; const page = definitions.slice(start, start + maxResults); const next = start + page.length;
     return { queryDefinitions: page.map(({ clientToken: _clientToken, clientTokenHash: _clientTokenHash, ...definition }) => structuredClone(definition)), ...(next < definitions.length ? { nextToken: this.encode("DescribeQueryDefinitions", { index: next, filter }) } : {}) };

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "generatedBy": "scripts/generate-cloudwatch-logs-insights-capabilities.mjs",
   "designSnapshot": "2026-08-01",
-  "claim": "CloudWatch Logs Insights QL core subset",
+  "claim": "CloudWatch Logs Insights QL core and bounded SQL/PPL subsets",
   "languages": [
     {
       "name": "CWLI",
@@ -11,12 +11,12 @@
     },
     {
       "name": "PPL",
-      "state": "unsupported",
+      "state": "partial",
       "requirement": "CWLI-P1-015"
     },
     {
       "name": "SQL",
-      "state": "unsupported",
+      "state": "partial",
       "requirement": "CWLI-P1-017"
     }
   ],
@@ -1140,7 +1140,12 @@
   "limits": {
     "queryCharacters": 10000,
     "cwliConcurrentQueries": 100,
-    "pplSqlConcurrentQueries": 15,
+    "pplSqlConcurrentQueries": 100,
+    "pplSqlScannedEvents": 50000,
+    "pplSqlMaterializedBytes": 67108864,
+    "pplSqlExecutionTimeoutSeconds": 30,
+    "pplSqlResultRows": 10000,
+    "pplSqlLogGroups": 1,
     "executionTimeoutMinutes": 60,
     "resultAvailabilityDays": 7,
     "explicitLogGroups": 50,

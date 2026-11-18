@@ -1,3 +1,4 @@
+import { metadata as openSearchMetadata, routeOpenSearch } from "./services/opensearch.js";
 import { assumeRole, awsQuery, getCallerIdentity, request, rest } from "./api-client.js";
 import { associateFormLabels, emptyState, escapeHtml, loading, pageHeader } from "./components.js";
 import { normalizeHash, parseRoute, routeNotFound, shouldGuardNavigation } from "./router.js";
@@ -56,6 +57,7 @@ const serviceMeta = {
   "step-functions": stepFunctionsMetadata,
   xray: xrayMetadata,
   cloudfront: cloudFrontMetadata,
+  opensearch: openSearchMetadata,
 };
 let acceptedHash = normalizeHash(location.hash);
 let pendingNavigation = null;
@@ -218,6 +220,7 @@ async function route(focus = true) {
     else if (parts[0] === "step-functions") await routeStepFunctions(parts, serviceContext);
     else if (parts[0] === "xray") await routeXRay(parts, serviceContext);
     else if (parts[0] === "cloudfront") await routeCloudFront(parts, serviceContext);
+    else if (parts[0] === "opensearch") await routeOpenSearch(parts, serviceContext);
     else notFound(parts);
     associateFormLabels(main);
     enhanceArnComboboxes(main);

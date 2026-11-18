@@ -1216,3 +1216,30 @@ a.method-split-monitor:focus-visible{position:relative;z-index:1;outline:2px sol
 dialog.sfn-dialog .button{text-transform:none}.sfn-detail .card-header,.sfn-page .card-header{flex-wrap:wrap}.sfn-detail .card-header .actions,.sfn-page .card-header .actions{min-width:0}
 [data-theme="dark"] .sfn-flow-viewport{background:#161c25}[data-theme="dark"] .sfn-flow-node{background:#202833}[data-theme="dark"] .sfn-flow-node.status-succeeded,[data-theme="dark"] .sfn-flow-legend .status-succeeded{background:#173b2c}[data-theme="dark"] .sfn-flow-node.status-failed,[data-theme="dark"] .sfn-flow-legend .status-failed{background:#4a2029}[data-theme="dark"] .sfn-flow-node.status-caught-error,[data-theme="dark"] .sfn-flow-legend .status-caught-error{background:#4a3216}[data-theme="dark"] .sfn-flow-node.status-in-progress,[data-theme="dark"] .sfn-flow-legend .status-in-progress{background:#1d3260}[data-theme="dark"] .sfn-flow-node.status-cancelled,[data-theme="dark"] .sfn-flow-legend .status-cancelled{background:#343b46}[data-theme="dark"] .sfn-flow-node.status-not-started,[data-theme="dark"] .sfn-flow-legend .status-not-started{background:#202833}[data-theme="dark"] .sfn-flow-terminal{background:#4a4014;border-color:#8a7526;color:#f3e3a0}[data-theme="dark"] .sfn-flow-terminal.end{background:#2a3340;border-color:var(--line);color:var(--muted)}[data-theme="dark"] .sfn-flow-group{background:rgba(15,127,144,.14)}[data-theme="dark"] .sfn-flow-group.type-map{background:rgba(32,184,166,.12)}[data-theme="dark"] .sfn-flow-label{background:#3d2a12;border-color:#7a4a1c;color:#f5c08a}[data-theme="dark"] .sfn-flow-label.catch{background:#4a2029;border-color:#8a3a48;color:#f3b3bd}[data-theme="dark"] .sfn-flow-node .sfn-flow-note{color:#f5c08a}
 [data-theme="dark"] .sfn-studio-layout{background:#161c25}[data-theme="dark"] .sfn-studio-palette,[data-theme="dark"] .sfn-studio-inspector,[data-theme="dark"] .sfn-studio-palette-item{background:#1b222c}[data-theme="dark"] .sfn-studio-palette-item:hover{background:#263140}[data-theme="dark"] .sfn-choice:has(input:checked){background:rgba(91,92,226,.2)}[data-theme="dark"] .sfn-data-state.omitted{background:#3d2a12}
+
+.opensearch-page .code-box{max-height:520px;white-space:pre-wrap;overflow-wrap:anywhere}.opensearch-page .os-delete-confirm{display:block;margin:0 0 16px}.opensearch-page [hidden]{display:none}.opensearch-page details summary{cursor:pointer;font-weight:600}.opensearch-page textarea{min-height:150px}
+
+/* Embedded search workspace */
+.os-workspace-grid{display:grid;grid-template-columns:minmax(220px,280px) minmax(0,1fr);gap:20px;align-items:start}
+.os-workspace-grid>*,.os-workspace .field-row>*{min-width:0}
+.os-workspace textarea{min-height:100px;font-family:var(--font-mono,monospace)}
+.os-workspace .os-source{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;margin:0;font-size:12px}
+.os-saved-objects{list-style:none;padding:0;margin:20px 0 0;display:grid;gap:12px}
+.os-saved-objects li{display:flex;flex-wrap:wrap;gap:6px;align-items:center;border-top:1px solid var(--line);padding-top:12px}
+.os-saved-objects li .button:first-child{max-width:100%;overflow-wrap:anywhere;white-space:normal}
+.os-workspace-standalone{display:block;min-height:100vh;overflow:auto;padding:24px;background:var(--bg)}
+.os-workspace-standalone .page-width{margin:0 auto;max-width:1500px}
+.os-workspace-standalone #os-workspace-login{max-width:560px;margin:24px auto}
+.os-workspace-standalone [hidden]{display:none!important}
+@media(max-width:760px){.os-workspace-grid{grid-template-columns:minmax(0,1fr)}.os-workspace-standalone{padding:12px}.os-workspace .field-row{display:block}.os-workspace .toolbar{flex-wrap:wrap}}
+
+.opensearch-page .osis-endpoint code,.opensearch-page .osis-endpoint .mono{overflow-wrap:anywhere;word-break:break-word;white-space:normal}
+
+.os-ingest-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border-color, #d5dfec); }
+.os-ingest-row h3, .os-ingest-row p { margin: 0 0 8px; overflow-wrap: anywhere; }
+
+.opensearch-page .os-dq-role-help code{overflow-wrap:anywhere;word-break:break-word;white-space:normal}
+
+.opensearch-page .cc-identifier, .opensearch-page #cc-query-form code { overflow-wrap: anywhere; }
+.opensearch-page table[aria-label$="connections"] { min-width: 720px; }
+.opensearch-page .cc-identifier { min-width: 130px; }

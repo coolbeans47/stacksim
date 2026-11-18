@@ -2,7 +2,7 @@ import { trustPolicySource, policyRevision, mergeProvenance, authorizationDecisi
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AwsError } from "./errors.js";
-import { effectiveRoleTags, type PrincipalContext } from "./auth/sigv4.js";
+import { effectiveRoleTags, refreshPrincipalIdentity, type PrincipalContext } from "./auth/sigv4.js";
 import type { Clock } from "./core/clock.js";
 import type { Scheduler } from "./core/scheduler.js";
 import { evaluateTrust, type AuthorizationResult } from "./iam/evaluator.js";
@@ -19,6 +19,7 @@ function randomCredential(prefix: string, bytes: number, length: number): string
 
 export class StsService {
   private started = false;
+  private readonly serviceSessions = new Map<string, PrincipalContext>();
   constructor(private readonly store: StateStore, private readonly clock: Clock, private readonly scheduler: Scheduler) {}
   start(): void { if (this.started) return; this.started = true; const next = () => this.scheduler.schedule(() => { void this.cleanup().finally(next); }, 60_000); next(); }
   private async cleanup(): Promise<void> { let changed = false; for (const account of Object.values(this.store.state.accounts)) for (const [key, session] of Object.entries(account.iam.sessions)) if (session.expiration <= this.clock.now()) { delete account.iam.sessions[key]; if (session.credentialId) await this.store.credentialStore?.delete(session.credentialId); changed = true; } if (changed) await this.store.save(); }
@@ -69,6 +70,35 @@ export class StsService {
     };
   }
 
+  /** Resource-bound internal role assumption, including confused-deputy trust
+   * conditions. The source account owns the role and the resulting session. */
+  async assumeServiceRoleForResource(roleArn: string, sessionName: string, servicePrincipal: string, source: { accountId: string; arn: string }, reuseSession = false): Promise<PrincipalContext> {
+    const account = this.store.state.accounts[source.accountId];
+    const role = account && Object.values(account.iam.roles).find(role => role.arn === roleArn);
+    if (!role || roleArn.split(":")[4] !== source.accountId || source.arn.split(":")[4] !== source.accountId) throw new AwsError("AccessDenied", "The service resource and pipeline role must belong to the same account", 403);
+    if (!/^[\w+=,.@-]{2,64}$/.test(sessionName)) throw new AwsError("ValidationError", "Invalid service role session name", 400);
+    const principal: PrincipalContext = { principalType: "service", accessKeyId: `service:${servicePrincipal}`, principalArn: servicePrincipal, principalId: servicePrincipal, accountId: source.accountId };
+    const trust = evaluateTrust(role.assumeRolePolicyDocument, principal, "sts:AssumeRole", {
+      "aws:SourceArn": source.arn, "aws:SourceAccount": source.accountId, "aws:PrincipalArn": servicePrincipal,
+      "aws:PrincipalAccount": source.accountId, "aws:PrincipalServiceName": servicePrincipal,
+      "aws:CurrentTime": new Date(this.clock.now()).toISOString(),
+      ...Object.fromEntries(Object.entries(role.tags).map(([key, value]) => [`aws:ResourceTag/${key}`, value])),
+    }, trustPolicySource(role));
+    if (trust.decision !== "allowed") throw new AwsError("AccessDenied", trust.reason, 403);
+    // Long-lived pollers may reuse credentials, but every call still evaluates
+    // current trust and refreshes the identity (including role replacement).
+    const cacheKey = JSON.stringify([roleArn, sessionName, servicePrincipal, source]);
+    const cached = reuseSession && this.serviceSessions.get(cacheKey);
+    if (cached) {
+      try { if ((cached.issuedAt ?? 0) + 3_300_000 > this.clock.now()) return refreshPrincipalIdentity(this.store, this.clock, cached); } catch {}
+      this.serviceSessions.delete(cacheKey);
+    }
+    const issued = await this.persistRoleSession({ role, sessionName, durationSeconds: 3600, sessionTags: {}, transitiveTagKeys: [] });
+    const result: PrincipalContext = { principalType: "roleSession", accessKeyId: issued.AccessKeyId, principalArn: issued.AssumedRoleUser.Arn, sessionArn: issued.AssumedRoleUser.Arn, principalId: issued.AssumedRoleUser.AssumedRoleId, accountId: source.accountId, roleArn, issuedAt: this.clock.now(), principalTags: effectiveRoleTags(role.tags, {}), sessionTags: {}, transitiveTagKeys: [] };
+    if (reuseSession) { if (this.serviceSessions.size >= 1000) this.serviceSessions.delete(this.serviceSessions.keys().next().value!); this.serviceSessions.set(cacheKey, result); }
+    return result;
+  }
+
   private persistRoleSession(input: {
     role: IamRoleState;
     sessionName: string;
@@ -92,6 +122,7 @@ export class StsService {
     const duration = input.durationSeconds;
     const sessionName = input.sessionName;
     const role = input.role;
+    const accountId = role.arn.split(":")[4];
     const sessionTags = input.sessionTags;
     const resultingTransitiveTagKeys = input.transitiveTagKeys;
     const sourceIdentity = input.sourceIdentity;
@@ -101,9 +132,9 @@ export class StsService {
       ? 0
       : Buffer.byteLength(JSON.stringify({ sessionPolicy, tags: sessionTags }));
     if (!input.skipPackedPolicyCheck && packedBytes > 2048) throw new AwsError("PackedPolicyTooLarge", "Packed session policy exceeds the allowed size", 400);
-    return this.store.withCredentialMutation(this.store.accountId, async () => {
+    return this.store.withCredentialMutation(accountId, async () => {
       let accessKeyId: string; do { accessKeyId = randomCredential("ASIA", 16, 20); } while (Object.values(this.store.state.accounts).some(account => account.iam.sessions[accessKeyId] || account.iam.accessKeys[accessKeyId]));
-      const secretAccessKey = randomCredential("", 32, 40); const issuedAt = this.clock.now(); const expiration = issuedAt + duration * 1000; const assumedRoleId = `${role.roleId}:${sessionName}`; const arn = `arn:aws:sts::${this.store.accountId}:assumed-role/${role.roleName}/${sessionName}`; const tokenPayload = Buffer.from(JSON.stringify({ accessKeyId, expiration, arn })).toString("base64url"); const signature = createHmac("sha256", this.store.state.installation.paginationSecret).update(tokenPayload).digest("base64url"); const sessionToken = `${tokenPayload}.${signature}`;
+      const secretAccessKey = randomCredential("", 32, 40); const issuedAt = this.clock.now(); const expiration = issuedAt + duration * 1000; const assumedRoleId = `${role.roleId}:${sessionName}`; const arn = `arn:${role.arn.split(":")[1]}:sts::${accountId}:assumed-role/${role.roleName}/${sessionName}`; const tokenPayload = Buffer.from(JSON.stringify({ accessKeyId, expiration, arn })).toString("base64url"); const signature = createHmac("sha256", this.store.state.installation.paginationSecret).update(tokenPayload).digest("base64url"); const sessionToken = `${tokenPayload}.${signature}`;
       const credentialId = randomUUID();
       if (!this.store.credentialStore) throw new AwsError("InternalFailure", "The IAM credential store is unavailable", 500);
       const persisted: LocalCredentialState = {
@@ -116,8 +147,8 @@ export class StsService {
       };
       let transitionStarted = false;
       try {
-        await this.store.credentialStore.put({ credentialId, type: "sts-session", accountId: this.store.accountId, ownerId: assumedRoleId, accessKeyId }, { secretAccessKey, sessionToken });
-        this.store.ensureAccount().iam.sessions[accessKeyId] = persisted;
+        await this.store.credentialStore.put({ credentialId, type: "sts-session", accountId: accountId, ownerId: assumedRoleId, accessKeyId }, { secretAccessKey, sessionToken });
+        this.store.ensureAccount(accountId).iam.sessions[accessKeyId] = persisted;
         // Identity linking and the session must appear in the same state write.
         // The transition is synchronous, after trust and vault admission, so a
         // rejected credential request cannot leave a promoted guest behind.
@@ -128,7 +159,7 @@ export class StsService {
         try {
           if (transitionStarted) input.stateTransition?.rollback();
         } finally {
-          delete this.store.ensureAccount().iam.sessions[accessKeyId];
+          delete this.store.ensureAccount(accountId).iam.sessions[accessKeyId];
           await this.store.credentialStore.delete(credentialId).catch(() => undefined);
         }
         throw error;

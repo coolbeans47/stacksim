@@ -1,5 +1,5 @@
 import { escapeHtml } from "./components.js";
-import { dynamo } from "./api-client.js";
+import { dynamo, request } from "./api-client.js";
 import { session } from "./state.js";
 
 export function bindGlobalSearch(input, serviceMeta, toast, requestNavigation = target => { location.hash = target; }) {
@@ -18,6 +18,7 @@ export function bindGlobalSearch(input, serviceMeta, toast, requestNavigation = 
   let resourceResults = [];
   let loadingResources = false;
   let loadedRegion;
+  let loadedIdentity;
   let loadGeneration = 0;
 
   const matches = rawValue => {
@@ -33,7 +34,8 @@ export function bindGlobalSearch(input, serviceMeta, toast, requestNavigation = 
       search: service.search,
     }));
     const operations = [...readOperations("stacksim:dynamodb:partiql-history", "PartiQL history"), ...readOperations("stacksim:dynamodb:partiql-saved", "Saved PartiQL operation")];
-    const resources = [...resourceResults, ...operations].filter(resource => resource.search.some(term => term.includes(value) || value.includes(term)));
+    const currentResources = loadedRegion === session.region && loadedIdentity === session.credentials?.active ? resourceResults : [];
+    const resources = [...currentResources, ...operations].filter(resource => resource.search.some(term => term.includes(value) || value.includes(term)));
     return [...resources, ...services].slice(0, 30);
   };
   const close = () => {
@@ -55,9 +57,10 @@ export function bindGlobalSearch(input, serviceMeta, toast, requestNavigation = 
   };
 
   const loadResources = async (force = false) => {
-    if (loadingResources || (!force && loadedRegion === session.region)) return;
-    const region = session.region; const generation = ++loadGeneration; loadingResources = true; render();
+    if (loadingResources || (!force && loadedRegion === session.region && loadedIdentity === session.credentials?.active)) return;
+    const region = session.region; const identity = session.credentials?.active; const generation = ++loadGeneration; loadingResources = true; render();
     try {
+      const discoverDynamo = async () => {
       const names = []; let start;
       do {
         const page = await dynamo("ListTables", { Limit: 100, ...(start ? { ExclusiveStartTableName: start } : {}) });
@@ -69,7 +72,7 @@ export function bindGlobalSearch(input, serviceMeta, toast, requestNavigation = 
         try { tags = (await dynamo("ListTagsOfResource", { ResourceArn: described.Table.TableArn })).Tags ?? []; } catch { /* resource discovery remains useful when tags are unauthorized */ }
         return { table: described.Table, tags };
       }));
-      const discovered = tables.flatMap(({ table, tags }) => {
+      return tables.flatMap(({ table, tags }) => {
         const tagTerms = tags.flatMap(tag => [String(tag.Key).toLowerCase(), String(tag.Value).toLowerCase(), `${tag.Key}:${tag.Value}`.toLowerCase()]);
         const tableEntry = {
           kind: "resource", name: table.TableName, description: `DynamoDB table · ${table.ItemCount ?? 0} items${tags.length ? ` · ${tags.map(tag => `${tag.Key}=${tag.Value}`).join(", ")}` : ""}`,
@@ -83,12 +86,19 @@ export function bindGlobalSearch(input, serviceMeta, toast, requestNavigation = 
         }));
         return [tableEntry, ...indexEntries];
       });
-      if (generation !== loadGeneration || region !== session.region) return;
-      resourceResults = discovered; loadedRegion = region;
+      };
+      const results = await Promise.allSettled([discoverDynamo(), request("/2021-01-01/domain", { service: "es" }).then(result => (result.DomainNames ?? []).map(domain => ({
+        kind: "resource", name: domain.DomainName, description: "OpenSearch domain", icon: "O", cls: "db",
+        target: `#/opensearch/domains/${encodeURIComponent(domain.DomainName)}`, search: [domain.DomainName.toLowerCase(), "opensearch", "domain"],
+      })))]);
+      const discovered = results.flatMap(result => result.status === "fulfilled" ? result.value : []);
+      if (generation !== loadGeneration || region !== session.region || identity !== session.credentials?.active) return;
+      resourceResults = discovered; loadedRegion = region; loadedIdentity = identity;
     } catch {
       if (generation === loadGeneration && region === session.region) resourceResults = [];
-    } finally { if (generation === loadGeneration) { const regionChanged = region !== session.region; loadingResources = false; render(); if (regionChanged) void loadResources(true); } }
+    } finally { if (generation === loadGeneration) { const regionChanged = region !== session.region || identity !== session.credentials?.active; loadingResources = false; render(); if (regionChanged) void loadResources(true); } }
   };
+  window.addEventListener("stacksim-auth-change", () => { resourceResults = []; loadedRegion = undefined; close(); });
   input.addEventListener("focus", () => { void loadResources(true); });
   input.addEventListener("input", () => { active = -1; render(); void loadResources(); });
   input.addEventListener("keydown", event => {

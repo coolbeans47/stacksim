@@ -43,6 +43,7 @@ import { AwsError } from "./errors.js";
 import type { PrincipalContext } from "./auth/sigv4.js";
 import { evaluateTrust } from "./iam/evaluator.js";
 import { executeDynamoResolver, validateDynamoResolverTemplates } from "./appsync/dynamodb-resolver.js";
+import { executeOpenSearchResolver, validateOpenSearchResolverTemplates, type AppSyncOpenSearchPort } from "./appsync/opensearch-resolver.js";
 import { executeNoneResolver, validateNoneResolverTemplates } from "./appsync/none-resolver.js";
 import {
   AppSyncVtlError,
@@ -692,6 +693,8 @@ export class AppSyncService {
   private readonly realtimeSignals: AppSyncRealtimeDiagnostic[] = [];
   private realtimeFaultInjector?: AppSyncRealtimeFaultInjector;
   private activeGraphqlRequests = 0;
+  private openSearch?: AppSyncOpenSearchPort;
+  setOpenSearchPort(port: AppSyncOpenSearchPort): void { this.openSearch = port; }
 
   private get tokens(): PaginationTokens {
     return new PaginationTokens(this.store.state.installation.paginationSecret);
@@ -2042,6 +2045,8 @@ export class AppSyncService {
               resolverContext,
               this.clock.now(),
             )
+            : dataSource!.type === "AMAZON_OPENSEARCH_SERVICE" && this.openSearch
+              ? await executeOpenSearchResolver(this.openSearch, api, resolver, dataSource!, resolverContext, this.clock.now())
             : this.dynamodb && this.assumeServiceRole && dataSource!.type === "AMAZON_DYNAMODB"
                 && dataSource!.serviceRoleArn && dataSource!.dynamodbConfig
               ? await executeDynamoResolver(
@@ -2881,13 +2886,15 @@ export class AppSyncService {
       type: dataSource.type,
       ...(dataSource.serviceRoleArn ? { serviceRoleArn: dataSource.serviceRoleArn } : {}),
       ...(dataSource.dynamodbConfig ? { dynamodbConfig: structuredClone(dataSource.dynamodbConfig) } : {}),
+      ...(dataSource.openSearchServiceConfig ? { openSearchServiceConfig: structuredClone(dataSource.openSearchServiceConfig) } : {}),
     };
   }
 
-  private async dataSourceInput(input: Record<string, unknown>, update = false): Promise<{
+  private async dataSourceInput(input: Record<string, unknown>, update = false, apiId?: string): Promise<{
     name?: string;
     description?: string;
-    type: "NONE" | "AMAZON_DYNAMODB";
+    type: "NONE" | "AMAZON_DYNAMODB" | "AMAZON_OPENSEARCH_SERVICE";
+    openSearchServiceConfig?: { endpoint: string; awsRegion: string };
     serviceRoleArn?: string;
     dynamodbConfig?: { tableName: string; awsRegion: string };
   }> {
@@ -2898,19 +2905,31 @@ export class AppSyncService {
       "relationalDatabaseConfig", "eventBridgeConfig", "metricsConfig",
     ]);
     const name = update ? undefined : requireGraphqlName(input.name, "name");
-    if (input.type !== "NONE" && input.type !== "AMAZON_DYNAMODB") {
-      throw new AwsError("BadRequestException", "Only NONE and AMAZON_DYNAMODB data sources are implemented.", 400);
+    if (input.type !== "NONE" && input.type !== "AMAZON_DYNAMODB" && input.type !== "AMAZON_OPENSEARCH_SERVICE") {
+      throw new AwsError("BadRequestException", "Only NONE, AMAZON_DYNAMODB and AMAZON_OPENSEARCH_SERVICE data sources are implemented.", 400);
     }
     for (const field of [
       "lambdaConfig", "elasticsearchConfig",
-      "openSearchServiceConfig", "httpConfig", "relationalDatabaseConfig",
+      "httpConfig", "relationalDatabaseConfig",
       "eventBridgeConfig", "metricsConfig",
     ]) {
       if (input[field] !== undefined) {
         throw new AwsError("BadRequestException", `${field} is outside the APS-P0-010 data-source boundary.`, 400);
       }
     }
+    if (input.type !== "AMAZON_OPENSEARCH_SERVICE" && input.openSearchServiceConfig !== undefined) throw new AwsError("BadRequestException", "openSearchServiceConfig requires AMAZON_OPENSEARCH_SERVICE", 400);
     const description = input.description === undefined ? undefined : this.keyDescription(input.description);
+    if (input.type === "AMAZON_OPENSEARCH_SERVICE") {
+      if (input.dynamodbConfig !== undefined) throw new AwsError("BadRequestException", "OpenSearch data sources do not accept dynamodbConfig", 400);
+      if (!this.openSearch || !apiId) throw new AwsError("BadRequestException", "OpenSearch integration is unavailable", 400);
+      const serviceRoleArn = requireString(input.serviceRoleArn, "serviceRoleArn", 2048);
+      if (!validObject(input.openSearchServiceConfig)) throw new AwsError("BadRequestException", "openSearchServiceConfig is required", 400);
+      rejectUnknown(input.openSearchServiceConfig, ["endpoint", "awsRegion"]);
+      const endpoint = requireString(input.openSearchServiceConfig.endpoint, "endpoint", 2048), awsRegion = requireString(input.openSearchServiceConfig.awsRegion, "awsRegion", 64);
+      if (awsRegion !== this.region) throw new AwsError("BadRequestException", "The OpenSearch domain must be in the GraphQL API Region", 400);
+      await this.openSearch.validate(this.requireApi(apiId), serviceRoleArn, { endpoint, awsRegion });
+      return { ...(name === undefined ? {} : { name }), ...(description === undefined ? {} : { description }), type: "AMAZON_OPENSEARCH_SERVICE", serviceRoleArn, openSearchServiceConfig: { endpoint, awsRegion } };
+    }
     if (input.type === "NONE") {
       if (input.serviceRoleArn !== undefined || input.dynamodbConfig !== undefined) {
         throw new AwsError("BadRequestException", "NONE data sources do not accept a service role or DynamoDB configuration.", 400);
@@ -2977,7 +2996,7 @@ export class AppSyncService {
   }
 
   private async createDataSource(apiId: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const candidate = await this.dataSourceInput(input);
+    const candidate = await this.dataSourceInput(input, false, apiId);
     return this.store.withMutationLock(`appsync:${this.store.accountId}:${this.region}:${apiId}`, async () => {
       const api = this.requireApi(apiId);
       if (api.dataSources[candidate.name!]) throw new AwsError("BadRequestException", "A data source with that name already exists.", 400);
@@ -2990,6 +3009,7 @@ export class AppSyncService {
         type: candidate.type,
         ...(candidate.serviceRoleArn ? { serviceRoleArn: candidate.serviceRoleArn } : {}),
         ...(candidate.dynamodbConfig ? { dynamodbConfig: candidate.dynamodbConfig } : {}),
+        ...(candidate.openSearchServiceConfig ? { openSearchServiceConfig: candidate.openSearchServiceConfig } : {}),
         generation: randomUUID(),
         createdAt: now,
         updatedAt: now,
@@ -3007,7 +3027,7 @@ export class AppSyncService {
 
   private async updateDataSource(apiId: string, name: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     requireGraphqlName(name, "name");
-    const candidate = await this.dataSourceInput(input, true);
+    const candidate = await this.dataSourceInput(input, true, apiId);
     return this.store.withMutationLock(`appsync:${this.store.accountId}:${this.region}:${apiId}`, async () => {
       const api = this.requireApi(apiId);
       const dataSource = this.requireDataSource(api, name);
@@ -3018,6 +3038,7 @@ export class AppSyncService {
       else delete dataSource.serviceRoleArn;
       if (candidate.dynamodbConfig) dataSource.dynamodbConfig = candidate.dynamodbConfig;
       else delete dataSource.dynamodbConfig;
+      if (candidate.openSearchServiceConfig) dataSource.openSearchServiceConfig = candidate.openSearchServiceConfig; else delete dataSource.openSearchServiceConfig;
       dataSource.updatedAt = this.clock.now();
       dataSource.revision++;
       api.updatedAt = dataSource.updatedAt;
@@ -3085,6 +3106,8 @@ export class AppSyncService {
       let evaluation;
       if (dataSource.type === "NONE") {
         evaluation = executeNoneResolver(fn.requestMappingTemplate, fn.responseMappingTemplate, stageContext, now);
+      } else if (dataSource.type === "AMAZON_OPENSEARCH_SERVICE" && this.openSearch) {
+        evaluation = await executeOpenSearchResolver(this.openSearch, api, fn, dataSource, stageContext, now);
       } else if (this.dynamodb && this.assumeServiceRole && dataSource.serviceRoleArn && dataSource.dynamodbConfig) {
         evaluation = await executeDynamoResolver(
           { store: this.store, region: this.region, clock: this.clock, dynamodb: this.dynamodb, assumeServiceRole: this.assumeServiceRole },
@@ -3307,6 +3330,8 @@ export class AppSyncService {
     try {
       if (dataSource.type === "NONE") {
         validateNoneResolverTemplates(requestMappingTemplate, responseMappingTemplate);
+      } else if (dataSource.type === "AMAZON_OPENSEARCH_SERVICE") {
+        validateOpenSearchResolverTemplates(requestMappingTemplate, responseMappingTemplate);
       } else {
         validateDynamoResolverTemplates(requestMappingTemplate, responseMappingTemplate);
       }

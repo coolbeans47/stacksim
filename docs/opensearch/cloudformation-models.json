@@ -1,0 +1,3195 @@
+{
+  "AWS::Elasticsearch::Domain": {
+    "typeName": "AWS::Elasticsearch::Domain",
+    "description": "Resource Type definition for AWS::Elasticsearch::Domain",
+    "additionalProperties": false,
+    "properties": {
+      "ElasticsearchClusterConfig": {
+        "$ref": "#/definitions/ElasticsearchClusterConfig"
+      },
+      "DomainName": {
+        "type": "string"
+      },
+      "ElasticsearchVersion": {
+        "type": "string"
+      },
+      "LogPublishingOptions": {
+        "type": "object",
+        "patternProperties": {
+          "[a-zA-Z0-9]+": {
+            "$ref": "#/definitions/LogPublishingOption"
+          }
+        }
+      },
+      "SnapshotOptions": {
+        "$ref": "#/definitions/SnapshotOptions"
+      },
+      "VPCOptions": {
+        "$ref": "#/definitions/VPCOptions"
+      },
+      "NodeToNodeEncryptionOptions": {
+        "$ref": "#/definitions/NodeToNodeEncryptionOptions"
+      },
+      "AccessPolicies": {
+        "type": "object"
+      },
+      "DomainEndpointOptions": {
+        "$ref": "#/definitions/DomainEndpointOptions"
+      },
+      "DomainArn": {
+        "type": "string"
+      },
+      "CognitoOptions": {
+        "$ref": "#/definitions/CognitoOptions"
+      },
+      "AdvancedOptions": {
+        "type": "object",
+        "patternProperties": {
+          "[a-zA-Z0-9]+": {
+            "type": "string"
+          }
+        }
+      },
+      "AdvancedSecurityOptions": {
+        "$ref": "#/definitions/AdvancedSecurityOptionsInput"
+      },
+      "DomainEndpoint": {
+        "type": "string"
+      },
+      "EBSOptions": {
+        "$ref": "#/definitions/EBSOptions"
+      },
+      "Id": {
+        "type": "string"
+      },
+      "Arn": {
+        "type": "string"
+      },
+      "EncryptionAtRestOptions": {
+        "$ref": "#/definitions/EncryptionAtRestOptions"
+      },
+      "Tags": {
+        "type": "array",
+        "uniqueItems": false,
+        "items": {
+          "$ref": "#/definitions/Tag"
+        }
+      }
+    },
+    "definitions": {
+      "LogPublishingOption": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "CloudWatchLogsLogGroupArn": {
+            "type": "string"
+          },
+          "Enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ElasticsearchClusterConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "InstanceCount": {
+            "type": "integer"
+          },
+          "WarmEnabled": {
+            "type": "boolean"
+          },
+          "WarmCount": {
+            "type": "integer"
+          },
+          "DedicatedMasterEnabled": {
+            "type": "boolean"
+          },
+          "ZoneAwarenessConfig": {
+            "$ref": "#/definitions/ZoneAwarenessConfig"
+          },
+          "ColdStorageOptions": {
+            "$ref": "#/definitions/ColdStorageOptions"
+          },
+          "DedicatedMasterCount": {
+            "type": "integer"
+          },
+          "InstanceType": {
+            "type": "string"
+          },
+          "WarmType": {
+            "type": "string"
+          },
+          "ZoneAwarenessEnabled": {
+            "type": "boolean"
+          },
+          "DedicatedMasterType": {
+            "type": "string"
+          }
+        }
+      },
+      "VPCOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "SecurityGroupIds": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "SubnetIds": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SnapshotOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "AutomatedSnapshotStartHour": {
+            "type": "integer"
+          }
+        }
+      },
+      "ZoneAwarenessConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "AvailabilityZoneCount": {
+            "type": "integer"
+          }
+        }
+      },
+      "NodeToNodeEncryptionOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ColdStorageOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "DomainEndpointOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "CustomEndpointCertificateArn": {
+            "type": "string"
+          },
+          "CustomEndpointEnabled": {
+            "type": "boolean"
+          },
+          "EnforceHTTPS": {
+            "type": "boolean"
+          },
+          "CustomEndpoint": {
+            "type": "string"
+          },
+          "TLSSecurityPolicy": {
+            "type": "string"
+          }
+        }
+      },
+      "CognitoOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          },
+          "IdentityPoolId": {
+            "type": "string"
+          },
+          "UserPoolId": {
+            "type": "string"
+          },
+          "RoleArn": {
+            "type": "string"
+          }
+        }
+      },
+      "EBSOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "EBSEnabled": {
+            "type": "boolean"
+          },
+          "VolumeType": {
+            "type": "string"
+          },
+          "Iops": {
+            "type": "integer"
+          },
+          "VolumeSize": {
+            "type": "integer"
+          }
+        }
+      },
+      "Tag": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Value": {
+            "type": "string"
+          },
+          "Key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Value",
+          "Key"
+        ]
+      },
+      "EncryptionAtRestOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "KmsKeyId": {
+            "type": "string"
+          },
+          "Enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "MasterUserOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "MasterUserPassword": {
+            "type": "string"
+          },
+          "MasterUserName": {
+            "type": "string"
+          },
+          "MasterUserARN": {
+            "type": "string"
+          }
+        }
+      },
+      "AdvancedSecurityOptionsInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          },
+          "MasterUserOptions": {
+            "$ref": "#/definitions/MasterUserOptions"
+          },
+          "AnonymousAuthEnabled": {
+            "type": "boolean"
+          },
+          "InternalUserDatabaseEnabled": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "createOnlyProperties": [
+      "/properties/DomainName"
+    ],
+    "primaryIdentifier": [
+      "/properties/Id"
+    ],
+    "readOnlyProperties": [
+      "/properties/Id",
+      "/properties/DomainArn",
+      "/properties/DomainEndpoint",
+      "/properties/Arn"
+    ]
+  },
+  "AWS::OSIS::Pipeline": {
+    "typeName": "AWS::OSIS::Pipeline",
+    "description": "An OpenSearch Ingestion Service Data Prepper pipeline running Data Prepper.",
+    "sourceUrl": "https://github.com/aws-cloudformation/aws-cloudformation-resource-providers-osis.git",
+    "definitions": {
+      "BufferOptions": {
+        "description": "Key-value pairs to configure buffering.",
+        "type": "object",
+        "properties": {
+          "PersistentBufferEnabled": {
+            "type": "boolean",
+            "description": "Whether persistent buffering should be enabled."
+          }
+        },
+        "required": [
+          "PersistentBufferEnabled"
+        ],
+        "additionalProperties": false
+      },
+      "EncryptionAtRestOptions": {
+        "description": "Key-value pairs to configure encryption at rest.",
+        "type": "object",
+        "properties": {
+          "KmsKeyArn": {
+            "type": "string",
+            "description": "The KMS key to use for encrypting data. By default an AWS owned key is used"
+          }
+        },
+        "required": [
+          "KmsKeyArn"
+        ],
+        "additionalProperties": false
+      },
+      "LogPublishingOptions": {
+        "description": "Key-value pairs to configure log publishing.",
+        "type": "object",
+        "properties": {
+          "IsLoggingEnabled": {
+            "type": "boolean",
+            "description": "Whether logs should be published."
+          },
+          "CloudWatchLogDestination": {
+            "type": "object",
+            "description": "The destination for OpenSearch Ingestion Service logs sent to Amazon CloudWatch.",
+            "properties": {
+              "LogGroup": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "\\/aws\\/vendedlogs\\/[\\.\\-_/#A-Za-z0-9]+"
+              }
+            },
+            "required": [
+              "LogGroup"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "Tag": {
+        "description": "A key-value pair to associate with a resource.",
+        "type": "object",
+        "properties": {
+          "Key": {
+            "type": "string",
+            "description": "The key name of the tag. You can specify a value that is 1 to 128 Unicode characters in length and cannot be prefixed with aws:. You can use any of the following characters: the set of Unicode letters, digits, whitespace, _, ., /, =, +, and -.",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "Value": {
+            "type": "string",
+            "description": "The value for the tag. You can specify a value that is 0 to 256 Unicode characters in length and cannot be prefixed with aws:. You can use any of the following characters: the set of Unicode letters, digits, whitespace, _, ., /, =, +, and -.",
+            "minLength": 0,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "Key",
+          "Value"
+        ],
+        "additionalProperties": false
+      },
+      "VpcOptions": {
+        "description": "Container for the values required to configure VPC access for the pipeline. If you don't specify these values, OpenSearch Ingestion Service creates the pipeline with a public endpoint.",
+        "type": "object",
+        "properties": {
+          "SecurityGroupIds": {
+            "type": "array",
+            "insertionOrder": false,
+            "description": "A list of security groups associated with the VPC endpoint.",
+            "items": {
+              "type": "string",
+              "minLength": 11,
+              "maxLength": 20,
+              "pattern": "sg-\\w{8}(\\w{9})?"
+            }
+          },
+          "SubnetIds": {
+            "type": "array",
+            "insertionOrder": false,
+            "description": "A list of subnet IDs associated with the VPC endpoint.",
+            "items": {
+              "type": "string",
+              "minLength": 15,
+              "maxLength": 24,
+              "pattern": "subnet-\\w{8}(\\w{9})?"
+            }
+          },
+          "VpcEndpointManagement": {
+            "description": "Defines whether you or Amazon OpenSearch Ingestion service create and manage the VPC endpoint configured for the pipeline.",
+            "type": "string",
+            "enum": [
+              "CUSTOMER",
+              "SERVICE"
+            ]
+          },
+          "VpcAttachmentOptions": {
+            "type": "object",
+            "description": "Options for attaching a VPC to the pipeline.",
+            "properties": {
+              "AttachToVpc": {
+                "type": "boolean",
+                "description": "Whether the pipeline should be attached to the provided VPC"
+              },
+              "CidrBlock": {
+                "type": "string",
+                "description": "The CIDR block to be reserved for OpenSearch Ingestion to create elastic network interfaces (ENIs).",
+                "pattern": "^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/(3[0-2]|[12]?[0-9])$"
+              }
+            },
+            "required": [
+              "AttachToVpc",
+              "CidrBlock"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "SubnetIds"
+        ],
+        "additionalProperties": false
+      },
+      "VpcEndpoint": {
+        "description": "An OpenSearch Ingestion Service-managed VPC endpoint that will access one or more pipelines.",
+        "type": "object",
+        "properties": {
+          "VpcEndpointId": {
+            "type": "string",
+            "description": "The unique identifier of the endpoint."
+          },
+          "VpcId": {
+            "type": "string",
+            "description": "The ID for your VPC. AWS Privatelink generates this value when you create a VPC."
+          },
+          "VpcOptions": {
+            "$ref": "#/definitions/VpcOptions"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ResourcePolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Policy": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "Policy"
+        ]
+      }
+    },
+    "properties": {
+      "BufferOptions": {
+        "$ref": "#/definitions/BufferOptions"
+      },
+      "EncryptionAtRestOptions": {
+        "$ref": "#/definitions/EncryptionAtRestOptions"
+      },
+      "LogPublishingOptions": {
+        "$ref": "#/definitions/LogPublishingOptions"
+      },
+      "MaxUnits": {
+        "description": "The maximum pipeline capacity, in Ingestion OpenSearch Compute Units (OCUs).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 384
+      },
+      "MinUnits": {
+        "description": "The minimum pipeline capacity, in Ingestion OpenSearch Compute Units (OCUs).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 384
+      },
+      "PipelineConfigurationBody": {
+        "description": "The Data Prepper pipeline configuration.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100000
+      },
+      "PipelineName": {
+        "description": "Name of the OpenSearch Ingestion Service pipeline to create. Pipeline names are unique across the pipelines owned by an account within an AWS Region.",
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 28,
+        "pattern": "[a-z][a-z0-9\\-]+"
+      },
+      "Tags": {
+        "description": "An array of key-value pairs to apply to this resource.",
+        "type": "array",
+        "uniqueItems": true,
+        "insertionOrder": false,
+        "items": {
+          "$ref": "#/definitions/Tag"
+        }
+      },
+      "VpcOptions": {
+        "$ref": "#/definitions/VpcOptions"
+      },
+      "VpcEndpoints": {
+        "type": "array",
+        "insertionOrder": false,
+        "description": "The VPC interface endpoints that have access to the pipeline.",
+        "items": {
+          "$ref": "#/definitions/VpcEndpoint"
+        }
+      },
+      "VpcEndpointService": {
+        "description": "The VPC endpoint service name for the pipeline.",
+        "type": "string",
+        "minLength": 0,
+        "maxLength": 128
+      },
+      "PipelineArn": {
+        "description": "The Amazon Resource Name (ARN) of the pipeline.",
+        "type": "string",
+        "minLength": 46,
+        "maxLength": 78,
+        "pattern": "^arn:(aws|aws\\-cn|aws\\-us\\-gov|aws\\-iso|aws\\-iso\\-b):osis:.+:pipeline\\/.+$"
+      },
+      "PipelineRoleArn": {
+        "description": "The Pipeline Role (ARN) for the pipeline.",
+        "type": "string",
+        "minLength": 20,
+        "maxLength": 2048,
+        "pattern": "^arn:(aws|aws\\-cn|aws\\-us\\-gov|aws\\-iso|aws\\-iso\\-b|aws\\-iso\\-e|aws\\-iso\\-f):iam::[0-9]+:role\\/.*$"
+      },
+      "IngestEndpointUrls": {
+        "type": "array",
+        "insertionOrder": false,
+        "description": "A list of endpoints that can be used for ingesting data into a pipeline",
+        "items": {
+          "type": "string"
+        }
+      },
+      "ResourcePolicy": {
+        "$ref": "#/definitions/ResourcePolicy"
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "MaxUnits",
+      "MinUnits",
+      "PipelineConfigurationBody",
+      "PipelineName"
+    ],
+    "readOnlyProperties": [
+      "/properties/PipelineArn",
+      "/properties/IngestEndpointUrls",
+      "/properties/VpcEndpoints",
+      "/properties/VpcEndpointService"
+    ],
+    "writeOnlyProperties": [
+      "/properties/VpcOptions"
+    ],
+    "createOnlyProperties": [
+      "/properties/PipelineName"
+    ],
+    "primaryIdentifier": [
+      "/properties/PipelineArn"
+    ],
+    "tagging": {
+      "taggable": true,
+      "tagOnCreate": true,
+      "tagUpdatable": true,
+      "cloudFormationSystemTags": true,
+      "tagProperty": "/properties/Tags",
+      "permissions": [
+        "osis:TagResource",
+        "osis:UntagResource",
+        "osis:ListTagsForResource"
+      ]
+    },
+    "handlers": {
+      "create": {
+        "permissions": [
+          "osis:CreatePipeline",
+          "osis:GetPipeline",
+          "osis:TagResource",
+          "osis:ListTagsForResource",
+          "osis:GetResourcePolicy",
+          "osis:PutResourcePolicy",
+          "iam:PassRole",
+          "iam:CreateServiceLinkedRole",
+          "logs:CreateLogDelivery",
+          "kms:DescribeKey"
+        ]
+      },
+      "read": {
+        "permissions": [
+          "osis:GetPipeline",
+          "osis:ListTagsForResource",
+          "osis:GetResourcePolicy"
+        ]
+      },
+      "update": {
+        "permissions": [
+          "osis:UpdatePipeline",
+          "osis:GetPipeline",
+          "osis:ListTagsForResource",
+          "osis:TagResource",
+          "osis:UntagResource",
+          "osis:GetResourcePolicy",
+          "osis:PutResourcePolicy",
+          "osis:DeleteResourcePolicy",
+          "iam:PassRole",
+          "logs:GetLogDelivery",
+          "logs:UpdateLogDelivery",
+          "logs:ListLogDeliveries",
+          "kms:DescribeKey"
+        ]
+      },
+      "delete": {
+        "permissions": [
+          "osis:DeletePipeline",
+          "osis:GetPipeline",
+          "logs:GetLogDelivery",
+          "logs:DeleteLogDelivery",
+          "logs:ListLogDeliveries"
+        ]
+      },
+      "list": {
+        "permissions": [
+          "osis:ListPipelines"
+        ]
+      }
+    }
+  },
+  "AWS::OpenSearchServerless::AccessPolicy": {
+    "typeName": "AWS::OpenSearchServerless::AccessPolicy",
+    "sourceUrl": "https://github.com/aws-cloudformation/aws-cloudformation-resource-providers-opensearchserverless",
+    "description": "Resource Type definition for AWS::OpenSearchServerless::AccessPolicy",
+    "tagging": {
+      "taggable": false,
+      "tagOnCreate": false,
+      "tagUpdatable": false,
+      "cloudFormationSystemTags": false
+    },
+    "definitions": {
+      "AccessPolicyType": {
+        "type": "string",
+        "description": "The possible types for the access policy",
+        "enum": [
+          "data"
+        ]
+      }
+    },
+    "properties": {
+      "Name": {
+        "type": "string",
+        "maxLength": 32,
+        "minLength": 3,
+        "pattern": "^[a-z][a-z0-9-]{2,31}$",
+        "description": "The name of the policy"
+      },
+      "Type": {
+        "$ref": "#/definitions/AccessPolicyType"
+      },
+      "Description": {
+        "type": "string",
+        "maxLength": 1000,
+        "minLength": 1,
+        "description": "The description of the policy"
+      },
+      "Policy": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 20480,
+        "pattern": "[\\u0009\\u000A\\u000D\\u0020-\\u007E\\u00A1-\\u00FF]+",
+        "description": "The JSON policy document that is the content for the policy"
+      }
+    },
+    "required": [
+      "Type",
+      "Name",
+      "Policy"
+    ],
+    "createOnlyProperties": [
+      "/properties/Type",
+      "/properties/Name"
+    ],
+    "primaryIdentifier": [
+      "/properties/Type",
+      "/properties/Name"
+    ],
+    "handlers": {
+      "create": {
+        "permissions": [
+          "aoss:CreateAccessPolicy",
+          "aoss:GetAccessPolicy"
+        ]
+      },
+      "read": {
+        "permissions": [
+          "aoss:GetAccessPolicy"
+        ]
+      },
+      "update": {
+        "permissions": [
+          "aoss:UpdateAccessPolicy",
+          "aoss:GetAccessPolicy"
+        ]
+      },
+      "delete": {
+        "permissions": [
+          "aoss:DeleteAccessPolicy",
+          "aoss:GetAccessPolicy"
+        ]
+      },
+      "list": {
+        "handlerSchema": {
+          "properties": {
+            "Type": {
+              "$ref": "resource-schema.json#/properties/Type"
+            }
+          },
+          "required": [
+            "Type"
+          ]
+        },
+        "permissions": [
+          "aoss:ListAccessPolicies"
+        ]
+      }
+    },
+    "additionalProperties": false
+  },
+  "AWS::OpenSearchServerless::Collection": {
+    "typeName": "AWS::OpenSearchServerless::Collection",
+    "description": "Amazon OpenSearchServerless collection resource",
+    "tagging": {
+      "taggable": true,
+      "tagOnCreate": true,
+      "tagUpdatable": true,
+      "cloudFormationSystemTags": true,
+      "tagProperty": "/properties/Tags",
+      "permissions": [
+        "aoss:TagResource",
+        "aoss:UntagResource",
+        "aoss:ListTagsForResource"
+      ]
+    },
+    "definitions": {
+      "Tag": {
+        "type": "object",
+        "description": "A key-value pair metadata associated with resource",
+        "properties": {
+          "Key": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "description": "The key in the key-value pair"
+          },
+          "Value": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 0,
+            "description": "The value in the key-value pair"
+          }
+        },
+        "required": [
+          "Key",
+          "Value"
+        ],
+        "additionalProperties": false
+      },
+      "CollectionType": {
+        "type": "string",
+        "description": "The possible types for the collection",
+        "enum": [
+          "SEARCH",
+          "TIMESERIES",
+          "VECTORSEARCH"
+        ]
+      },
+      "StandbyReplicas": {
+        "type": "string",
+        "description": "The possible standby replicas for the collection",
+        "enum": [
+          "ENABLED",
+          "DISABLED"
+        ]
+      },
+      "DeletionProtection": {
+        "type": "string",
+        "description": "The deletion protection state of the collection",
+        "enum": [
+          "ENABLED",
+          "DISABLED"
+        ]
+      },
+      "ServerlessVectorAcceleration": {
+        "type": "string",
+        "description": "Indicates whether GPU acceleration is enabled for vector indexing",
+        "enum": [
+          "ENABLED",
+          "DISABLED",
+          "ALLOWED"
+        ]
+      },
+      "VectorOptions": {
+        "type": "object",
+        "description": "Vector search configuration options for the collection",
+        "properties": {
+          "ServerlessVectorAcceleration": {
+            "$ref": "#/definitions/ServerlessVectorAcceleration"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EncryptionConfig": {
+        "type": "object",
+        "description": "Encryption settings for the collection",
+        "properties": {
+          "AWSOwnedKey": {
+            "type": "boolean",
+            "description": "Indicates whether to use an AWS owned key for encryption."
+          },
+          "KmsKeyArn": {
+            "type": "string",
+            "description": "Key Management Service key used to encrypt the collection."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FipsEndpoints": {
+        "type": "object",
+        "properties": {
+          "CollectionEndpoint": {
+            "type": "string"
+          },
+          "DashboardEndpoint": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "properties": {
+      "Description": {
+        "type": "string",
+        "maxLength": 1000,
+        "description": "The description of the collection"
+      },
+      "Id": {
+        "type": "string",
+        "maxLength": 40,
+        "minLength": 3,
+        "description": "The identifier of the collection"
+      },
+      "Name": {
+        "type": "string",
+        "maxLength": 64,
+        "minLength": 3,
+        "pattern": "^[a-z][a-z0-9-]{2,63}$",
+        "description": "The name of the collection.\n\nThe name must meet the following criteria:\nUnique to your account and AWS Region\nStarts with a lowercase letter\nContains only lowercase letters a-z, the numbers 0-9 and the hyphen (-)\nContains between 3 and 64 characters\n"
+      },
+      "Tags": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/Tag"
+        },
+        "maxItems": 50,
+        "minItems": 0,
+        "insertionOrder": false,
+        "description": "List of tags to associate with the collection. Tag changes are applied in place without replacing the collection. Reading, adding, changing or removing tags requires the aoss:ListTagsForResource, aoss:TagResource and aoss:UntagResource permissions."
+      },
+      "Arn": {
+        "description": "The Amazon Resource Name (ARN) of the collection.",
+        "type": "string"
+      },
+      "CollectionEndpoint": {
+        "description": "The endpoint for the collection.",
+        "type": "string"
+      },
+      "DashboardEndpoint": {
+        "description": "The OpenSearch Dashboards endpoint for the collection.",
+        "type": "string"
+      },
+      "Type": {
+        "$ref": "#/definitions/CollectionType"
+      },
+      "StandbyReplicas": {
+        "$ref": "#/definitions/StandbyReplicas"
+      },
+      "DeletionProtection": {
+        "$ref": "#/definitions/DeletionProtection"
+      },
+      "CollectionGroupName": {
+        "type": "string",
+        "description": "The name of the collection group to associate with the collection."
+      },
+      "EncryptionConfig": {
+        "$ref": "#/definitions/EncryptionConfig"
+      },
+      "VectorOptions": {
+        "$ref": "#/definitions/VectorOptions"
+      },
+      "KmsKeyArn": {
+        "type": "string",
+        "description": "Key Management Service key used to encrypt the collection."
+      },
+      "FipsEndpoints": {
+        "$ref": "#/definitions/FipsEndpoints"
+      }
+    },
+    "required": [
+      "Name"
+    ],
+    "readOnlyProperties": [
+      "/properties/Id",
+      "/properties/Arn",
+      "/properties/CollectionEndpoint",
+      "/properties/DashboardEndpoint",
+      "/properties/FipsEndpoints",
+      "/properties/KmsKeyArn"
+    ],
+    "writeOnlyProperties": [
+      "/properties/EncryptionConfig"
+    ],
+    "createOnlyProperties": [
+      "/properties/Name",
+      "/properties/Type",
+      "/properties/StandbyReplicas",
+      "/properties/CollectionGroupName",
+      "/properties/EncryptionConfig"
+    ],
+    "primaryIdentifier": [
+      "/properties/Id"
+    ],
+    "additionalIdentifiers": [
+      [
+        "/properties/Name"
+      ],
+      [
+        "/properties/Arn"
+      ]
+    ],
+    "handlers": {
+      "create": {
+        "permissions": [
+          "aoss:CreateCollection",
+          "aoss:BatchGetCollection",
+          "aoss:AddCollectionToCollectionGroup",
+          "aoss:TagResource",
+          "aoss:ListTagsForResource",
+          "iam:CreateServiceLinkedRole",
+          "kms:CreateGrant",
+          "kms:DescribeKey"
+        ]
+      },
+      "delete": {
+        "permissions": [
+          "aoss:DeleteCollection",
+          "aoss:BatchGetCollection"
+        ]
+      },
+      "list": {
+        "permissions": [
+          "aoss:ListCollections"
+        ]
+      },
+      "read": {
+        "permissions": [
+          "aoss:BatchGetCollection",
+          "aoss:ListTagsForResource"
+        ]
+      },
+      "update": {
+        "permissions": [
+          "aoss:UpdateCollection",
+          "aoss:BatchGetCollection",
+          "aoss:TagResource",
+          "aoss:UntagResource",
+          "aoss:ListTagsForResource"
+        ]
+      }
+    },
+    "additionalProperties": false
+  },
+  "AWS::OpenSearchServerless::CollectionGroup": {
+    "typeName": "AWS::OpenSearchServerless::CollectionGroup",
+    "description": "Resource Type definition for AWS::OpenSearchServerless::CollectionGroup",
+    "sourceUrl": "https://github.com/aws-cloudformation/aws-cloudformation-resource-providers-opensearchserverless",
+    "tagging": {
+      "taggable": true,
+      "tagOnCreate": true,
+      "tagUpdatable": true,
+      "cloudFormationSystemTags": true,
+      "tagProperty": "/properties/Tags",
+      "permissions": [
+        "aoss:TagResource",
+        "aoss:UntagResource",
+        "aoss:ListTagsForResource"
+      ]
+    },
+    "definitions": {
+      "CapacityLimits": {
+        "type": "object",
+        "properties": {
+          "MaxSearchCapacityInOcu": {
+            "type": "number",
+            "multipleOf": 0.5,
+            "description": "The maximum search capacity for collections in the group."
+          },
+          "MaxIndexingCapacityInOcu": {
+            "type": "number",
+            "multipleOf": 0.5,
+            "description": "The maximum indexing capacity for collections in the group."
+          },
+          "MinSearchCapacityInOcu": {
+            "type": "number",
+            "multipleOf": 0.5,
+            "description": "The minimum search capacity for collections in the group."
+          },
+          "MinIndexingCapacityInOcu": {
+            "type": "number",
+            "multipleOf": 0.5,
+            "description": "The minimum indexing capacity for collections in the group."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Tag": {
+        "description": "A map of key-value pairs associated with the collection group.",
+        "type": "object",
+        "properties": {
+          "Key": {
+            "type": "string",
+            "description": "The key in the key-value pair",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "Value": {
+            "type": "string",
+            "description": "The value in the key-value pair",
+            "minLength": 0,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "Key",
+          "Value"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "properties": {
+      "Name": {
+        "type": "string",
+        "maxLength": 32,
+        "minLength": 3,
+        "pattern": "^[a-z][a-z0-9-]{2,31}$",
+        "description": "The name of the collection group."
+      },
+      "Id": {
+        "type": "string",
+        "maxLength": 40,
+        "minLength": 3,
+        "description": "The unique identifier of the collection group."
+      },
+      "Arn": {
+        "description": "The Amazon Resource Name (ARN) of the collection group.",
+        "type": "string"
+      },
+      "Description": {
+        "type": "string",
+        "maxLength": 1000,
+        "description": "The description of the collection group."
+      },
+      "StandbyReplicas": {
+        "type": "string",
+        "description": "Indicates whether standby replicas are used for the collection group.",
+        "enum": [
+          "ENABLED",
+          "DISABLED"
+        ]
+      },
+      "Generation": {
+        "type": "string",
+        "description": "The generation of Amazon OpenSearch Serverless for the collection group. Valid values are CLASSIC and NEXTGEN.",
+        "enum": [
+          "CLASSIC",
+          "NEXTGEN"
+        ]
+      },
+      "CapacityLimits": {
+        "$ref": "#/definitions/CapacityLimits"
+      },
+      "Tags": {
+        "description": "An array of key-value pairs to apply to this resource.",
+        "type": "array",
+        "uniqueItems": true,
+        "insertionOrder": false,
+        "items": {
+          "$ref": "#/definitions/Tag"
+        }
+      }
+    },
+    "required": [
+      "Name",
+      "StandbyReplicas"
+    ],
+    "readOnlyProperties": [
+      "/properties/Id",
+      "/properties/Arn"
+    ],
+    "createOnlyProperties": [
+      "/properties/Name",
+      "/properties/StandbyReplicas",
+      "/properties/Generation"
+    ],
+    "primaryIdentifier": [
+      "/properties/Id"
+    ],
+    "additionalIdentifiers": [
+      [
+        "/properties/Name"
+      ],
+      [
+        "/properties/Arn"
+      ]
+    ],
+    "handlers": {
+      "create": {
+        "permissions": [
+          "aoss:CreateCollectionGroup",
+          "aoss:BatchGetCollectionGroup",
+          "aoss:TagResource"
+        ]
+      },
+      "read": {
+        "permissions": [
+          "aoss:BatchGetCollectionGroup",
+          "aoss:ListTagsForResource"
+        ]
+      },
+      "update": {
+        "permissions": [
+          "aoss:UpdateCollectionGroup",
+          "aoss:BatchGetCollectionGroup",
+          "aoss:TagResource",
+          "aoss:UntagResource"
+        ]
+      },
+      "delete": {
+        "permissions": [
+          "aoss:DeleteCollectionGroup",
+          "aoss:BatchGetCollectionGroup"
+        ]
+      },
+      "list": {
+        "permissions": [
+          "aoss:ListCollectionGroups"
+        ]
+      }
+    },
+    "additionalProperties": false
+  },
+  "AWS::OpenSearchServerless::CollectionIndex": {
+    "typeName": "AWS::OpenSearchServerless::CollectionIndex",
+    "description": "Resource Type definition for AWS::OpenSearchServerless::CollectionIndex",
+    "sourceUrl": "https://github.com/aws-cloudformation/aws-cloudformation-resource-providers-opensearchserverless",
+    "tagging": {
+      "taggable": false,
+      "tagOnCreate": false,
+      "tagUpdatable": false,
+      "cloudFormationSystemTags": false
+    },
+    "definitions": {},
+    "properties": {
+      "Id": {
+        "description": "The identifier of the collection",
+        "type": "string",
+        "maxLength": 40,
+        "minLength": 3,
+        "pattern": "^[a-z0-9]{3,40}$"
+      },
+      "IndexName": {
+        "description": "The name of the collection index",
+        "type": "string",
+        "pattern": "^(?![_-])[a-z][a-z0-9_-]*$",
+        "maxLength": 255,
+        "minLength": 1
+      },
+      "IndexSchema": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2480,
+        "pattern": "[\\u0009\\u000A\\u000D\\u0020-\\u007E\\u00A1-\\u00FF]+",
+        "description": "The Mappings for the collection index"
+      }
+    },
+    "required": [
+      "Id",
+      "IndexName"
+    ],
+    "createOnlyProperties": [
+      "/properties/Id",
+      "/properties/IndexName"
+    ],
+    "primaryIdentifier": [
+      "/properties/Id",
+      "/properties/IndexName"
+    ],
+    "additionalProperties": false,
+    "handlers": {
+      "create": {
+        "permissions": [
+          "aoss:CreateIndex",
+          "aoss:GetIndex",
+          "aoss:APIAccessAll"
+        ]
+      },
+      "read": {
+        "permissions": [
+          "aoss:GetIndex",
+          "aoss:APIAccessAll"
+        ]
+      },
+      "update": {
+        "permissions": [
+          "aoss:UpdateIndex",
+          "aoss:GetIndex",
+          "aoss:APIAccessAll"
+        ]
+      },
+      "delete": {
+        "permissions": [
+          "aoss:DeleteIndex",
+          "aoss:GetIndex",
+          "aoss:APIAccessAll"
+        ]
+      }
+    }
+  },
+  "AWS::OpenSearchServerless::Index": {
+    "typeName": "AWS::OpenSearchServerless::Index",
+    "sourceUrl": "https://github.com/aws-cloudformation/aws-cloudformation-resource-providers-opensearchserverless",
+    "description": "Resource Type definition for AWS::OpenSearchServerless::Index",
+    "tagging": {
+      "taggable": false
+    },
+    "definitions": {
+      "IndexSettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Index": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "RefreshInterval": {
+                "type": "string",
+                "description": "How often to perform refresh operation (e.g. '1s', '5s')"
+              },
+              "Knn": {
+                "type": "boolean",
+                "description": "Enable/disable k-nearest neighbor search capability"
+              },
+              "KnnAlgoParamEfSearch": {
+                "type": "integer",
+                "description": "Size of the dynamic list for the nearest neighbors"
+              }
+            }
+          },
+          "Analysis": {
+            "type": "object",
+            "description": "Custom analysis configuration including analyzers, tokenizers, and filters",
+            "additionalProperties": false,
+            "properties": {
+              "Analyzer": {
+                "type": "object",
+                "description": "Custom analyzer definitions",
+                "patternProperties": {
+                  "^[A-Za-z0-9_.-]{1,64}$": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "Type": {
+                        "type": "string",
+                        "description": "The analyzer type (e.g. custom, standard, simple)"
+                      },
+                      "Tokenizer": {
+                        "type": "string",
+                        "description": "The tokenizer to use"
+                      },
+                      "Filter": {
+                        "type": "array",
+                        "description": "Token filters to apply",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "CharFilter": {
+                        "type": "array",
+                        "description": "Character filters to apply",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      },
+      "PropertyMapping": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Dimension": {
+            "type": "integer",
+            "description": "Dimension size for vector fields, defines the number of dimensions in the vector"
+          },
+          "Index": {
+            "type": "boolean",
+            "description": "Whether a field should be indexed"
+          },
+          "Method": {
+            "type": "object",
+            "description": "Configuration for k-NN search method",
+            "additionalProperties": false,
+            "properties": {
+              "Engine": {
+                "type": "string",
+                "enum": [
+                  "nmslib",
+                  "faiss",
+                  "lucene"
+                ],
+                "description": "The k-NN search engine to use"
+              },
+              "Name": {
+                "type": "string",
+                "description": "The algorithm name for k-NN search",
+                "enum": [
+                  "hnsw",
+                  "ivf"
+                ]
+              },
+              "SpaceType": {
+                "type": "string",
+                "description": "The distance function used for k-NN search",
+                "enum": [
+                  "l2",
+                  "l1",
+                  "linf",
+                  "cosinesimil",
+                  "innerproduct",
+                  "hamming"
+                ]
+              },
+              "Parameters": {
+                "type": "object",
+                "description": "Additional parameters for the k-NN algorithm",
+                "additionalProperties": false,
+                "properties": {
+                  "EfConstruction": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "The size of the dynamic list used during k-NN graph creation"
+                  },
+                  "M": {
+                    "type": "integer",
+                    "description": "Number of neighbors to consider during k-NN search",
+                    "minimum": 2,
+                    "maximum": 100
+                  }
+                }
+              }
+            },
+            "required": [
+              "Name"
+            ]
+          },
+          "Properties": {
+            "type": "object",
+            "description": "Nested fields within an object or nested field type",
+            "additionalProperties": false,
+            "patternProperties": {
+              "^[A-Za-z0-9_.-]{1,64}$": {
+                "$ref": "#/definitions/PropertyMapping",
+                "description": "Nested field name and its mapping configuration"
+              }
+            }
+          },
+          "Type": {
+            "type": "string",
+            "description": "The field data type. Must be a valid OpenSearch field type.",
+            "enum": [
+              "text",
+              "knn_vector",
+              "keyword",
+              "integer"
+            ]
+          },
+          "Analyzer": {
+            "type": "string",
+            "description": "The analyzer to use for this field (for text and keyword fields)"
+          },
+          "SpaceType": {
+            "type": "string",
+            "description": "The distance function used for k-NN search (field-level, outside Method)",
+            "enum": [
+              "l2",
+              "l1",
+              "linf",
+              "cosinesimil",
+              "innerproduct",
+              "hamming"
+            ]
+          },
+          "CompressionLevel": {
+            "type": "string",
+            "description": "The compression level for knn_vector fields",
+            "enum": [
+              "16x",
+              "32x",
+              "8x",
+              "4x",
+              "2x",
+              "1x"
+            ]
+          },
+          "DataType": {
+            "type": "string",
+            "description": "The data type for knn_vector fields (e.g. float, byte). Controls how vector values are stored.",
+            "enum": [
+              "float",
+              "byte"
+            ]
+          },
+          "Value": {
+            "type": "string",
+            "description": "Default value for the field when not specified in a document"
+          }
+        },
+        "required": [
+          "Type"
+        ]
+      }
+    },
+    "properties": {
+      "CollectionEndpoint": {
+        "description": "The endpoint for the collection.",
+        "type": "string"
+      },
+      "IndexName": {
+        "type": "string",
+        "pattern": "^(?![_-])[a-z][a-z0-9_-]*$",
+        "description": "The name of the OpenSearch Serverless index."
+      },
+      "Settings": {
+        "$ref": "#/definitions/IndexSettings",
+        "description": "Index settings"
+      },
+      "Mappings": {
+        "type": "object",
+        "description": "Index Mappings",
+        "additionalProperties": false,
+        "properties": {
+          "Properties": {
+            "type": "object",
+            "description": "Defines the fields within the mapping, including their types and configurations",
+            "additionalProperties": false,
+            "patternProperties": {
+              "^[A-Za-z0-9_.-]{1,64}$": {
+                "$ref": "#/definitions/PropertyMapping",
+                "description": "Field name and its mapping configuration"
+              }
+            }
+          }
+        }
+      },
+      "Uuid": {
+        "description": "The unique identifier for the index.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "CollectionEndpoint",
+      "IndexName"
+    ],
+    "additionalProperties": false,
+    "primaryIdentifier": [
+      "/properties/IndexName",
+      "/properties/CollectionEndpoint"
+    ],
+    "readOnlyProperties": [
+      "/properties/Uuid"
+    ],
+    "createOnlyProperties": [
+      "/properties/IndexName",
+      "/properties/CollectionEndpoint",
+      "/properties/Settings/Analysis"
+    ],
+    "writeOnlyProperties": [
+      "/properties/Settings/Index/RefreshInterval",
+      "/properties/Settings/Index/KnnAlgoParamEfSearch"
+    ],
+    "handlers": {
+      "create": {
+        "permissions": [
+          "aoss:APIAccessAll"
+        ]
+      },
+      "read": {
+        "permissions": [
+          "aoss:APIAccessAll"
+        ]
+      },
+      "update": {
+        "permissions": [
+          "aoss:APIAccessAll"
+        ]
+      },
+      "delete": {
+        "permissions": [
+          "aoss:APIAccessAll"
+        ]
+      },
+      "list": {
+        "handlerSchema": {
+          "properties": {
+            "CollectionEndpoint": {
+              "$ref": "resource-schema.json#/properties/CollectionEndpoint"
+            }
+          },
+          "required": [
+            "CollectionEndpoint"
+          ]
+        },
+        "permissions": [
+          "aoss:APIAccessAll"
+        ]
+      }
+    }
+  },
+  "AWS::OpenSearchServerless::LifecyclePolicy": {
+    "typeName": "AWS::OpenSearchServerless::LifecyclePolicy",
+    "sourceUrl": "https://github.com/aws-cloudformation/aws-cloudformation-resource-providers-opensearchserverless",
+    "description": "Resource Type definition for AWS::OpenSearchServerless::LifecyclePolicy",
+    "tagging": {
+      "taggable": false,
+      "tagOnCreate": false,
+      "tagUpdatable": false,
+      "cloudFormationSystemTags": false
+    },
+    "definitions": {
+      "LifecyclePolicyType": {
+        "type": "string",
+        "description": "The type of lifecycle policy",
+        "enum": [
+          "retention"
+        ]
+      }
+    },
+    "properties": {
+      "Name": {
+        "type": "string",
+        "maxLength": 32,
+        "minLength": 3,
+        "pattern": "^[a-z][a-z0-9-]+$",
+        "description": "The name of the policy"
+      },
+      "Type": {
+        "$ref": "#/definitions/LifecyclePolicyType"
+      },
+      "Description": {
+        "type": "string",
+        "maxLength": 1000,
+        "minLength": 0,
+        "description": "The description of the policy"
+      },
+      "Policy": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 20480,
+        "pattern": "[\\u0009\\u000A\\u000D\\u0020-\\u007E\\u00A1-\\u00FF]+",
+        "description": "The JSON policy document that is the content for the policy"
+      }
+    },
+    "required": [
+      "Type",
+      "Name",
+      "Policy"
+    ],
+    "createOnlyProperties": [
+      "/properties/Type",
+      "/properties/Name"
+    ],
+    "primaryIdentifier": [
+      "/properties/Type",
+      "/properties/Name"
+    ],
+    "handlers": {
+      "create": {
+        "permissions": [
+          "aoss:CreateLifecyclePolicy"
+        ]
+      },
+      "read": {
+        "permissions": [
+          "aoss:BatchGetLifecyclePolicy"
+        ]
+      },
+      "update": {
+        "permissions": [
+          "aoss:UpdateLifecyclePolicy",
+          "aoss:BatchGetLifecyclePolicy"
+        ]
+      },
+      "delete": {
+        "permissions": [
+          "aoss:DeleteLifecyclePolicy"
+        ]
+      },
+      "list": {
+        "handlerSchema": {
+          "properties": {
+            "Type": {
+              "$ref": "resource-schema.json#/properties/Type"
+            }
+          },
+          "required": [
+            "Type"
+          ]
+        },
+        "permissions": [
+          "aoss:ListLifecyclePolicies"
+        ]
+      }
+    },
+    "additionalProperties": false
+  },
+  "AWS::OpenSearchServerless::SecurityConfig": {
+    "typeName": "AWS::OpenSearchServerless::SecurityConfig",
+    "sourceUrl": "https://github.com/aws-cloudformation/aws-cloudformation-resource-providers-opensearchserverless",
+    "description": "Resource Type definition for AWS::OpenSearchServerless::SecurityConfig",
+    "tagging": {
+      "taggable": false,
+      "tagOnCreate": false,
+      "tagUpdatable": false,
+      "cloudFormationSystemTags": false
+    },
+    "definitions": {
+      "SamlConfigOptions": {
+        "type": "object",
+        "description": "Describes saml options in form of key value map",
+        "properties": {
+          "Metadata": {
+            "type": "string",
+            "description": "The XML saml provider metadata document that you want to use",
+            "maxLength": 51200,
+            "minLength": 1,
+            "pattern": "[\\u0009\\u000A\\u000D\\u0020-\\u007E\\u00A1-\\u00FF]+"
+          },
+          "UserAttribute": {
+            "type": "string",
+            "description": "Custom attribute for this saml integration",
+            "maxLength": 2048,
+            "minLength": 1,
+            "pattern": "[\\w+=,.@-]+"
+          },
+          "GroupAttribute": {
+            "type": "string",
+            "description": "Group attribute for this saml integration",
+            "maxLength": 2048,
+            "minLength": 1,
+            "pattern": "[\\w+=,.@-]+"
+          },
+          "OpenSearchServerlessEntityId": {
+            "type": "string",
+            "description": "Custom entity id attribute to override default entity id for this saml integration",
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^aws:opensearch:[0-9]{12}:*"
+          },
+          "SessionTimeout": {
+            "type": "integer",
+            "description": "Defines the session timeout in minutes"
+          }
+        },
+        "required": [
+          "Metadata"
+        ],
+        "additionalProperties": false
+      },
+      "SecurityConfigType": {
+        "type": "string",
+        "description": "Config type for security config",
+        "enum": [
+          "saml",
+          "iamidentitycenter",
+          "iamfederation"
+        ]
+      },
+      "IamIdentityCenterInstanceArn": {
+        "type": "string",
+        "description": "The ARN of the IAM Identity Center instance used to integrate with OpenSearch Serverless"
+      },
+      "IamIdentityCenterApplicationArn": {
+        "type": "string",
+        "description": "The ARN of the IAM Identity Center application used to integrate with OpenSearch Serverless"
+      },
+      "IamIdentityCenterUserAttribute": {
+        "type": "string",
+        "description": "User attribute for this IAM Identity Center integration"
+      },
+      "IamIdentityCenterGroupAttribute": {
+        "type": "string",
+        "description": "Group attribute for this IAM Identity Center integration"
+      },
+      "IamIdentityCenterConfigOptions": {
+        "type": "object",
+        "description": "Describes IAM Identity Center options for an OpenSearch Serverless security configuration in the form of a key-value map",
+        "properties": {
+          "InstanceArn": {
+            "$ref": "#/definitions/IamIdentityCenterInstanceArn"
+          },
+          "ApplicationArn": {
+            "$ref": "#/definitions/IamIdentityCenterApplicationArn"
+          },
+          "ApplicationName": {
+            "type": "string",
+            "description": "The name of the IAM Identity Center application used to integrate with OpenSearch Serverless"
+          },
+          "ApplicationDescription": {
+            "type": "string",
+            "description": "The description of the IAM Identity Center application used to integrate with OpenSearch Serverless"
+          },
+          "UserAttribute": {
+            "$ref": "#/definitions/IamIdentityCenterUserAttribute"
+          },
+          "GroupAttribute": {
+            "$ref": "#/definitions/IamIdentityCenterGroupAttribute"
+          }
+        },
+        "required": [
+          "InstanceArn"
+        ],
+        "additionalProperties": false
+      },
+      "IamFederationConfigOptions": {
+        "type": "object",
+        "description": "Describe IAM federation options in form of key value map",
+        "properties": {
+          "GroupAttribute": {
+            "type": "string",
+            "description": "Group attribute for this IAM federation integration"
+          },
+          "UserAttribute": {
+            "type": "string",
+            "description": "User attribute for this IAM federation integration"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "properties": {
+      "Description": {
+        "type": "string",
+        "maxLength": 1000,
+        "minLength": 1,
+        "description": "Security config description"
+      },
+      "Id": {
+        "type": "string",
+        "maxLength": 100,
+        "minLength": 1,
+        "description": "The identifier of the security config"
+      },
+      "Name": {
+        "type": "string",
+        "maxLength": 32,
+        "minLength": 3,
+        "pattern": "^[a-z][a-z0-9-]{2,31}$",
+        "description": "The friendly name of the security config"
+      },
+      "SamlOptions": {
+        "$ref": "#/definitions/SamlConfigOptions"
+      },
+      "IamIdentityCenterOptions": {
+        "$ref": "#/definitions/IamIdentityCenterConfigOptions"
+      },
+      "IamFederationOptions": {
+        "$ref": "#/definitions/IamFederationConfigOptions"
+      },
+      "Type": {
+        "$ref": "#/definitions/SecurityConfigType"
+      }
+    },
+    "readOnlyProperties": [
+      "/properties/Id",
+      "/properties/IamIdentityCenterOptions/ApplicationArn",
+      "/properties/IamIdentityCenterOptions/ApplicationName",
+      "/properties/IamIdentityCenterOptions/ApplicationDescription"
+    ],
+    "writeOnlyProperties": [
+      "/properties/Name"
+    ],
+    "createOnlyProperties": [
+      "/properties/Type",
+      "/properties/Name",
+      "/properties/IamIdentityCenterOptions/InstanceArn"
+    ],
+    "primaryIdentifier": [
+      "/properties/Id"
+    ],
+    "additionalIdentifiers": [
+      [
+        "/properties/Name"
+      ]
+    ],
+    "handlers": {
+      "create": {
+        "permissions": [
+          "aoss:CreateSecurityConfig",
+          "sso:CreateApplication",
+          "sso:ListApplications",
+          "sso:DeleteApplication",
+          "sso:PutApplicationAssignmentConfiguration",
+          "sso:PutApplicationAuthenticationMethod",
+          "sso:PutApplicationGrant"
+        ]
+      },
+      "read": {
+        "permissions": [
+          "aoss:GetSecurityConfig"
+        ]
+      },
+      "update": {
+        "permissions": [
+          "aoss:GetSecurityConfig",
+          "aoss:UpdateSecurityConfig"
+        ]
+      },
+      "delete": {
+        "permissions": [
+          "aoss:DeleteSecurityConfig",
+          "sso:ListApplicationAssignments",
+          "sso:DeleteApplicationAssignment",
+          "sso:DeleteApplication"
+        ]
+      },
+      "list": {
+        "handlerSchema": {
+          "properties": {
+            "Type": {
+              "$ref": "resource-schema.json#/properties/Type"
+            }
+          },
+          "required": [
+            "Type"
+          ]
+        },
+        "permissions": [
+          "aoss:ListSecurityConfigs"
+        ]
+      }
+    },
+    "additionalProperties": false
+  },
+  "AWS::OpenSearchServerless::SecurityPolicy": {
+    "typeName": "AWS::OpenSearchServerless::SecurityPolicy",
+    "sourceUrl": "https://github.com/aws-cloudformation/aws-cloudformation-resource-providers-opensearchserverless",
+    "description": "Resource Type definition for AWS::OpenSearchServerless::SecurityPolicy",
+    "tagging": {
+      "taggable": false,
+      "tagOnCreate": false,
+      "tagUpdatable": false,
+      "cloudFormationSystemTags": false
+    },
+    "definitions": {
+      "SecurityPolicyType": {
+        "type": "string",
+        "description": "The possible types for the network policy",
+        "enum": [
+          "encryption",
+          "network"
+        ]
+      }
+    },
+    "properties": {
+      "Description": {
+        "type": "string",
+        "maxLength": 1000,
+        "minLength": 1,
+        "description": "The description of the policy"
+      },
+      "Policy": {
+        "type": "string",
+        "maxLength": 20480,
+        "minLength": 1,
+        "pattern": "[\\u0009\\u000A\\u000D\\u0020-\\u007E\\u00A1-\\u00FF]+",
+        "description": "The JSON policy document that is the content for the policy"
+      },
+      "Name": {
+        "type": "string",
+        "maxLength": 32,
+        "minLength": 3,
+        "pattern": "^[a-z][a-z0-9-]{2,31}$",
+        "description": "The name of the policy"
+      },
+      "Type": {
+        "$ref": "#/definitions/SecurityPolicyType"
+      }
+    },
+    "required": [
+      "Type",
+      "Name",
+      "Policy"
+    ],
+    "createOnlyProperties": [
+      "/properties/Type",
+      "/properties/Name"
+    ],
+    "primaryIdentifier": [
+      "/properties/Type",
+      "/properties/Name"
+    ],
+    "handlers": {
+      "create": {
+        "permissions": [
+          "aoss:GetSecurityPolicy",
+          "aoss:CreateSecurityPolicy",
+          "kms:DescribeKey",
+          "kms:CreateGrant"
+        ]
+      },
+      "update": {
+        "permissions": [
+          "aoss:GetSecurityPolicy",
+          "aoss:UpdateSecurityPolicy",
+          "kms:DescribeKey",
+          "kms:CreateGrant"
+        ]
+      },
+      "delete": {
+        "permissions": [
+          "aoss:GetSecurityPolicy",
+          "aoss:DeleteSecurityPolicy"
+        ]
+      },
+      "list": {
+        "handlerSchema": {
+          "properties": {
+            "Type": {
+              "$ref": "resource-schema.json#/properties/Type"
+            }
+          },
+          "required": [
+            "Type"
+          ]
+        },
+        "permissions": [
+          "aoss:ListSecurityPolicies"
+        ]
+      },
+      "read": {
+        "permissions": [
+          "aoss:GetSecurityPolicy",
+          "kms:DescribeKey"
+        ]
+      }
+    },
+    "additionalProperties": false
+  },
+  "AWS::OpenSearchServerless::VpcEndpoint": {
+    "typeName": "AWS::OpenSearchServerless::VpcEndpoint",
+    "description": "Resource Type definition for AWS::OpenSearchServerless::VpcEndpoint",
+    "tagging": {
+      "taggable": false,
+      "tagOnCreate": false,
+      "tagUpdatable": false,
+      "cloudFormationSystemTags": false
+    },
+    "properties": {
+      "Id": {
+        "type": "string",
+        "maxLength": 255,
+        "minLength": 1,
+        "pattern": "^vpce-[0-9a-z]*$",
+        "description": "The identifier of the VPC Endpoint"
+      },
+      "Name": {
+        "type": "string",
+        "maxLength": 32,
+        "minLength": 3,
+        "pattern": "^[a-z][a-z0-9-]{2,31}$",
+        "description": "The name of the VPC Endpoint"
+      },
+      "SecurityGroupIds": {
+        "type": "array",
+        "insertionOrder": false,
+        "items": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[\\w+\\-]+$"
+        },
+        "maxItems": 5,
+        "minItems": 1,
+        "description": "The ID of one or more security groups to associate with the endpoint network interface"
+      },
+      "SubnetIds": {
+        "type": "array",
+        "insertionOrder": false,
+        "items": {
+          "type": "string",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^subnet-([0-9a-f]{8}|[0-9a-f]{17})$"
+        },
+        "maxItems": 6,
+        "minItems": 1,
+        "description": "The ID of one or more subnets in which to create an endpoint network interface"
+      },
+      "VpcId": {
+        "type": "string",
+        "maxLength": 255,
+        "minLength": 1,
+        "pattern": "^vpc-[0-9a-z]*$",
+        "description": "The ID of the VPC in which the endpoint will be used."
+      }
+    },
+    "required": [
+      "Name",
+      "VpcId",
+      "SubnetIds"
+    ],
+    "readOnlyProperties": [
+      "/properties/Id"
+    ],
+    "createOnlyProperties": [
+      "/properties/Name",
+      "/properties/VpcId"
+    ],
+    "primaryIdentifier": [
+      "/properties/Id"
+    ],
+    "additionalIdentifiers": [
+      [
+        "/properties/Name"
+      ]
+    ],
+    "replacementStrategy": "delete_then_create",
+    "handlers": {
+      "create": {
+        "permissions": [
+          "aoss:BatchGetVpcEndpoint",
+          "aoss:CreateVpcEndpoint",
+          "ec2:CreateVpcEndpoint",
+          "ec2:DeleteVpcEndPoints",
+          "ec2:DescribeVpcEndpoints",
+          "ec2:ModifyVpcEndPoint",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups",
+          "ec2:CreateTags",
+          "route53:ChangeResourceRecordSets",
+          "route53:GetChange",
+          "route53:GetHostedZone",
+          "route53:ListResourceRecordSets",
+          "route53:ListHostedZonesByName",
+          "route53:CreateHostedZone",
+          "route53:ListHostedZonesByVPC",
+          "route53:AssociateVPCWithHostedZone"
+        ]
+      },
+      "read": {
+        "permissions": [
+          "aoss:BatchGetVpcEndpoint",
+          "ec2:DescribeVpcEndpoints"
+        ]
+      },
+      "update": {
+        "permissions": [
+          "aoss:BatchGetVpcEndpoint",
+          "aoss:UpdateVpcEndpoint",
+          "ec2:CreateVpcEndpoint",
+          "ec2:DeleteVpcEndPoints",
+          "ec2:DescribeVpcEndpoints",
+          "ec2:ModifyVpcEndPoint",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups",
+          "ec2:CreateTags",
+          "route53:ChangeResourceRecordSets",
+          "route53:GetChange",
+          "route53:GetHostedZone",
+          "route53:ListResourceRecordSets",
+          "route53:ListHostedZonesByName",
+          "route53:CreateHostedZone",
+          "route53:ListHostedZonesByVPC",
+          "route53:AssociateVPCWithHostedZone"
+        ]
+      },
+      "delete": {
+        "permissions": [
+          "aoss:BatchGetVpcEndpoint",
+          "aoss:DeleteVpcEndpoint",
+          "ec2:DeleteVpcEndPoints",
+          "ec2:DescribeVpcEndpoints",
+          "ec2:ModifyVpcEndPoint",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups",
+          "ec2:CreateTags",
+          "route53:ChangeResourceRecordSets",
+          "route53:DeleteHostedZone",
+          "route53:GetChange",
+          "route53:GetHostedZone",
+          "route53:ListResourceRecordSets",
+          "route53:ListHostedZonesByName",
+          "route53:ListHostedZonesByVPC",
+          "route53:AssociateVPCWithHostedZone"
+        ]
+      },
+      "list": {
+        "permissions": [
+          "aoss:ListVpcEndpoints",
+          "ec2:DescribeVpcEndpoints"
+        ]
+      }
+    },
+    "additionalProperties": false
+  },
+  "AWS::OpenSearchService::Application": {
+    "typeName": "AWS::OpenSearchService::Application",
+    "description": "Amazon OpenSearchService application resource",
+    "definitions": {
+      "AppConfigType": {
+        "type": "string",
+        "enum": [
+          "opensearchDashboards.dashboardAdmin.users",
+          "opensearchDashboards.dashboardAdmin.groups"
+        ],
+        "description": "AppConfig type values."
+      },
+      "Tag": {
+        "type": "object",
+        "description": "A key-value pair metadata associated with resource",
+        "properties": {
+          "Key": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "description": "The key in the key-value pair"
+          },
+          "Value": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 0,
+            "description": "The value in the key-value pair"
+          }
+        },
+        "required": [
+          "Key",
+          "Value"
+        ],
+        "additionalProperties": false
+      },
+      "AppConfig": {
+        "type": "object",
+        "description": "A key-value pair of AppConfig",
+        "properties": {
+          "Key": {
+            "$ref": "#/definitions/AppConfigType",
+            "description": "The configuration key"
+          },
+          "Value": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 0,
+            "description": "The configuration value."
+          }
+        },
+        "required": [
+          "Key",
+          "Value"
+        ],
+        "additionalProperties": false
+      },
+      "DataSource": {
+        "type": "object",
+        "description": "Datasource arn and description",
+        "properties": {
+          "DataSourceArn": {
+            "$ref": "#/properties/Arn",
+            "description": "The ARN of the data source."
+          },
+          "DataSourceDescription": {
+            "type": "string",
+            "description": "Description of the data source."
+          }
+        },
+        "required": [
+          "DataSourceArn"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "properties": {
+      "Arn": {
+        "type": "string",
+        "description": "Amazon Resource Name (ARN) format."
+      },
+      "IamIdentityCenterOptions": {
+        "type": "object",
+        "description": "Options for configuring IAM Identity Center",
+        "properties": {
+          "Enabled": {
+            "type": "boolean",
+            "description": "Whether IAM Identity Center is enabled."
+          },
+          "IamIdentityCenterInstanceArn": {
+            "$ref": "#/properties/Arn",
+            "description": "The ARN of the IAM Identity Center instance."
+          },
+          "IamRoleForIdentityCenterApplicationArn": {
+            "type": "string",
+            "description": "The ARN of the IAM role for Identity Center application."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Id": {
+        "type": "string",
+        "maxLength": 40,
+        "minLength": 3,
+        "description": "The identifier of the application."
+      },
+      "Name": {
+        "type": "string",
+        "pattern": "[a-z][a-z0-9\\-]+",
+        "minLength": 3,
+        "maxLength": 40,
+        "description": "The name of the application."
+      },
+      "Endpoint": {
+        "type": "string",
+        "description": "The endpoint for the application."
+      },
+      "AppConfigs": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/AppConfig"
+        },
+        "description": "List of application configurations.",
+        "insertionOrder": false
+      },
+      "KmsKeyArn": {
+        "type": "string",
+        "minLength": 20,
+        "maxLength": 2048,
+        "pattern": "^arn:aws(-[a-z]+)*:kms:[a-z0-9-]+:\\d{12}:key/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
+        "description": "The ARN of the KMS key used to encrypt the application."
+      },
+      "DataSources": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/DataSource"
+        },
+        "description": "List of data sources.",
+        "insertionOrder": false
+      },
+      "Tags": {
+        "description": "An arbitrary set of tags (key-value pairs) for this application.",
+        "items": {
+          "$ref": "#/definitions/Tag"
+        },
+        "type": "array",
+        "uniqueItems": true
+      }
+    },
+    "required": [
+      "Name"
+    ],
+    "readOnlyProperties": [
+      "/properties/Id",
+      "/properties/Arn"
+    ],
+    "createOnlyProperties": [
+      "/properties/Name",
+      "/properties/KmsKeyArn"
+    ],
+    "writeOnlyProperties": [
+      "/properties/KmsKeyArn"
+    ],
+    "primaryIdentifier": [
+      "/properties/Name"
+    ],
+    "additionalIdentifiers": [
+      [
+        "/properties/Arn"
+      ]
+    ],
+    "handlers": {
+      "create": {
+        "permissions": [
+          "es:CreateApplication",
+          "es:GetApplication",
+          "es:AddTags",
+          "es:ListTags",
+          "iam:CreateServiceLinkedRole"
+        ]
+      },
+      "read": {
+        "permissions": [
+          "es:GetApplication",
+          "es:ListTags"
+        ]
+      },
+      "update": {
+        "permissions": [
+          "es:UpdateApplication",
+          "es:GetApplication",
+          "es:AddTags",
+          "es:RemoveTags",
+          "es:ListTags"
+        ]
+      },
+      "delete": {
+        "permissions": [
+          "es:GetApplication",
+          "es:DeleteApplication"
+        ]
+      },
+      "list": {
+        "permissions": [
+          "es:ListApplications"
+        ]
+      }
+    },
+    "tagging": {
+      "taggable": true,
+      "tagOnCreate": true,
+      "tagUpdatable": true,
+      "cloudFormationSystemTags": true,
+      "tagProperty": "/properties/Tags",
+      "permissions": [
+        "es:AddTags",
+        "es:RemoveTags",
+        "es:ListTags"
+      ]
+    },
+    "additionalProperties": false
+  },
+  "AWS::OpenSearchService::Domain": {
+    "typeName": "AWS::OpenSearchService::Domain",
+    "description": "An example resource schema demonstrating some basic constructs and validation rules.",
+    "sourceUrl": "https://github.com/aws-cloudformation/aws-cloudformation-rpdk.git",
+    "definitions": {
+      "ZoneAwarenessConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "AvailabilityZoneCount": {
+            "type": "integer"
+          }
+        }
+      },
+      "NodeConfig": {
+        "type": "object",
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          },
+          "Type": {
+            "type": "string"
+          },
+          "Count": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false
+      },
+      "NodeOption": {
+        "type": "object",
+        "properties": {
+          "NodeType": {
+            "type": "string",
+            "enum": [
+              "coordinator"
+            ]
+          },
+          "NodeConfig": {
+            "$ref": "#/definitions/NodeConfig"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ClusterConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "InstanceCount": {
+            "type": "integer"
+          },
+          "WarmEnabled": {
+            "type": "boolean"
+          },
+          "WarmCount": {
+            "type": "integer"
+          },
+          "DedicatedMasterEnabled": {
+            "type": "boolean"
+          },
+          "ZoneAwarenessConfig": {
+            "$ref": "#/definitions/ZoneAwarenessConfig"
+          },
+          "DedicatedMasterCount": {
+            "type": "integer"
+          },
+          "InstanceType": {
+            "type": "string"
+          },
+          "WarmType": {
+            "type": "string"
+          },
+          "ZoneAwarenessEnabled": {
+            "type": "boolean"
+          },
+          "DedicatedMasterType": {
+            "type": "string"
+          },
+          "MultiAZWithStandbyEnabled": {
+            "type": "boolean"
+          },
+          "ColdStorageOptions": {
+            "$ref": "#/definitions/ColdStorageOptions"
+          },
+          "NodeOptions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/NodeOption"
+            }
+          }
+        }
+      },
+      "LogPublishingOption": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "CloudWatchLogsLogGroupArn": {
+            "type": "string"
+          },
+          "Enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SnapshotOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "AutomatedSnapshotStartHour": {
+            "type": "integer"
+          }
+        }
+      },
+      "VPCOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "SecurityGroupIds": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "SubnetIds": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "EgressEnabled": {
+            "type": "boolean",
+            "description": "Controls whether egress traffic from the domain is routed through the customer VPC."
+          }
+        }
+      },
+      "NodeToNodeEncryptionOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "S3VectorsEngine": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean",
+            "description": "Whether to enable S3 vectors engine."
+          }
+        },
+        "required": [
+          "Enabled"
+        ]
+      },
+      "ServerlessVectorAcceleration": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean",
+            "description": "Whether to enable serverless vector acceleration."
+          }
+        }
+      },
+      "AIMLOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "S3VectorsEngine": {
+            "$ref": "#/definitions/S3VectorsEngine"
+          },
+          "ServerlessVectorAcceleration": {
+            "$ref": "#/definitions/ServerlessVectorAcceleration"
+          }
+        }
+      },
+      "DomainEndpointOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "CustomEndpointCertificateArn": {
+            "type": "string"
+          },
+          "CustomEndpointEnabled": {
+            "type": "boolean"
+          },
+          "EnforceHTTPS": {
+            "type": "boolean"
+          },
+          "CustomEndpoint": {
+            "type": "string"
+          },
+          "TLSSecurityPolicy": {
+            "type": "string"
+          }
+        }
+      },
+      "CognitoOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          },
+          "IdentityPoolId": {
+            "type": "string"
+          },
+          "UserPoolId": {
+            "type": "string"
+          },
+          "RoleArn": {
+            "type": "string"
+          }
+        }
+      },
+      "MasterUserOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "MasterUserPassword": {
+            "type": "string"
+          },
+          "MasterUserName": {
+            "type": "string"
+          },
+          "MasterUserARN": {
+            "type": "string"
+          }
+        }
+      },
+      "Idp": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "MetadataContent": {
+            "type": "string",
+            "maxLength": 1048576,
+            "minLength": 1
+          },
+          "EntityId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "MetadataContent",
+          "EntityId"
+        ]
+      },
+      "SAMLOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          },
+          "Idp": {
+            "$ref": "#/definitions/Idp"
+          },
+          "MasterUserName": {
+            "type": "string"
+          },
+          "MasterBackendRole": {
+            "type": "string"
+          },
+          "SubjectKey": {
+            "type": "string"
+          },
+          "RolesKey": {
+            "type": "string"
+          },
+          "SessionTimeoutMinutes": {
+            "type": "integer"
+          }
+        }
+      },
+      "JWTOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          },
+          "PublicKey": {
+            "type": "string"
+          },
+          "SubjectKey": {
+            "type": "string"
+          },
+          "RolesKey": {
+            "type": "string"
+          }
+        }
+      },
+      "IAMFederationOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          },
+          "RolesKey": {
+            "type": "string"
+          },
+          "SubjectKey": {
+            "type": "string"
+          }
+        }
+      },
+      "AdvancedSecurityOptionsInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          },
+          "MasterUserOptions": {
+            "$ref": "#/definitions/MasterUserOptions"
+          },
+          "InternalUserDatabaseEnabled": {
+            "type": "boolean"
+          },
+          "AnonymousAuthEnabled": {
+            "type": "boolean"
+          },
+          "SAMLOptions": {
+            "$ref": "#/definitions/SAMLOptions"
+          },
+          "JWTOptions": {
+            "$ref": "#/definitions/JWTOptions"
+          },
+          "IAMFederationOptions": {
+            "$ref": "#/definitions/IAMFederationOptions"
+          },
+          "AnonymousAuthDisableDate": {
+            "type": "string"
+          }
+        }
+      },
+      "EBSOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "EBSEnabled": {
+            "type": "boolean"
+          },
+          "VolumeType": {
+            "type": "string"
+          },
+          "Iops": {
+            "type": "integer"
+          },
+          "VolumeSize": {
+            "type": "integer"
+          },
+          "Throughput": {
+            "type": "integer"
+          }
+        }
+      },
+      "EncryptionAtRestOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "KmsKeyId": {
+            "type": "string"
+          },
+          "Enabled": {
+            "type": "boolean"
+          },
+          "EncryptionMode": {
+            "type": "string",
+            "description": "The type of encryption at rest applied to the domain's data. Valid values are DISK and NATIVE. DISK is the default and uses volume-level encryption. NATIVE uses engine-native, index-level encryption and requires encryption at rest to be enabled and OpenSearch version 3.3 or later. After the mode is set to NATIVE, it can't be changed back to DISK.",
+            "enum": [
+              "DISK",
+              "NATIVE"
+            ]
+          }
+        }
+      },
+      "Tag": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Value": {
+            "description": "The key of the tag.",
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 256
+          },
+          "Key": {
+            "description": "The value of the tag.",
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "Value",
+          "Key"
+        ]
+      },
+      "ServiceSoftwareOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "CurrentVersion": {
+            "type": "string"
+          },
+          "NewVersion": {
+            "type": "string"
+          },
+          "UpdateAvailable": {
+            "type": "boolean"
+          },
+          "Cancellable": {
+            "type": "boolean"
+          },
+          "UpdateStatus": {
+            "type": "string"
+          },
+          "Description": {
+            "type": "string"
+          },
+          "AutomatedUpdateDate": {
+            "type": "string"
+          },
+          "OptionalDeployment": {
+            "type": "boolean"
+          }
+        }
+      },
+      "WindowStartTime": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Hours": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 23
+          },
+          "Minutes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 59
+          }
+        },
+        "required": [
+          "Hours",
+          "Minutes"
+        ]
+      },
+      "OffPeakWindow": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "WindowStartTime": {
+            "$ref": "#/definitions/WindowStartTime"
+          }
+        }
+      },
+      "OffPeakWindowOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          },
+          "OffPeakWindow": {
+            "$ref": "#/definitions/OffPeakWindow"
+          }
+        }
+      },
+      "SoftwareUpdateOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "AutoSoftwareUpdateEnabled": {
+            "type": "boolean"
+          },
+          "UseLatestServiceSoftwareForBlueGreen": {
+            "type": "boolean"
+          }
+        }
+      },
+      "DeploymentStrategyOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "DeploymentStrategy": {
+            "type": "string",
+            "enum": [
+              "Default",
+              "CapacityOptimized"
+            ]
+          }
+        }
+      },
+      "AutomatedSnapshotPauseOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          },
+          "StartTime": {
+            "type": "string"
+          },
+          "EndTime": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Enabled"
+        ]
+      },
+      "ColdStorageOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "Enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SubjectKeyIdcType": {
+        "type": "string",
+        "enum": [
+          "UserName",
+          "UserId",
+          "Email"
+        ],
+        "description": "Subject Key Idc type values."
+      },
+      "RolesKeyIdcType": {
+        "type": "string",
+        "enum": [
+          "GroupName",
+          "GroupId"
+        ],
+        "description": "Roles Key Idc type values."
+      },
+      "IdentityCenterOptions": {
+        "type": "object",
+        "description": "Options for configuring Identity Center",
+        "properties": {
+          "EnabledAPIAccess": {
+            "type": "boolean",
+            "description": "Whether Identity Center is enabled."
+          },
+          "IdentityCenterInstanceARN": {
+            "type": "string",
+            "description": "The ARN of the Identity Center instance."
+          },
+          "SubjectKey": {
+            "$ref": "#/definitions/SubjectKeyIdcType",
+            "description": "The subject key for Identity Center options."
+          },
+          "RolesKey": {
+            "$ref": "#/definitions/RolesKeyIdcType",
+            "description": "The roles key for Identity Center options."
+          },
+          "IdentityCenterApplicationARN": {
+            "type": "string",
+            "description": "The ARN of the Identity Center application."
+          },
+          "IdentityStoreId": {
+            "type": "string",
+            "description": "The IdentityStoreId for Identity Center options."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "properties": {
+      "ClusterConfig": {
+        "$ref": "#/definitions/ClusterConfig"
+      },
+      "DomainName": {
+        "type": "string"
+      },
+      "AccessPolicies": {
+        "type": "object"
+      },
+      "IPAddressType": {
+        "type": "string"
+      },
+      "EngineVersion": {
+        "type": "string"
+      },
+      "AdvancedOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "patternProperties": {
+          "[a-zA-Z0-9]+": {
+            "type": "string"
+          }
+        }
+      },
+      "LogPublishingOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "patternProperties": {
+          "[a-zA-Z0-9]+": {
+            "$ref": "#/definitions/LogPublishingOption"
+          }
+        }
+      },
+      "SnapshotOptions": {
+        "$ref": "#/definitions/SnapshotOptions"
+      },
+      "VPCOptions": {
+        "$ref": "#/definitions/VPCOptions"
+      },
+      "NodeToNodeEncryptionOptions": {
+        "$ref": "#/definitions/NodeToNodeEncryptionOptions"
+      },
+      "DomainEndpointOptions": {
+        "$ref": "#/definitions/DomainEndpointOptions"
+      },
+      "CognitoOptions": {
+        "$ref": "#/definitions/CognitoOptions"
+      },
+      "AdvancedSecurityOptions": {
+        "$ref": "#/definitions/AdvancedSecurityOptionsInput"
+      },
+      "DomainEndpoint": {
+        "type": "string"
+      },
+      "DomainEndpointV2": {
+        "type": "string"
+      },
+      "DomainEndpoints": {
+        "type": "object",
+        "additionalProperties": false,
+        "patternProperties": {
+          "^.*$": {
+            "type": "string"
+          }
+        }
+      },
+      "EBSOptions": {
+        "$ref": "#/definitions/EBSOptions"
+      },
+      "Id": {
+        "type": "string"
+      },
+      "Arn": {
+        "type": "string"
+      },
+      "DomainArn": {
+        "type": "string"
+      },
+      "EncryptionAtRestOptions": {
+        "$ref": "#/definitions/EncryptionAtRestOptions"
+      },
+      "Tags": {
+        "description": "An arbitrary set of tags (key-value pairs) for this Domain.",
+        "items": {
+          "$ref": "#/definitions/Tag"
+        },
+        "type": "array",
+        "uniqueItems": true
+      },
+      "ServiceSoftwareOptions": {
+        "$ref": "#/definitions/ServiceSoftwareOptions"
+      },
+      "OffPeakWindowOptions": {
+        "$ref": "#/definitions/OffPeakWindowOptions"
+      },
+      "SoftwareUpdateOptions": {
+        "$ref": "#/definitions/SoftwareUpdateOptions"
+      },
+      "SkipShardMigrationWait": {
+        "type": "boolean"
+      },
+      "IdentityCenterOptions": {
+        "$ref": "#/definitions/IdentityCenterOptions"
+      },
+      "AIMLOptions": {
+        "$ref": "#/definitions/AIMLOptions"
+      },
+      "DeploymentStrategyOptions": {
+        "$ref": "#/definitions/DeploymentStrategyOptions"
+      },
+      "AutomatedSnapshotPauseOptions": {
+        "$ref": "#/definitions/AutomatedSnapshotPauseOptions"
+      },
+      "EngineMode": {
+        "type": "string",
+        "description": "The engine mode of the domain. Determines whether the domain runs the standard (GENERAL) engine or the optimized multi-engine (OPTIMIZED) engine. This value cannot be changed after the domain is created.",
+        "enum": [
+          "GENERAL",
+          "OPTIMIZED"
+        ]
+      },
+      "UseCase": {
+        "type": "string",
+        "description": "The primary use case of the domain. Determines the default configuration tuned for the workload. For GENERAL engine-mode domains, this value can be changed after creation. For OPTIMIZED engine-mode domains, this value cannot be changed after creation.",
+        "enum": [
+          "SEARCH",
+          "VECTOR",
+          "OBSERVABILITY",
+          "MIXED"
+        ]
+      },
+      "AcceptedWarnings": {
+        "type": "array",
+        "insertionOrder": false,
+        "items": {
+          "type": "string"
+        },
+        "description": "Warning codes to accept for this domain configuration update. Accepting a warning lets the update proceed past a validation that would otherwise block it. This property applies only to the current update and is not persisted on the domain. You can find warning codes in the ValidationFailures returned by DescribeDomainChangeProgress or DescribeDryRunProgress."
+      }
+    },
+    "propertyTransform": {
+      "/properties/EncryptionAtRestOptions/KmsKeyId": "$split(EncryptionAtRestOptions.KmsKeyId, \"/\")[-1] $OR EncryptionAtRestOptions.KmsKeyId"
+    },
+    "tagging": {
+      "taggable": true,
+      "tagOnCreate": true,
+      "tagUpdatable": true,
+      "cloudFormationSystemTags": true,
+      "tagProperty": "/properties/Tags",
+      "permissions": [
+        "es:AddTags",
+        "es:RemoveTags",
+        "es:ListTags"
+      ]
+    },
+    "additionalProperties": false,
+    "createOnlyProperties": [
+      "/properties/DomainName",
+      "/properties/EngineMode"
+    ],
+    "conditionalCreateOnlyProperties": [
+      "/properties/EncryptionAtRestOptions/properties",
+      "/properties/AdvancedSecurityOptions/properties/Enabled"
+    ],
+    "readOnlyProperties": [
+      "/properties/Id",
+      "/properties/Arn",
+      "/properties/DomainArn",
+      "/properties/DomainEndpoint",
+      "/properties/DomainEndpointV2",
+      "/properties/DomainEndpoints",
+      "/properties/ServiceSoftwareOptions",
+      "/properties/AdvancedSecurityOptions/AnonymousAuthDisableDate",
+      "/properties/IdentityCenterOptions/IdentityCenterApplicationARN",
+      "/properties/IdentityCenterOptions/IdentityStoreId"
+    ],
+    "writeOnlyProperties": [
+      "/properties/AdvancedSecurityOptions/MasterUserOptions",
+      "/properties/AdvancedSecurityOptions/SAMLOptions/MasterUserName",
+      "/properties/AdvancedSecurityOptions/SAMLOptions/MasterBackendRole",
+      "/properties/AdvancedSecurityOptions/JWTOptions/PublicKey",
+      "/properties/AcceptedWarnings"
+    ],
+    "primaryIdentifier": [
+      "/properties/DomainName"
+    ],
+    "handlers": {
+      "create": {
+        "permissions": [
+          "es:CreateDomain",
+          "es:DescribeDomain",
+          "es:AddTags",
+          "es:ListTags",
+          "es:DescribeDomainChangeProgress"
+        ]
+      },
+      "read": {
+        "permissions": [
+          "es:DescribeDomain",
+          "es:ListTags"
+        ]
+      },
+      "update": {
+        "permissions": [
+          "es:UpdateDomain",
+          "es:UpgradeDomain",
+          "es:DescribeDomain",
+          "es:AddTags",
+          "es:RemoveTags",
+          "es:ListTags",
+          "es:DescribeDomainChangeProgress"
+        ],
+        "timeoutInMinutes": 2160
+      },
+      "delete": {
+        "permissions": [
+          "es:DeleteDomain",
+          "es:DescribeDomain"
+        ]
+      }
+    }
+  }
+}

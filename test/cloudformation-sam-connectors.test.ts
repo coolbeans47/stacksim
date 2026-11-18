@@ -296,7 +296,7 @@ test("SAM connectors deploy under IAM enforcement, grant exactly their access, s
     // ports, as a real restart does: the worker's QUEUE_URL (a queue Ref) names the port.
     destroy(clients);
     clients = undefined;
-    const ports = { port: simulator.port, invokePort: simulator.invokePort };
+    const ports = { port: simulator.port, invokePort: simulator.invokePort, cloudFormationCustomResourceCallbackPort: simulator.customResourceCallbackPort };
     await simulator.stop();
     simulator = new StackSim({ ...ports, dataDir: root, region, authMode: "enforce", cdkBootstrap: true });
     await simulator.start();

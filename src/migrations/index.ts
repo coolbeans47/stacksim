@@ -1,3 +1,4 @@
+import { migrateV89ToV90 } from "./v89-to-v90.js";
 import type { SimState } from "../types.js";
 import { CURRENT_SCHEMA_VERSION, migrateV1ToV2 } from "./v1-to-v2.js";
 import { migrateV3ToV4 } from "./v3-to-v4.js";
@@ -186,6 +187,7 @@ export function migrateState(input: unknown, accountId: string, region: string):
   if (version <= 86) state = migrateV86ToV87(state);
   if (version <= 87) state = migrateV87ToV88(state);
   if (version <= 88) state = migrateV88ToV89(state);
+  if (version <= 89) state = migrateV89ToV90(state);
   if (version < CURRENT_SCHEMA_VERSION) return { state, migrated: true };
   if (version === CURRENT_SCHEMA_VERSION) return { state: structuredClone(input) as SimState, migrated: false };
   throw new Error(`No migration path exists from state schema ${version}`);

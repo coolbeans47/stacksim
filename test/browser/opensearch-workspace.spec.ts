@@ -1,0 +1,57 @@
+import { expect, test } from "@playwright/test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Client } from "@opensearch-project/opensearch";
+import { StackSim } from "../../src/server.js";
+
+test.use({ ignoreHTTPSErrors: true });
+for (const width of [1440, 390]) test(`resource workspace authenticates, discovers, saves and isolates identities at ${width}px`, async ({ page }) => {
+  test.setTimeout(60000);
+  const root = await mkdtemp(join(tmpdir(), "stacksim-os-workspace-ui-"));
+  const sim = new StackSim({ port: 0, invokePort: 0, dataDir: root, authMode: "enforce", cdkBootstrap: false });
+  let client: Client | undefined;
+  try {
+    await sim.start();
+    await sim.opensearch.execute("CreateDomain", { DomainName: "workspace-domain", EncryptionAtRestOptions: { Enabled: true }, NodeToNodeEncryptionOptions: { Enabled: true }, AdvancedSecurityOptions: { Enabled: true, InternalUserDatabaseEnabled: true, MasterUserOptions: { MasterUserName: "master", MasterUserPassword: "Master-password1!" } }, AccessPolicies: JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: "*", Action: "es:ESHttp*", Resource: "arn:aws:es:eu-west-1:000000000000:domain/workspace-domain/*" }] }) }, "eu-west-1");
+    await expect.poll(() => sim.opensearch.domain("eu-west-1", "workspace-domain").state).toBe("active");
+    const endpoint = `https://127.0.0.1:${sim.opensearch.domain("eu-west-1", "workspace-domain").gatewayPort}`;
+    client = new Client({ node: endpoint, ssl: { ca: await readFile(sim.opensearch.diagnostics("eu-west-1").caCertificatePath) }, auth: { username: "master", password: "Master-password1!" } });
+    await client.indices.create({ index: "products", body: { mappings: { properties: { title: { type: "text" }, price: { type: "integer" }, secret: { type: "keyword" } } } } });
+    await client.index({ index: "products", id: "1", refresh: true, body: { title: "Red shoes", price: 12, secret: "Hidden description" } });
+    await client.index({ index: "products", id: "2", refresh: true, body: { title: "Blue hat", price: 40, secret: "Hidden description" } });
+    const put = (path: string, body: any) => client!.transport.request({ method: "PUT", path, body });
+    await put("/_plugins/_security/api/roles/reader", { index_permissions: [{ index_patterns: ["products"], allowed_actions: ["read"], dls: '{"range":{"price":{"lt":20}}}', fls: ["title", "price"] }] });
+    await put("/_plugins/_security/api/internalusers/reader", { password: "Reader-password1!", opendistro_security_roles: ["reader"] });
+    const account = sim.store.ensureAccount();
+    await put("/_plugins/_security/api/rolesmapping/all_access", { users: [account.iam.users[account.iam.accessKeys.admin.userName].arn] });
+    const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+    await page.setViewportSize({ width, height: 900 }); await page.goto(`${endpoint}/_stacksim/workspace-ui/`);
+    await page.getByLabel("Access key ID or username").fill("master");
+    await page.getByLabel("Secret access key or password").fill("Wrong-password1!"); await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.locator("#os-workspace-login [role=alert]")).toContainText("Invalid basic credentials");
+    await page.getByLabel("Secret access key or password").fill("Master-password1!"); await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Discover", exact: true })).toBeVisible();
+    await page.getByLabel("Data view name", { exact: true }).fill("Product catalog"); await page.getByLabel("Index pattern", { exact: true }).fill("products"); await page.getByRole("button", { name: "Create data view" }).click();
+    await page.getByRole("button", { name: "Search documents" }).click(); await expect(page.locator("#os-discover-status")).toHaveText("2 matching documents");
+    await page.getByLabel("Query DSL (JSON)").fill('{"match":{"title":"red"}}'); await page.getByRole("button", { name: "Search documents" }).click(); await expect(page.locator("#os-discover-status")).toHaveText("1 matching documents");
+    await page.getByRole("button", { name: "Save search", exact: true }).click(); await expect(page.locator("#os-saved-list")).toContainText("Saved search");
+    await page.getByLabel("HTTP method", { exact: true }).selectOption("POST"); await page.getByLabel("Request path", { exact: true }).fill("/products/_count"); await page.getByRole("button", { name: "Run request", exact: true }).click();
+    await expect(page.locator("#os-dev-response")).toContainText('"count": 2');
+    await page.screenshot({ path: test.info().outputPath(`workspace-${width}.png`), fullPage: true });
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await page.getByLabel("Authentication", { exact: true }).selectOption("basic"); await page.getByLabel("Access key ID or username").fill("reader"); await page.getByLabel("Secret access key or password").fill("Reader-password1!"); await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.locator("#os-saved-list")).toContainText("No saved objects yet");
+    await page.getByLabel("Data view name", { exact: true }).fill("My products"); await page.getByLabel("Index pattern", { exact: true }).fill("products"); await page.getByRole("button", { name: "Create data view" }).click();
+    await page.getByRole("button", { name: "Search documents" }).click(); await expect(page.locator("#os-discover-status")).toHaveText("1 matching documents");
+    await expect(page.locator("#os-discover-results")).toContainText("Red shoes"); await expect(page.locator("#os-discover-results")).not.toContainText("Hidden description");
+    await page.getByRole("button", { name: "Inspect fields", exact: true }).click(); await expect(page.locator("#os-fields")).toContainText("title: text"); await expect(page.locator("#os-fields")).not.toContainText("secret");
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await page.getByLabel("Authentication", { exact: true }).selectOption("iam"); await page.getByLabel("Access key ID or username").fill("admin"); await page.getByLabel("Secret access key or password").fill("password"); await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.locator("#os-saved-list")).toContainText("No saved objects yet");
+    await page.getByLabel("HTTP method", { exact: true }).selectOption("POST"); await page.getByLabel("Request path", { exact: true }).fill("/products/_count"); await page.getByRole("button", { name: "Run request", exact: true }).click();
+    await expect(page.locator("#os-dev-response")).toContainText('"count": 2');
+    expect(await page.evaluate(() => Object.keys(localStorage).length + Object.keys(sessionStorage).length)).toBe(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true); expect(errors).toEqual([]);
+  } finally { await client?.close(); await sim.stop(); await rm(root, { recursive: true, force: true }); }
+});

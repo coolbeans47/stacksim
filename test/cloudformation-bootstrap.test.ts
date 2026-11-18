@@ -6,6 +6,7 @@ import { test } from "node:test";
 import {
   CDK_BOOTSTRAP_COMPATIBILITY_VERSION,
   CDK_BOOTSTRAP_COGNITO_POLICY_NAME,
+  CDK_BOOTSTRAP_SEARCH_POLICY_NAME,
   CDK_BOOTSTRAP_POLICY_NAME,
   CDK_BOOTSTRAP_POLICY_REVISION,
   CDK_BOOTSTRAP_QUALIFIER,
@@ -71,7 +72,7 @@ test("bootstrap manager creates the reduced CDK contract durably and idempotentl
       assert.equal(role.tags["stacksim:policy-revision"], String(CDK_BOOTSTRAP_POLICY_REVISION));
       assert.deepEqual(Object.keys(role.inlinePolicies), [CDK_BOOTSTRAP_POLICY_NAME]);
       assert.deepEqual(role.attachedPolicyArns, role.roleName === names.roleNames.cloudFormationExecution
-        ? [`arn:aws:iam::${ACCOUNT}:policy/${CDK_BOOTSTRAP_COGNITO_POLICY_NAME}`]
+        ? [`arn:aws:iam::${ACCOUNT}:policy/${CDK_BOOTSTRAP_COGNITO_POLICY_NAME}`, `arn:aws:iam::${ACCOUNT}:policy/${CDK_BOOTSTRAP_SEARCH_POLICY_NAME}`]
         : []);
       assert.equal(statements(role.inlinePolicies[CDK_BOOTSTRAP_POLICY_NAME]).some(statement => statement.Effect === "Allow" && (statement.Action === "*" || statement.Action?.includes?.("*"))), false, "bootstrap roles must not receive wildcard administrator permissions");
     }
@@ -115,7 +116,7 @@ test("bootstrap manager creates the reduced CDK contract durably and idempotentl
     ].sort());
     assert.deepEqual(statements(executionDocument).find(statement => statement.Sid === "PassSupportedServiceRoles"), {
       Sid: "PassSupportedServiceRoles", Effect: "Allow", Action: "iam:PassRole", Resource: `arn:aws:iam::${ACCOUNT}:role/*`,
-      Condition: { StringEquals: { "iam:PassedToService": ["apigateway.amazonaws.com", "appsync.amazonaws.com", "cognito-idp.amazonaws.com", "cognito-identity.amazonaws.com", "lambda.amazonaws.com", "logs.amazonaws.com", "states.amazonaws.com", "streams.metrics.cloudwatch.amazonaws.com"] } },
+      Condition: { StringEquals: { "iam:PassedToService": ["apigateway.amazonaws.com", "appsync.amazonaws.com", "cognito-idp.amazonaws.com", "cognito-identity.amazonaws.com", "lambda.amazonaws.com", "logs.amazonaws.com", "osis-pipelines.amazonaws.com", "states.amazonaws.com", "streams.metrics.cloudwatch.amazonaws.com"] } },
     });
     assert.deepEqual(actions(executionDocument, "ManageAppSyncResources"), [
       "appsync:*Function*",

@@ -8,12 +8,12 @@ const TAG_BYTES = 16;
 const ENVELOPE_VERSION = 1;
 
 export interface MaterialBinding {
-  service: "ssm" | "secretsmanager" | "appsync";
+  service: "ssm" | "secretsmanager" | "appsync" | "opensearch" | "opensearch-backups";
   accountId: string;
   region: string;
   resourceArn: string;
   generationId: string;
-  valueKind: "SecureString" | "SecretString" | "SecretBinary" | "ApiKey";
+  valueKind: "SecureString" | "SecretString" | "SecretBinary" | "ApiKey" | "PasswordVerifier";
   version: number | string;
 }
 
@@ -63,7 +63,7 @@ export class EncryptedMaterialStore {
   private readonly readPins = new Map<string, number>();
   private readonly pendingRemovals = new Set<string>();
 
-  constructor(private readonly dataRoot: string, private readonly service: "ssm" | "secretsmanager" | "appsync") {
+  constructor(private readonly dataRoot: string, private readonly service: "ssm" | "secretsmanager" | "appsync" | "opensearch" | "opensearch-backups") {
     const secretsRoot = resolve(dataRoot, "secrets");
     this.keyPath = resolve(secretsRoot, `${service}.key`);
     this.materialRoot = resolve(secretsRoot, `${service}-materials`);
@@ -115,7 +115,7 @@ export class EncryptedMaterialStore {
   }
 
   private get label(): string {
-    return this.service === "ssm" ? "SSM" : this.service === "secretsmanager" ? "Secrets Manager" : "AppSync";
+    return this.service === "ssm" ? "SSM" : this.service === "secretsmanager" ? "Secrets Manager" : this.service.startsWith("opensearch") ? "OpenSearch" : "AppSync";
   }
 
   private derivedKey(binding: MaterialBinding): Buffer {

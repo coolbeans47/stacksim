@@ -814,6 +814,18 @@ export class DynamoDbService {
 
   private encodeShardIterator(stream: DynamoStreamDescriptorState, nextSequenceNumber: string): string { return this.partiqlTokens.encode("DynamoDBStreams.GetRecords", { streamArn: stream.streamArn, shardId: stream.shardId, nextSequenceNumber, expiresAt: this.clock.now() + STREAM_ITERATOR_TTL_MS }); }
 
+  /** Narrow integration port. The caller authorizes DescribeStream and
+   * GetShardIterator before capturing a durable numeric position. Opaque public
+   * iterators expire after 15 minutes and are unsuitable as durable checkpoints. */
+  async captureIngestionStreamPosition(streamArn: string, position: 'LATEST' | 'TRIM_HORIZON'): Promise<{ streamArn: string; shardId: string; nextSequence: string; keys: string[] }> {
+    const changed = await this.pruneStreams(), stream = this.requireStream(streamArn);
+    if (!['NEW_IMAGE', 'NEW_AND_OLD_IMAGES'].includes(stream.streamViewType)) throw new AwsError('ValidationException', 'Ingestion requires new document images');
+    if (stream.streamStatus !== 'ENABLED') throw new AwsError('ConflictException', 'The source stream is disabled', 409);
+    const nextSequence = position === 'LATEST' ? stream.lastSequenceNumber ? String(streamSequenceValue(stream.lastSequenceNumber) + 1n) : stream.startingSequenceNumber : stream.trimmedThroughSequence ? String(streamSequenceValue(stream.trimmedThroughSequence) + 1n) : stream.startingSequenceNumber;
+    if (changed) await this.store.save();
+    return { streamArn, shardId: stream.shardId, nextSequence, keys: [...stream.keySchema].sort((a, b) => a.KeyType === b.KeyType ? 0 : a.KeyType === 'HASH' ? -1 : 1).map(key => key.AttributeName) };
+  }
+
   async GetShardIterator(input: any): Promise<any> {
     const changed = await this.pruneStreams(); if (typeof input.StreamArn !== "string" || !input.StreamArn || typeof input.ShardId !== "string" || !input.ShardId || typeof input.ShardIteratorType !== "string") throw new AwsError("ValidationException", "StreamArn, ShardId, and ShardIteratorType are required"); const stream = this.requireStream(input.StreamArn); if (input.ShardId !== stream.shardId) throw new AwsError("ResourceNotFoundException", "The shard does not exist"); const type = input.ShardIteratorType; if (!new Set(["TRIM_HORIZON", "LATEST", "AT_SEQUENCE_NUMBER", "AFTER_SEQUENCE_NUMBER", "AT_TIMESTAMP"]).has(type)) throw new AwsError("ValidationException", `1 validation error detected: Value '${type}' at 'shardIteratorType' failed to satisfy constraint: Member must satisfy enum value set: [TRIM_HORIZON, LATEST, AT_SEQUENCE_NUMBER, AFTER_SEQUENCE_NUMBER, AT_TIMESTAMP]`);
     const usesSequence = type === "AT_SEQUENCE_NUMBER" || type === "AFTER_SEQUENCE_NUMBER"; if (usesSequence !== (input.SequenceNumber !== undefined)) throw new AwsError("ValidationException", usesSequence ? "SequenceNumber is required for this iterator type" : "SequenceNumber is only valid for AT_SEQUENCE_NUMBER or AFTER_SEQUENCE_NUMBER");
@@ -1334,7 +1346,7 @@ export class DynamoDbService {
     }
   }
 
-  async ExportTableToPointInTime(input: any): Promise<any> {
+  async ExportTableToPointInTime(input: any, _principal?: PrincipalContext, authorizeDestination?: (bucket: string, keys: string[]) => Promise<void>): Promise<any> {
     const table = this.requireBackupTable(input.TableArn); const pitr = table.pointInTimeRecovery;
     if (pitr.status !== "ENABLED" || pitr.enabledAt === undefined) throw new AwsError("PointInTimeRecoveryUnavailableException", "Point in time recovery has not yet been enabled for this source table");
     const format = input.ExportFormat ?? "DYNAMODB_JSON"; if (format === "ION") throw new AwsError("ValidationException", "Ion export is codec-blocked locally; use DYNAMODB_JSON"); if (format !== "DYNAMODB_JSON") throw new AwsError("ValidationException", "ExportFormat must be DYNAMODB_JSON or ION");
@@ -1357,6 +1369,10 @@ export class DynamoDbService {
     const keyPrefix = exportKeyPrefix(prefix, exportId);
     const dataKey = `${keyPrefix}/data/data.json.gz`;
     const exportArn = `${table.arn}/export/${exportId}`;
+    // Internal integrations may require the initiating role's destination
+    // permissions in addition to the S3-owned DynamoDB service transfer policy.
+    // Check exact output objects before publishing an export intent.
+    await authorizeDestination?.(input.S3Bucket, [dataKey, `${keyPrefix}/manifest-files.json`, `${keyPrefix}/manifest-files.checksum`, `${keyPrefix}/manifest-summary.json`, `${keyPrefix}/manifest-summary.checksum`]);
     const job: DynamoExportState = {
       exportArn,
       exportStatus: "IN_PROGRESS",

@@ -23,6 +23,7 @@ import {
   CDK_BOOTSTRAP_COGNITO_POLICY_NAME,
   CDK_BOOTSTRAP_POLICY_NAME,
   CDK_BOOTSTRAP_POLICY_REVISION,
+  CDK_BOOTSTRAP_SEARCH_POLICY_NAME,
   CloudFormationBootstrapManager,
   cdkBootstrapNames,
 } from "../src/cloudformation/bootstrap.js";
@@ -115,7 +116,7 @@ test("current bootstrap revision retains SES, SNS, AppSync, Cognito, and Step Fu
     const policy = executionRole.inlinePolicies[CDK_BOOTSTRAP_POLICY_NAME];
     const allStatements = statements(policy);
 
-    assert.equal(CDK_BOOTSTRAP_POLICY_REVISION, 22);
+    assert.equal(CDK_BOOTSTRAP_POLICY_REVISION, 27);
     assert.equal(bootstrap.policyRevision, CDK_BOOTSTRAP_POLICY_REVISION);
     assert.equal(executionRole.tags["stacksim:policy-revision"], String(CDK_BOOTSTRAP_POLICY_REVISION));
     const cognitoPolicyArn = `arn:aws:iam::${accountId}:policy/${CDK_BOOTSTRAP_COGNITO_POLICY_NAME}`;
@@ -123,7 +124,10 @@ test("current bootstrap revision retains SES, SNS, AppSync, Cognito, and Step Fu
     assert(cognitoPolicy);
     assert.deepEqual(actionList(statements(cognitoPolicy.versions[cognitoPolicy.defaultVersionId].document)[0]).sort(), [...COGNITO_CLOUDFORMATION_EXECUTION_ACTIONS]);
     assert.deepEqual(actionList(statements(cognitoPolicy.versions[cognitoPolicy.defaultVersionId].document)[1]).sort(), [...COGNITO_IDENTITY_CLOUDFORMATION_EXECUTION_ACTIONS]);
-    assert.deepEqual(executionRole.attachedPolicyArns, [cognitoPolicyArn]);
+    assert.deepEqual(executionRole.attachedPolicyArns, [
+      cognitoPolicyArn,
+      `arn:aws:iam::${accountId}:policy/${CDK_BOOTSTRAP_SEARCH_POLICY_NAME}`,
+    ]);
 
     const expected = [
       {

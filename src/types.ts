@@ -2185,7 +2185,7 @@ export interface LogQueryStatisticsState {
 export interface LogQueryJobState {
   queryId: string;
   queryString: string;
-  queryLanguage: "CWLI";
+  queryLanguage: "CWLI" | "SQL" | "PPL";
   logGroupNames: string[];
   startTime: number;
   endTime: number;
@@ -2200,6 +2200,7 @@ export interface LogQueryJobState {
   statistics: LogQueryStatisticsState;
   userIdentity?: string;
   failure?: string;
+  sourceOwner?: { service: "opensearch"; arn: string; generation: string };
 }
 
 export interface CloudFormationStackState {
@@ -3533,7 +3534,8 @@ export interface AppSyncDataSourceState {
   name: string;
   arn: string;
   description?: string;
-  type: "NONE" | "AMAZON_DYNAMODB";
+  type: "NONE" | "AMAZON_DYNAMODB" | "AMAZON_OPENSEARCH_SERVICE";
+  openSearchServiceConfig?: { endpoint: string; awsRegion: string };
   serviceRoleArn?: string;
   dynamodbConfig?: {
     tableName: string;
@@ -3826,6 +3828,7 @@ export interface XRayRegionState {
 }
 
 export interface RegionState {
+  opensearch: import("./opensearch/model.js").OpenSearchRegionState;
   cloudformation: CloudFormationRegionState;
   parameterStore: ParameterStoreRegionState;
   secretsManager: SecretsManagerRegionState;

@@ -159,7 +159,7 @@ test.describe("APS-P0-015 AppSync console", () => {
     await page.goto(`${consoleUrl}${apiHrefForTest(apiId, "schema")}`);
     await expectPanelHelp(page, "Schema definition", "last valid schema");
     await page.goto(`${consoleUrl}${apiHrefForTest(apiId, "data-sources")}`);
-    await expectPanelHelp(page, "Data sources", "Lambda, HTTP, OpenSearch");
+    await expectPanelHelp(page, "Data sources", "Lambda, HTTP, EventBridge");
     await page.goto(`${consoleUrl}${apiHrefForTest(apiId, "resolvers")}`);
     await expectPanelHelp(page, "Resolvers", "APPSYNC_JS");
     await page.goto(`${consoleUrl}${apiHrefForTest(apiId, "api-keys")}`);
