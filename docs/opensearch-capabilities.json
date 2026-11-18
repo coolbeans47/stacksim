@@ -1,0 +1,1216 @@
+{
+  "schemaVersion": 1,
+  "provider": "stacksim-embedded",
+  "managedActions": [
+    "AddDirectQueryDataSource",
+    "AddTags",
+    "AssociatePackage",
+    "AssociatePackages",
+    "AttachDataSource",
+    "CancelDomainConfigChange",
+    "CreateApplication",
+    "CreateDomain",
+    "CreateIndex",
+    "CreatePackage",
+    "DeleteApplication",
+    "DeleteDirectQueryDataSource",
+    "DeleteDomain",
+    "DeleteIndex",
+    "DeletePackage",
+    "DescribeDataSourceAttachment",
+    "DescribeDomain",
+    "DescribeDomainChangeProgress",
+    "DescribeDomainConfig",
+    "DescribeDomainHealth",
+    "DescribeDomainNodes",
+    "DescribeDomains",
+    "DescribeDryRunProgress",
+    "DescribeInsightDetails",
+    "DescribeInstanceTypeLimits",
+    "DescribePackages",
+    "DetachDataSource",
+    "DissociatePackage",
+    "DissociatePackages",
+    "GetApplication",
+    "GetDefaultApplicationSetting",
+    "GetDirectQueryDataSource",
+    "GetDomainMaintenanceStatus",
+    "GetIndex",
+    "GetPackageVersionHistory",
+    "InsightFeedback",
+    "ListApplications",
+    "ListDataSourceAttachments",
+    "ListDirectQueryDataSources",
+    "ListDomainMaintenances",
+    "ListDomainNames",
+    "ListDomainsForPackage",
+    "ListInsights",
+    "ListInstanceTypeDetails",
+    "ListPackagesForDomain",
+    "ListTags",
+    "ListVersions",
+    "PutDefaultApplicationSetting",
+    "RemoveTags",
+    "StartDomainMaintenance",
+    "UpdateApplication",
+    "UpdateDirectQueryDataSource",
+    "UpdateDomainConfig",
+    "UpdateIndex",
+    "UpdatePackage",
+    "UpdatePackageScope",
+    "CreateOutboundConnection",
+    "AcceptInboundConnection",
+    "RejectInboundConnection",
+    "DeleteInboundConnection",
+    "DeleteOutboundConnection",
+    "DescribeInboundConnections",
+    "DescribeOutboundConnections",
+    "CompareDomainConfiguration"
+  ],
+  "engineVersion": "OpenSearch_2.19",
+  "instanceType": "r6gd.large.search",
+  "queries": [
+    "match_all",
+    "match_none",
+    "match",
+    "multi_match",
+    "match_phrase",
+    "term",
+    "terms",
+    "range",
+    "exists",
+    "ids",
+    "bool",
+    "constant_score",
+    "prefix",
+    "wildcard",
+    "nested",
+    "knn",
+    "hybrid"
+  ],
+  "aggregations": [
+    "terms",
+    "range",
+    "date_histogram",
+    "histogram",
+    "filter",
+    "nested",
+    "min",
+    "max",
+    "sum",
+    "avg",
+    "stats",
+    "value_count",
+    "cardinality",
+    "composite"
+  ],
+  "analyzers": [
+    "standard",
+    "simple",
+    "keyword",
+    "whitespace",
+    "stop"
+  ],
+  "limits": {
+    "domains": 20,
+    "indexesPerDomain": 100,
+    "documentsPerDomain": 50000,
+    "documentStorageBytes": 67108864,
+    "documentBytes": 1048576,
+    "requestBytes": 10485760,
+    "responseBytes": 33554432,
+    "resultWindow": 10000,
+    "searchContextsPerDomain": 20,
+    "maxContextLifetimeMs": 300000,
+    "concurrentGatewayRequestsPerDomain": 16,
+    "searchContextBytesPerDomain": 67108864,
+    "queryClauses": 1024,
+    "aggregationWorkBuckets": 10000,
+    "documentRecordsPerDomain": 100000,
+    "analysisInputBytes": 1048576,
+    "analysisTokens": 65536,
+    "phraseComparisons": 10000000
+  },
+  "unsupported": {
+    "serverless": "Bounded collection types, groups, retention and application SEARCH workspaces are implemented; identity/private-endpoint adapters and warm tiers are outside the developer scope.",
+    "ingestion": "The bounded HTTP ingestion profile is implemented. VPC/resource-policy APIs, customer KMS keys and additional source/sink plugins remain unavailable.",
+    "dashboards": "Upstream Dashboards is not bundled; the local workspace implements Discover, data views, saved searches and Dev Tools",
+    "nativePlugins": "Native engine plugins are unavailable in the embedded interpreter",
+    "applications": "IAM applications and shared SEARCH workspaces are implemented; Identity Center/SAML/Cognito, presigned browser login sessions, cross-account source roles, customer KMS, additional direct-query backends and ML capabilities are outside the developer scope.",
+    "operations": "Upgrades, replication/migration and VPC connectivity remain unavailable; embedded DIRECT cross-cluster search, snapshots, maintenance and dictionary packages are implemented."
+  },
+  "legacyActions": {
+    "AddTags": "AddTags",
+    "AssociatePackage": "AssociatePackage",
+    "CancelDomainConfigChange": "CancelDomainConfigChange",
+    "CreateElasticsearchDomain": "CreateDomain",
+    "CreatePackage": "CreatePackage",
+    "DeleteElasticsearchDomain": "DeleteDomain",
+    "DeletePackage": "DeletePackage",
+    "DescribeDomainChangeProgress": "DescribeDomainChangeProgress",
+    "DescribeElasticsearchDomain": "DescribeDomain",
+    "DescribeElasticsearchDomainConfig": "DescribeDomainConfig",
+    "DescribeElasticsearchDomains": "DescribeDomains",
+    "DescribeElasticsearchInstanceTypeLimits": "DescribeInstanceTypeLimits",
+    "DescribePackages": "DescribePackages",
+    "DissociatePackage": "DissociatePackage",
+    "GetPackageVersionHistory": "GetPackageVersionHistory",
+    "ListDomainNames": "ListDomainNames",
+    "ListDomainsForPackage": "ListDomainsForPackage",
+    "ListElasticsearchInstanceTypes": "ListInstanceTypeDetails",
+    "ListElasticsearchVersions": "ListVersions",
+    "ListPackagesForDomain": "ListPackagesForDomain",
+    "ListTags": "ListTags",
+    "RemoveTags": "RemoveTags",
+    "UpdateElasticsearchDomainConfig": "UpdateDomainConfig",
+    "UpdatePackage": "UpdatePackage",
+    "CreateOutboundCrossClusterSearchConnection": "CreateOutboundConnection",
+    "AcceptInboundCrossClusterSearchConnection": "AcceptInboundConnection",
+    "RejectInboundCrossClusterSearchConnection": "RejectInboundConnection",
+    "DeleteInboundCrossClusterSearchConnection": "DeleteInboundConnection",
+    "DeleteOutboundCrossClusterSearchConnection": "DeleteOutboundConnection",
+    "DescribeInboundCrossClusterSearchConnections": "DescribeInboundConnections",
+    "DescribeOutboundCrossClusterSearchConnections": "DescribeOutboundConnections"
+  },
+  "vectors": {
+    "execution": "exact scan",
+    "dimensions": {
+      "min": 1,
+      "max": 4096
+    },
+    "spaces": [
+      "l2",
+      "l1",
+      "linf",
+      "cosinesimil",
+      "innerproduct"
+    ],
+    "query": "top-level knn with k and optional filter; float vectors only",
+    "unsupported": [
+      "approximate indexing",
+      "HNSW/IVF tuning",
+      "model hosting",
+      "quantization",
+      "nested vectors",
+      "PIT/scroll vector queries"
+    ]
+  },
+  "metrics": {
+    "namespace": "AWS/ES",
+    "dimensions": [
+      "ClientId",
+      "DomainName"
+    ],
+    "counters": [
+      "OpenSearchRequests",
+      "2xx",
+      "3xx",
+      "4xx",
+      "5xx"
+    ],
+    "gauges": [
+      "SearchableDocuments",
+      "DeletedDocuments",
+      "ClusterStatus.green",
+      "Nodes"
+    ],
+    "sampling": "resource activation and completed gateway/local query requests; no idle heartbeat",
+    "unavailable": [
+      "JVM metrics",
+      "EC2 capacity",
+      "EBS throughput",
+      "AWS fleet CPU"
+    ]
+  },
+  "cloudFormation": [
+    "AWS::OpenSearchService::Domain",
+    "AWS::Elasticsearch::Domain",
+    "AWS::OpenSearchServerless::Collection",
+    "AWS::OpenSearchServerless::AccessPolicy",
+    "AWS::OpenSearchServerless::SecurityPolicy",
+    "AWS::OpenSearchServerless::Index",
+    "AWS::OpenSearchServerless::CollectionIndex",
+    "AWS::OpenSearchServerless::CollectionGroup",
+    "AWS::OpenSearchServerless::LifecyclePolicy",
+    "AWS::OSIS::Pipeline",
+    "AWS::OpenSearchService::Application"
+  ],
+  "encryption": {
+    "algorithm": "AES-256-GCM",
+    "execution": "SQLite in memory, authenticated encrypted snapshots and transaction journal",
+    "keyManagement": "Resource-owned local keys; not AWS KMS",
+    "boundary": "Search documents, mappings, aliases, templates and security records; no plaintext SQLite, WAL or temporary search files",
+    "limitBytes": 536870912,
+    "nodeToNode": "Single-process memory calls; no inter-node network channels",
+    "platformEvidence": [
+      "macOS Node.js 22.13.0"
+    ]
+  },
+  "security": {
+    "authentication": [
+      "SigV4 IAM master/role mappings",
+      "Basic internal-user database"
+    ],
+    "authorization": [
+      "index permissions",
+      "DLS before query/aggregation",
+      "FLS before query/aggregation"
+    ],
+    "storage": "Encrypted password verifiers and security metadata",
+    "restrictedRoles": "Document/field-restricted roles are read-only",
+    "unsupported": [
+      "shared tenants",
+      "field masking",
+      "attribute substitution",
+      "host role mappings"
+    ]
+  },
+  "workspace": {
+    "consoleRoute": "#/opensearch/domains/:name/workspace",
+    "resourcePath": "/_stacksim/workspace-ui/",
+    "savedObjectApi": "/_stacksim/workspace",
+    "authentication": [
+      "SigV4",
+      "internal-user Basic"
+    ],
+    "savedObjectsPerIdentity": 100,
+    "savedObjectsPerDomain": 1000,
+    "savedObjectBytes": 65536
+  },
+  "serverlessActions": [
+    "BatchGetCollection",
+    "BatchGetCollectionGroup",
+    "BatchGetEffectiveLifecyclePolicy",
+    "BatchGetLifecyclePolicy",
+    "CancelIngestionJob",
+    "CreateAccessPolicy",
+    "CreateCollection",
+    "CreateCollectionGroup",
+    "CreateIndex",
+    "CreateIngestionJob",
+    "CreateIngestionStream",
+    "CreateLifecyclePolicy",
+    "CreateSecurityPolicy",
+    "DeleteAccessPolicy",
+    "DeleteCollection",
+    "DeleteCollectionGroup",
+    "DeleteIndex",
+    "DeleteIngestionStream",
+    "DeleteLifecyclePolicy",
+    "DeleteSecurityPolicy",
+    "GetAccessPolicy",
+    "GetAccountSettings",
+    "GetIndex",
+    "GetIngestionJob",
+    "GetIngestionStream",
+    "GetPoliciesStats",
+    "GetSecurityPolicy",
+    "ListAccessPolicies",
+    "ListCollectionGroups",
+    "ListCollections",
+    "ListIngestionJobs",
+    "ListIngestionStreams",
+    "ListLifecyclePolicies",
+    "ListSecurityPolicies",
+    "ListTagsForResource",
+    "TagResource",
+    "UntagResource",
+    "UpdateAccessPolicy",
+    "UpdateAccountSettings",
+    "UpdateCollection",
+    "UpdateCollectionGroup",
+    "UpdateIndex",
+    "UpdateLifecyclePolicy",
+    "UpdateSecurityPolicy"
+  ],
+  "serverless": {
+    "collectionTypes": [
+      "SEARCH",
+      "TIMESERIES",
+      "VECTORSEARCH"
+    ],
+    "defaultCollectionType": "TIMESERIES",
+    "storage": "AES-256-GCM resource-owned snapshots and journal",
+    "refreshIntervalMs": {
+      "SEARCH": 10000,
+      "TIMESERIES": 10000,
+      "VECTORSEARCH_CLASSIC": 60000,
+      "VECTORSEARCH_NEXTGEN": 10000
+    },
+    "authorization": [
+      "network policy",
+      "IAM aoss:APIAccessAll",
+      "data access policy"
+    ],
+    "capacity": "Four concurrent local requests per allocated OCU, capped at 32 per pool/class. Separate group pools independent of ungrouped account pool. NextGen minimum zero releases admission allocation after 10 idle minutes; encrypted engine memory remains resident and wake is immediate.",
+    "limits": {
+      "collectionsPerAccountRegion": 20,
+      "policiesPerAccountRegion": 100,
+      "tagsPerCollection": 50,
+      "idempotencyRecords": 1000,
+      "idempotencyLifetimeHours": 24,
+      "groupsPerAccountRegion": 20
+    },
+    "unsupported": [
+      "customer KMS",
+      "SAML",
+      "VPC endpoints",
+      "collection workspaces",
+      "alias/template APIs",
+      "warm storage tiers",
+      "vector acceleration/compression/derived-source semantics"
+    ],
+    "generations": [
+      "CLASSIC",
+      "NEXTGEN"
+    ],
+    "retention": "Time-series ingestion age, 24h\u20133650d, longest literal resource match; NoMinIndexRetention; encrypted durable timestamps; expiry before requests and every minute.",
+    "typeRestrictions": "Time-series and Classic vectors require generated IDs and reject updates; NextGen vectors permit custom IDs. SEARCH/TIMESERIES reject k-NN indexes. Groups admit one collection type in this local profile.",
+    "ingestionJobs": {
+      "scope": "One-time S3 jobs for active NextGen SEARCH/VECTORSEARCH; same account/Region; caller execution identity",
+      "formats": [
+        "JSON object/array",
+        "NDJSON/JSONL",
+        "optional gzip"
+      ],
+      "authorization": "Original caller revalidated; key/session revocation/expiry and role replacement fail; normal S3 IAM/bucket and AOSS network/IAM/data policies",
+      "checkpoint": "Separate encrypted work store, frozen/pinned listing, atomic object admission, per-record durable acknowledgment; restart resumes; source-derived IDs; at least once",
+      "failures": "Real failure-index records contain source metadata/ordinal and stable reason; default target-ingestion-failures; no document contents in control metadata",
+      "cancellation": "Durable CANCELLING/CANCELLED; stops pending work, permits in-flight commit, preserves indexed documents",
+      "retries": "Transient 429/5xx up to ten times, 1\u201360s backoff with activeAlerts; authorization errors terminal",
+      "limits": {
+        "objects": 1000,
+        "listingBytes": 2097152,
+        "objectBytes": 10485760,
+        "expandedBytes": 10485760,
+        "recordsPerObject": 1000,
+        "recordBytes": 1048576,
+        "activeJobs": 20,
+        "workers": 4,
+        "recordsPerTick": 20,
+        "retainedJobsPerAccountRegion": 100
+      },
+      "unsupported": [
+        "Cross-account sources",
+        "Classic and time-series targets",
+        "Document extraction/image understanding/model inference",
+        "Semantic enrichment",
+        "Continued delegation after original credential expiry",
+        "Deleting obsolete documents when a source object shrinks"
+      ]
+    },
+    "ingestionStreams": {
+      "scope": "NextGen SEARCH/VECTORSEARCH; dedicated same-account/Region standard SQS queue; zero to five source buckets; optional per-bucket initial scan",
+      "authorization": "Caller iam:PassRole; aoss.amazonaws.com with actual source ARN/account; fresh trust/identity and IAM/resource/data/network checks; bounded reusable service credentials",
+      "events": [
+        "direct S3 ObjectCreated:Put/Post/Copy/CompleteMultipartUpload",
+        "S3 TestEvent"
+      ],
+      "checkpoint": "Separate encrypted listing/message/receipt/admitted records/acks; completion before DeleteMessage; 1000 completed message IDs; stale receipts recover by redelivery; at least once",
+      "source": "Current object must match notification ETag/size/version; stale events become failure-index records; no historical version overwrite",
+      "deletion": "Durable DELETING/DELETED; pending work stops, in-flight commits may finish; encrypted work/key removed; documents, bucket and queue retained",
+      "retries": "Source, destination, trust and storage errors retry indefinitely with 1\u201360s backoff and activeAlerts",
+      "limits": {
+        "activeStreams": 20,
+        "retainedStreamsPerAccountRegion": 100,
+        "workers": 4,
+        "recordsPerTick": 20,
+        "buckets": 5,
+        "initialObjects": 1000,
+        "notificationRecords": 100,
+        "notificationBytes": 1048576,
+        "checkpointBytes": 2097152,
+        "objectBytes": 10485760,
+        "recordsPerObject": 1000,
+        "recordBytes": 1048576,
+        "queueVisibilitySeconds": 300,
+        "completedMessageIds": 1000
+      },
+      "unsupported": [
+        "Other queue consumers",
+        "FIFO/cross-account sources",
+        "SNS-wrapped notifications",
+        "ObjectRemoved synchronization",
+        "Removing obsolete ordinals when an object shrinks",
+        "Unstructured extraction/model inference",
+        "Classic/time-series targets"
+      ]
+    }
+  },
+  "ingestionActions": [
+    "CreatePipeline",
+    "DeletePipeline",
+    "GetPipeline",
+    "GetPipelineBlueprint",
+    "GetPipelineChangeProgress",
+    "ListPipelineBlueprints",
+    "ListPipelines",
+    "ListTagsForResource",
+    "StartPipeline",
+    "StopPipeline",
+    "TagResource",
+    "UntagResource",
+    "UpdatePipeline",
+    "ValidatePipeline"
+  ],
+  "ingestionProfile": {
+    "processors": [
+      "add_entries",
+      "delete_entries",
+      "rename_keys",
+      "parse_json",
+      "convert_type",
+      "convert_entry_type"
+    ],
+    "sources": [
+      "http JSON array",
+      "http NDJSON",
+      "s3 one-time NDJSON scan",
+      "dynamodb stream-only change capture"
+    ],
+    "sinks": [
+      "managed OpenSearch",
+      "Serverless"
+    ],
+    "delivery": "at-least-once; encrypted durable per-item retries, original configuration retained",
+    "buffer": "always persistent; AES-256-GCM snapshots/journal/commit head",
+    "limits": {
+      "pipelines": 20,
+      "records": 10000,
+      "bufferBytes": 67108864,
+      "batchRecords": 1000,
+      "eventBytes": 1048576,
+      "requestBytes": 10485760,
+      "maximumUnits": 8,
+      "concurrentRequests": 32
+    },
+    "deadLetter": "same-account/same-Region S3; role and bucket policy enforced",
+    "capacity": "1\u20138 local units: four concurrent requests and ten delivery records/tick/unit; backlog allocation respects min/max",
+    "logging": {
+      "destination": "Existing /aws/vendedlogs/ group in configured account and pipeline Region",
+      "permissions": "Caller Create/Update/DeleteLogDelivery and delivery.logs.amazonaws.com resource policy; policies/groups are not auto-created",
+      "events": [
+        "pipeline lifecycle",
+        "per-item delivery errors without event contents"
+      ],
+      "failure": "Best-effort delivery with persistent failure diagnostics; ingestion progress continues; failed log events are not replayed",
+      "sourceArn": "Local log stream ARN for AWS vended-log resource-policy conditions"
+    },
+    "s3Source": {
+      "scope": "One same-account/Region bucket, pipeline role; one literal prefix and up to 20 excluded suffixes; optional UTC time window or relative range",
+      "codec": "Strict UTF-8 NDJSON objects, none/gzip compression, acknowledgments required, no source deletion",
+      "checkpoint": "Encrypted frozen listing and atomic event admission; cursor advances only after all object events reach sink/DLQ; process restart resumes; explicit Stop/Start creates a new run",
+      "identity": "S3 version pinned where available; ETag, size and lastModified checked; GetObjectVersion required for pinned versions",
+      "limits": {
+        "objects": 1000,
+        "objectBytes": 10485760,
+        "expandedBytes": 10485760,
+        "eventsPerObject": 1000,
+        "eventBytes": 1048576,
+        "checkpointBytes": 2097152,
+        "buckets": 1
+      },
+      "states": [
+        "LISTING",
+        "READING",
+        "DELIVERING",
+        "RETRYING",
+        "BLOCKED",
+        "COMPLETED",
+        "COMPLETED_WITH_FAILURES"
+      ],
+      "unsupported": [
+        "SQS notifications or recurring schedules",
+        "Multiple buckets/prefixes or cross-account sources",
+        "CSV/Parquet/Avro/JSON codecs",
+        "Source deletion, SSE-C and automatic archive restore",
+        "Metadata expressions, native coordinator topology and native performance parity"
+      ],
+      "console": "S3 blueprint and measured scan progress; no HTTP test form or ingest endpoint for S3 sources"
+    },
+    "dynamodbSource": {
+      "scope": "One same-Region table in the installation account, managed-domain sink; NEW_IMAGE/NEW_AND_OLD_IMAGES; LATEST/TRIM_HORIZON; acknowledgments required",
+      "checkpoint": "Encrypted atomic batch/metadata admission; pinned stream/shard/numeric cursor; advances after sink/DLQ; Stop/Start and restart preserve it; trim/replacement blocks",
+      "authorization": "Fresh pipeline role with DescribeTable/DescribeStream/GetShardIterator/GetRecords, DynamoDB resource policies and normal domain IAM/FGAC",
+      "writes": "New images indexed; REMOVE deletes; stable metadata ID/action and external versions; stale/replayed source version conflicts acknowledged",
+      "version": "Local table sequence up to Number.MAX_SAFE_INTEGER; differs from native timestamp/tie-breaker encoding; dedicated index required",
+      "values": "String partition/sort keys without |, joined by |, <=512 bytes; JSON attribute conversion; base64 binary; <=15 significant digits and safe integer magnitude; unsupported precision fails",
+      "limits": {
+        "tables": 1,
+        "shards": 1,
+        "readBatchRecords": 100,
+        "checkpointBytes": 65536
+      },
+      "unsupported": [
+        "Cross-account sources, multiple tables/shards",
+        "Nonstring or ambiguous composite keys",
+        "Full 64-bit version numbers",
+        "Serverless sinks",
+        "Arbitrary metadata expressions"
+      ],
+      "console": "DynamoDB stream and snapshot blueprints; measured export ARN/offset/completion and CDC status; no HTTP intake",
+      "initialExport": {
+        "scope": "Optional export.s3_bucket/s3_prefix with LATEST; PITR enabled; actual DynamoDB FULL_EXPORT to same-account/Region S3",
+        "authorization": "Role DescribeContinuousBackups/ExportTableToPointInTime/DescribeExport and exact-key S3 PutObject at admission; DynamoDB service bucket policy at writes; role S3 GetObject on ingestion",
+        "checkpoint": "Pin cursor/time/token/baseline before export; persist ARN; verify and pin artifact digest; encrypted 100-record batches; snapshot offset advances only after all sink/DLQ acks; then CDC from pinned cursor",
+        "version": "All snapshot records use pre-cursor sequence (including zero); later CDC external versions supersede; dedicated empty index required",
+        "limits": {
+          "items": 1000,
+          "compressedBytes": 10485760,
+          "expandedBytes": 10485760,
+          "manifestBytes": 1048576,
+          "recordBytes": 1048576,
+          "batchRecords": 100,
+          "admissionWindowHours": 8
+        },
+        "failures": "Failed export, changed artifacts or expired/changed stream block; permissions retry; export files/jobs retained after pipeline deletion",
+        "unsupported": [
+          "KMS",
+          "Export-only without stream",
+          "Ion/incremental exports",
+          "Multiple export data files",
+          "Cross-account/Region export bucket"
+        ]
+      }
+    }
+  },
+  "snapshots": {
+    "repositories": "S3 in the domain account/Region; one writer per bucket/prefix, optional read-only readers",
+    "format": "stacksim-search-snapshot-v1 JSON/gzip; not native Lucene snapshot files",
+    "contents": [
+      "user indexes",
+      "mappings",
+      "settings",
+      "aliases",
+      "committed document source/version/routing",
+      "optional index templates",
+      "optional ingest pipelines",
+      "optional search pipelines"
+    ],
+    "authorization": [
+      "es:ESHttp* domain authorization",
+      "FGAC snapshot/repository and unrestricted index grants",
+      "IAM PassRole on registration",
+      "es.amazonaws.com role trust",
+      "S3 role and bucket policies"
+    ],
+    "restore": "durable asynchronous job; atomic creation of new indexes; bounded RE2 rename; aliases/templates optional",
+    "limits": {
+      "repositoriesPerDomain": 20,
+      "snapshotsPerRepository": 100,
+      "expandedSnapshotBytes": 100663296,
+      "concurrentJobsPerDomain": 1,
+      "recentJobs": 32
+    },
+    "unsupported": [
+      "native snapshot files",
+      "partial snapshots",
+      "cross-account/Region buckets",
+      "customer KMS repository settings",
+      "restore over existing indexes",
+      "snapshot user metadata",
+      "multi-name snapshot deletion/status"
+    ]
+  },
+  "maintenance": {
+    "actions": [
+      "REBOOT_NODE",
+      "RESTART_SEARCH_PROCESS"
+    ],
+    "mapping": "Search restart reopens storage; node reboot also rebinds the same HTTPS endpoint. Both drain active requests and discard in-memory search contexts. No host reboot or separate native process is claimed.",
+    "historyLimit": 100,
+    "drainTimeoutMs": 30000,
+    "unsupported": [
+      "RESTART_DASHBOARD",
+      "AWS service-software updates",
+      "host reboot"
+    ]
+  },
+  "logs": {
+    "types": [
+      "ES_APPLICATION_LOGS",
+      "SEARCH_SLOW_LOGS",
+      "INDEX_SLOW_LOGS",
+      "AUDIT_LOGS"
+    ],
+    "destination": "Existing CloudWatch Logs groups in the configured StackSim account and domain Region; es.amazonaws.com resource policy required",
+    "thresholds": "warn/info/debug/trace for index.search.slowlog.threshold.query and index.indexing.slowlog.threshold.index; -1 disables; 0ms\u201324h",
+    "timing": "Whole embedded request elapsed time for each touched index, not native per-shard query/fetch timings",
+    "privacy": "No request bodies, query strings, documents or credentials",
+    "failure": "Best effort; diagnostic failure counters persist; rejected events are not replayed and writes remain acknowledged",
+    "unsupported": [
+      "native fetch-phase slow logs",
+      "cross-account log groups"
+    ],
+    "audit": {
+      "requires": "Domain publishing and encrypted FGAC security capture both enabled; existing CloudWatch Logs policy",
+      "apis": [
+        "GET /_plugins/_security/api/audit",
+        "GET/PUT /_plugins/_security/api/audit/config",
+        "PATCH /_plugins/_security/api/audit[/config]"
+      ],
+      "categories": [
+        "FAILED_LOGIN",
+        "MISSING_PRIVILEGES",
+        "GRANTED_PRIVILEGES",
+        "AUTHENTICATED"
+      ],
+      "authorization": "Security master only for configuration; capture uses each current REST identity",
+      "filters": [
+        "enabled",
+        "enable_rest",
+        "disabled_rest_categories",
+        "ignore_users glob",
+        "ignore_requests REST path glob",
+        "resolve_indices"
+      ],
+      "limits": {
+        "configurationBytes": 32768,
+        "filterEntries": 100,
+        "filterCharacters": 1024,
+        "patchOperations": 100,
+        "pathCharacters": 1024,
+        "userCharacters": 1024,
+        "resolvedIndexes": 20
+      },
+      "unsupported": [
+        "transport/compliance events",
+        "request body/header capture",
+        "per-item bulk audit records",
+        "pre-FGAC IAM/domain-policy/SigV4 failures",
+        "legacy _opendistro API aliases",
+        "per-document compliance evidence"
+      ]
+    }
+  },
+  "ingestPipelines": {
+    "processors": [
+      "set",
+      "remove",
+      "rename",
+      "append",
+      "convert",
+      "json",
+      "lowercase",
+      "uppercase",
+      "trim",
+      "split",
+      "join",
+      "gsub",
+      "drop",
+      "fail",
+      "pipeline"
+    ],
+    "apis": [
+      "PUT/GET/DELETE /_ingest/pipeline/{id}",
+      "GET /_ingest/pipeline",
+      "GET/POST /_ingest/pipeline/{id}/_simulate",
+      "GET/POST /_ingest/pipeline/_simulate"
+    ],
+    "execution": "index/create and bulk; request or default pipeline then final pipeline; _none skips the default only",
+    "persistence": "Resource-owned engine metadata, encrypted when the domain is encrypted; included in snapshot global state",
+    "failure": "Per-item bulk outcomes; document/mapping changes roll back together; on_failure and ignore_failure supported",
+    "limits": {
+      "pipelinesPerDomain": 100,
+      "definitionBytes": 262144,
+      "processorSteps": 64,
+      "nestedPipelines": 8,
+      "simulationDocuments": 1000,
+      "documentBytes": 1048576,
+      "simulationResponseBytes": 33554432
+    },
+    "unsupported": [
+      "Serverless",
+      "scripts/conditions",
+      "metadata mutation/index rerouting",
+      "Mustache sections/field-name templates",
+      "external enrichment",
+      "updates on indexes with configured pipelines",
+      "native processor statistics",
+      "multiple/wildcard delete"
+    ]
+  },
+  "integrations": {
+    "appsync": {
+      "type": "AMAZON_OPENSEARCH_SERVICE",
+      "configuration": "Existing same-account/same-Region managed domain HTTPS endpoint and AppSync service role",
+      "resolvers": "VTL UNIT and function stages; 2017-02-28 JSON request documents with GET/PUT/POST/HEAD/DELETE",
+      "authorization": [
+        "GraphQL authorization",
+        "iam:PassRole",
+        "appsync.amazonaws.com trust with source ARN/account",
+        "es:ESHttp* IAM/domain policies",
+        "domain FGAC including DLS/FLS"
+      ],
+      "limits": {
+        "requestBodyBytes": 1048576,
+        "responseBodyBytes": 1048576
+      },
+      "cloudFormation": "AWS::AppSync::DataSource.OpenSearchServiceConfig",
+      "unsupported": [
+        "Serverless",
+        "legacy AMAZON_ELASTICSEARCH type",
+        "arbitrary headers or endpoints",
+        "NDJSON bulk bodies",
+        "APPSYNC_JS"
+      ]
+    }
+  },
+  "queryLanguages": {
+    "managedOnly": true,
+    "endpoints": [
+      "/_plugins/_sql",
+      "/_plugins/_sql/_explain",
+      "/_plugins/_sql/close",
+      "/_plugins/_ppl",
+      "/_plugins/_ppl/_explain"
+    ],
+    "format": "jdbc",
+    "sql": [
+      "SELECT scalar fields/aliases/*",
+      "WHERE comparisons, AND/OR/NOT, IN, BETWEEN, LIKE, IS NULL",
+      "GROUP BY",
+      "COUNT/SUM/AVG/MIN/MAX",
+      "ORDER BY",
+      "LIMIT/OFFSET"
+    ],
+    "ppl": [
+      "source",
+      "where",
+      "fields",
+      "stats",
+      "sort",
+      "head"
+    ],
+    "security": "Current IAM/domain policy and resolved index permissions; DLS/FLS before relational operations; FGAC changes invalidate cursors",
+    "limits": {
+      "queryBytes": 32768,
+      "tokens": 2048,
+      "pplCommands": 32,
+      "columns": 128,
+      "mappedFields": 4096,
+      "rows": 10000,
+      "groups": 10000,
+      "intermediateJsonBytes": 67108864,
+      "likeComparisons": 10000000,
+      "cursorLifetimeMs": 300000,
+      "sharedSearchContexts": 20,
+      "sharedContextBytes": 67108864
+    },
+    "unsupported": [
+      "joins/subqueries/unions",
+      "writes/DDL",
+      "scripts/eval/functions beyond listed aggregates",
+      "prepared parameters",
+      "CSV/raw/JSON formats",
+      "date/object/vector fields",
+      "multivalued fields",
+      "implicit type casts",
+      "Serverless",
+      "native query plan parity"
+    ]
+  },
+  "searchPipelines": {
+    "managedOnly": true,
+    "apis": [
+      "PUT/GET/DELETE /_search/pipeline/{id}",
+      "GET /_search/pipeline"
+    ],
+    "processors": [
+      "normalization-processor"
+    ],
+    "normalization": [
+      "min_max",
+      "l2"
+    ],
+    "combination": [
+      "arithmetic_mean",
+      "geometric_mean",
+      "harmonic_mean"
+    ],
+    "selection": [
+      "URL search_pipeline",
+      "body saved/inline search_pipeline",
+      "index.search.default_pipeline",
+      "_none"
+    ],
+    "limits": {
+      "definitions": 100,
+      "definitionBytes": 65536,
+      "hybridSubqueries": 5,
+      "paginationDepthPerIndexSubquery": 10000
+    },
+    "semantics": "Current index/DLS/FLS before candidates and normalization; one shard per local index; existing lexical scores and exact float vectors; full authorized matching union for counts/aggregations; per-index bounded ranking candidates",
+    "persistence": "Engine transaction metadata, encrypted with the domain; optional snapshot global state",
+    "unsupported": [
+      "request/response processors",
+      "other phase processors",
+      "normalization bounds",
+      "neural model inference",
+      "hybrid PIT/scroll/search_after",
+      "hybrid field sorting/rescore/explanation/collapse",
+      "Serverless",
+      "native float-bit parity"
+    ]
+  },
+  "indexStateManagement": {
+    "scope": "Managed domains only; embedded lifecycle interpreter",
+    "policyApi": "/_plugins/_ism/policies: create/get/list/versioned update/delete",
+    "indexApi": [
+      "add",
+      "remove",
+      "change_policy",
+      "retry",
+      "explain"
+    ],
+    "actions": [
+      "read_only",
+      "read_write",
+      "delete",
+      "rollover"
+    ],
+    "conditions": [
+      "min_index_age",
+      "min_rollover_age",
+      "min_doc_count",
+      "min_size"
+    ],
+    "executionIntervalMs": 5000,
+    "execution": "One action or transition per interval; durable atomic effects/checkpoint; resumes after restart",
+    "policyRevisions": "Pinned on attachment; explicit queued change_policy applies a new revision; deleting a definition does not stop attached jobs",
+    "templates": "Highest-priority match on new index creation; equal-priority policies reject creation",
+    "security": "Current FGAC execution identity/roles; actual index action and rollover target grants; normal domain/IAM request gates",
+    "limits": {
+      "policiesPerDomain": 100,
+      "policyBytes": 65536,
+      "states": 32,
+      "actionsAndTransitions": 128,
+      "templatesPerPolicy": 10,
+      "patternsPerTemplate": 20,
+      "automaticRetries": 10
+    },
+    "sizeSemantics": "Committed live JSON source bytes, including unrefreshed documents; not segment size",
+    "ageSemantics": "Persisted index creation time; attachment time for older indexes without metadata; restore time for restored indexes",
+    "snapshotSemantics": "Policies, jobs and execution identities are excluded from portable snapshots",
+    "unsupported": [
+      "cron",
+      "notifications",
+      "force_merge",
+      "shrink",
+      "allocation",
+      "replica_count",
+      "native tiers",
+      "close/open",
+      "rollup",
+      "snapshot actions",
+      "scripts",
+      "bulk policy creation",
+      "validation endpoints",
+      "Serverless ISM"
+    ]
+  },
+  "packages": {
+    "type": "TXT-DICTIONARY",
+    "source": "Same-account, same-Region S3; caller GetObject and bucket-policy authorization; current readable UTF-8 object",
+    "storage": "AES-256-GCM protected immutable versions; no dictionary plaintext in the control catalog",
+    "publication": "Durable asynchronous imports, associations and deletion; queued work resumes on restart; failed associations retain their last working version",
+    "sharing": "Create-time vending plus ADD/REMOVE/OVERRIDE account or GLOBAL scope; removal prevents new associations without revoking existing copies",
+    "versioning": "Imports do not change associations; reassociation installs the latest available version. Index and non-updateable search filters remain pinned; updateable synonym search filters use the active association. Snapshots carry version references, not dictionary text.",
+    "limits": {
+      "packagesPerAccountRegion": 100,
+      "versionsPerPackage": 20,
+      "associationsPerDomain": 20,
+      "dictionaryBytes": 65536,
+      "entries": 1000,
+      "scopeAccounts": 100,
+      "pageSize": 100,
+      "cursorTtlSeconds": 600
+    },
+    "unsupported": [
+      "Executable ZIP plugins, package licenses/configuration and native plugin installation",
+      "Customer KMS encryption and cross-account/cross-Region S3 imports",
+      "Close/open analyzer refresh; use a new index for pinned analysis",
+      "Restoring dictionary-dependent indexes without the matching associated versions"
+    ]
+  },
+  "customAnalysis": {
+    "scope": "Managed domains only",
+    "tokenizers": [
+      "standard",
+      "whitespace",
+      "keyword"
+    ],
+    "filters": [
+      "lowercase",
+      "stop",
+      "synonym"
+    ],
+    "defaults": [
+      "default",
+      "default_search"
+    ],
+    "dictionaries": "Inline or associated analyzers/<PackageID>; single-term synonym rules, directional or equivalent; no filesystem access",
+    "limits": {
+      "analyzersPerIndex": 32,
+      "filtersPerIndex": 32,
+      "filtersPerAnalyzer": 16,
+      "configurationBytes": 65536,
+      "compiledBytes": 1048576,
+      "alternativesPerTerm": 32,
+      "termCharacters": 256,
+      "inputBytes": 1048576,
+      "tokens": 65536,
+      "tokenTextBytes": 4194304,
+      "phraseComparisons": 10000000
+    },
+    "unsupported": [
+      "Native tokenization parity and language/stemmer/graph plugins",
+      "Multiword synonym rules, character filters and scripts",
+      "Mutable analysis settings or updateable index filters"
+    ]
+  },
+  "automaticBackups": {
+    "scope": "Managed domains; hourly, checked once per minute; delayed work captures current data without inventing missed historical backups",
+    "repositories": [
+      "cs-automated",
+      "cs-automated-enc"
+    ],
+    "repositoryType": "stacksim-automatic (explicit local type, not a fictitious S3 bucket)",
+    "storage": "Separately keyed AES-256-GCM immutable portable JSON/gzip copies; protected even when live search storage is unencrypted",
+    "retention": {
+      "maxAgeDays": 14,
+      "maxSnapshots": 336,
+      "maxCompressedBytesPerDomain": 1073741824,
+      "expandedSnapshotBytes": 100663296
+    },
+    "authorization": "Ordinary domain/IAM and FGAC repository/snapshot permissions; unrestricted restore index grants",
+    "recovery": "Protected bytes precede durable catalog publication; unfinished material intents are reconciled on restart; retention removes retired materials only after publishing references",
+    "deletion": "Automatic copies are owned and removed by their domain; user-owned S3 snapshots remain independent",
+    "limitations": [
+      "Full portable copies rather than native incremental segments",
+      "Capacity may expire snapshots sooner than 14 days",
+      "No manual create/delete/unregister or schedule customization",
+      "Security, workspaces and execution jobs are excluded",
+      "Restoring custom analysis needs associated dictionary versions",
+      "Missing backup keys disable backup restore and scheduling without disabling live search"
+    ]
+  },
+  "insights": {
+    "operations": [
+      "ListInsights",
+      "DescribeInsightDetails",
+      "InsightFeedback"
+    ],
+    "observation": "On read; actual domain/storage, backup, enabled log delivery, latest failed configuration/maintenance and measured capacity",
+    "capacityThreshold": 0.8,
+    "historyPerDomain": 100,
+    "states": [
+      "ACTIVE",
+      "RESOLVED"
+    ],
+    "pagination": "Scoped HMAC cursor, 10 minutes, 1\u2013500 results",
+    "feedback": "Persisted latest Up/Down and optional 1000-character text; does not dismiss",
+    "limitations": [
+      "No background observation or AWS fleet predictions",
+      "No HTML output",
+      "Resolved history pruned before active records"
+    ]
+  },
+  "lambdaProducers": {
+    "example": "examples/opensearch-producers",
+    "access": "Execution-role SigV4 over verified HTTPS; per-invocation DescribeDomain discovery; normal IAM/domain policy and FGAC",
+    "cloudWatchLogs": "Existing subscription and asynchronous Lambda delivery with base64/gzip envelopes, bounded index-scoped bulk writes and stable IDs",
+    "failure": "HTTP and per-item failures fail invocation; durable Lambda retries; example SQS dead-letter queue",
+    "limits": {
+      "expandedEnvelopeBytes": 10485760,
+      "eventsPerEnvelope": 10000,
+      "messageBytes": 262144,
+      "bulkRecords": 500,
+      "bulkBytes": 5242880
+    },
+    "unsupported": [
+      "Direct OpenSearch Logs destination ARN",
+      "Serverless or VPC producers in this example",
+      "Exactly-once delivery"
+    ]
+  },
+  "documentVersioning": {
+    "supported": [
+      "internal CAS",
+      "external",
+      "external_gte"
+    ],
+    "operations": [
+      "document index/delete",
+      "bulk index/delete"
+    ],
+    "maximum": 9007199254740991,
+    "differences": [
+      "No explicit version on create/update",
+      "Tombstones retained until index deletion under 100000-record limit; no timed gc_deletes",
+      "Snapshots preserve live document versions but omit tombstones and source checkpoints"
+    ]
+  },
+  "applications": {
+    "operations": [
+      "CreateApplication",
+      "GetApplication",
+      "UpdateApplication",
+      "DeleteApplication",
+      "ListApplications",
+      "AttachDataSource",
+      "DetachDataSource",
+      "DescribeDataSourceAttachment",
+      "ListDataSourceAttachments",
+      "GetDefaultApplicationSetting",
+      "PutDefaultApplicationSetting"
+    ],
+    "authentication": {
+      "controlSigningName": "es",
+      "endpointSigningName": "opensearch",
+      "accessAction": "opensearch:ApplicationAccessAll",
+      "dashboardAdministrators": "* or one IAM role ARN; unset grants no dashboard administrator privileges",
+      "standalone": "Memory-only IAM credentials; no cookie session or presigned /_login/ adapter"
+    },
+    "storage": "Resource-owned AES-256-GCM saved objects; source documents remain in their owning domain/collection",
+    "sources": "Current same-account, same-Region domain/collection generations; queries preserve caller IAM and source FGAC/DLS/FLS or AOSS data policy",
+    "attachments": "AttachDataSource accepts domains; PENDING resolves when app and domain are active; SEARCH workspaceConfiguration or existing workspaceId; 24-hour pending timeout",
+    "collectionNetwork": "Public network policies or SourceServices application.opensearchservice.amazonaws.com; the latter grants no public ingress",
+    "workspaces": "Local authenticated context/workspaces/query routes; shared saved objects per workspace and pinned source generation; administrator gates saved-object writes and workspace creation",
+    "limits": {
+      "applicationsPerInstallation": 20,
+      "sourcesPerApplication": 20,
+      "workspacesPerApplication": 20,
+      "savedObjectsPerWorkspaceSource": 100,
+      "savedObjectsPerApplication": 1000,
+      "concurrentQueriesPerApplication": 16,
+      "requestBytes": 10485760,
+      "responseBytes": 33554432,
+      "idempotencyHours": 24,
+      "idempotencyRecordsPerAccountRegion": 1000,
+      "paginationMinutes": 10
+    },
+    "gatewayPorts": [
+      35000,
+      39999
+    ],
+    "cloudFormation": "AWS::OpenSearchService::Application; bootstrap policy revision 27"
+  },
+  "directQuery": {
+    "operations": [
+      "AddDirectQueryDataSource",
+      "GetDirectQueryDataSource",
+      "UpdateDirectQueryDataSource",
+      "DeleteDirectQueryDataSource",
+      "ListDirectQueryDataSources"
+    ],
+    "sourceTypes": [
+      "CloudWatchLog"
+    ],
+    "execution": "Actual CloudWatch Logs SQL/PPL jobs over segmented events; no copied index",
+    "querySurface": "Explicit local /_stacksim/api/opensearch/direct-query/{name}/{start|get|cancel} routes signed with es; native direct-query wire protocol is not claimed",
+    "authorization": "Caller IAM opensearch query actions plus creator identity or explicit same-account data source policy; current role trust and logs:StartQuery permission are rechecked at scheduling and result/cancel access",
+    "associations": "1\u201320 active same-account, same-Region collections pinned by generation; interactive Logs queries do not read collection indexes",
+    "storage": "Configuration catalog and resource-owned query identifiers on real Logs jobs; seven-day result retention",
+    "limits": {
+      "sourcesPerAccountRegion": 20,
+      "concurrentQueriesPerSource": 30,
+      "retainedQueriesPerSource": 1000,
+      "scannedEvents": 50000,
+      "scanAndMaterializedBytes": 67108864,
+      "resultRows": 10000,
+      "responseBytes": 33554432,
+      "executionSeconds": 30,
+      "paginationMinutes": 10
+    },
+    "unsupported": [
+      "SecurityLake",
+      "Prometheus",
+      "Glue/S3 data sources",
+      "Cross-account sources/principals",
+      "Indexed/materialized views",
+      "Native direct-query REST wire protocol",
+      "Application direct-query workspace views",
+      "Joins and subqueries"
+    ]
+  },
+  "crossClusterSearch": {
+    "mode": "DIRECT",
+    "operations": "Seven connection operations and seven shared legacy facades",
+    "scope": "Managed domains across accounts/Regions in this installation and partition; pinned resource generations",
+    "authentication": "IAM, source HTTP authorization, explicit destination es:ESCrossClusterGet resource-policy grant plus IAM evaluation, current per-domain FGAC search/search_shards with DLS/FLS",
+    "query": "GET/POST /local-index,alias:remote-index/_search; global embedded DSL/aggregations/sort/source projection/exact k-NN",
+    "skipUnavailable": "Optional destination availability failures only; permission errors, revoked connections and missing indexes fail",
+    "limits": {
+      "selectors": 100,
+      "resolvedIndexes": 100,
+      "scannedDocuments": 50000,
+      "sourceAndSchemaBytes": 67108864,
+      "deadlineMs": 30000,
+      "incomingPerDomain": 20,
+      "outgoingPerDomain": 20,
+      "retainedConnectionsPerInstallation": 1000,
+      "terminalRetentionDays": 15,
+      "pageTokenMs": 600000
+    },
+    "storage": "One source-owned durable catalog record with account/Region-scoped inbound/outbound views; no document copying",
+    "unsupported": [
+      "VPC_ENDPOINT",
+      "external clusters",
+      "cross-partition",
+      "internal-user propagation",
+      "wildcard cluster aliases",
+      "remote writes",
+      "SQL/PPL",
+      "msearch/count",
+      "PIT/scroll",
+      "hybrid/search pipelines",
+      "dictionary packages",
+      "replication",
+      "migration"
+    ]
+  },
+  "configurationComparison": {
+    "categories": [
+      "aliases",
+      "templates",
+      "ingest_pipelines",
+      "ism_policies",
+      "security_roles",
+      "security_role_mappings",
+      "security_internal_users"
+    ],
+    "scope": "Same-account domains, same partition, source-Region request; IAM es:CompareDomainConfiguration required on both domains",
+    "semantics": "Actual current engine metadata; object key order and ISM timestamps ignored, arrays ordered; password verifier differences reported with Policy=redacted and no values",
+    "limits": {
+      "metadataBytes": 67108864,
+      "fieldsVisited": 1000000,
+      "deadlineMs": 30000,
+      "detailBytesPerCategory": 1048576,
+      "itemsPerDifferenceType": 1000,
+      "fieldsPerItem": 100,
+      "fieldValueBytes": 10240
+    },
+    "truncation": "Complete item counts, Truncated=true when item/field/value/detail limits omit details",
+    "unsupported": [
+      "alerting_monitors",
+      "cluster_settings",
+      "component_templates",
+      "security_action_groups",
+      "cross-account comparison"
+    ]
+  },
+  "scope": {
+    "profile": "developer-simulator",
+    "revisedOn": "2026-11-17",
+    "purpose": "Learn and test application code against real bounded local search",
+    "fullAwsParityRequired": false,
+    "additionalPhasesPlanned": false,
+    "scopeDocument": "docs/opensearch/implementation-plan.md",
+    "excludedMigrationActions": [
+      "StartMigration",
+      "GetMigration",
+      "ListMigrations"
+    ]
+  }
+}

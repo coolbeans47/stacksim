@@ -1,0 +1,3333 @@
+{
+  "completeDesign": true,
+  "nativeParity": false,
+  "operations": [
+    {
+      "family": "opensearch",
+      "operation": "AcceptInboundConnection",
+      "method": "PUT",
+      "route": "/2021-01-01/opensearch/cc/inboundConnection/{ConnectionId}/accept",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-connections.test.ts",
+        "test/opensearch-connection-recovery.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "DIRECT embedded cross-cluster search with durable owner approval/revocation, global authorized queries, account/Region-scoped views and console; VPC/external clusters/replication are outside the developer scope",
+      "owner": "OS-11B",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "AddDataSource",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/dataSource",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11A",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "AddDirectQueryDataSource",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/directQueryDataSource",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-direct-query.test.ts",
+        "test/opensearch-direct-query-recovery.test.ts",
+        "test/browser/opensearch-direct-query.spec.ts"
+      ],
+      "reason": "CloudWatchLog configuration, PassRole/trust and same-account access policies, actual bounded SQL/PPL Logs jobs through explicit local query routes, durable ownership/deletion and console; other backends and native direct-query wire are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "AddReplicationPeer",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/replication/addPeer",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "AddTags",
+      "method": "POST",
+      "route": "/2021-01-01/tags",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-01",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "AssociatePackage",
+      "method": "POST",
+      "route": "/2021-01-01/packages/associate/{PackageID}/{DomainName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "AssociatePackages",
+      "method": "POST",
+      "route": "/2021-01-01/packages/associateMultiple",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "AttachDataSource",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/application/{id}/attachDataSource",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-applications.test.ts",
+        "test/opensearch-application-cloudformation.test.ts",
+        "test/opensearch-application-recovery.test.ts",
+        "test/browser/opensearch-applications.spec.ts"
+      ],
+      "reason": "IAM application lifecycle, actual shared SEARCH workspaces and caller-authorized domain/collection queries; identity/direct-query/ML branches are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "AuthorizeVpcEndpointAccess",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/authorizeVpcEndpointAccess",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "CancelDomainConfigChange",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/config/cancel",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-phase03.test.ts",
+        "test/opensearch-config-recovery.test.ts"
+      ],
+      "reason": "Durable bounded configuration revisions, verbose/basic dry runs and pending cancellation; see OS-03 acceptance",
+      "owner": "OS-03",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "CancelServiceSoftwareUpdate",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/serviceSoftwareUpdate/cancel",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-05",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "CompareDomainConfiguration",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/compareDomainConfiguration",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-comparison.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "Seven real engine metadata categories; both-domain IAM, deterministic field differences, credential redaction and complete counts with bounded/truncated details; additional categories unsupported",
+      "owner": "OS-11B",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "CreateApplication",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/application",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-applications.test.ts",
+        "test/opensearch-application-cloudformation.test.ts",
+        "test/opensearch-application-recovery.test.ts",
+        "test/browser/opensearch-applications.spec.ts"
+      ],
+      "reason": "IAM application lifecycle, actual shared SEARCH workspaces and caller-authorized domain/collection queries; identity/direct-query/ML branches are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "CreateDomain",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/domain",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts",
+        "test/opensearch-logging.test.ts",
+        "test/browser/opensearch-monitoring.spec.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-01",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "CreateIndex",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/index",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "CreateOutboundConnection",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/cc/outboundConnection",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-connections.test.ts",
+        "test/opensearch-connection-recovery.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "DIRECT embedded cross-cluster search with durable owner approval/revocation, global authorized queries, account/Region-scoped views and console; VPC/external clusters/replication are outside the developer scope",
+      "owner": "OS-11B",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "CreatePackage",
+      "method": "POST",
+      "route": "/2021-01-01/packages",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "CreateVpcEndpoint",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/vpcEndpoints",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DeleteApplication",
+      "method": "DELETE",
+      "route": "/2021-01-01/opensearch/application/{id}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-applications.test.ts",
+        "test/opensearch-application-cloudformation.test.ts",
+        "test/opensearch-application-recovery.test.ts",
+        "test/browser/opensearch-applications.spec.ts"
+      ],
+      "reason": "IAM application lifecycle, actual shared SEARCH workspaces and caller-authorized domain/collection queries; identity/direct-query/ML branches are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DeleteDataSource",
+      "method": "DELETE",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/dataSource/{DataSourceName}",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11A",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DeleteDirectQueryDataSource",
+      "method": "DELETE",
+      "route": "/2021-01-01/opensearch/directQueryDataSource/{DataSourceName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-direct-query.test.ts",
+        "test/opensearch-direct-query-recovery.test.ts",
+        "test/browser/opensearch-direct-query.spec.ts"
+      ],
+      "reason": "CloudWatchLog configuration, PassRole/trust and same-account access policies, actual bounded SQL/PPL Logs jobs through explicit local query routes, durable ownership/deletion and console; other backends and native direct-query wire are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DeleteDomain",
+      "method": "DELETE",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-01",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DeleteInboundConnection",
+      "method": "DELETE",
+      "route": "/2021-01-01/opensearch/cc/inboundConnection/{ConnectionId}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-connections.test.ts",
+        "test/opensearch-connection-recovery.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "DIRECT embedded cross-cluster search with durable owner approval/revocation, global authorized queries, account/Region-scoped views and console; VPC/external clusters/replication are outside the developer scope",
+      "owner": "OS-11B",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DeleteIndex",
+      "method": "DELETE",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/index/{IndexName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DeleteOutboundConnection",
+      "method": "DELETE",
+      "route": "/2021-01-01/opensearch/cc/outboundConnection/{ConnectionId}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-connections.test.ts",
+        "test/opensearch-connection-recovery.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "DIRECT embedded cross-cluster search with durable owner approval/revocation, global authorized queries, account/Region-scoped views and console; VPC/external clusters/replication are outside the developer scope",
+      "owner": "OS-11B",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DeletePackage",
+      "method": "DELETE",
+      "route": "/2021-01-01/packages/{PackageID}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DeleteVpcEndpoint",
+      "method": "DELETE",
+      "route": "/2021-01-01/opensearch/vpcEndpoints/{VpcEndpointId}",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DeregisterCapability",
+      "method": "DELETE",
+      "route": "/2021-01-01/opensearch/application/{ApplicationId}/capability/deregister/{CapabilityName}",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11A",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeDataSourceAttachment",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/application/{id}/describeDataSourceAttachment",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-applications.test.ts",
+        "test/opensearch-application-cloudformation.test.ts",
+        "test/opensearch-application-recovery.test.ts",
+        "test/browser/opensearch-applications.spec.ts"
+      ],
+      "reason": "IAM application lifecycle, actual shared SEARCH workspaces and caller-authorized domain/collection queries; identity/direct-query/ML branches are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeDomain",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts",
+        "test/opensearch-logging.test.ts",
+        "test/browser/opensearch-monitoring.spec.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-01",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeDomainAutoTunes",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/autoTunes",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-05",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeDomainChangeProgress",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/progress",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-phase03.test.ts",
+        "test/opensearch-config-recovery.test.ts"
+      ],
+      "reason": "Durable bounded configuration revisions, verbose/basic dry runs and pending cancellation; see OS-03 acceptance",
+      "owner": "OS-03",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeDomainConfig",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/config",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts",
+        "test/opensearch-logging.test.ts",
+        "test/browser/opensearch-monitoring.spec.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-01",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeDomainHealth",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/health",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-05",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeDomainNodes",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/nodes",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-maintenance.test.ts",
+        "test/opensearch-maintenance-recovery.test.ts"
+      ],
+      "reason": "One embedded node; durable restart/rebind maintenance with drained admission, preserved data, truthful state and bounded paginated history",
+      "owner": "OS-05",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeDomainReplication",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/replication",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeDomains",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/domain-info",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-01",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeDryRunProgress",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/dryRun",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-phase03.test.ts",
+        "test/opensearch-config-recovery.test.ts"
+      ],
+      "reason": "Durable bounded configuration revisions, verbose/basic dry runs and pending cancellation; see OS-03 acceptance",
+      "owner": "OS-03",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeInboundConnections",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/cc/inboundConnection/search",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-connections.test.ts",
+        "test/opensearch-connection-recovery.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "DIRECT embedded cross-cluster search with durable owner approval/revocation, global authorized queries, account/Region-scoped views and console; VPC/external clusters/replication are outside the developer scope",
+      "owner": "OS-11B",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeInsightDetails",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/insight-details",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-insights.test.ts",
+        "test/browser/opensearch-insights.spec.ts"
+      ],
+      "reason": "Persisted observations of actual local capacity, failures and recovery with feedback; on-read observation, no AWS fleet predictions",
+      "owner": "OS-05",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeInstanceTypeLimits",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/instanceTypeLimits/{EngineVersion}/{InstanceType}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-01",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeOutboundConnections",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/cc/outboundConnection/search",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-connections.test.ts",
+        "test/opensearch-connection-recovery.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "DIRECT embedded cross-cluster search with durable owner approval/revocation, global authorized queries, account/Region-scoped views and console; VPC/external clusters/replication are outside the developer scope",
+      "owner": "OS-11B",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribePackages",
+      "method": "POST",
+      "route": "/2021-01-01/packages/describe",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeReservedInstanceOfferings",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/reservedInstanceOfferings",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-12",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeReservedInstances",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/reservedInstances",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-12",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DescribeVpcEndpoints",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/vpcEndpoints/describe",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DetachDataSource",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/application/{id}/detachDataSource",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-applications.test.ts",
+        "test/opensearch-application-cloudformation.test.ts",
+        "test/opensearch-application-recovery.test.ts",
+        "test/browser/opensearch-applications.spec.ts"
+      ],
+      "reason": "IAM application lifecycle, actual shared SEARCH workspaces and caller-authorized domain/collection queries; identity/direct-query/ML branches are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DissociatePackage",
+      "method": "POST",
+      "route": "/2021-01-01/packages/dissociate/{PackageID}/{DomainName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "DissociatePackages",
+      "method": "POST",
+      "route": "/2021-01-01/packages/dissociateMultiple",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "FailoverReplication",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/replication/failover",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "GetApplication",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/application/{id}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-applications.test.ts",
+        "test/opensearch-application-cloudformation.test.ts",
+        "test/opensearch-application-recovery.test.ts",
+        "test/browser/opensearch-applications.spec.ts"
+      ],
+      "reason": "IAM application lifecycle, actual shared SEARCH workspaces and caller-authorized domain/collection queries; identity/direct-query/ML branches are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "GetCapability",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/application/{ApplicationId}/capability/{CapabilityName}",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11A",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "GetCompatibleVersions",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/compatibleVersions",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-05",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "GetDataSource",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/dataSource/{DataSourceName}",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11A",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "GetDefaultApplicationSetting",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/defaultApplicationSetting",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-applications.test.ts",
+        "test/opensearch-application-cloudformation.test.ts",
+        "test/opensearch-application-recovery.test.ts",
+        "test/browser/opensearch-applications.spec.ts"
+      ],
+      "reason": "IAM application lifecycle, actual shared SEARCH workspaces and caller-authorized domain/collection queries; identity/direct-query/ML branches are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "GetDirectQueryDataSource",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/directQueryDataSource/{DataSourceName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-direct-query.test.ts",
+        "test/opensearch-direct-query-recovery.test.ts",
+        "test/browser/opensearch-direct-query.spec.ts"
+      ],
+      "reason": "CloudWatchLog configuration, PassRole/trust and same-account access policies, actual bounded SQL/PPL Logs jobs through explicit local query routes, durable ownership/deletion and console; other backends and native direct-query wire are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "GetDomainMaintenanceStatus",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/domainMaintenance",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-maintenance.test.ts",
+        "test/opensearch-maintenance-recovery.test.ts"
+      ],
+      "reason": "One embedded node; durable restart/rebind maintenance with drained admission, preserved data, truthful state and bounded paginated history",
+      "owner": "OS-05",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "GetIndex",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/index/{IndexName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "GetMigration",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/app-migrations/{migrationId}",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "GetPackageVersionHistory",
+      "method": "GET",
+      "route": "/2021-01-01/packages/{PackageID}/history",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "GetUpgradeHistory",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/upgradeDomain/{DomainName}/history",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-05",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "GetUpgradeStatus",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/upgradeDomain/{DomainName}/status",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-05",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "InsightFeedback",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/insight-feedback",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-insights.test.ts",
+        "test/browser/opensearch-insights.spec.ts"
+      ],
+      "reason": "Persisted observations of actual local capacity, failures and recovery with feedback; on-read observation, no AWS fleet predictions",
+      "owner": "OS-05",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListApplications",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/list-applications",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-applications.test.ts",
+        "test/opensearch-application-cloudformation.test.ts",
+        "test/opensearch-application-recovery.test.ts",
+        "test/browser/opensearch-applications.spec.ts"
+      ],
+      "reason": "IAM application lifecycle, actual shared SEARCH workspaces and caller-authorized domain/collection queries; identity/direct-query/ML branches are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListDataSourceAttachments",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/application/{id}/listDataSourceAttachments",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-applications.test.ts",
+        "test/opensearch-application-cloudformation.test.ts",
+        "test/opensearch-application-recovery.test.ts",
+        "test/browser/opensearch-applications.spec.ts"
+      ],
+      "reason": "IAM application lifecycle, actual shared SEARCH workspaces and caller-authorized domain/collection queries; identity/direct-query/ML branches are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListDataSources",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/dataSource",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11A",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListDirectQueryDataSources",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/directQueryDataSource",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-direct-query.test.ts",
+        "test/opensearch-direct-query-recovery.test.ts",
+        "test/browser/opensearch-direct-query.spec.ts"
+      ],
+      "reason": "CloudWatchLog configuration, PassRole/trust and same-account access policies, actual bounded SQL/PPL Logs jobs through explicit local query routes, durable ownership/deletion and console; other backends and native direct-query wire are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListDomainMaintenances",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/domainMaintenances",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-maintenance.test.ts",
+        "test/opensearch-maintenance-recovery.test.ts"
+      ],
+      "reason": "One embedded node; durable restart/rebind maintenance with drained admission, preserved data, truthful state and bounded paginated history",
+      "owner": "OS-05",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListDomainNames",
+      "method": "GET",
+      "route": "/2021-01-01/domain",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-01",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListDomainsForPackage",
+      "method": "GET",
+      "route": "/2021-01-01/packages/{PackageID}/domains",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListInsights",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/insights",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-insights.test.ts",
+        "test/browser/opensearch-insights.spec.ts"
+      ],
+      "reason": "Persisted observations of actual local capacity, failures and recovery with feedback; on-read observation, no AWS fleet predictions",
+      "owner": "OS-05",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListInstanceTypeDetails",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/instanceTypeDetails/{EngineVersion}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-01",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListMigrations",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/app-migrations",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListPackagesForDomain",
+      "method": "GET",
+      "route": "/2021-01-01/domain/{DomainName}/packages",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListScheduledActions",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/scheduledActions",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-05",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListTags",
+      "method": "GET",
+      "route": "/2021-01-01/tags/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-01",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListVersions",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/versions",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-01",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListVpcEndpointAccess",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/listVpcEndpointAccess",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListVpcEndpoints",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/vpcEndpoints",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "ListVpcEndpointsForDomain",
+      "method": "GET",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/vpcEndpoints",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "PurchaseReservedInstanceOffering",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/purchaseReservedInstanceOffering",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-12",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "PutDefaultApplicationSetting",
+      "method": "PUT",
+      "route": "/2021-01-01/opensearch/defaultApplicationSetting",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-applications.test.ts",
+        "test/opensearch-application-cloudformation.test.ts",
+        "test/opensearch-application-recovery.test.ts",
+        "test/browser/opensearch-applications.spec.ts"
+      ],
+      "reason": "IAM application lifecycle, actual shared SEARCH workspaces and caller-authorized domain/collection queries; identity/direct-query/ML branches are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "RegisterCapability",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/application/{ApplicationId}/capability/register",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11A",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "RejectInboundConnection",
+      "method": "PUT",
+      "route": "/2021-01-01/opensearch/cc/inboundConnection/{ConnectionId}/reject",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-connections.test.ts",
+        "test/opensearch-connection-recovery.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "DIRECT embedded cross-cluster search with durable owner approval/revocation, global authorized queries, account/Region-scoped views and console; VPC/external clusters/replication are outside the developer scope",
+      "owner": "OS-11B",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "RemoveReplicationPeer",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/replication/removePeer",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "RemoveTags",
+      "method": "POST",
+      "route": "/2021-01-01/tags-removal",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-01",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "RevokeVpcEndpointAccess",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/revokeVpcEndpointAccess",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "RollbackServiceSoftwareUpdate",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/serviceSoftwareUpdate/rollback",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-05",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "StartDomainMaintenance",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/domainMaintenance",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-maintenance.test.ts",
+        "test/opensearch-maintenance-recovery.test.ts"
+      ],
+      "reason": "One embedded node; durable restart/rebind maintenance with drained admission, preserved data, truthful state and bounded paginated history",
+      "owner": "OS-05",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "StartMigration",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/app-migrations",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "StartServiceSoftwareUpdate",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/serviceSoftwareUpdate/start",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-05",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "SwitchoverReplication",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/replication/switchover",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "UpdateApplication",
+      "method": "PUT",
+      "route": "/2021-01-01/opensearch/application/{id}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-applications.test.ts",
+        "test/opensearch-application-cloudformation.test.ts",
+        "test/opensearch-application-recovery.test.ts",
+        "test/browser/opensearch-applications.spec.ts"
+      ],
+      "reason": "IAM application lifecycle, actual shared SEARCH workspaces and caller-authorized domain/collection queries; identity/direct-query/ML branches are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "UpdateClone",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/clone",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "UpdateDataSource",
+      "method": "PUT",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/dataSource/{DataSourceName}",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11A",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "UpdateDirectQueryDataSource",
+      "method": "PUT",
+      "route": "/2021-01-01/opensearch/directQueryDataSource/{DataSourceName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-direct-query.test.ts",
+        "test/opensearch-direct-query-recovery.test.ts",
+        "test/browser/opensearch-direct-query.spec.ts"
+      ],
+      "reason": "CloudWatchLog configuration, PassRole/trust and same-account access policies, actual bounded SQL/PPL Logs jobs through explicit local query routes, durable ownership/deletion and console; other backends and native direct-query wire are outside the developer scope",
+      "owner": "OS-11A",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "UpdateDomainConfig",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/config",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-phase03.test.ts",
+        "test/opensearch-config-recovery.test.ts",
+        "test/opensearch-logging.test.ts",
+        "test/browser/opensearch-monitoring.spec.ts"
+      ],
+      "reason": "Durable bounded configuration revisions, verbose/basic dry runs and pending cancellation; see OS-03 acceptance",
+      "owner": "OS-03",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "UpdateIndex",
+      "method": "PUT",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/index/{IndexName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-service.test.ts",
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "UpdatePackage",
+      "method": "POST",
+      "route": "/2021-01-01/packages/update",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "UpdatePackageScope",
+      "method": "POST",
+      "route": "/2021-01-01/packages/updateScope",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-10",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearch",
+      "operation": "UpdateScheduledAction",
+      "method": "PUT",
+      "route": "/2021-01-01/opensearch/domain/{DomainName}/scheduledAction/update",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-05",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "UpdateVpcEndpoint",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/vpcEndpoints/update",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearch",
+      "operation": "UpgradeDomain",
+      "method": "POST",
+      "route": "/2021-01-01/opensearch/upgradeDomain",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-05",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "BatchGetCollection",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "BatchGetCollectionGroup",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-lifecycle.test.ts"
+      ],
+      "reason": "Durable collection groups, generation capacity and time-series retention/effective policies within the bounded embedded profile",
+      "owner": "OS-07",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "BatchGetEffectiveLifecyclePolicy",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-lifecycle.test.ts"
+      ],
+      "reason": "Durable collection groups, generation capacity and time-series retention/effective policies within the bounded embedded profile",
+      "owner": "OS-07",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "BatchGetLifecyclePolicy",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-lifecycle.test.ts"
+      ],
+      "reason": "Durable collection groups, generation capacity and time-series retention/effective policies within the bounded embedded profile",
+      "owner": "OS-07",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "BatchGetVpcEndpoint",
+      "method": "POST",
+      "route": "/",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "CancelIngestionJob",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-ingestion.test.ts",
+        "test/opensearch-serverless-ingestion-recovery.test.ts",
+        "test/browser/opensearch-serverless-ingestion.spec.ts",
+        "docs/opensearch/os09-acceptance.md"
+      ],
+      "reason": "NextGen S3 JSON/NDJSON jobs, caller IAM/data/network authorization, encrypted checkpoints, failure index, cancellation and restart; bounded formats/delegation/quotas; continuous streams and AI extraction unavailable",
+      "owner": "OS-09",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "CreateAccessPolicy",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "CreateCollection",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "CreateCollectionGroup",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-lifecycle.test.ts"
+      ],
+      "reason": "Durable collection groups, generation capacity and time-series retention/effective policies within the bounded embedded profile",
+      "owner": "OS-07",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "CreateIndex",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "CreateIngestionJob",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-ingestion.test.ts",
+        "test/opensearch-serverless-ingestion-recovery.test.ts",
+        "test/browser/opensearch-serverless-ingestion.spec.ts",
+        "docs/opensearch/os09-acceptance.md"
+      ],
+      "reason": "NextGen S3 JSON/NDJSON jobs, caller IAM/data/network authorization, encrypted checkpoints, failure index, cancellation and restart; bounded formats/delegation/quotas; continuous streams and AI extraction unavailable",
+      "owner": "OS-09",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "CreateIngestionStream",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-streams.test.ts",
+        "test/opensearch-serverless-streams-recovery.test.ts",
+        "test/browser/opensearch-serverless-streams.spec.ts"
+      ],
+      "reason": "NextGen same-account S3/SQS continuous streams with initial scan, IAM role/trust and queue/bucket/data/network checks, encrypted batches/acks, failure index, restart and deletion; documented bounded source profile",
+      "owner": "OS-09",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "CreateLifecyclePolicy",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-lifecycle.test.ts"
+      ],
+      "reason": "Durable collection groups, generation capacity and time-series retention/effective policies within the bounded embedded profile",
+      "owner": "OS-07",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "CreateSecurityConfig",
+      "method": "POST",
+      "route": "/",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11A",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "CreateSecurityPolicy",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "CreateVpcEndpoint",
+      "method": "POST",
+      "route": "/",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "DeleteAccessPolicy",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "DeleteCollection",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "DeleteCollectionGroup",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-lifecycle.test.ts"
+      ],
+      "reason": "Durable collection groups, generation capacity and time-series retention/effective policies within the bounded embedded profile",
+      "owner": "OS-07",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "DeleteIndex",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "DeleteIngestionStream",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-streams.test.ts",
+        "test/opensearch-serverless-streams-recovery.test.ts",
+        "test/browser/opensearch-serverless-streams.spec.ts"
+      ],
+      "reason": "NextGen same-account S3/SQS continuous streams with initial scan, IAM role/trust and queue/bucket/data/network checks, encrypted batches/acks, failure index, restart and deletion; documented bounded source profile",
+      "owner": "OS-09",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "DeleteLifecyclePolicy",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-lifecycle.test.ts"
+      ],
+      "reason": "Durable collection groups, generation capacity and time-series retention/effective policies within the bounded embedded profile",
+      "owner": "OS-07",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "DeleteSecurityConfig",
+      "method": "POST",
+      "route": "/",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11A",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "DeleteSecurityPolicy",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "DeleteVpcEndpoint",
+      "method": "POST",
+      "route": "/",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "GetAccessPolicy",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "GetAccountSettings",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "GetIndex",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "GetIngestionJob",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-ingestion.test.ts",
+        "test/opensearch-serverless-ingestion-recovery.test.ts",
+        "test/browser/opensearch-serverless-ingestion.spec.ts",
+        "docs/opensearch/os09-acceptance.md"
+      ],
+      "reason": "NextGen S3 JSON/NDJSON jobs, caller IAM/data/network authorization, encrypted checkpoints, failure index, cancellation and restart; bounded formats/delegation/quotas; continuous streams and AI extraction unavailable",
+      "owner": "OS-09",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "GetIngestionStream",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-streams.test.ts",
+        "test/opensearch-serverless-streams-recovery.test.ts",
+        "test/browser/opensearch-serverless-streams.spec.ts"
+      ],
+      "reason": "NextGen same-account S3/SQS continuous streams with initial scan, IAM role/trust and queue/bucket/data/network checks, encrypted batches/acks, failure index, restart and deletion; documented bounded source profile",
+      "owner": "OS-09",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "GetPoliciesStats",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "GetSecurityConfig",
+      "method": "POST",
+      "route": "/",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11A",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "GetSecurityPolicy",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "ListAccessPolicies",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "ListCollectionGroups",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-lifecycle.test.ts"
+      ],
+      "reason": "Durable collection groups, generation capacity and time-series retention/effective policies within the bounded embedded profile",
+      "owner": "OS-07",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "ListCollections",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "ListIngestionJobs",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-ingestion.test.ts",
+        "test/opensearch-serverless-ingestion-recovery.test.ts",
+        "test/browser/opensearch-serverless-ingestion.spec.ts",
+        "docs/opensearch/os09-acceptance.md"
+      ],
+      "reason": "NextGen S3 JSON/NDJSON jobs, caller IAM/data/network authorization, encrypted checkpoints, failure index, cancellation and restart; bounded formats/delegation/quotas; continuous streams and AI extraction unavailable",
+      "owner": "OS-09",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "ListIngestionStreams",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-streams.test.ts",
+        "test/opensearch-serverless-streams-recovery.test.ts",
+        "test/browser/opensearch-serverless-streams.spec.ts"
+      ],
+      "reason": "NextGen same-account S3/SQS continuous streams with initial scan, IAM role/trust and queue/bucket/data/network checks, encrypted batches/acks, failure index, restart and deletion; documented bounded source profile",
+      "owner": "OS-09",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "ListLifecyclePolicies",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-lifecycle.test.ts"
+      ],
+      "reason": "Durable collection groups, generation capacity and time-series retention/effective policies within the bounded embedded profile",
+      "owner": "OS-07",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "ListSecurityConfigs",
+      "method": "POST",
+      "route": "/",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11A",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "ListSecurityPolicies",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "ListTagsForResource",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "ListVpcEndpoints",
+      "method": "POST",
+      "route": "/",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "TagResource",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "UntagResource",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "UpdateAccessPolicy",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "UpdateAccountSettings",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "UpdateCollection",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "UpdateCollectionGroup",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-lifecycle.test.ts"
+      ],
+      "reason": "Durable collection groups, generation capacity and time-series retention/effective policies within the bounded embedded profile",
+      "owner": "OS-07",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "UpdateIndex",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "UpdateLifecyclePolicy",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-lifecycle.test.ts"
+      ],
+      "reason": "Durable collection groups, generation capacity and time-series retention/effective policies within the bounded embedded profile",
+      "owner": "OS-07",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "UpdateSecurityConfig",
+      "method": "POST",
+      "route": "/",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11A",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "UpdateSecurityPolicy",
+      "method": "POST",
+      "route": "/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless.test.ts"
+      ],
+      "reason": "Encrypted SEARCH collections, independent policy enforcement and bounded local runtime; see os06-acceptance.md",
+      "owner": "OS-06",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "opensearchserverless",
+      "operation": "UpdateVpcEndpoint",
+      "method": "POST",
+      "route": "/",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "osis",
+      "operation": "CreatePipeline",
+      "method": "POST",
+      "route": "/2022-01-01/osis/createPipeline",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion.test.ts",
+        "test/opensearch-ingestion-logging.test.ts",
+        "test/opensearch-ingestion-s3.test.ts",
+        "test/opensearch-ingestion-dynamodb.test.ts",
+        "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+        "test/opensearch-ingestion-dynamodb-export.test.ts",
+        "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+        "test/browser/opensearch-ingestion-dynamodb-export.spec.ts"
+      ],
+      "reason": "Embedded signed HTTP or one-time S3 NDJSON scan, encrypted buffering/checkpoints, authorized sink and durable retry/DLQ; remaining source/network breadth is explicit; stream-only DynamoDB CDC with encrypted checkpoints, versioned index/delete and role/resource-policy enforcement",
+      "owner": "OS-08",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "osis",
+      "operation": "CreatePipelineEndpoint",
+      "method": "POST",
+      "route": "/2022-01-01/osis/createPipelineEndpoint",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "osis",
+      "operation": "DeletePipeline",
+      "method": "DELETE",
+      "route": "/2022-01-01/osis/deletePipeline/{PipelineName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion.test.ts",
+        "test/opensearch-ingestion-logging.test.ts",
+        "test/opensearch-ingestion-s3.test.ts",
+        "test/opensearch-ingestion-dynamodb.test.ts",
+        "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+        "test/opensearch-ingestion-dynamodb-export.test.ts",
+        "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+        "test/browser/opensearch-ingestion-dynamodb-export.spec.ts"
+      ],
+      "reason": "Embedded signed HTTP or one-time S3 NDJSON scan, encrypted buffering/checkpoints, authorized sink and durable retry/DLQ; remaining source/network breadth is explicit; stream-only DynamoDB CDC with encrypted checkpoints, versioned index/delete and role/resource-policy enforcement",
+      "owner": "OS-08",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "osis",
+      "operation": "DeletePipelineEndpoint",
+      "method": "DELETE",
+      "route": "/2022-01-01/osis/deletePipelineEndpoint/{EndpointId}",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "osis",
+      "operation": "DeleteResourcePolicy",
+      "method": "DELETE",
+      "route": "/2022-01-01/osis/resourcePolicy/{ResourceArn}",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "osis",
+      "operation": "GetPipeline",
+      "method": "GET",
+      "route": "/2022-01-01/osis/getPipeline/{PipelineName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion.test.ts",
+        "test/opensearch-ingestion-logging.test.ts",
+        "test/opensearch-ingestion-s3.test.ts",
+        "test/opensearch-ingestion-dynamodb.test.ts",
+        "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+        "test/opensearch-ingestion-dynamodb-export.test.ts",
+        "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+        "test/browser/opensearch-ingestion-dynamodb-export.spec.ts"
+      ],
+      "reason": "Embedded signed HTTP or one-time S3 NDJSON scan, encrypted buffering/checkpoints, authorized sink and durable retry/DLQ; remaining source/network breadth is explicit; stream-only DynamoDB CDC with encrypted checkpoints, versioned index/delete and role/resource-policy enforcement",
+      "owner": "OS-08",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "osis",
+      "operation": "GetPipelineBlueprint",
+      "method": "GET",
+      "route": "/2022-01-01/osis/getPipelineBlueprint/{BlueprintName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion.test.ts",
+        "test/opensearch-ingestion-s3.test.ts",
+        "test/opensearch-ingestion-dynamodb.test.ts",
+        "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+        "test/opensearch-ingestion-dynamodb-export.test.ts",
+        "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+        "test/browser/opensearch-ingestion-dynamodb-export.spec.ts"
+      ],
+      "reason": "Embedded signed HTTP or one-time S3 NDJSON scan, encrypted buffering/checkpoints, authorized sink and durable retry/DLQ; remaining source/network breadth is explicit; stream-only DynamoDB CDC with encrypted checkpoints, versioned index/delete and role/resource-policy enforcement",
+      "owner": "OS-08",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "osis",
+      "operation": "GetPipelineChangeProgress",
+      "method": "GET",
+      "route": "/2022-01-01/osis/getPipelineChangeProgress/{PipelineName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion.test.ts",
+        "test/opensearch-ingestion-dynamodb.test.ts",
+        "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+        "test/opensearch-ingestion-dynamodb-export.test.ts",
+        "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+        "test/browser/opensearch-ingestion-dynamodb-export.spec.ts"
+      ],
+      "reason": "Embedded signed HTTP or one-time S3 NDJSON scan, encrypted buffering/checkpoints, authorized sink and durable retry/DLQ; remaining source/network breadth is explicit; stream-only DynamoDB CDC with encrypted checkpoints, versioned index/delete and role/resource-policy enforcement",
+      "owner": "OS-08",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "osis",
+      "operation": "GetResourcePolicy",
+      "method": "GET",
+      "route": "/2022-01-01/osis/resourcePolicy/{ResourceArn}",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "osis",
+      "operation": "ListPipelineBlueprints",
+      "method": "POST",
+      "route": "/2022-01-01/osis/listPipelineBlueprints",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion.test.ts",
+        "test/opensearch-ingestion-s3.test.ts",
+        "test/opensearch-ingestion-dynamodb.test.ts",
+        "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+        "test/opensearch-ingestion-dynamodb-export.test.ts",
+        "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+        "test/browser/opensearch-ingestion-dynamodb-export.spec.ts"
+      ],
+      "reason": "Embedded signed HTTP or one-time S3 NDJSON scan, encrypted buffering/checkpoints, authorized sink and durable retry/DLQ; remaining source/network breadth is explicit; stream-only DynamoDB CDC with encrypted checkpoints, versioned index/delete and role/resource-policy enforcement",
+      "owner": "OS-08",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "osis",
+      "operation": "ListPipelineEndpointConnections",
+      "method": "GET",
+      "route": "/2022-01-01/osis/listPipelineEndpointConnections",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "osis",
+      "operation": "ListPipelineEndpoints",
+      "method": "GET",
+      "route": "/2022-01-01/osis/listPipelineEndpoints",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "osis",
+      "operation": "ListPipelines",
+      "method": "GET",
+      "route": "/2022-01-01/osis/listPipelines",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion.test.ts",
+        "test/opensearch-ingestion-dynamodb.test.ts",
+        "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+        "test/opensearch-ingestion-dynamodb-export.test.ts",
+        "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+        "test/browser/opensearch-ingestion-dynamodb-export.spec.ts"
+      ],
+      "reason": "Embedded signed HTTP or one-time S3 NDJSON scan, encrypted buffering/checkpoints, authorized sink and durable retry/DLQ; remaining source/network breadth is explicit; stream-only DynamoDB CDC with encrypted checkpoints, versioned index/delete and role/resource-policy enforcement",
+      "owner": "OS-08",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "osis",
+      "operation": "ListTagsForResource",
+      "method": "GET",
+      "route": "/2022-01-01/osis/listTagsForResource/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion.test.ts",
+        "test/opensearch-ingestion-dynamodb.test.ts",
+        "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+        "test/opensearch-ingestion-dynamodb-export.test.ts",
+        "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+        "test/browser/opensearch-ingestion-dynamodb-export.spec.ts"
+      ],
+      "reason": "Embedded signed HTTP or one-time S3 NDJSON scan, encrypted buffering/checkpoints, authorized sink and durable retry/DLQ; remaining source/network breadth is explicit; stream-only DynamoDB CDC with encrypted checkpoints, versioned index/delete and role/resource-policy enforcement",
+      "owner": "OS-08",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "osis",
+      "operation": "PutResourcePolicy",
+      "method": "PUT",
+      "route": "/2022-01-01/osis/resourcePolicy/{ResourceArn}",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "osis",
+      "operation": "RevokePipelineEndpointConnections",
+      "method": "POST",
+      "route": "/2022-01-01/osis/revokePipelineEndpointConnections",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11B",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "osis",
+      "operation": "StartPipeline",
+      "method": "PUT",
+      "route": "/2022-01-01/osis/startPipeline/{PipelineName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion.test.ts",
+        "test/opensearch-ingestion-s3.test.ts",
+        "test/opensearch-ingestion-dynamodb.test.ts",
+        "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+        "test/opensearch-ingestion-dynamodb-export.test.ts",
+        "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+        "test/browser/opensearch-ingestion-dynamodb-export.spec.ts"
+      ],
+      "reason": "Embedded signed HTTP or one-time S3 NDJSON scan, encrypted buffering/checkpoints, authorized sink and durable retry/DLQ; remaining source/network breadth is explicit; stream-only DynamoDB CDC with encrypted checkpoints, versioned index/delete and role/resource-policy enforcement",
+      "owner": "OS-08",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "osis",
+      "operation": "StopPipeline",
+      "method": "PUT",
+      "route": "/2022-01-01/osis/stopPipeline/{PipelineName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion.test.ts",
+        "test/opensearch-ingestion-s3.test.ts",
+        "test/opensearch-ingestion-dynamodb.test.ts",
+        "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+        "test/opensearch-ingestion-dynamodb-export.test.ts",
+        "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+        "test/browser/opensearch-ingestion-dynamodb-export.spec.ts"
+      ],
+      "reason": "Embedded signed HTTP or one-time S3 NDJSON scan, encrypted buffering/checkpoints, authorized sink and durable retry/DLQ; remaining source/network breadth is explicit; stream-only DynamoDB CDC with encrypted checkpoints, versioned index/delete and role/resource-policy enforcement",
+      "owner": "OS-08",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "osis",
+      "operation": "TagResource",
+      "method": "POST",
+      "route": "/2022-01-01/osis/tagResource/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion.test.ts",
+        "test/opensearch-ingestion-dynamodb.test.ts",
+        "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+        "test/opensearch-ingestion-dynamodb-export.test.ts",
+        "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+        "test/browser/opensearch-ingestion-dynamodb-export.spec.ts"
+      ],
+      "reason": "Embedded signed HTTP or one-time S3 NDJSON scan, encrypted buffering/checkpoints, authorized sink and durable retry/DLQ; remaining source/network breadth is explicit; stream-only DynamoDB CDC with encrypted checkpoints, versioned index/delete and role/resource-policy enforcement",
+      "owner": "OS-08",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "osis",
+      "operation": "UntagResource",
+      "method": "POST",
+      "route": "/2022-01-01/osis/untagResource/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion.test.ts",
+        "test/opensearch-ingestion-dynamodb.test.ts",
+        "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+        "test/opensearch-ingestion-dynamodb-export.test.ts",
+        "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+        "test/browser/opensearch-ingestion-dynamodb-export.spec.ts"
+      ],
+      "reason": "Embedded signed HTTP or one-time S3 NDJSON scan, encrypted buffering/checkpoints, authorized sink and durable retry/DLQ; remaining source/network breadth is explicit; stream-only DynamoDB CDC with encrypted checkpoints, versioned index/delete and role/resource-policy enforcement",
+      "owner": "OS-08",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "osis",
+      "operation": "UpdatePipeline",
+      "method": "PUT",
+      "route": "/2022-01-01/osis/updatePipeline/{PipelineName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion.test.ts",
+        "test/opensearch-ingestion-logging.test.ts",
+        "test/opensearch-ingestion-s3.test.ts",
+        "test/opensearch-ingestion-dynamodb.test.ts",
+        "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+        "test/opensearch-ingestion-dynamodb-export.test.ts",
+        "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+        "test/browser/opensearch-ingestion-dynamodb-export.spec.ts"
+      ],
+      "reason": "Embedded signed HTTP or one-time S3 NDJSON scan, encrypted buffering/checkpoints, authorized sink and durable retry/DLQ; remaining source/network breadth is explicit; stream-only DynamoDB CDC with encrypted checkpoints, versioned index/delete and role/resource-policy enforcement",
+      "owner": "OS-08",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "osis",
+      "operation": "ValidatePipeline",
+      "method": "POST",
+      "route": "/2022-01-01/osis/validatePipeline",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion.test.ts",
+        "test/opensearch-ingestion-s3.test.ts",
+        "test/opensearch-ingestion-dynamodb.test.ts",
+        "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+        "test/opensearch-ingestion-dynamodb-export.test.ts",
+        "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+        "test/browser/opensearch-ingestion-dynamodb-export.spec.ts"
+      ],
+      "reason": "Embedded signed HTTP or one-time S3 NDJSON scan, encrypted buffering/checkpoints, authorized sink and durable retry/DLQ; remaining source/network breadth is explicit; stream-only DynamoDB CDC with encrypted checkpoints, versioned index/delete and role/resource-policy enforcement",
+      "owner": "OS-08",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "AcceptInboundCrossClusterSearchConnection",
+      "method": "PUT",
+      "route": "/2015-01-01/es/ccs/inboundConnection/{ConnectionId}/accept",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-connections.test.ts",
+        "test/opensearch-connection-recovery.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "DIRECT embedded cross-cluster search with durable owner approval/revocation, global authorized queries, account/Region-scoped views and console; VPC/external clusters/replication are outside the developer scope",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "AddTags",
+      "method": "POST",
+      "route": "/2015-01-01/tags",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "AssociatePackage",
+      "method": "POST",
+      "route": "/2015-01-01/packages/associate/{PackageID}/{DomainName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "AuthorizeVpcEndpointAccess",
+      "method": "POST",
+      "route": "/2015-01-01/es/domain/{DomainName}/authorizeVpcEndpointAccess",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "CancelDomainConfigChange",
+      "method": "POST",
+      "route": "/2015-01-01/es/domain/{DomainName}/config/cancel",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Frozen legacy shapes project the shared managed pending-change preview and cancellation; the original configuration remains active",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "CancelElasticsearchServiceSoftwareUpdate",
+      "method": "POST",
+      "route": "/2015-01-01/es/serviceSoftwareUpdate/cancel",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "CreateElasticsearchDomain",
+      "method": "POST",
+      "route": "/2015-01-01/es/domain",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "CreateOutboundCrossClusterSearchConnection",
+      "method": "POST",
+      "route": "/2015-01-01/es/ccs/outboundConnection",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-connections.test.ts",
+        "test/opensearch-connection-recovery.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "DIRECT embedded cross-cluster search with durable owner approval/revocation, global authorized queries, account/Region-scoped views and console; VPC/external clusters/replication are outside the developer scope",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "CreatePackage",
+      "method": "POST",
+      "route": "/2015-01-01/packages",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "CreateVpcEndpoint",
+      "method": "POST",
+      "route": "/2015-01-01/es/vpcEndpoints",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "DeleteElasticsearchDomain",
+      "method": "DELETE",
+      "route": "/2015-01-01/es/domain/{DomainName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "DeleteElasticsearchServiceRole",
+      "method": "DELETE",
+      "route": "/2015-01-01/es/role",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "DeleteInboundCrossClusterSearchConnection",
+      "method": "DELETE",
+      "route": "/2015-01-01/es/ccs/inboundConnection/{ConnectionId}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-connections.test.ts",
+        "test/opensearch-connection-recovery.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "DIRECT embedded cross-cluster search with durable owner approval/revocation, global authorized queries, account/Region-scoped views and console; VPC/external clusters/replication are outside the developer scope",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "DeleteOutboundCrossClusterSearchConnection",
+      "method": "DELETE",
+      "route": "/2015-01-01/es/ccs/outboundConnection/{ConnectionId}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-connections.test.ts",
+        "test/opensearch-connection-recovery.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "DIRECT embedded cross-cluster search with durable owner approval/revocation, global authorized queries, account/Region-scoped views and console; VPC/external clusters/replication are outside the developer scope",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "DeletePackage",
+      "method": "DELETE",
+      "route": "/2015-01-01/packages/{PackageID}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "DeleteVpcEndpoint",
+      "method": "DELETE",
+      "route": "/2015-01-01/es/vpcEndpoints/{VpcEndpointId}",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "DescribeDomainAutoTunes",
+      "method": "GET",
+      "route": "/2015-01-01/es/domain/{DomainName}/autoTunes",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "DescribeDomainChangeProgress",
+      "method": "GET",
+      "route": "/2015-01-01/es/domain/{DomainName}/progress",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "DescribeElasticsearchDomain",
+      "method": "GET",
+      "route": "/2015-01-01/es/domain/{DomainName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "DescribeElasticsearchDomainConfig",
+      "method": "GET",
+      "route": "/2015-01-01/es/domain/{DomainName}/config",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "DescribeElasticsearchDomains",
+      "method": "POST",
+      "route": "/2015-01-01/es/domain-info",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "DescribeElasticsearchInstanceTypeLimits",
+      "method": "GET",
+      "route": "/2015-01-01/es/instanceTypeLimits/{ElasticsearchVersion}/{InstanceType}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "DescribeInboundCrossClusterSearchConnections",
+      "method": "POST",
+      "route": "/2015-01-01/es/ccs/inboundConnection/search",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-connections.test.ts",
+        "test/opensearch-connection-recovery.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "DIRECT embedded cross-cluster search with durable owner approval/revocation, global authorized queries, account/Region-scoped views and console; VPC/external clusters/replication are outside the developer scope",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "DescribeOutboundCrossClusterSearchConnections",
+      "method": "POST",
+      "route": "/2015-01-01/es/ccs/outboundConnection/search",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-connections.test.ts",
+        "test/opensearch-connection-recovery.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "DIRECT embedded cross-cluster search with durable owner approval/revocation, global authorized queries, account/Region-scoped views and console; VPC/external clusters/replication are outside the developer scope",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "DescribePackages",
+      "method": "POST",
+      "route": "/2015-01-01/packages/describe",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "DescribeReservedElasticsearchInstanceOfferings",
+      "method": "GET",
+      "route": "/2015-01-01/es/reservedInstanceOfferings",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "DescribeReservedElasticsearchInstances",
+      "method": "GET",
+      "route": "/2015-01-01/es/reservedInstances",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "DescribeVpcEndpoints",
+      "method": "POST",
+      "route": "/2015-01-01/es/vpcEndpoints/describe",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "DissociatePackage",
+      "method": "POST",
+      "route": "/2015-01-01/packages/dissociate/{PackageID}/{DomainName}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "GetCompatibleElasticsearchVersions",
+      "method": "GET",
+      "route": "/2015-01-01/es/compatibleVersions",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "GetPackageVersionHistory",
+      "method": "GET",
+      "route": "/2015-01-01/packages/{PackageID}/history",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "GetUpgradeHistory",
+      "method": "GET",
+      "route": "/2015-01-01/es/upgradeDomain/{DomainName}/history",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "GetUpgradeStatus",
+      "method": "GET",
+      "route": "/2015-01-01/es/upgradeDomain/{DomainName}/status",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "ListDomainNames",
+      "method": "GET",
+      "route": "/2015-01-01/domain",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "ListDomainsForPackage",
+      "method": "GET",
+      "route": "/2015-01-01/packages/{PackageID}/domains",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "ListElasticsearchInstanceTypes",
+      "method": "GET",
+      "route": "/2015-01-01/es/instanceTypes/{ElasticsearchVersion}",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "ListElasticsearchVersions",
+      "method": "GET",
+      "route": "/2015-01-01/es/versions",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "ListPackagesForDomain",
+      "method": "GET",
+      "route": "/2015-01-01/domain/{DomainName}/packages",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "ListTags",
+      "method": "GET",
+      "route": "/2015-01-01/tags/",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "ListVpcEndpointAccess",
+      "method": "GET",
+      "route": "/2015-01-01/es/domain/{DomainName}/listVpcEndpointAccess",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "ListVpcEndpoints",
+      "method": "GET",
+      "route": "/2015-01-01/es/vpcEndpoints",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "ListVpcEndpointsForDomain",
+      "method": "GET",
+      "route": "/2015-01-01/es/domain/{DomainName}/vpcEndpoints",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "PurchaseReservedElasticsearchInstanceOffering",
+      "method": "POST",
+      "route": "/2015-01-01/es/purchaseReservedInstanceOffering",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "RejectInboundCrossClusterSearchConnection",
+      "method": "PUT",
+      "route": "/2015-01-01/es/ccs/inboundConnection/{ConnectionId}/reject",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-connections.test.ts",
+        "test/opensearch-connection-recovery.test.ts",
+        "test/browser/opensearch-connections.spec.ts"
+      ],
+      "reason": "DIRECT embedded cross-cluster search with durable owner approval/revocation, global authorized queries, account/Region-scoped views and console; VPC/external clusters/replication are outside the developer scope",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "RemoveTags",
+      "method": "POST",
+      "route": "/2015-01-01/tags-removal",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "RevokeVpcEndpointAccess",
+      "method": "POST",
+      "route": "/2015-01-01/es/domain/{DomainName}/revokeVpcEndpointAccess",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "StartElasticsearchServiceSoftwareUpdate",
+      "method": "POST",
+      "route": "/2015-01-01/es/serviceSoftwareUpdate/start",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "UpdateClone",
+      "method": "POST",
+      "route": "/2015-01-01/es/domain/{DomainName}/clone",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "UpdateElasticsearchDomainConfig",
+      "method": "POST",
+      "route": "/2015-01-01/es/domain/{DomainName}/config",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-legacy.test.ts"
+      ],
+      "reason": "Bounded embedded compatibility profile; see capability catalog and guide",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "UpdatePackage",
+      "method": "POST",
+      "route": "/2015-01-01/packages/update",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-packages.test.ts",
+        "test/opensearch-analyzers.test.ts",
+        "test/opensearch-package-recovery.test.ts"
+      ],
+      "reason": "Data-only encrypted S3 dictionary packages; durable versions/associations affect custom analyzer search; executable/native plugins reject",
+      "owner": "OS-11C",
+      "disposition": "supported-subset"
+    },
+    {
+      "family": "es",
+      "operation": "UpdateVpcEndpoint",
+      "method": "POST",
+      "route": "/2015-01-01/es/vpcEndpoints/update",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    },
+    {
+      "family": "es",
+      "operation": "UpgradeElasticsearchDomain",
+      "method": "POST",
+      "route": "/2015-01-01/es/upgradeDomain",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "owner": "OS-11C",
+      "disposition": "out-of-scope"
+    }
+  ],
+  "counts": {
+    "total": 231,
+    "implementedSubset": 153,
+    "notImplemented": 78
+  },
+  "resources": [
+    {
+      "type": "AWS::OpenSearchService::Domain",
+      "owner": "OS-04",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded managed-domain schema, shared catalog, ownership and lifecycle",
+      "disposition": "supported-subset"
+    },
+    {
+      "type": "AWS::OpenSearchService::Application",
+      "owner": "OS-11A",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-application-cloudformation.test.ts"
+      ],
+      "reason": "Owned IAM application, live source associations, encrypted workspace endpoint, updates, replacement and retention",
+      "disposition": "supported-subset"
+    },
+    {
+      "type": "AWS::OpenSearchServerless::Collection",
+      "owner": "OS-06/07",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-cloudformation.test.ts"
+      ],
+      "reason": "Shared encrypted catalog with dependency ordering, ownership, readiness, replacement and retention",
+      "disposition": "supported-subset"
+    },
+    {
+      "type": "AWS::OpenSearchServerless::AccessPolicy",
+      "owner": "OS-06",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-cloudformation.test.ts"
+      ],
+      "reason": "Shared encrypted catalog with dependency ordering, ownership, readiness, replacement and retention",
+      "disposition": "supported-subset"
+    },
+    {
+      "type": "AWS::OpenSearchServerless::SecurityPolicy",
+      "owner": "OS-06",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-cloudformation.test.ts"
+      ],
+      "reason": "Shared encrypted catalog with dependency ordering, ownership, readiness, replacement and retention",
+      "disposition": "supported-subset"
+    },
+    {
+      "type": "AWS::OpenSearchServerless::Index",
+      "owner": "OS-06; vector settings OS-10",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-cloudformation.test.ts",
+        "test/opensearch-serverless-index.test.ts"
+      ],
+      "reason": "Frozen registry schema, live authorized index lifecycle, atomic ownership, replacement and retention",
+      "disposition": "supported-subset"
+    },
+    {
+      "type": "AWS::OpenSearchServerless::CollectionIndex",
+      "owner": "OS-06",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-cloudformation.test.ts",
+        "test/opensearch-serverless-index.test.ts"
+      ],
+      "reason": "Frozen registry schema, live authorized index lifecycle, atomic ownership, replacement and retention",
+      "disposition": "supported-subset"
+    },
+    {
+      "type": "AWS::OpenSearchServerless::CollectionGroup",
+      "owner": "OS-07",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-cloudformation.test.ts"
+      ],
+      "reason": "Owned live groups/retention policies; dependencies, in-place updates, replacement and deletion; shared service authorization",
+      "disposition": "supported-subset"
+    },
+    {
+      "type": "AWS::OpenSearchServerless::LifecyclePolicy",
+      "owner": "OS-07",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-serverless-cloudformation.test.ts"
+      ],
+      "reason": "Owned live groups/retention policies; dependencies, in-place updates, replacement and deletion; shared service authorization",
+      "disposition": "supported-subset"
+    },
+    {
+      "type": "AWS::OpenSearchServerless::SecurityConfig",
+      "owner": "OS-11A",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "disposition": "out-of-scope"
+    },
+    {
+      "type": "AWS::OpenSearchServerless::VpcEndpoint",
+      "owner": "OS-11B",
+      "status": "not-implemented",
+      "evidence": [],
+      "reason": "Deliberately unsupported by the developer simulator contract; not scheduled for implementation. See docs/opensearch/implementation-plan.md.",
+      "disposition": "out-of-scope"
+    },
+    {
+      "type": "AWS::OSIS::Pipeline",
+      "owner": "OS-08; network/policy breadth OS-11B",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-ingestion-cloudformation.test.ts",
+        "test/opensearch-ingestion-s3.test.ts"
+      ],
+      "reason": "Owned pipeline lifecycle, configuration/tags, replacement and retention; Ref name and live endpoint/ARN attributes",
+      "disposition": "supported-subset"
+    },
+    {
+      "type": "AWS::Elasticsearch::Domain",
+      "owner": "OS-11C",
+      "status": "implemented-subset",
+      "evidence": [
+        "test/opensearch-cloudformation.test.ts"
+      ],
+      "reason": "Bounded managed-domain schema, shared catalog, ownership and lifecycle",
+      "disposition": "supported-subset"
+    }
+  ],
+  "dataPlaneEvidence": [
+    "test/opensearch-engine.test.ts",
+    "test/opensearch-vector.test.ts",
+    "test/opensearch-durability.test.ts",
+    "test/opensearch-service.test.ts",
+    "test/opensearch-phase01.test.ts",
+    "test/opensearch-phase02.test.ts",
+    "test/opensearch-wire.test.ts",
+    "test/opensearch-encryption.test.ts",
+    "test/opensearch-security.test.ts",
+    "test/opensearch-phase03.test.ts",
+    "test/opensearch-config-recovery.test.ts",
+    "test/opensearch-workspace.test.ts",
+    "test/opensearch-serverless.test.ts",
+    "test/opensearch-serverless-lifecycle.test.ts",
+    "test/opensearch-serverless-express.test.ts",
+    "test/opensearch-ingestion-config.test.ts",
+    "test/opensearch-ingestion-roles.test.ts",
+    "test/opensearch-ingestion.test.ts",
+    "test/opensearch-snapshot-engine.test.ts",
+    "test/opensearch-snapshots.test.ts",
+    "test/opensearch-snapshot-recovery.test.ts",
+    "test/opensearch-maintenance.test.ts",
+    "test/opensearch-maintenance-recovery.test.ts",
+    "test/opensearch-logging.test.ts",
+    "test/opensearch-ingestion-logging.test.ts",
+    "test/opensearch-ingest-pipelines.test.ts",
+    "test/opensearch-appsync.test.ts",
+    "test/opensearch-query-languages.test.ts",
+    "test/opensearch-hybrid.test.ts",
+    "test/opensearch-audit.test.ts",
+    "test/opensearch-ism.test.ts",
+    "test/opensearch-analyzers.test.ts",
+    "test/opensearch-packages.test.ts",
+    "test/opensearch-package-recovery.test.ts",
+    "test/opensearch-automatic-backups.test.ts",
+    "test/opensearch-automatic-recovery.test.ts",
+    "test/opensearch-insights.test.ts",
+    "test/opensearch-producers.test.ts",
+    "test/opensearch-ingestion-s3.test.ts",
+    "test/opensearch-ingestion-s3-recovery.test.ts",
+    "test/opensearch-versioning.test.ts",
+    "test/opensearch-ingestion-dynamodb.test.ts",
+    "test/opensearch-ingestion-dynamodb-recovery.test.ts",
+    "test/opensearch-serverless-ingestion.test.ts",
+    "test/opensearch-serverless-ingestion-recovery.test.ts",
+    "test/opensearch-serverless-streams.test.ts",
+    "test/opensearch-serverless-streams-recovery.test.ts",
+    "test/opensearch-ingestion-dynamodb-export.test.ts",
+    "test/opensearch-ingestion-dynamodb-export-recovery.test.ts",
+    "test/opensearch-applications.test.ts",
+    "test/opensearch-application-cloudformation.test.ts",
+    "test/opensearch-application-recovery.test.ts",
+    "test/opensearch-direct-query.test.ts",
+    "test/opensearch-direct-query-recovery.test.ts",
+    "test/cloudwatch-opensearch-languages.test.ts",
+    "test/opensearch-connections.test.ts",
+    "test/opensearch-connection-recovery.test.ts",
+    "test/opensearch-comparison.test.ts"
+  ],
+  "consoleEvidence": [
+    "test/browser/opensearch-console.spec.ts",
+    "test/browser/opensearch-workspace.spec.ts",
+    "test/browser/opensearch-serverless.spec.ts",
+    "test/browser/opensearch-ingestion.spec.ts",
+    "test/browser/opensearch-snapshots.spec.ts",
+    "test/browser/opensearch-maintenance.spec.ts",
+    "test/browser/opensearch-monitoring.spec.ts",
+    "test/browser/opensearch-ingest-pipelines.spec.ts",
+    "test/browser/opensearch-appsync.spec.ts",
+    "test/browser/opensearch-query-languages.spec.ts",
+    "test/browser/opensearch-hybrid.spec.ts",
+    "test/browser/opensearch-audit.spec.ts",
+    "test/browser/opensearch-ism.spec.ts",
+    "test/browser/opensearch-packages.spec.ts",
+    "test/browser/opensearch-automatic-backups.spec.ts",
+    "test/browser/opensearch-insights.spec.ts",
+    "test/browser/opensearch-producers.spec.ts",
+    "test/browser/opensearch-ingestion-s3.spec.ts",
+    "test/browser/opensearch-ingestion-dynamodb.spec.ts",
+    "test/browser/opensearch-serverless-ingestion.spec.ts",
+    "test/browser/opensearch-serverless-streams.spec.ts",
+    "test/browser/opensearch-ingestion-dynamodb-export.spec.ts",
+    "test/browser/opensearch-applications.spec.ts",
+    "test/browser/opensearch-direct-query.spec.ts",
+    "test/browser/cloudwatch-opensearch-languages.spec.ts",
+    "test/browser/opensearch-connections.spec.ts"
+  ],
+  "scope": "developer-simulator-2026-11-17",
+  "completionMeaning": "Required developer workflows are implemented. Existing extensions are retained; unsupported AWS breadth is deliberately excluded, not remaining mandatory phases. This does not claim native or full AWS parity.",
+  "scopeDocument": "docs/opensearch/implementation-plan.md"
+}

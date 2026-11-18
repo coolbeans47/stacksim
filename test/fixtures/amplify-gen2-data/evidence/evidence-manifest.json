@@ -159,7 +159,7 @@
     },
     {
       "path": "dependency-manifest.json",
-      "sha256": "95a6e510b793f46965e59af98bab2ca66b4511ace04de06244def59819bbc0ad",
+      "sha256": "2c0fb800f5ff0846c7cf94848b0342bc99ac9a03691f187cf9284eafa793b49a",
       "bytes": 477418
     },
     {
@@ -174,7 +174,7 @@
     },
     {
       "path": "fixture-source-manifest.json",
-      "sha256": "e18e75e84683387efc9d6a6cec14ab36cbdca6d0c0801c9a31b9236025a222b7",
+      "sha256": "aff9836f65791e5349bd0d5da65d4e08424adc2c5f4acdc40ab7f6d126dc1fb1",
       "bytes": 1751
     },
     {

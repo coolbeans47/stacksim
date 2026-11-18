@@ -1,0 +1,15 @@
+import { setTimeout as delay } from 'node:timers/promises';
+import * as Aoss from '@aws-sdk/client-opensearchserverless';
+import * as S3 from '@aws-sdk/client-s3';
+import { StackSim } from '../../src/server.js';
+const [root, boundary] = process.argv.slice(2), region = 'eu-west-1', sim = new StackSim({ dataDir: root, region, port: 0, invokePort: 0, cdkBootstrap: false, authMode: 'enforce' });
+await sim.start(); const sdk = { endpoint: `http://127.0.0.1:${sim.port}`, region, credentials: { accessKeyId: 'admin', secretAccessKey: 'password' }, maxAttempts: 1 }, aoss = new Aoss.OpenSearchServerlessClient(sdk), s3 = new S3.S3Client({ ...sdk, forcePathStyle: true });
+await aoss.send(new Aoss.CreateCollectionGroupCommand({ name: 'recovery-group', generation: 'NEXTGEN', standbyReplicas: 'DISABLED' }));
+await aoss.send(new Aoss.CreateSecurityPolicyCommand({ name: 'recovery-network', type: 'network', policy: JSON.stringify([{ Rules: [{ ResourceType: 'collection', Resource: ['collection/job-recovery'] }], AllowFromPublic: true }]) }));
+await aoss.send(new Aoss.CreateAccessPolicyCommand({ name: 'recovery-data', type: 'data', policy: JSON.stringify([{ Rules: [{ ResourceType: 'index', Resource: ['index/job-recovery/*'], Permission: ['aoss:*'] }], Principal: [Object.values(sim.store.ensureAccount().iam.users)[0].arn] }]) }));
+const id = (await aoss.send(new Aoss.CreateCollectionCommand({ name: 'job-recovery', type: 'SEARCH', collectionGroupName: 'recovery-group', encryptionConfig: { aWSOwnedKey: true } }))).createCollectionDetail!.id!; while (sim.opensearch.serverless.collection(region, id).status !== 'ACTIVE') await delay(10);
+await s3.send(new S3.CreateBucketCommand({ Bucket: 'source-recovery', CreateBucketConfiguration: { LocationConstraint: region } })); await s3.send(new S3.PutObjectCommand({ Bucket: 'source-recovery', Key: 'events.json', Body: '[{"title":"first"},{"title":"second"}]' }));
+const host = (sim.opensearch.serverless.ingestion as any).host, write = host.write.bind(host);
+host.write = async (...args: any[]) => { if (boundary === 'after-sink') await write(...args); process.send?.({ boundary, collectionId: id, documentId: args[3] }); await new Promise(() => {}); };
+await aoss.send(new Aoss.CreateIngestionJobCommand({ collectionId: id, ingestionJobName: 'source-recovery', indexName: 'records', source: { s3: { bucket: 'source-recovery' } } }));
+setInterval(() => {}, 1000);

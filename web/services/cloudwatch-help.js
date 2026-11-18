@@ -74,12 +74,12 @@ const help = {
   logsInsights: {
     level: "Partial",
     description: "The Logs Insights editor searches one or more log groups over a selected time range. Use the query language to select fields, filter events, sort records, calculate statistics, and inspect the original record behind a result.",
-    support: "The generated CloudWatch Logs Insights QL core subset, bounded jobs, cancellation, partial and final results, pointers, visualizations, CSV export, and query history are active. PPL and SQL definitions can be stored but are not executed, and the full AWS command and function catalog is unavailable.",
+    support: "The generated CloudWatch Logs Insights QL core subset, bounded jobs, cancellation, partial and final results, pointers, visualizations, CSV export, and query history are active. SQL/PPL runs a bounded scalar query subset over one Standard log group with filters, projections, sorting, and count/sum/avg/min/max grouping. Joins, subqueries, and the full AWS command/function catalog are unavailable.",
   },
   savedQueries: {
     level: "Supported locally",
     description: "Saved queries retain useful query text and its selected log groups so it can be loaded again without rebuilding an investigation. Parameterized definitions let a reusable query ask for values when it is opened.",
-    support: "Create, update, list, load, delete, language metadata, selected log groups, and StackSim query parameters persist locally. CWLI definitions execute through the supported subset; saved PPL and SQL definitions remain non-executable metadata.",
+    support: "Create, update, list, load, delete, language metadata, selected log groups, and StackSim query parameters persist locally. CWLI, PPL, and SQL definitions execute through their supported subsets. SQL chooses its group in FROM; PPL accepts one selected group or a source command.",
   },
   logGroups: {
     level: "Supported locally",

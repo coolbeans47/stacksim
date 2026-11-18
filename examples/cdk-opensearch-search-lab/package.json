@@ -1,0 +1,43 @@
+{
+  "name": "stacksim-cdk-opensearch-search-lab",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "esbuild@0.25.12": true,
+    "fsevents@2.3.2": true,
+    "fsevents@2.3.3": true
+  },
+  "scripts": {
+    "build:lambda": "node scripts/build-lambda.mjs",
+    "build:frontend": "node frontend/build.mjs",
+    "synth": "cdk synth --no-notices",
+    "build": "npm run build:lambda && npm run build:frontend && npm run synth && npm run verify:assembly",
+    "verify:assembly": "node scripts/verify-assembly.mjs",
+    "deploy": "node scripts/deploy.mjs",
+    "seed": "node scripts/seed.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "node --test test/api.test.mjs",
+    "test:e2e": "playwright test",
+    "destroy": "node scripts/destroy.mjs"
+  },
+  "dependencies": {
+    "@opensearch-project/opensearch": "3.10.0",
+    "aws-cdk-lib": "2.265.0",
+    "constructs": "10.7.1",
+    "lucide-react": "0.468.0",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "aws-cdk": "2.1132.0",
+    "esbuild": "0.28.1",
+    "tsx": "4.20.0",
+    "typescript": "5.8.3"
+  }
+}

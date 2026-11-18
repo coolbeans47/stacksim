@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { parseIngestionConfig } from "./opensearch/ingestion/config.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { PrincipalContext } from "./auth/sigv4.js";
 import type { Clock } from "./core/clock.js";
@@ -796,6 +797,7 @@ export class CloudFormationService {
             const declaration = topProperty ? provider.schema.properties[topProperty] : undefined;
             if (declaration?.updateBehavior === "REPLACEMENT") throw new AwsError("ValidationError", `Secure dynamic references cannot contribute to a primary identifier at ${path}`, 400);
             const reviewedDestination = typeName === RDS_DB_INSTANCE_TYPE && topProperty === "MasterUserPassword"
+              || ["AWS::OpenSearchService::Domain", "AWS::Elasticsearch::Domain"].includes(typeName) && topProperty === "AdvancedSecurityOptions" && path.endsWith(".MasterUserOptions.MasterUserPassword")
               || typeName === SECRETS_MANAGER_SECRET_TYPE && topProperty === "SecretString";
             if (!reviewedDestination) throw new AwsError("ValidationError", `Secure dynamic reference destination ${typeName}.${topProperty ?? "Properties"} has no reviewed protected-storage contract`, 400);
           }
@@ -2453,6 +2455,7 @@ export class CloudFormationService {
         if (typeName === "AWS::CloudFormation::CustomResource" || typeName.startsWith("Custom::")) throw new AwsError("ValidationError", `Secure dynamic references are not supported in custom resources at ${found.path}`, 400);
         if (provider.schema.properties[propertyName]?.updateBehavior === "REPLACEMENT") throw new AwsError("ValidationError", `Secure dynamic references cannot contribute to a primary identifier at ${found.path}`, 400);
         const reviewedDestination = typeName === RDS_DB_INSTANCE_TYPE && propertyName === "MasterUserPassword"
+          || ["AWS::OpenSearchService::Domain", "AWS::Elasticsearch::Domain"].includes(typeName) && propertyName === "AdvancedSecurityOptions" && found.path.endsWith(".MasterUserOptions.MasterUserPassword")
           || typeName === SECRETS_MANAGER_SECRET_TYPE && propertyName === "SecretString";
         if (!reviewedDestination) throw new AwsError("ValidationError", `Secure dynamic reference destination ${typeName}.${propertyName} has no reviewed protected-storage contract`, 400);
       }
@@ -3848,6 +3851,28 @@ export class CloudFormationService {
         if (operation === "DELETE") add("apigateway:DELETE");
       }
       if (read) add("apigateway:GET");
+    } else if (typeName === "AWS::OSIS::Pipeline") {
+      add("osis:GetPipeline", "osis:ListTagsForResource");
+      if (create) add("osis:CreatePipeline", "osis:TagResource");
+      if (update) add("osis:UpdatePipeline", "osis:TagResource", "osis:UntagResource");
+      if (operation === "DELETE") add("osis:DeletePipeline");
+    } else if (typeName === "AWS::OpenSearchService::Domain" || typeName === "AWS::Elasticsearch::Domain") {
+      const domain = typeName === "AWS::Elasticsearch::Domain" ? "ElasticsearchDomain" : "Domain";
+      add(`es:Describe${domain}`, `es:Describe${domain}Config`, "es:ListTags");
+      if (create) add(`es:Create${domain}`, "es:AddTags");
+      if (update) add(`es:Update${domain}Config`, "es:AddTags", "es:RemoveTags");
+      if (operation === "DELETE") add(`es:Delete${domain}`);
+    } else if (typeName === "AWS::OpenSearchServerless::Index" || typeName === "AWS::OpenSearchServerless::CollectionIndex") {
+      add("aoss:APIAccessAll");
+      if (typeName.endsWith("::CollectionIndex")) { add("aoss:GetIndex"); if (create) add("aoss:CreateIndex"); if (update) add("aoss:UpdateIndex"); if (operation === "DELETE") add("aoss:DeleteIndex"); }
+    } else if (["AWS::OpenSearchServerless::Collection", "AWS::OpenSearchServerless::AccessPolicy", "AWS::OpenSearchServerless::SecurityPolicy", "AWS::OpenSearchServerless::LifecyclePolicy", "AWS::OpenSearchServerless::CollectionGroup"].includes(typeName)) {
+      const kind = typeName.split("::").at(-1)!;
+      add(`aoss:${["Collection", "CollectionGroup", "LifecyclePolicy"].includes(kind) ? `BatchGet${kind}` : `Get${kind}`}`);
+      if (create) add(`aoss:Create${kind}`);
+      if (update) add(`aoss:Update${kind}`);
+      if (operation === "DELETE") add(`aoss:Delete${kind}`);
+      if (create && kind === "Collection" && properties.CollectionGroupName) add("aoss:AddCollectionToCollectionGroup");
+      if (kind === "Collection" || kind === "CollectionGroup") { add("aoss:ListTagsForResource"); if (create || update) add("aoss:TagResource"); if (update) add("aoss:UntagResource"); }
     } else if (typeName === "AWS::RDS::DBInstance") {
       add("rds:DescribeDBInstances", "rds:ListTagsForResource");
       if (create) add("rds:CreateDBInstance", "rds:ModifyDBInstance", "rds:DeleteDBInstance", "rds:AddTagsToResource", "rds:RemoveTagsFromResource");
@@ -4007,6 +4032,32 @@ export class CloudFormationService {
       } else if (typeName === "AWS::S3::Bucket" || typeName === "AWS::S3::BucketPolicy") {
         const bucketName = typeName === "AWS::S3::Bucket" ? properties.BucketName ?? physicalId : properties.Bucket ?? physicalId;
         if (typeof bucketName === "string" && bucketName) resources.push(`arn:aws:s3:::${bucketName}`);
+      } else if (typeName === "AWS::OSIS::Pipeline") {
+        const pipeline = Object.values(this.store.regionState(this.region, accountId).opensearch.ingestion?.pipelines ?? {}).find(pipeline => pipeline.arn === physicalId || pipeline.name === properties.PipelineName);
+        resources.push(action === "osis:CreatePipeline" ? "*" : pipeline?.arn ?? `arn:${partitionForRegion(this.region)}:osis:${this.region}:${accountId}:pipeline/${properties.PipelineName ?? "*"}`);
+        const requestedTags = tags(properties.Tags);
+        context = { "aws:TagKeys": requestedTags.map(tag => tag.Key), ...Object.fromEntries(requestedTags.map(tag => [`aws:RequestTag/${tag.Key}`, tag.Value])), ...Object.fromEntries(Object.entries(pipeline?.tags ?? {}).map(([key, value]) => [`aws:ResourceTag/${key}`, value])) };
+      } else if (typeName === "AWS::OpenSearchService::Domain" || typeName === "AWS::Elasticsearch::Domain") {
+        resources.push(`arn:${partitionForRegion(this.region)}:es:${this.region}:${accountId}:domain/${properties.DomainName ?? physicalId ?? "*"}`);
+      } else if (typeName.startsWith("AWS::OpenSearchServerless::")) {
+        const state = this.store.regionState(this.region, accountId).opensearch.serverless;
+        const endpointCollection = typeName.endsWith("::Index") ? Object.values(state?.collections ?? {}).find(collection => properties.CollectionEndpoint === `https://127.0.0.1:${collection.gatewayPort}`) : undefined;
+        const requestedCollectionId = typeName.endsWith("::CollectionIndex") ? properties.Id : typeName.endsWith("::Collection") ? physicalId : endpointCollection?.id;
+        const collectionId = typeof requestedCollectionId === "string" ? requestedCollectionId : undefined;
+        const collection = collectionId ? state?.collections[collectionId] : undefined;
+        const group = Object.values(state?.groups ?? {}).find(group => typeName.endsWith("::CollectionGroup") ? group.id === physicalId || group.name === properties.Name : group.name === properties.CollectionGroupName);
+        const scope = ["aoss:APIAccessAll", "aoss:UpdateCollection", "aoss:DeleteCollection", "aoss:UpdateCollectionGroup", "aoss:DeleteCollectionGroup", "aoss:AddCollectionToCollectionGroup", "aoss:TagResource", "aoss:UntagResource", "aoss:ListTagsForResource"].includes(action);
+        const groupScoped = typeName.endsWith("::CollectionGroup") || action === "aoss:AddCollectionToCollectionGroup";
+        resources.push(scope ? (groupScoped ? group?.arn : collection?.arn ?? endpointCollection?.arn) ?? `arn:${partitionForRegion(this.region)}:aoss:${this.region}:${accountId}:${groupScoped ? "collection-group" : "collection"}/${groupScoped ? "*" : collectionId ?? "*"}` : "*");
+        const requestedTags = tags(properties.Tags);
+        context = { "aoss:collection": endpointCollection?.name ?? collection?.name ?? (typeName.endsWith("::Collection") ? properties.Name : undefined), "aoss:CollectionId": collectionId, "aoss:collection-group": group?.name ?? properties.CollectionGroupName ?? (typeName.endsWith("::CollectionGroup") ? properties.Name : undefined), "aoss:DeletionProtection": typeof properties.DeletionProtection === "string" ? properties.DeletionProtection.toLowerCase() : undefined, "aws:TagKeys": requestedTags.map(tag => tag.Key), ...Object.fromEntries(requestedTags.map(tag => [`aws:RequestTag/${tag.Key}`, tag.Value])), ...Object.fromEntries(Object.entries((groupScoped ? group?.tags : collection?.tags) ?? {}).map(([key, value]) => [`aws:ResourceTag/${key}`, value])) };
+        if (typeName.endsWith("Policy") && action !== "aoss:BatchGetLifecyclePolicy") {
+          const previous = state?.policies[`${properties.Type}:${properties.Name}`]?.policy;
+          let proposed: any; try { proposed = typeof properties.Policy === "string" ? JSON.parse(properties.Policy) : undefined; } catch { /* Provider validation reports malformed JSON. */ }
+          const patterns = [proposed, previous].filter(Boolean).flatMap(document => (Array.isArray(document) ? document : [document]).flatMap(statement => Array.isArray(statement.Rules) ? statement.Rules.flatMap((rule: any) => Array.isArray(rule.Resource) ? rule.Resource : []) : []));
+          for (const pattern of patterns.length ? patterns : [""]) { const parts = String(pattern).split("/"); addTarget(action, "*", { ...context, "aoss:collection": parts[1], "aoss:index": parts[0] === "index" ? parts[2] : undefined }); }
+          continue;
+        }
       } else if (typeName.startsWith("AWS::CloudFront::")) {
         const requestedTags = tags(properties.Tags);
         context = {
@@ -4558,6 +4609,7 @@ export class CloudFormationService {
     }
 
     const passRoles: Array<{ roleArn: unknown; service: string }> = [];
+    if (typeName === "AWS::OSIS::Pipeline" && operation !== "DELETE" && operation !== "READ") passRoles.push({ roleArn: parseIngestionConfig(String(properties.PipelineConfigurationBody), typeof properties.PipelineRoleArn === "string" ? properties.PipelineRoleArn : undefined).sink.roleArn, service: "osis-pipelines.amazonaws.com" });
     const apiGatewayV2RoleArn = (value: unknown): string | undefined => typeof value === "string" && /^arn:aws(?:-[a-z]+)?:iam::\d{12}:role\/.+/.test(value) ? value : undefined;
     if (typeName === "AWS::Lambda::Function" && operation !== "DELETE" && operation !== "READ") passRoles.push({ roleArn: properties.Role, service: "lambda.amazonaws.com" });
     if (typeName === "AWS::ApiGateway::Account" && operation !== "DELETE" && operation !== "READ") passRoles.push({ roleArn: properties.CloudWatchRoleArn, service: "apigateway.amazonaws.com" });

@@ -1,0 +1,21 @@
+import { StackSim } from '../../src/server.js';
+import { setTimeout as delay } from 'node:timers/promises';
+const [root, boundary] = process.argv.slice(2), region = 'eu-west-1';
+const sim = new StackSim({ dataDir: root, region, port: 0, invokePort: 0, authMode: 'off', cdkBootstrap: false }); await sim.start();
+await sim.opensearch.execute('CreateDomain', { DomainName: 'source' }, region); while (sim.opensearch.domain(region, 'source').state !== 'active') await delay(10);
+const save = sim.store.save.bind(sim.store); let armed = boundary === 'create-intent' || boundary === 'activation-publish';
+const parked = async (app: any) => { process.send?.({ boundary, id: app?.id }); setInterval(() => {}, 1000); await new Promise(() => {}); };
+sim.store.save = async () => {
+  const app = Object.values(sim.opensearch.applications.state(region).records)[0];
+  if (armed && (boundary === 'activation-publish' && app?.status === 'ACTIVE' || boundary === 'delete-cleanup' && !app)) await parked(app);
+  await save();
+  if (armed && (boundary === 'create-intent' && app?.status === 'CREATING' || boundary === 'update-intent' && app?.status === 'UPDATING' || boundary === 'delete-intent' && app?.status === 'DELETING')) await parked(app);
+};
+const created = await sim.opensearch.applications.execute('CreateApplication', { name: 'crash-app', dataSources: [{ dataSourceArn: sim.opensearch.domain(region, 'source').arn }], appConfigs: [{ key: 'opensearchDashboards.dashboardAdmin.users', value: '*' }] }, region);
+while (sim.opensearch.applications.application(region, created.id).status !== 'ACTIVE') await delay(10);
+await sim.opensearch.applications.execute('AttachDataSource', { id: created.id, dataSourceArn: sim.opensearch.domain(region, 'source').arn, workspaceConfiguration: { name: 'Crash workspace', workspaceType: 'SEARCH' } }, region);
+const app = sim.opensearch.applications.application(region, created.id), principal = { principalType: 'anonymous', principalArn: '*', principalId: 'anonymous', accessKeyId: '', accountId: sim.store.accountId } as any;
+await sim.opensearch.applications.local(region, sim.store.accountId, app.id, principal, true, 'query', { workspaceId: app.workspaces[0].id, dataSourceArn: app.sources[0].dataSourceArn, method: 'PUT', path: '/_stacksim/workspace', body: { type: 'data-view', title: 'Durable view', pattern: 'products*' } });
+armed = true;
+if (boundary === 'update-intent') await sim.opensearch.applications.execute('UpdateApplication', { id: created.id, appConfigs: [] }, region);
+else await sim.opensearch.applications.execute('DeleteApplication', { id: created.id }, region);

@@ -11,6 +11,7 @@ import { resolveIamAuthorizationTarget } from "./iam-target.js";
 import { xrayOperation } from "../xray/action-inventory.js";
 import { moveTaskSource } from "../sqs/move-task.js";
 import { AwsError } from "../errors.js";
+import { parseLogLanguage } from "../cloudwatch-logs-query-languages.js";
 import { virtualHostedBucket } from "../s3/address.js";
 
 export interface AuthorizationTarget { action: string; resource: string; operation: string; input: any; context: Record<string, unknown>; additionalTargets?: AuthorizationTarget[] }
@@ -450,7 +451,13 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
       }
     }
   }
-  else if (service === "logs") { action = `logs:${operation}`; if (input.logGroupName) resource = `arn:aws:logs:${region}:${accountId}:log-group:${input.logGroupName}${input.logStreamName ? `:log-stream:${input.logStreamName}` : ":*"}`; else if (input.resourceArn) resource = input.resourceArn; else if (input.destinationName) resource = `arn:aws:logs:${region}:${accountId}:destination:${input.destinationName}`; }
+  else if (service === "logs") {
+    action = `logs:${operation}`;
+    if (operation === "StartQuery" && ["SQL", "PPL"].includes(String(input.queryLanguage).toUpperCase())) resource = `arn:aws:logs:${region}:${accountId}:log-group:${parseLogLanguage(input, region, accountId).source}:*`;
+    else if (input.logGroupName) resource = `arn:aws:logs:${region}:${accountId}:log-group:${input.logGroupName}${input.logStreamName ? `:log-stream:${input.logStreamName}` : ":*"}`;
+    else if (input.resourceArn) resource = input.resourceArn;
+    else if (input.destinationName) resource = `arn:aws:logs:${region}:${accountId}:destination:${input.destinationName}`;
+  }
   else if (service === "lambda") {
     const tagArn = url.pathname.match(/^\/2017-03-31\/tags\/(.+)$/)?.[1]; const accountSettings = url.pathname === "/2016-08-19/account-settings"; const layerMatch = url.pathname.match(/^\/2018-10-31\/layers(?:\/([^/]+)\/versions(?:\/(\d+)(?:\/policy(?:\/([^/]+))?)?)?)?$/); const codeSigningMatch = url.pathname.match(/^\/2020-04-22\/code-signing-configs(?:\/(.+?)(\/functions)?)?$/); const capacityMatch = url.pathname.match(/^\/2025-11-30\/capacity-providers(?:\/([^/]+)(\/function-versions)?)?$/); const durableExecutionMatch = url.pathname.match(/^\/2025-12-01\/durable-executions\/([^/]+)(?:\/(history|state|checkpoint|stop))?$/); const durableListMatch = url.pathname.match(/^\/2025-12-01\/functions\/([^/]+)\/durable-executions$/); const durableCallbackMatch = url.pathname.match(/^\/2025-12-01\/durable-execution-callbacks\/([^/]+)\/(succeed|fail|heartbeat)$/); const functionMatch = url.pathname.match(/^\/(?:2014-11-13|2015-03-31|2017-10-31|2019-09-25|2019-09-30|2020-06-30|2021-07-20|2021-10-31|2021-11-15|2024-08-31|2025-11-30)\/functions\/([^/]+)/); const name = functionMatch?.[1]; const suffix = name ? url.pathname.slice(url.pathname.indexOf(`/${name}`) + name.length + 1) : "";
     const eventMapping = url.pathname.match(/^\/2015-03-31\/event-source-mappings(?:\/([^/]+))?$/); const eventConfig = suffix.startsWith("/event-invoke-config"); const functionConcurrency = suffix === "/concurrency"; const provisionedConcurrency = suffix === "/provisioned-concurrency"; const functionUrl = suffix === "/url" || suffix === "/urls"; const responseStream = suffix === "/response-streaming-invocations"; const functionCodeSigning = suffix === "/code-signing-config"; const runtimeManagement = suffix === "/runtime-management-config"; const recursionConfig = suffix === "/recursion-config";

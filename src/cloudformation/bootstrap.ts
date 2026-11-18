@@ -4,6 +4,7 @@ import type { IamService } from "../iam.js";
 import type { S3Service } from "../s3.js";
 import type { StateStore } from "../state.js";
 import type { CloudFormationBootstrapState, PolicyDocument } from "../types.js";
+import { partitionForRegion } from "./transforms.js";
 import { COGNITO_CLOUDFORMATION_EXECUTION_ACTIONS } from "./providers/cognito.js";
 import { COGNITO_IDENTITY_CLOUDFORMATION_EXECUTION_ACTIONS } from "./providers/cognito-identity.js";
 import {
@@ -26,10 +27,11 @@ export const CDK_BOOTSTRAP_QUALIFIER = "hnb659fds";
 // permissions backed by StackSim's bounded providers; they do not advertise
 // the cumulative upstream version 30 template.
 export const CDK_BOOTSTRAP_COMPATIBILITY_VERSION = 23;
-export const CDK_BOOTSTRAP_POLICY_REVISION = 22;
+export const CDK_BOOTSTRAP_POLICY_REVISION = 27;
 export const CDK_BOOTSTRAP_VERSION_PARAMETER = `/cdk-bootstrap/${CDK_BOOTSTRAP_QUALIFIER}/version`;
 export const CDK_BOOTSTRAP_POLICY_NAME = "stacksim-cdk-bootstrap";
 export const CDK_BOOTSTRAP_COGNITO_POLICY_NAME = "stacksim-cdk-bootstrap-cognito";
+export const CDK_BOOTSTRAP_SEARCH_POLICY_NAME = "stacksim-cdk-bootstrap-search";
 
 const MANAGED_BY_TAG = "stacksim:managed-by";
 const QUALIFIER_TAG = "stacksim:qualifier";
@@ -225,11 +227,31 @@ function cognitoOnlyExecutionPolicy(): PolicyDocument {
   };
 }
 
+function serverlessExecutionPolicy(): PolicyDocument {
+  return { Version: "2012-10-17", Statement: [{
+      Sid: "ManageOpenSearchServerlessResources",
+      Effect: "Allow",
+      Action: ["aoss:AddCollectionToCollectionGroup", "aoss:CreateCollectionGroup", "aoss:UpdateCollectionGroup", "aoss:DeleteCollectionGroup", "aoss:BatchGetCollectionGroup", "aoss:CreateLifecyclePolicy", "aoss:UpdateLifecyclePolicy", "aoss:DeleteLifecyclePolicy", "aoss:BatchGetLifecyclePolicy", "aoss:APIAccessAll", "aoss:CreateIndex", "aoss:GetIndex", "aoss:UpdateIndex", "aoss:DeleteIndex", "aoss:CreateCollection", "aoss:UpdateCollection", "aoss:DeleteCollection", "aoss:BatchGetCollection", "aoss:ListTagsForResource", "aoss:TagResource", "aoss:UntagResource", "aoss:CreateAccessPolicy", "aoss:GetAccessPolicy", "aoss:UpdateAccessPolicy", "aoss:DeleteAccessPolicy", "aoss:CreateSecurityPolicy", "aoss:GetSecurityPolicy", "aoss:UpdateSecurityPolicy", "aoss:DeleteSecurityPolicy"],
+      Resource: "*",
+    }, { Sid: "ManageOpenSearchPipelines", Effect: "Allow", Action: ["osis:CreatePipeline", "osis:UpdatePipeline", "osis:DeletePipeline", "osis:GetPipeline", "osis:ListTagsForResource", "osis:TagResource", "osis:UntagResource"], Resource: "*" }] };
+}
+
 function cognitoExecutionPolicy(accountId: string, region: string): PolicyDocument {
   const base = cognitoOnlyExecutionPolicy();
   return { ...base, Statement: [
     ...(Array.isArray(base.Statement) ? base.Statement : [base.Statement]),
     ...amx04ExecutionPolicy(accountId, region).Statement as any[],
+    {
+      Sid: "ManageOpenSearchDomains",
+      Effect: "Allow",
+      Action: ["es:CreateDomain", "es:DescribeDomain", "es:DescribeDomainConfig", "es:DeleteDomain", "es:UpdateDomainConfig", "es:CreateElasticsearchDomain", "es:DescribeElasticsearchDomain", "es:DescribeElasticsearchDomainConfig", "es:DeleteElasticsearchDomain", "es:UpdateElasticsearchDomainConfig", "es:AddTags", "es:RemoveTags", "es:ListTags"],
+      Resource: `arn:${partitionForRegion(region)}:es:${region}:${accountId}:domain/*`,
+    },
+    {
+      Sid: 'ManageOpenSearchApplications', Effect: 'Allow',
+      Action: ['es:CreateApplication', 'es:GetApplication', 'es:UpdateApplication', 'es:DeleteApplication', 'es:AddTags', 'es:RemoveTags', 'es:ListTags'],
+      Resource: `arn:${partitionForRegion(region)}:opensearch:${region}:${accountId}:application/*`,
+    },
     {
       Sid: "ManageOpeningCloudFrontResources",
       Effect: "Allow",
@@ -243,6 +265,7 @@ function cognitoExecutionPolicy(accountId: string, region: string): PolicyDocume
       ],
       Resource: "*",
     },
+
     {
       Sid: "ManageParameterStoreResources",
       Effect: "Allow",
@@ -301,7 +324,7 @@ function executionPolicy(bucketName: string, accountId: string, region: string):
         Effect: "Allow",
         Action: "iam:PassRole",
         Resource: `arn:aws:iam::${accountId}:role/*`,
-        Condition: { StringEquals: { "iam:PassedToService": ["apigateway.amazonaws.com", "appsync.amazonaws.com", "cognito-idp.amazonaws.com", "cognito-identity.amazonaws.com", "lambda.amazonaws.com", "logs.amazonaws.com", "states.amazonaws.com", "streams.metrics.cloudwatch.amazonaws.com"] } },
+        Condition: { StringEquals: { "iam:PassedToService": ["apigateway.amazonaws.com", "appsync.amazonaws.com", "cognito-idp.amazonaws.com", "cognito-identity.amazonaws.com", "lambda.amazonaws.com", "logs.amazonaws.com", "osis-pipelines.amazonaws.com", "states.amazonaws.com", "streams.metrics.cloudwatch.amazonaws.com"] } },
       },
       {
         Sid: "ManageLambdaResources",
@@ -540,7 +563,7 @@ export class CloudFormationBootstrapManager {
       {
         key: "cloudFormationExecution", name: names.roleNames.cloudFormationExecution, arn: names.roleArns.cloudFormationExecution, cdkRole: "cfn-exec",
         description: "stacksim reduced CloudFormation execution role", trust: serviceTrust("cloudformation.amazonaws.com"), policy: executionPolicy(names.bucketName, accountId, this.region),
-        managedPolicyArns: [`arn:aws:iam::${accountId}:policy/${CDK_BOOTSTRAP_COGNITO_POLICY_NAME}`],
+        managedPolicyArns: [`arn:aws:iam::${accountId}:policy/${CDK_BOOTSTRAP_COGNITO_POLICY_NAME}`, `arn:aws:iam::${accountId}:policy/${CDK_BOOTSTRAP_SEARCH_POLICY_NAME}`],
       },
     ];
   }
@@ -626,25 +649,24 @@ export class CloudFormationBootstrapManager {
     return true;
   }
 
-  private inspectCognitoPolicy(): ManagedPolicyInspection {
-    const arn = `arn:aws:iam::${this.store.accountId}:policy/${CDK_BOOTSTRAP_COGNITO_POLICY_NAME}`;
-    const expected = cognitoExecutionPolicy(this.store.accountId, this.region);
+  private inspectManagedPolicy(name: string, expected: PolicyDocument): ManagedPolicyInspection {
+    const arn = `arn:aws:iam::${this.store.accountId}:policy/${name}`;
     const existing = this.store.ensureAccount().iam.policies[arn];
     if (!existing) return { arn, disposition: "create", policy: expected };
     if (existing.awsManaged || existing.tags[MANAGED_BY_TAG] !== MANAGED_BY_VALUE || existing.tags[QUALIFIER_TAG] !== CDK_BOOTSTRAP_QUALIFIER) {
-      throw resetError(`IAM policy ${CDK_BOOTSTRAP_COGNITO_POLICY_NAME} already exists but is not owned by the stacksim CDK bootstrap manager`);
+      throw resetError(`IAM policy ${name} already exists but is not owned by the stacksim CDK bootstrap manager`);
     }
     const revision = Number(existing.tags[REVISION_TAG] ?? 0);
-    if (!Number.isSafeInteger(revision) || revision < 0) throw resetError(`IAM policy ${CDK_BOOTSTRAP_COGNITO_POLICY_NAME} has an invalid policy revision tag`);
-    if (revision > CDK_BOOTSTRAP_POLICY_REVISION) throw resetError(`IAM policy ${CDK_BOOTSTRAP_COGNITO_POLICY_NAME} has newer policy revision ${revision}`);
+    if (!Number.isSafeInteger(revision) || revision < 0) throw resetError(`IAM policy ${name} has an invalid policy revision tag`);
+    if (revision > CDK_BOOTSTRAP_POLICY_REVISION) throw resetError(`IAM policy ${name} has newer policy revision ${revision}`);
     const document = existing.versions[existing.defaultVersionId]?.document;
     const exact = document !== undefined && canonical(document) === canonical(expected);
-    const previousExact = document !== undefined && canonical(document) === canonical(cognitoOnlyExecutionPolicy());
-    if (revision === CDK_BOOTSTRAP_POLICY_REVISION && !exact && !previousExact) throw resetError(`IAM policy ${CDK_BOOTSTRAP_COGNITO_POLICY_NAME} was locally edited at policy revision ${revision}`);
+    const previousExact = name === CDK_BOOTSTRAP_COGNITO_POLICY_NAME && document !== undefined && canonical(document) === canonical(cognitoOnlyExecutionPolicy());
+    if (revision === CDK_BOOTSTRAP_POLICY_REVISION && !exact && !previousExact) throw resetError(`IAM policy ${name} was locally edited at policy revision ${revision}`);
     return { arn, disposition: revision === CDK_BOOTSTRAP_POLICY_REVISION && exact ? "current" : "reconcile", policy: expected };
   }
 
-  private async applyCognitoPolicy(inspection: ManagedPolicyInspection): Promise<boolean> {
+  private async applyManagedPolicy(inspection: ManagedPolicyInspection): Promise<boolean> {
     if (inspection.disposition === "current") return false;
     const tags = [
       { Key: MANAGED_BY_TAG, Value: MANAGED_BY_VALUE },
@@ -653,8 +675,8 @@ export class CloudFormationBootstrapManager {
     ];
     if (inspection.disposition === "create") {
       await this.iam.CreatePolicy({
-        PolicyName: CDK_BOOTSTRAP_COGNITO_POLICY_NAME,
-        Description: "stacksim reduced CDK Cognito execution permissions",
+        PolicyName: inspection.arn.split(":policy/")[1],
+        Description: "stacksim reduced CDK service execution permissions",
         PolicyDocument: inspection.policy,
         Tags: tags,
       });
@@ -694,14 +716,17 @@ export class CloudFormationBootstrapManager {
     // Complete all read-only policy and role validation before creating or
     // upgrading infrastructure, so same-name unowned/tampered IAM state fails
     // cleanly.
-    const cognitoPolicyInspection = this.inspectCognitoPolicy();
+    const cognitoPolicyInspection = this.inspectManagedPolicy(CDK_BOOTSTRAP_COGNITO_POLICY_NAME, cognitoExecutionPolicy(this.store.accountId, this.region));
+    const searchPolicyInspection = this.inspectManagedPolicy(CDK_BOOTSTRAP_SEARCH_POLICY_NAME, serverlessExecutionPolicy());
     const inspections: RoleInspection[] = [];
     for (const spec of this.specs()) inspections.push(await this.inspectRole(spec));
 
     const bucketBefore = regionState.s3Buckets[names.bucketName];
     const bucketChanged = !bucketBefore || bucketBefore.managedRevision !== CDK_BOOTSTRAP_POLICY_REVISION || bucketBefore.versioning !== "enabled";
     await this.s3.ensureManagedBucket(names.bucketName, CDK_BOOTSTRAP_POLICY_REVISION);
-    const managedPolicyChanged = await this.applyCognitoPolicy(cognitoPolicyInspection);
+    const cognitoPolicyChanged = await this.applyManagedPolicy(cognitoPolicyInspection);
+    const searchPolicyChanged = await this.applyManagedPolicy(searchPolicyInspection);
+    const managedPolicyChanged = cognitoPolicyChanged || searchPolicyChanged;
     let rolesChanged = false;
     for (const inspection of inspections) rolesChanged = await this.applyRole(inspection) || rolesChanged;
 

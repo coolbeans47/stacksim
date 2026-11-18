@@ -139,6 +139,18 @@ function secretFor(store: StateStore, accessKeyId: string, clock: Clock): { secr
   };
 }
 
+/** Revalidate a previously authenticated identity without persisting or
+ * returning its credential material to a background worker. */
+export function refreshPrincipalIdentity(store: StateStore, clock: Clock, identity: Pick<PrincipalContext, 'accessKeyId' | 'principalId' | 'principalArn' | 'accountId'>): PrincipalContext {
+  const principal = secretFor(store, identity.accessKeyId, clock).principal;
+  if (principal.accountId !== identity.accountId || principal.principalId !== identity.principalId || principal.principalArn !== identity.principalArn) throw new AwsError('AccessDeniedException', 'The original execution identity is no longer available', 403);
+  if (principal.roleArn) {
+    const role = Object.values(store.state.accounts[principal.accountId]?.iam.roles ?? {}).find(role => role.arn === principal.roleArn);
+    if (!role || principal.principalId.split(':')[0] !== role.roleId) throw new AwsError('AccessDeniedException', 'The original execution role is no longer available', 403);
+  }
+  return principal;
+}
+
 export async function authenticateSigV4(req: IncomingMessage, url: URL, store: StateStore, clock: Clock, expectedRegion?: string, expectedService?: string): Promise<PrincipalContext> {
   const signature = parse(req, url); const credential = secretFor(store, signature.accessKeyId, clock);
   if (expectedRegion && signature.region !== expectedRegion) throw new AwsError("SignatureDoesNotMatch", `Credential should be scoped to region ${expectedRegion}`, 403);

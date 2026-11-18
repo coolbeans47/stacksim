@@ -944,7 +944,9 @@ test.describe("target phase console workflows", () => {
       await page.goto(`${consoleUrl}#/cloudwatch/contributor-insights`);
       await expectHelp("Insight rules", "managed DynamoDB templates");
       await page.goto(`${consoleUrl}#/cloudwatch/logs-insights`);
-      await expectHelp("Query editor", "PPL and SQL definitions");
+      const logsQueryHelp = await expectHelp("Query editor", "SQL/PPL runs a bounded scalar query subset");
+      await expect(logsQueryHelp).toContainText("one Standard log group");
+      await expect(logsQueryHelp).toContainText("Joins, subqueries, and the full AWS command/function catalog are unavailable");
       await expectHelp("Saved queries", "selected log groups");
       await page.goto(`${consoleUrl}#/cloudwatch/log-groups`);
       await expectHelp("Log groups", "retention");

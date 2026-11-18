@@ -2,7 +2,7 @@
 
 This guide explains every panel in the StackSim AppSync console: what each setting does, why you would use it in real AWS workloads, and how it maps to production AWS AppSync behavior.
 
-StackSim models GraphQL APIs with API-key, IAM, and local Cognito access-token authorization, SDL schemas, VTL unit resolvers, NONE and DynamoDB data sources, local HTTP and WebSocket endpoints, and metrics. Lambda, HTTP, OpenSearch, and other data sources remain unavailable. The console create form stays API-key-only; deploy the pinned Auth fixtures for Cognito APIs.
+StackSim models GraphQL APIs with API-key, IAM, and local Cognito access-token authorization, SDL schemas, VTL unit resolvers, NONE, DynamoDB and managed OpenSearch data sources, local HTTP and WebSocket endpoints, and metrics. Lambda, HTTP, and other data sources remain unavailable. The console create form stays API-key-only; deploy the pinned Auth fixtures for Cognito APIs.
 
 ---
 
@@ -77,7 +77,7 @@ Syntax and semantic validation, resolver-coordinate checks, authorization direct
 
 ### Data sources
 
-List with **Create data source**. Types: **NONE** (local VTL logic) or **DynamoDB** (same-Region table + IAM service role).
+List with **Create data source**. Types: **NONE** (local VTL logic), **DynamoDB** (same-Region table + IAM service role), or **OpenSearch** (same-Region managed domain endpoint + IAM service role).
 
 Detail page: description, type, table, role; **Edit**, **Delete**.
 
@@ -120,7 +120,7 @@ Key-value table; **Manage tags**.
 | Feature | StackSim behavior |
 |---------|-------------------|
 | Authorization | API key, IAM, local Cognito access tokens |
-| Data sources | NONE, DynamoDB |
+| Data sources | NONE, DynamoDB, managed OpenSearch |
 | Resolvers | VTL UNIT only |
 | APPSYNC_JS / pipeline | Unavailable |
 | Cognito / OIDC / Lambda auth | Pinned local Cognito access-token subset; OIDC/Lambda unavailable |
@@ -143,3 +143,5 @@ Key-value table; **Manage tags**.
 ## Two-user ownership lesson
 
 Use [Authenticated notes](../examples/amplify-auth-notes/README.md) to inspect the generated User Pool API, unchanged owner pipeline functions, DynamoDB conditions, and authorized subscriptions. Native Cognito directives admit the credential mode; generated authorization enforces the record owner. The console does not store bearer tokens. [Gap 3 closeout](gap-3-authenticated-app-closeout.md) records the exact tested scope.
+
+OpenSearch data sources use `2017-02-28` VTL request documents with operation, path and optional JSON params. Service roles need `es:ESHttp*` for the relevant domain paths and any required FGAC role mapping. Source ARN/account trust conditions use the GraphQL API. The adapter accepts existing managed endpoints in the same account/Region; Serverless, custom headers, NDJSON bodies and legacy Elasticsearch source types are unavailable. See [OS-09 acceptance](opensearch/os09-acceptance.md).

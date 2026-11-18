@@ -1,0 +1,7 @@
+node_modules/
+cdk.out/
+frontend/dist/
+lambda/dist/
+.runtime/
+test-results/
+playwright-report/

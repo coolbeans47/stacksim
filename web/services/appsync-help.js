@@ -24,12 +24,12 @@ const help = {
   dataSources: {
     level: "Partial",
     description: "A data source tells a resolver where its data comes from. Choose NONE for local payload and template logic, or DynamoDB to read and write a same-Region table through an IAM service role.",
-    support: "NONE and DynamoDB sources, table discovery, role trust, iam:PassRole checks, fresh assumed credentials, and resolver invocation are active. Lambda, HTTP, OpenSearch, EventBridge, RDS, and Bedrock data sources are unavailable.",
+    support: "NONE, DynamoDB and managed OpenSearch sources, table discovery, role trust, iam:PassRole checks, fresh assumed credentials, and resolver invocation are active. Lambda, HTTP, EventBridge, RDS, and Bedrock data sources are unavailable.",
   },
   dataSourceConfiguration: {
     level: "Partial",
     description: "Data-source configuration binds a stable AppSync name to its backend and credentials. For DynamoDB, the table and service role determine both where requests run and what operations the resolver may perform.",
-    support: "Descriptions, NONE/DynamoDB selection, table and role updates, permission enforcement, dependency checks, and deletion are active. Credentials are assumed per invocation and are never displayed or stored in this panel.",
+    support: "Descriptions, NONE/DynamoDB/OpenSearch selection, table and role updates, permission enforcement, dependency checks, and deletion are active. Credentials are assumed per invocation and are never displayed or stored in this panel.",
   },
   resolvers: {
     level: "Partial",
@@ -39,7 +39,7 @@ const help = {
   resolverExecution: {
     level: "Partial",
     description: "Execution summarizes the resolver attached to this schema coordinate. Edit it to change the data source or the request and response VTL templates that run whenever a client selects this field.",
-    support: "VTL UNIT execution, supported NONE and DynamoDB operations, mapping errors, field metrics, safe diagnostics, and updates are active. APPSYNC_JS and configurable pipeline functions are not available in this editor.",
+    support: "VTL UNIT execution, supported NONE, DynamoDB and managed OpenSearch operations, mapping errors, field metrics, safe diagnostics, and updates are active. APPSYNC_JS and configurable pipeline functions are not available in this editor.",
   },
   apiKeys: {
     level: "Supported locally",

@@ -1,3 +1,9 @@
+import { createOpenSearchDomainProvider, createElasticsearchDomainProvider } from "./cloudformation/providers/opensearch.js";
+import { createOpenSearchServerlessProviders } from "./cloudformation/providers/opensearchserverless.js";
+import { createOpenSearchIngestionProvider } from "./cloudformation/providers/opensearch-ingestion.js";
+import { createOpenSearchApplicationProvider } from './cloudformation/providers/opensearch-application.js';
+import { OpenSearchService } from "./opensearch.js";
+import { familyForRequest as openSearchFamily } from "./opensearch/protocol.js";
 import { trustPolicySource, authorizationDecision, resourcePolicySource, mergeProvenance } from "./iam/provenance.js";
 import { createServer, type Server as HttpServer } from "node:http";
 import { createServer as createSecureServer, type Server as HttpsServer } from "node:https";
@@ -78,6 +84,10 @@ import { EmbeddedSqliteProvider } from "./rds/embedded-sqlite.js";
 import { ManagedMariaDbProvider } from "./rds/managed-mariadb.js";
 import type { RdsEngineProvider } from "./rds/provider.js";
 import { authenticateSigV4, principalWithoutValidation, type PrincipalContext } from "./auth/sigv4.js";
+import type { S3ReadSource } from './opensearch/ingestion/s3-source.js';
+import type { DynamoSourceConfig } from './opensearch/ingestion/dynamodb-config.js';
+import { readDynamoExport } from './opensearch/ingestion/dynamodb-export.js';
+import { parseLogLanguage } from './cloudwatch-logs-query-languages.js';
 import { authorizationTarget, executeApiTarget, type AuthorizationTarget } from "./auth/target.js";
 import { combineIdentityAndResourceAuthorization, evaluateAuthorization, evaluateResourcePolicy, evaluateRoleAuthorization, evaluateTrust, roleSessionAuthorizationContext, type AuthorizationResult } from "./iam/evaluator.js";
 import { AwsError, sendAwsError } from "./errors.js";
@@ -349,6 +359,7 @@ export class StackSim {
   readonly stepfunctions: StepFunctionsService;
   readonly xray: XRayService;
   readonly cloudfront: CloudFrontService;
+  readonly opensearch: OpenSearchService;
   readonly authMode: "off" | "validate" | "enforce";
   readonly seedDefaultAdmin: boolean;
   readonly defaultUserName: string;
@@ -536,8 +547,234 @@ export class StackSim {
     const rdsProvider = options.rdsProvider ?? new EmbeddedSqliteProvider({ instancesRoot: rdsInstancesRoot, startupTimeoutMs: rdsStartupTimeoutMs });
     const legacyDestroyProvider = options.rdsProvider ? undefined : new ManagedMariaDbProvider({ instancesRoot: rdsInstancesRoot, startupTimeoutMs: rdsStartupTimeoutMs });
     this.rdsManager = new RdsManager(this.store, rdsProvider, this.clock, { startupTimeoutMs: rdsStartupTimeoutMs, legacyDestroyProvider });
+    this.opensearch = new OpenSearchService(this.store, this.clock, this.authMode);
+    this.opensearch.setTelemetryPublisher((region, event) => this.services(region).telemetry.publish(event));
     this.iam = new IamService(this.store, this.clock);
     this.sts = new StsService(this.store, this.clock, this.scheduler);
+    this.opensearch.directQueries.configure(async (source, operation, input = {}) => {
+      if (source.accountId !== this.store.accountId) throw new AwsError('ValidationException', 'Direct queries require log storage in the current StackSim account');
+      const regional = this.store.regionState(source.region, source.accountId), logs = this.services(source.region).logs;
+      const owned = (job: import('./types.js').LogQueryJobState) => job.sourceOwner?.service === 'opensearch' && job.sourceOwner.arn === source.arn && job.sourceOwner.generation === source.generation;
+      if (operation === 'cleanup') { for (const job of Object.values(regional.logQueryJobs).filter(owned)) if (job.status === 'Scheduled' || job.status === 'Running') await logs.StopQuery({ queryId: job.queryId }); return {}; }
+      const role = await this.sts.assumeServiceRoleForResource(source.roleArn, `direct-query-${source.generation.slice(0, 16)}`, 'directquery.opensearchservice.amazonaws.com', { accountId: source.accountId, arn: source.arn }, true);
+      if (operation === 'validate') return {};
+      let groupName: string, job: import('./types.js').LogQueryJobState | undefined;
+      if (operation === 'start') {
+        const allowed = ['queryLanguage', 'queryString', 'startTime', 'endTime', 'limit', 'logGroupName', 'logGroupNames', 'logGroupIdentifiers'];
+        if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !allowed.includes(key))) throw new AwsError('ValidationException', 'Unsupported direct query input');
+        groupName = parseLogLanguage(input, source.region, source.accountId).source;
+      } else {
+        if (operation !== 'guard' && (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['queryId', ...(operation === 'get' ? ['maxItems', 'nextToken'] : [])].includes(key)))) throw new AwsError('ValidationException', 'Unsupported direct query input');
+        job = regional.logQueryJobs[String(input.queryId ?? '')];
+        if (!job || !owned(job) || job.expiresAt <= this.clock.now()) throw new AwsError('ResourceNotFoundException', 'Direct query job does not exist', 404);
+        groupName = job.logGroupNames[0];
+      }
+      const group = regional.logs[groupName]; if (!group) throw new AwsError('ResourceNotFoundException', 'The direct query log group does not exist', 404);
+      const context = { 'aws:PrincipalArn': role.roleArn ?? role.principalArn, 'aws:PrincipalAccount': role.accountId, 'aws:ResourceAccount': source.accountId, 'aws:RequestedRegion': source.region, 'aws:SecureTransport': true, 'aws:CurrentTime': new Date(this.clock.now()).toISOString(), 'aws:SourceArn': source.arn, 'aws:SourceAccount': source.accountId, ...Object.fromEntries(Object.entries(group.tags).map(([key, value]) => [`aws:ResourceTag/${key}`, value])) };
+      await this.authorize(role, { action: 'logs:StartQuery', resource: `${group.arn}:*`, operation: 'StartQuery', input: { logGroupName: groupName }, context }, randomUUID());
+      if (operation === 'guard') return {};
+      if (operation === 'start') return logs.StartQuery(input, role, { service: 'opensearch', arn: source.arn, generation: source.generation });
+      if (operation === 'cancel') return logs.StopQuery({ queryId: job!.queryId });
+      return logs.GetQueryResults({ queryId: job!.queryId, maxItems: input.maxItems, nextToken: input.nextToken });
+    });
+    const searchLogTarget = (domain: { arn: string; accountId: string; region: string; generation: string }, type: string, groupArn: string) => {
+      if (domain.accountId !== this.store.accountId) throw new AwsError("ValidationException", "The CloudWatch Logs adapter supports the configured StackSim account");
+      const state = this.store.regionState(domain.region, domain.accountId), group = Object.values(state.logs).find(group => group.arn === groupArn.replace(/:\*$/, ""));
+      if (!group) throw new AwsError("ValidationException", "The log group must exist in the domain account and Region");
+      const logStreamName = `opensearch/${domain.generation}/${type}`, streamArn = `${group.arn}:log-stream:${logStreamName}`;
+      const authorize = (action: string, resource: string) => {
+        if (action === "logs:CreateLogGroup") return false;
+        const context = { "aws:SourceArn": domain.arn, "aws:SourceAccount": domain.accountId, "aws:RequestedRegion": domain.region, "aws:SecureTransport": true, "aws:CurrentTime": new Date(this.clock.now()).toISOString() };
+        const evaluations = Object.values(state.logResourcePolicies).filter(policy => policy.policyScope !== "RESOURCE" || [group.arn, `${group.arn}:*`].includes(policy.resourceArn ?? "")).flatMap(policy => { try { return [evaluateResourcePolicy(JSON.parse(policy.policyDocument), "es.amazonaws.com", action, resource, context)]; } catch { return []; } });
+        return evaluations.some(result => result.decision === "allowed") && !evaluations.some(result => result.decision === "explicitDeny");
+      };
+      if (!authorize("logs:CreateLogStream", streamArn) || !authorize("logs:PutLogEvents", streamArn)) throw new AwsError("ValidationException", "The Logs resource policy must allow es.amazonaws.com to create streams and publish events for this domain");
+      return { logGroupName: group.logGroupName, logStreamName, authorize };
+    };
+    this.opensearch.configureLogs({
+      validate: (domain, type, groupArn) => { searchLogTarget(domain, type, groupArn); },
+      publish: async (domain, type, groupArn, event) => {
+        await this.store.withMutationLock(`opensearch:logs:${domain.generation}:${type}`, async () => {
+          const target = searchLogTarget(domain, type, groupArn);
+          if (!await this.services(domain.region).logs.deliverServiceEvents({ logGroupName: target.logGroupName, logStreamName: target.logStreamName, logEvents: [event] }, target.authorize)) throw new AwsError("AccessDeniedException", "OpenSearch log delivery was rejected", 403);
+        });
+      },
+    });
+    this.opensearch.configurePackageSource(async (region, accountId, bucket, key, principal) => {
+      const registration = this.store.state.installation.s3BucketNames[bucket];
+      if (!registration || registration.accountId !== accountId || registration.region !== region) throw new AwsError("AccessDeniedException", "Package imports require a same-account, same-Region S3 bucket", 403);
+      const s3 = this.services(region).s3, resource = `arn:aws:s3:::${bucket}/${key}`;
+      if (this.authMode === "enforce") {
+        if (!principal) throw new AwsError("AccessDeniedException", "Package imports require an authenticated caller", 403);
+        const context: Record<string, unknown> = { "aws:PrincipalArn": principal.roleArn ?? principal.principalArn, "aws:PrincipalAccount": principal.accountId, "aws:RequestedRegion": region, "aws:SecureTransport": true, "aws:CurrentTime": new Date(this.clock.now()).toISOString(), "aws:TokenIssueTime": principal.issuedAt === undefined ? undefined : new Date(principal.issuedAt).toISOString(), "aws:SourceIdentity": principal.sourceIdentity };
+        await s3.enrichAuthorizationContext(resource, context); await this.authorize(principal, { action: "s3:GetObject", resource, operation: "GetObject", input: {}, context }, randomUUID());
+      }
+      return (await s3.readObjectBytes(bucket, key, undefined, 65536, true)).body;
+    });
+    this.opensearch.configureSnapshots(async (domain, repository) => {
+      const { bucket, region, role_arn: roleArn } = repository.settings, registration = this.store.state.installation.s3BucketNames[bucket];
+      if (!registration || registration.accountId !== domain.accountId || registration.region !== domain.region) throw new AwsError("AccessDeniedException", "Snapshot storage requires a same-account, same-Region S3 bucket", 403);
+      const principal = await this.sts.assumeServiceRoleForResource(roleArn, `snapshot-${domain.generation}`, "es.amazonaws.com", { accountId: domain.accountId, arn: domain.arn }), s3 = this.services(region).s3;
+      const authorize = async (action: string, key?: string, prefix?: string) => {
+        const resource = `arn:aws:s3:::${bucket}${key === undefined ? "" : `/${key}`}`, context: Record<string, unknown> = { "aws:PrincipalArn": principal.roleArn ?? principal.principalArn, "aws:PrincipalAccount": principal.accountId, "aws:RequestedRegion": region, "aws:SecureTransport": true, "aws:CurrentTime": new Date(this.clock.now()).toISOString(), "aws:TokenIssueTime": principal.issuedAt === undefined ? undefined : new Date(principal.issuedAt).toISOString(), "aws:SourceIdentity": principal.sourceIdentity, ...(prefix === undefined ? {} : { "s3:prefix": prefix }) };
+        await s3.enrichAuthorizationContext(resource, context);
+        if (this.authMode === "enforce") await this.authorize(principal, { action: `s3:${action}`, resource, operation: action, input: {}, context }, randomUUID());
+      };
+      return {
+        list: async prefix => { await authorize("ListBucket", undefined, prefix); return (await s3.listCurrentObjectsInternal(bucket, prefix)).map(object => object.key); },
+        read: async key => { await authorize("GetObject", key); return (await s3.readObjectBytes(bucket, key, undefined, 96 * 1024 * 1024, true)).body; },
+        write: async (key, body) => { await authorize("PutObject", key); await s3.putObjectBytesInternal(bucket, key, body, { contentType: "application/gzip", enforceObjectLock: true }); },
+        remove: async key => { await authorize("DeleteObject", key); await s3.deleteObjectInternal(bucket, key); },
+      };
+    });
+    const pipelineLogTarget = (pipeline: { accountId: string; region: string; generation: string }, name: string) => {
+      if (pipeline.accountId !== this.store.accountId) throw new AwsError("ValidationException", "The CloudWatch Logs adapter supports the configured StackSim account");
+      const state = this.store.regionState(pipeline.region, pipeline.accountId), group = Object.values(state.logs).find(group => group.logGroupName === name);
+      if (!group) throw new AwsError("ValidationException", "The pipeline log group must exist in the pipeline account and Region");
+      const logStreamName = `osis/${pipeline.generation}/pipeline`, streamArn = `${group.arn}:log-stream:${logStreamName}`;
+      const authorize = (action: string, resource: string) => {
+        if (action === "logs:CreateLogGroup") return false;
+        const context = { "aws:SourceArn": streamArn, "aws:SourceAccount": pipeline.accountId, "aws:RequestedRegion": pipeline.region, "aws:SecureTransport": true, "aws:CurrentTime": new Date(this.clock.now()).toISOString() };
+        const evaluations = Object.values(state.logResourcePolicies).filter(policy => policy.policyScope !== "RESOURCE" || [group.arn, `${group.arn}:*`].includes(policy.resourceArn ?? "")).flatMap(policy => { try { return [evaluateResourcePolicy(JSON.parse(policy.policyDocument), "delivery.logs.amazonaws.com", action, resource, context)]; } catch { return []; } });
+        return evaluations.some(result => result.decision === "allowed") && !evaluations.some(result => result.decision === "explicitDeny");
+      };
+      if (!authorize("logs:CreateLogStream", streamArn) || !authorize("logs:PutLogEvents", streamArn)) throw new AwsError("ValidationException", "The Logs resource policy must allow delivery.logs.amazonaws.com to create streams and publish pipeline events");
+      return { logGroupName: name, logStreamName, authorize };
+    };
+    const sourceBucket = (config: S3ReadSource, account: string) => {
+      const registration = this.store.state.installation.s3BucketNames[config.bucket];
+      if (!registration || registration.accountId !== account || registration.region !== config.region) throw new AwsError('ValidationException', 'S3 sources require an existing same-account, same-Region bucket');
+      return this.services(config.region).s3;
+    };
+    const authorizeSource = async (config: S3ReadSource, principal: PrincipalContext, key?: string, versionId?: string) => {
+      const s3 = sourceBucket(config, principal.accountId), resource = `arn:aws:s3:::${config.bucket}${key === undefined ? '' : `/${key}`}`;
+      const context: Record<string, unknown> = { 'aws:PrincipalArn': principal.roleArn ?? principal.principalArn, 'aws:PrincipalAccount': principal.accountId, 'aws:RequestedRegion': config.region, 'aws:SecureTransport': true, 'aws:CurrentTime': new Date(this.clock.now()).toISOString(), 'aws:TokenIssueTime': principal.issuedAt === undefined ? undefined : new Date(principal.issuedAt).toISOString(), 'aws:SourceIdentity': principal.sourceIdentity, ...(key === undefined ? { 's3:prefix': config.prefix } : versionId ? { 's3:VersionId': versionId } : {}) };
+      await s3.enrichAuthorizationContext(resource, context);
+      const operation = key === undefined ? 'ListBucket' : versionId ? 'GetObjectVersion' : 'GetObject';
+      if (this.authMode === 'enforce') await this.authorize(principal, { action: `s3:${operation}`, resource, operation, input: {}, context }, randomUUID());
+      return s3;
+    };
+    const dynamoSource = (config: DynamoSourceConfig, account: string) => {
+      if (account !== this.store.accountId || config.account !== account) throw new AwsError('ValidationException', 'DynamoDB ingestion requires a table in the StackSim installation account');
+      return this.services(config.region).dynamodb;
+    };
+    const authorizeDynamoSource = async (config: DynamoSourceConfig, principal: PrincipalContext, operation: string, resource: string) => {
+      const service = dynamoSource(config, principal.accountId);
+      const tags = this.store.regionState(config.region, principal.accountId).tables[config.table]?.tags ?? {};
+      const context = { 'aws:PrincipalArn': principal.roleArn ?? principal.principalArn, 'aws:PrincipalAccount': principal.accountId, 'aws:RequestedRegion': config.region, 'aws:SecureTransport': true, 'aws:CurrentTime': new Date(this.clock.now()).toISOString(), 'aws:TokenIssueTime': principal.issuedAt === undefined ? undefined : new Date(principal.issuedAt).toISOString(), 'aws:SourceIdentity': principal.sourceIdentity, ...Object.fromEntries(Object.entries(tags).map(([key, value]) => [`aws:ResourceTag/${key}`, value])) };
+      if (this.authMode === 'enforce') await this.authorize(principal, { action: `dynamodb:${operation}`, operation, resource, input: {}, context }, randomUUID());
+      return service;
+    };
+    this.opensearch.configureIngestion({
+      dynamoSource: {
+        validate: (config, account) => { dynamoSource(config, account); if (config.export) sourceBucket({ bucket: config.export.bucket, prefix: config.export.prefix, region: config.region }, account); },
+        startExport: async (config, token, time, principal) => {
+          if (!config.export || this.clock.now() - time >= 8 * 60 * 60 * 1000) throw new AwsError('ValidationException', 'The export admission window expired; recreate the pipeline after resynchronizing');
+          const service = await authorizeDynamoSource(config, principal, 'DescribeContinuousBackups', config.tableArn);
+          const { ContinuousBackupsDescription } = await service.DescribeContinuousBackups({ TableName: config.table });
+          if (ContinuousBackupsDescription.PointInTimeRecoveryDescription.PointInTimeRecoveryStatus !== 'ENABLED') throw new AwsError('ValidationException', 'Initial export requires enabled DynamoDB point-in-time recovery');
+          await authorizeDynamoSource(config, principal, 'ExportTableToPointInTime', config.tableArn);
+          const result = await service.ExportTableToPointInTime({ TableArn: config.tableArn, ExportTime: time / 1000, ClientToken: token, S3Bucket: config.export.bucket, S3BucketOwner: principal.accountId, S3Prefix: config.export.prefix, S3SseAlgorithm: 'AES256', ExportFormat: 'DYNAMODB_JSON', ExportType: 'FULL_EXPORT' }, principal, async (bucket, keys) => {
+            const s3 = sourceBucket({ bucket, prefix: config.export!.prefix, region: config.region }, principal.accountId);
+            for (const key of keys) {
+              const resource = `arn:aws:s3:::${bucket}/${key}`, context: Record<string, unknown> = { 'aws:PrincipalArn': principal.roleArn ?? principal.principalArn, 'aws:PrincipalAccount': principal.accountId, 'aws:RequestedRegion': config.region, 'aws:SecureTransport': true, 'aws:CurrentTime': new Date(this.clock.now()).toISOString(), 's3:x-amz-server-side-encryption': 'AES256' };
+              await s3.enrichAuthorizationContext(resource, context);
+              if (this.authMode === 'enforce') await this.authorize(principal, { action: 's3:PutObject', operation: 'PutObject', resource, input: {}, context }, randomUUID());
+            }
+          });
+          return result.ExportDescription.ExportArn;
+        },
+        readExport: async (config, arn, offset, principal) => {
+          if (!config.export || !arn.startsWith(`${config.tableArn}/export/`)) throw new AwsError('ValidationException', 'Invalid source export identity');
+          const service = await authorizeDynamoSource(config, principal, 'DescribeExport', arn), { ExportDescription: description } = await service.DescribeExport({ ExportArn: arn });
+          if (description.ExportStatus === 'IN_PROGRESS') return undefined;
+          if (description.ExportStatus !== 'COMPLETED' || description.TableArn !== config.tableArn || description.S3Bucket !== config.export.bucket || (description.S3Prefix ?? '') !== config.export.prefix) throw new AwsError('ValidationException', 'The source export failed or no longer matches the pipeline');
+          const result = await readDynamoExport(description, async key => { const s3 = await authorizeSource({ bucket: config.export!.bucket, prefix: config.export!.prefix, region: config.region }, principal, key); return (await s3.readObjectBytes(config.export!.bucket, key, undefined, 10 * 1024 * 1024, true)).body; });
+          return { ...result, items: result.items.slice(offset, offset + 100) };
+        },
+        open: async (config, principal) => {
+          const service = await authorizeDynamoSource(config, principal, 'DescribeTable', config.tableArn);
+          const { Table } = await service.DescribeTable({ TableName: config.table });
+          if (Table.TableArn !== config.tableArn || !Table.LatestStreamArn || !Table.StreamSpecification?.StreamEnabled) throw new AwsError('ValidationException', 'The source table requires an enabled stream');
+          await authorizeDynamoSource(config, principal, 'DescribeStream', Table.LatestStreamArn);
+          await authorizeDynamoSource(config, principal, 'GetShardIterator', Table.LatestStreamArn);
+          return service.captureIngestionStreamPosition(Table.LatestStreamArn, config.startPosition);
+        },
+        read: async (config, cursor, principal) => {
+          const service = await authorizeDynamoSource(config, principal, 'DescribeTable', config.tableArn);
+          const { Table } = await service.DescribeTable({ TableName: config.table });
+          if (Table.LatestStreamArn !== cursor.streamArn) throw new AwsError('ConflictException', 'The source stream was replaced', 409);
+          await authorizeDynamoSource(config, principal, 'DescribeStream', cursor.streamArn);
+          const { StreamDescription } = await service.DescribeStream({ StreamArn: cursor.streamArn });
+          if (StreamDescription.Shards?.length !== 1 || StreamDescription.Shards[0].ShardId !== cursor.shardId) throw new AwsError('ConflictException', 'The source shard changed', 409);
+          await authorizeDynamoSource(config, principal, 'GetShardIterator', cursor.streamArn);
+          const { ShardIterator } = await service.GetShardIterator({ StreamArn: cursor.streamArn, ShardId: cursor.shardId, ShardIteratorType: 'AT_SEQUENCE_NUMBER', SequenceNumber: cursor.nextSequence });
+          await authorizeDynamoSource(config, principal, 'GetRecords', cursor.streamArn);
+          const result = await service.GetRecords({ ShardIterator, Limit: 100 });
+          return { records: result.Records, closed: !result.NextShardIterator };
+        },
+      },
+      s3Source: {
+        validate: (config, account) => { sourceBucket(config, account); },
+        list: async (config, principal) => (await (await authorizeSource(config, principal)).listCurrentObjectsInternal(config.bucket, config.prefix)).map(object => ({ key: object.key, ...(object.versionId === 'null' ? {} : { versionId: object.versionId }), etag: object.etag, size: object.size, lastModified: object.lastModified })),
+        read: async (config, object, principal) => {
+          const s3 = await authorizeSource(config, principal, object.key, object.versionId);
+          const read = await s3.readObjectBytes(config.bucket, object.key, object.versionId, 10 * 1024 * 1024, true);
+          if (read.etag !== object.etag || read.size !== object.size || read.lastModified !== object.lastModified) throw new AwsError('ConflictException', 'The listed S3 object changed before admission', 409);
+          return read.body;
+        },
+      },
+      validateLogs: (pipeline, name) => { pipelineLogTarget(pipeline, name); },
+      log: async (pipeline, name, event) => {
+        await this.store.withMutationLock(`osis:logs:${pipeline.generation}`, async () => {
+          const target = pipelineLogTarget(pipeline, name);
+          if (!await this.services(pipeline.region).logs.deliverServiceEvents({ logGroupName: name, logStreamName: target.logStreamName, logEvents: [event] }, target.authorize)) throw new AwsError("AccessDeniedException", "Pipeline log delivery was rejected", 403);
+        });
+      },
+      assumeRole: (roleArn, pipeline) => this.sts.assumeServiceRoleForResource(roleArn, `osis-${pipeline.generation}`, "osis-pipelines.amazonaws.com", { accountId: pipeline.accountId, arn: pipeline.arn }),
+      metric: (pipeline, name, value) => this.services(pipeline.region).telemetry.publish({ namespace: "AWS/OSIS", metricName: name, dimensions: { PipelineName: pipeline.name, ClientId: pipeline.accountId }, unit: "Count", value, timestamp: this.clock.now(), aggregation: "sample" }),
+      deadLetter: async (config, principal, event, reason) => {
+        const registration = this.store.state.installation.s3BucketNames[config.bucket];
+        if (!registration || registration.accountId !== principal.accountId || registration.region !== config.region) throw new AwsError("AccessDeniedException", "Pipeline dead-letter delivery requires a same-account, same-Region S3 bucket", 403);
+        const s3 = this.services(config.region).s3, key = `${config.prefix}${event.id}.json`, resource = `arn:aws:s3:::${config.bucket}/${key}`;
+        const context: Record<string, unknown> = { "aws:PrincipalArn": principal.roleArn ?? principal.principalArn, "aws:PrincipalAccount": principal.accountId, "aws:RequestedRegion": config.region, "aws:SecureTransport": true, "aws:CurrentTime": new Date(this.clock.now()).toISOString(), "aws:TokenIssueTime": principal.issuedAt === undefined ? undefined : new Date(principal.issuedAt).toISOString(), "aws:SourceIdentity": principal.sourceIdentity };
+        await s3.enrichAuthorizationContext(resource, context);
+        if (this.authMode === "enforce") await this.authorize(principal, { action: "s3:PutObject", resource, operation: "PutObject", input: {}, context }, randomUUID());
+        await s3.putObjectBytesInternal(config.bucket, key, Buffer.from(JSON.stringify({ event: event.source, ...(event.metadata ? { metadata: event.metadata } : {}), error: reason, attempts: event.attempts + 1, acceptedAt: event.acceptedAt })), { contentType: "application/json", enforceObjectLock: true });
+      },
+    });
+    const streamQueue = (stream: import('./opensearch/serverless-streams.js').ServerlessStream) => {
+      const sqs = this.services(stream.region).sqs, queue = sqs.resolveQueueArn(stream.source.s3.sqsArn);
+      if (queue.ownerAccountId !== stream.accountId || queue.fifo) throw new AwsError('ValidationException', 'Ingestion requires a same-account standard SQS queue');
+      return { sqs, queue };
+    };
+    const authorizeStreamQueue = async (stream: import('./opensearch/serverless-streams.js').ServerlessStream, principal: PrincipalContext, operation: string) => {
+      const target = streamQueue(stream);
+      const context = { 'aws:PrincipalArn': principal.roleArn ?? principal.principalArn, 'aws:PrincipalAccount': principal.accountId, 'aws:RequestedRegion': stream.region, 'aws:SecureTransport': true, 'aws:CurrentTime': new Date(this.clock.now()).toISOString(), 'aws:TokenIssueTime': principal.issuedAt === undefined ? undefined : new Date(principal.issuedAt).toISOString(), ...Object.fromEntries(Object.entries(target.queue.state.tags ?? {}).map(([key, value]) => [`aws:ResourceTag/${key}`, value])) };
+      if (this.authMode === 'enforce') await this.authorize(principal, { action: `sqs:${operation}`, operation, resource: target.queue.queueArn, input: {}, context }, randomUUID());
+      return target;
+    };
+    this.opensearch.serverless.configureStreams({
+      assume: stream => this.sts.assumeServiceRoleForResource(stream.roleArn, `aoss-${stream.generation}`, 'aoss.amazonaws.com', { accountId: stream.accountId, arn: stream.arn }, true),
+      validateQueue: stream => { streamQueue(stream); },
+      receive: async (stream, principal) => {
+        await authorizeStreamQueue(stream, principal, 'GetQueueUrl');
+        await authorizeStreamQueue(stream, principal, 'GetQueueAttributes');
+        const { sqs, queue } = await authorizeStreamQueue(stream, principal, 'ReceiveMessage');
+        const message = (await sqs.ReceiveMessage({ QueueUrl: queue.queueUrl, MaxNumberOfMessages: 1, WaitTimeSeconds: 0, VisibilityTimeout: 300 })).Messages?.[0];
+        return message ? { id: message.MessageId!, receipt: message.ReceiptHandle!, body: message.Body! } : undefined;
+      },
+      acknowledge: async (stream, message, principal) => { const { sqs, queue } = await authorizeStreamQueue(stream, principal, 'DeleteMessage'); await sqs.DeleteMessage({ QueueUrl: queue.queueUrl, ReceiptHandle: message.receipt }); },
+      read: async (stream, object, principal) => {
+        const config = { bucket: object.bucket, prefix: '', region: stream.region };
+        // Read the current object: old/reordered version notifications may never
+        // overwrite a newer object with historical data.
+        const s3 = await authorizeSource(config, principal, object.key);
+        const read = await s3.readObjectBytes(object.bucket, object.key, undefined, 10 * 1024 * 1024, true);
+        if (read.etag !== object.etag || read.size !== object.size || object.versionId !== undefined && read.versionId !== object.versionId) throw new AwsError('ConflictException', 'The S3 notification no longer describes the current object', 409);
+        return read.body;
+      },
+    });
     this.cloudfront = new CloudFrontService(this.store, this.clock, ({ accountId, region, bucketName }) => {
       const registration = this.store.state.installation.s3BucketNames[bucketName];
       if (!registration || registration.accountId !== accountId || registration.region !== region) {
@@ -602,6 +839,8 @@ export class StackSim {
       caCertificatePath: this.customResourceCallbacks.caCertificatePath,
     });
     await this.cloudfront.start();
+    this.opensearch.configureTls({ certificate: callbackPki.certificate, privateKey: callbackPki.privateKey, caCertificatePath: this.customResourceCallbacks.caCertificatePath });
+    await this.opensearch.start();
     this.customResourceCallbackServer = createSecureServer({ cert: callbackPki.certificate, key: callbackPki.privateKey }, (req, res) => {
       const pathname = new URL(req.url ?? "/", `https://${req.headers.host ?? "localhost"}`).pathname;
       if (pathname.startsWith("/_stacksim/cloudformation/custom-resource-response/")) {
@@ -724,7 +963,8 @@ export class StackSim {
         res.setHeader("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
         return res.end(`<!doctype html><html><head><meta charset="utf-8"><title>SNS unsubscribe</title></head><body><main><h1>${completed ? "Subscription removed" : "Invalid unsubscribe link"}</h1><p>${completed ? "The local SNS subscription was removed." : "This unsubscribe link is invalid, expired, or already used."}</p></main></body></html>`);
       }
-      if (req.method === "GET" && url.pathname === "/_stacksim/health") return json(res, { status: "ok", services: ["cloudformation", "cloudfront", "lambda", "stepfunctions", "apigateway", "appsync", "dynamodb", "rds", "s3", "sqs", "sns", "ssm", "secretsmanager", "eventbridge", "scheduler", "logs", "cloudwatch", "iam", "sts", "ses", "cognito-idp", "cognito-identity", "xray"], compatibility: { amplifyGen2Auth: amplifyAuthCapabilities }, cloudfront: { status: "available", distributions: this.cloudfront.consoleSnapshot().distributions.length, viewers: this.cloudfront.listLocalViewers() }, xray: services.xray.health(), rds: this.rdsManager.metadata(), region, requestId: currentRequestId });
+      if (openSearchFamily(req, url) || url.pathname.startsWith("/_stacksim/api/opensearch/")) return this.opensearch.handle(req, res, url, region);
+      if (req.method === "GET" && url.pathname === "/_stacksim/health") return json(res, { status: "ok", services: ["opensearch", "cloudformation", "cloudfront", "lambda", "stepfunctions", "apigateway", "appsync", "dynamodb", "rds", "s3", "sqs", "sns", "ssm", "secretsmanager", "eventbridge", "scheduler", "logs", "cloudwatch", "iam", "sts", "ses", "cognito-idp", "cognito-identity", "xray"], compatibility: { amplifyGen2Auth: amplifyAuthCapabilities }, cloudfront: { status: "available", distributions: this.cloudfront.consoleSnapshot().distributions.length, viewers: this.cloudfront.listLocalViewers() }, xray: services.xray.health(), rds: this.rdsManager.metadata(), region, requestId: currentRequestId });
       if (req.method === "GET" && url.pathname === "/_stacksim/api/console-config") return json(res, { authMode: this.authMode, region, bootId: this.bootId });
       if (url.pathname.startsWith("/_stacksim/api/")) {
         try {
@@ -750,6 +990,7 @@ export class StackSim {
         invokeEndpoint: `${this.invokeProtocol}://${this.host}:${this.invokePort}`,
         s3HttpsEndpoint: `https://127.0.0.1:${this.s3TlsPort}`,
         s3AwsManagedKeyArn: services.s3.awsManagedKeyArn({ ownerAccountId: this.store.accountId, region }),
+        opensearchDomainCount: this.opensearch.domains(region).length,
         cloudfrontDistributionCount: this.cloudfront.consoleSnapshot().distributions.length,
         lambdaImageSource: process.env.STACKSIM_LAMBDA_OCI_ROOT ? "oci" : process.env.STACKSIM_LAMBDA_DOCKER_SOCKET ? "docker" : undefined,
         counts: { stacks: Object.values(this.store.regionState(region).cloudformation.stacks).filter(stack => stack.stackStatus !== "DELETE_COMPLETE").length, stateMachines: Object.keys(this.store.regionState(region).stepFunctions.stateMachines).length, parameters: Object.keys(this.store.regionState(region).parameterStore.parameters).length, secrets: Object.keys(this.store.regionState(region).secretsManager.secrets).length, functions: Object.keys(this.store.regionState(region).functions).length, capacityProviders: Object.keys(this.store.regionState(region).lambdaCapacityProviders).length, durableExecutions: Object.keys(this.store.regionState(region).lambdaDurableExecutions).length, tables: Object.keys(this.store.regionState(region).tables).length, rdsInstances: Object.keys(this.store.regionState(region).rdsDbInstances).length, buckets: Object.keys(this.store.regionState(region).s3Buckets).length, queues: Object.keys(this.store.regionState(region).sqsQueues).length, topics: Object.keys(this.store.regionState(region).sns.topics).length, subscriptions: Object.keys(this.store.regionState(region).sns.subscriptions).length, eventBuses: Object.keys(this.store.regionState(region).eventBuses).length, eventRules: Object.keys(this.store.regionState(region).eventRules).length, apis: Object.keys(this.store.regionState(region).apis).length, httpApis: Object.keys(this.store.regionState(region).httpApis).length, webSocketApis: Object.keys(this.store.regionState(region).webSocketApis).length, customDomains: Object.keys(this.store.regionState(region).apiGatewayDomainNames).length + Object.keys(this.store.regionState(region).apiGatewayV2DomainNames).length, logGroups: Object.keys(this.store.regionState(region).logs).length, users: Object.keys(this.store.ensureAccount().iam.users).length, groups: Object.keys(this.store.ensureAccount().iam.groups).length, roles: Object.keys(this.store.ensureAccount().iam.roles).length, policies: Object.keys(this.store.ensureAccount().iam.policies).length, sesIdentities: Object.keys(this.store.regionState(region).ses.identities).length, sesTemplates: Object.keys(this.store.regionState(region).ses.templates).length, sesConfigurationSets: Object.keys(this.store.regionState(region).ses.configurationSets).length, sesMessages: services.ses.summary().messageCount, cognitoUserPools: services.cognito.summary().poolCount, cognitoAppClients: services.cognito.summary().clientCount, cognitoIdentityPools: services.cognitoIdentity.summary().poolCount },
@@ -766,7 +1007,7 @@ export class StackSim {
         authMode: this.authMode,
         statePath: this.store.file,
         schemaVersion: this.store.state.schemaVersion,
-        services: { cloudformation: "available", cloudfront: "available", lambda: "available", apigateway: "available", appsync: "available", dynamodb: "available", rds: "available", s3: "available", sqs: "available", sns: services.sns.admissionStatus(), ssm: "available", secretsmanager: services.secretsmanager.admissionStatus(), eventbridge: "available", scheduler: "available", logs: "available", cloudwatch: "available", iam: "available", sts: "available", ses: services.ses.admissionStatus(), "cognito-idp": "available", "cognito-identity": "available", xray: services.xray.health().status },
+        services: { opensearch: "available", cloudformation: "available", cloudfront: "available", lambda: "available", apigateway: "available", appsync: "available", dynamodb: "available", rds: "available", s3: "available", sqs: "available", sns: services.sns.admissionStatus(), ssm: "available", secretsmanager: services.secretsmanager.admissionStatus(), eventbridge: "available", scheduler: "available", logs: "available", cloudwatch: "available", iam: "available", sts: "available", ses: services.ses.admissionStatus(), "cognito-idp": "available", "cognito-identity": "available", xray: services.xray.health().status },
         cloudfront: { distributions: this.cloudfront.consoleSnapshot().distributions.length, viewers: this.cloudfront.listLocalViewers(), caCertificatePath: this.cloudfront.caCertificatePath },
         s3: { httpsEndpoint: `https://127.0.0.1:${this.s3TlsPort}`, virtualHostedHttpsEndpoint: `https://s3.localhost:${this.s3TlsPort}`, caCertificatePath: this.customResourceCallbacks.caCertificatePath },
         rds: this.rdsManager.metadata(),
@@ -985,6 +1226,7 @@ export class StackSim {
     if (!services) {
       this.store.regionState(region);
       const logs = new CloudWatchLogsService(this.store, region, this.clock, this.scheduler, this.allowLocalFiles);
+      logs.setOwnedQueryGuard(async job => { const owner = job.sourceOwner!; await this.opensearch.directQueries.guard(region, this.store.accountId, owner.arn, owner.generation, { queryId: job.queryId }); });
       const telemetry = new TelemetryBus();
       const metrics = new CloudWatchMetricsService(this.store, region, this.clock, this.scheduler, this.metricRetention, this.alarmHistoryRetentionMs, this.allowLocalFiles);
       telemetry.subscribe(event => metrics.publish(event));
@@ -1138,6 +1380,17 @@ export class StackSim {
         },
         cognito,
       );
+      appsync.setOpenSearchPort({
+        validate: async (api, roleArn, config) => {
+          this.opensearch.dataSourceDomain(config.endpoint, config.awsRegion, api.owner);
+          await this.sts.assumeServiceRoleForResource(roleArn, `appsync-${api.apiId}`, "appsync.amazonaws.com", { accountId: api.owner, arn: api.arn });
+        },
+        request: async (api, source, method, path, body) => {
+          if (!source.serviceRoleArn || !source.openSearchServiceConfig) throw new AwsError("BadRequestException", "OpenSearch data source configuration is missing", 400);
+          const principal = await this.sts.assumeServiceRoleForResource(source.serviceRoleArn, `appsync-${api.apiId}`, "appsync.amazonaws.com", { accountId: api.owner, arn: api.arn }), config = source.openSearchServiceConfig;
+          return this.opensearch.dataSourceRequest(config.endpoint, config.awsRegion, api.owner, principal, method, path, body);
+        },
+      });
       const stepfunctions = new StepFunctionsService(this.store, region, this.clock, this.scheduler, lambda, telemetry, this.authMode, this.random, this.stepFunctionsLimits, input => eventbridge.publishServiceEvent(input), { caCertificatePath: this.customResourceCallbacks.caCertificatePath, port: () => this.customResourceCallbacks.port() }, { dynamodb, sqs, sns, eventbridge });
       eventbridge.setStepFunctionsService(stepfunctions);
       apigateway.setIntegrationServices({ sns, eventbridge, stepfunctions, s3 });
@@ -1155,6 +1408,11 @@ export class StackSim {
         createS3BucketNotificationsProvider(s3, this.store),
         createCdkBucketDeploymentProvider(s3, this.store, this.cloudfront),
         ...createCloudFrontCloudFormationProviders(this.cloudfront),
+        createOpenSearchDomainProvider(this.opensearch, region),
+        createElasticsearchDomainProvider(this.opensearch, region),
+        ...createOpenSearchServerlessProviders(this.opensearch.serverless, region),
+        createOpenSearchIngestionProvider(this.opensearch.ingestion, region),
+        createOpenSearchApplicationProvider(this.opensearch.applications, region),
         createLambdaFunctionProvider(lambda, s3),
         createLambdaLayerVersionProvider(lambda, s3),
         ...createLambdaCompanionProviders(lambda),
@@ -1565,6 +1823,10 @@ export class StackSim {
     if (service === "s3" && req.method === "OPTIONS") return principal;
     if (this.authMode !== "enforce" && !unsignedS3) return principal;
     const target = await authorizationTarget(req, url, service, region, this.store.accountId, principal, this.clock.now(), service === "iam" ? this.store.ensureAccount().iam : undefined);
+    if (service === "logs" && target.operation === "StartQuery" && ["SQL", "PPL"].includes(String(target.input.queryLanguage).toUpperCase())) {
+      const group = Object.values(this.store.regionState(region).logs).find(group => `${group.arn}:*` === target.resource);
+      for (const [key, value] of Object.entries(group?.tags ?? {})) target.context[`aws:ResourceTag/${key}`] = value;
+    }
     if (service === "cloudfront" && target.resource.startsWith("arn:")) {
       try {
         for (const [key, value] of Object.entries(this.cloudfront.listTags(target.resource))) target.context[`aws:ResourceTag/${key}`] = value;
@@ -2728,7 +2990,7 @@ export class StackSim {
     await Promise.all([...this.regionalServices.values()].flatMap(services => [services.sqs.stop(), services.eventbridge.stop(), services.eventscheduler.stop()]));
     this.scheduler.stop();
     const close = (server?: HttpServer | HttpsServer) => server?.listening ? new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())) : Promise.resolve();
-    const drained = Promise.all([close(this.control), close(this.data), close(this.customResourceCallbackServer), close(this.s3TlsServer), this.cloudfront.stop()]);
+    const drained = Promise.all([close(this.control), close(this.data), close(this.customResourceCallbackServer), close(this.s3TlsServer), this.cloudfront.stop(), this.opensearch.stop()]);
     // Terminate Lambda children while listeners drain. A provider can otherwise
     // hold a callback PUT body open, making server.close() wait for the child
     // that was previously stopped only after the drain completed.
