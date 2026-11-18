@@ -162,7 +162,6 @@
     "focusedTestCount": 174,
     "browserJourneyCount": 57,
     "phase03": "docs/opensearch/os03-acceptance.md",
-    "crossPlatformWorkflow": ".github/workflows/opensearch.yml; remote execution pending",
     "serverlessFoundations": "docs/opensearch/os06-acceptance.md",
     "serverlessLifecycle": "docs/opensearch/os07-acceptance.md",
     "ingestion": "docs/opensearch/os08-acceptance.md",
