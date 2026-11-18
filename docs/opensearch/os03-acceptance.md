@@ -108,9 +108,7 @@ scans persisted files for plaintext credentials and documents.
 The focused OpenSearch tests run on Node 22.13.0/macOS. Chrome workspace journeys
 cover 1440px and 390px, internal and IAM users, private saved state, DLS/FLS and
 Dev Tools. The existing five domain-console journeys also passed. The full
-project regression suite was not run. `.github/workflows/opensearch.yml` adds
-focused Linux/macOS/Windows checks on Node 22.13.0 and 24; remote executions are
-not yet evidence. AWS/native reference execution, authenticated AWS screenshots,
+project regression suite was not run. AWS/native reference execution, authenticated AWS screenshots,
 KMS/customer keys, additional TLS/certificate profiles and the remaining service
 phases are still open.
 
