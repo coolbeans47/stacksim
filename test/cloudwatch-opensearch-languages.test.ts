@@ -100,8 +100,11 @@ test("SQL/PPL source parsing enforces scoped IAM and resource tags before admitt
 test("SQL/PPL scan bounds fail instead of returning an incomplete aggregate", { timeout: 60_000 }, async () => {
   const h = await setup();
   try {
-    for (let i = 0; i < 5; i++) await h.put(Array(10_000).fill('{"value":1}'));
-    await h.put(['{"value":1}']);
+    // Seed the real stream in one write so the test measures the query scan.
+    const timestamp = h.clock.now();
+    await h.sim.logs["events"](group, "events").compact(Array.from({ length: 50_001 }, (_, order) => ({
+      timestamp, ingestionTime: timestamp, message: '{"value":1}', order, eventId: String(order),
+    })));
     const query = await h.client.send(new Logs.StartQueryCommand({ ...h.input, queryLanguage: "SQL", queryString: `SELECT COUNT(*) AS total FROM \`${group}\`` }));
     const result = await complete(h.client, h.clock, query.queryId!, "Failed"); assert.equal(result.statistics?.recordsScanned, 50_001); assert.deepEqual(result.results, []);
   } finally { h.client.destroy(); await h.sim.stop(); await rm(h.root, { recursive: true, force: true }); }
