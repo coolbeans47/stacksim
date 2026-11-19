@@ -1,29 +1,29 @@
 {
   "schemaVersion": 1,
   "baseline": {
-    "awsCdkCli": "2.1132.0",
-    "awsCdkLib": "2.265.0",
+    "awsCdkCli": "2.1144.0",
+    "awsCdkLib": "2.273.0",
     "constructs": "10.7.1",
     "cloudAssemblySchema": "54.0.0",
-    "minimumCliVersion": "2.1138.0",
+    "minimumCliVersion": "2.1144.0",
     "account": "000000000000",
     "region": "eu-west-1"
   },
   "files": {
-    "FixtureIdentityExports.template.json": "a47cd501c398fdf5d9da4cd31bdfbe22c279f3e3561535df3ae6c9db205c5c7a",
-    "FixtureApiExports.template.json": "71f5e976d0b82f285711f88e8854c3f9f3c326e34c855588b01f7c0163e3c39d",
-    "CloudFrontWebsiteStack.template.json": "b3ae6e26d07b99c7cee72a5fc9620bd6457089b38d80849d9990a84ca7e88312",
-    "FixtureIdentityExports.assets.json": "3f3dc8642e57c4fede6e0be9da0f59ac91377ebbe08c9759244aa6c89a0fd971",
-    "FixtureApiExports.assets.json": "3b43bc13162a1ab16fe08f0a2cbabbc2b5027ef9af622dab18a305aa8f0a0999",
-    "CloudFrontWebsiteStack.assets.json": "c2062e0e5c84ff38b0dcd6c663a098813630b9bd34695db3a25ad5bbc3316eaf",
-    "manifest.json": "44e00a90e1e49412dd51185811be591f6d1399720c1251e8cf1b2e763859a699",
-    "tree.json": "5d6adf5dc0a94be9866cb39cb7af106f1876c563e5e66f4d16aeb581e9f76138"
+    "FixtureIdentityExports.template.json": "87d561244fc1bfc95c983f38462d6191345222ec2b00e2c5f1d0988d5660ce11",
+    "FixtureApiExports.template.json": "5fb2d52ae48fbfc0c047c81a580f260b07df7c2ed36a1a7d0c6065768235ab00",
+    "CloudFrontWebsiteStack.template.json": "68732ed824f5511e38773b96f8c6c4b2adbe65a99ced40fcb1f3f1e8b6408e15",
+    "FixtureIdentityExports.assets.json": "3f339da5ab819b79bdfd99c836bc528273bdc0302ece3ba3ae9c330f8d031605",
+    "FixtureApiExports.assets.json": "cdcfdd653aaa2cf300909b652c6e2c268cd791df54737682fda29692b8331ffa",
+    "CloudFrontWebsiteStack.assets.json": "1ae99c61a7be0c0ce98f00329bcb51c386f395f9ac52f8339d578bf0176e9bdc",
+    "manifest.json": "945c7bc9b52c2864223bf718b3a7807d3fcdfd930f8af674cab660d417438c8b",
+    "tree.json": "df06fb7fbe4a2ace791f8ad095ad9f6a5d306cdbea97efacc31e162230d8041e"
   },
-  "assemblySha256": "fd9ea08fd63264f8327cfc0a4217285e697242eeee959b415ba6f46e93838cd6",
+  "assemblySha256": "e6698ae6f9bcc9b6d76b6e30d7b1710725097526ca950235439309f73aceefab",
   "assets": {
     "autoDeleteHandler": "faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6",
     "awsCliLayer": "98f62bef9320f8c0a0a7be21d7c746f069131f196f51ffe3008a6bb730b368ec",
-    "bucketDeploymentHandler": "97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f",
+    "bucketDeploymentHandler": "35328da138f26fbd9160297abc9a2522d93dbf75878cd5114a9c050419fc1ce0",
     "applicationV1": "1f1ba62d9e6a39204ee573e801690b4a20ec77b8a7d57b170d87741c44ddca7d",
     "runtimeConfigV1": "fa2199890515d52b44581e47c1029055c4ba03a16dcec02511122c999a25e5cd",
     "immutableAssetsV1": "50ca00c027af52cba1284e6717249aeadebde114ba79324ca7f25cb70d674424",

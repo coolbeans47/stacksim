@@ -30,8 +30,9 @@ import {
 
 export const CDK_BUCKET_DEPLOYMENT_TYPE = "Custom::CDKBucketDeployment";
 
-// These are the checked-in provider assets emitted by the supported aws-cdk-lib helpers.
-export const PINNED_BUCKET_DEPLOYMENT_HANDLER_ASSET = "97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f.zip";
+// Existing stacks can reference older CDK assets during updates and rollbacks.
+export const PINNED_BUCKET_DEPLOYMENT_HANDLER_ASSET = "35328da138f26fbd9160297abc9a2522d93dbf75878cd5114a9c050419fc1ce0.zip";
+export const LEGACY_BUCKET_DEPLOYMENT_HANDLER_ASSET = "97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f.zip";
 export const PINNED_BUCKET_DEPLOYMENT_AWSCLI_ASSET = "98f62bef9320f8c0a0a7be21d7c746f069131f196f51ffe3008a6bb730b368ec.zip";
 export const LEGACY_BUCKET_DEPLOYMENT_AWSCLI_ASSET = "a72522445441e9b66c2f16956c54d4786af8c61c156b80c48a6e7c32fcc49023.zip";
 
@@ -39,6 +40,10 @@ const SUPPORTED_BUCKET_DEPLOYMENT_AWSCLI_ASSETS = new Set<string>([
   LEGACY_BUCKET_DEPLOYMENT_AWSCLI_ASSET,
   PINNED_BUCKET_DEPLOYMENT_AWSCLI_ASSET,
 ]);
+
+export function isSupportedBucketDeploymentHandlerAsset(key: unknown): boolean {
+  return key === PINNED_BUCKET_DEPLOYMENT_HANDLER_ASSET || key === LEGACY_BUCKET_DEPLOYMENT_HANDLER_ASSET;
+}
 
 const MAX_SOURCE_ARCHIVE_BYTES = 128 * 1024 * 1024;
 const MAX_EXPANDED_ASSET_BYTES = 256 * 1024 * 1024;
@@ -310,7 +315,7 @@ async function validatePinnedHelper(s3: S3Service, store: StateStore, model: Cdk
   }
   const declared = helperResource(store, model, context);
   const code = record(declared?.properties.Code) ? declared!.properties.Code as Record<string, unknown> : undefined;
-  if (!declared || code?.S3Bucket !== model.SourceBucketNames[0] || code?.S3Key !== PINNED_BUCKET_DEPLOYMENT_HANDLER_ASSET) {
+  if (!declared || !code || code.S3Bucket !== model.SourceBucketNames[0] || !isSupportedBucketDeploymentHandlerAsset(code.S3Key)) {
     throw new DeploymentBoundaryError("ProviderConfiguration", "The BucketDeployment provider code asset does not match a supported aws-cdk-lib helper");
   }
   if (fn.tags?.["aws:cloudformation:stack-id"] !== context.stackId || fn.tags?.["aws:cloudformation:logical-id"] !== declared.logicalResourceId) {

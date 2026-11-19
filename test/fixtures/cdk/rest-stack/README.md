@@ -8,8 +8,8 @@ template rewrite is involved.
 
 ## Pinned toolchain and context
 
-- `cdk` 2.1132.0
-- `aws-cdk-lib` 2.265.0
+- `cdk` 2.1144.0
+- `aws-cdk-lib` 2.273.0
 - `constructs` 10.7.1
 - `tsx` 4.23.1
 - CDK context: `@aws-cdk/core:newStyleStackSynthesis=true`
@@ -125,11 +125,11 @@ create-complete checkpoint for every type, and verifies all 48 logical
 resources remain singly owned after the repeated restarts. This conditional
 variant freezes the following `v3` recovery corpus:
 
-| Recovery artifact | SHA-256 |
+| Recovery artifact | Semantic SHA-256 |
 | --- | --- |
-| `RestStack.template.json` | `493752b472b79e4cf99463ddb0ee5b12f7a9ad5ad850c5dcf8dab664f8cdbfb9` |
-| `RestStack.assets.json` | `34bc43113eb60ff15de3d605fcb95bfb6062e87a17d17efbc9e02cd8bd2f9e05` |
-| `manifest.json` | `55ed54df4a1d92d23422792cffbc071f557a09afc0fb2ce599e2524d114213e0` |
+| `RestStack.template.json` | `147d7939688d32d400c2e6d55af36c653846d67b4c3ee71c5841a8d1fb7c05d6` |
+| `RestStack.assets.json` | `334c7077a21e4d4383b38d37effae9acd7ae05a314ca5bb44f854b96a7f6ed03` |
+| `manifest.json` | `a2576f470feaf5e5698a00bb6b7a9ed9ec10bd9e9f43191ed20c6c877b7e4830` |
 
 The exact v1 logical IDs are:
 
@@ -187,12 +187,12 @@ standard file-publishing role. `PlainRestStack` uses inline Lambda code and
 publishes only its template; `RetainStack` likewise publishes only its
 template. No image asset is present.
 
-| Stack/artifact | SHA-256 |
+| Stack/artifact | Semantic SHA-256 |
 | --- | --- |
-| `RestStack.template.json` | `4075c15e1d39db5fe0e75299cbcb111e7d53f6bad413c0874bbddbc6fbc68874` |
-| v1 `manifest.json` | `72731a1d30a04f1b1704590833d623b39786f0d2f714b23109583dcc485a4a74` |
-| `RestStack.assets.json` | `8fc176f42621e1e67df361d8ae4e1861e656d22d5204aeae126c4a011f93a62b` |
-| `PlainRestStack.template.json` | `3ebbdd2c383af606cbe50858c464bacf6605005cdbd64ede1b035a66ac7229ce` |
-| `PlainRestStack.assets.json` | `fd6edb7c569cbebdc42901846c417b5fd350b0ddaff38a281d6461d3f175d6ea` |
-| `RetainStack.template.json` | `ffc56c9658de57462a8e8367149510e99dd2ca5ec7ec3d4ab89fa7070a773474` |
-| `RetainStack.assets.json` | `c1955b7b6512e70c35d702d2d5d9451666a6f7bdff3b08df1bdbd4d25010b012` |
+| `RestStack.template.json` | `6e2d5cd9153c62028b2eb41b666a0f50a422b6171225ccfd70569e65ca353ee4` |
+| v1 `manifest.json` | `1961efb6e0761793a7ba2ef47ae6431633b45c848e8c3848c4281315bc43aa23` |
+| `RestStack.assets.json` | `d78f239e8bad47a6e5b086cdaa2d6d9a3429e6b966f33bc0e97902b586c02486` |
+| `PlainRestStack.template.json` | `c024aaf717dc590dcefcaf734f2a33a19f3d422bd9aa989b4d9c4d5dfdf79ccb` |
+| `PlainRestStack.assets.json` | `4b413201046fd7f03c2b1d1e4d98ad70f5e80e1e047c9dbe4fdbf247415bcc4e` |
+| `RetainStack.template.json` | `dc79852bec6ed688ea581e97189cd069d216046547ba4233d5ed61b8793be64a` |
+| `RetainStack.assets.json` | `d20a4c261f5a1e6c0c6b87fe62668ca439adc5cb0e5d99841d5b7e5ed3ac1ff4` |

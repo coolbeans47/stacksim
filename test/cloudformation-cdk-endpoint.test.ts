@@ -203,7 +203,7 @@ test("pinned unmodified CDK stays local and rejects deploys when the reduced boo
     command = "version";
     const version = await runCdk(["--version"], env);
     assert.equal(version.code, 0, version.stderr);
-    assert.match(version.stdout, /^2\.1132\.0\b/, "the subprocess must use the repository-pinned CDK CLI");
+    assert.match(version.stdout, /^2\.1144\.0\b/, "the subprocess must use the repository-pinned CDK CLI");
 
     const synthOutput = join(root, "synth.out");
     const callsBeforeSynth = calls.length;
@@ -212,8 +212,8 @@ test("pinned unmodified CDK stays local and rejects deploys when the reduced boo
     assert.equal(synth.code, 0, `${synth.stdout}\n${synth.stderr}`);
     const synthesized = JSON.parse(await readFile(join(synthOutput, "EmptyStack.template.json"), "utf8"));
     const emptyDigests = await semanticCdkAssemblyDigests(synthOutput, ["EmptyStack.template.json"], ["manifest.json"]);
-    assert.equal(emptyDigests["EmptyStack.template.json"], "8eaab08c5f631b444760be51f9ee3eb36a27b0523b539eaf78b52491d7e7bf97", "the pinned empty-stack semantic template corpus drifted");
-    assert.equal(emptyDigests["manifest.json"], "3bb6eade359600b2cde68c2669ead928f364b71f7af294f65b9f6315d17640ee", "the pinned empty-stack semantic cloud assembly drifted");
+    assert.equal(emptyDigests["EmptyStack.template.json"], "773fc916cc31c5fb321a06ef55a3009d64057a721f473ca3771958a64eda1c8d", "the pinned empty-stack semantic template corpus drifted");
+    assert.equal(emptyDigests["manifest.json"], "cd66ba66dadfc27435e8f56f83711a380f97fd6bb4e6e6105f4d922a32593dc4", "the pinned empty-stack semantic cloud assembly drifted");
     assert.equal(synthesized.Parameters.BootstrapVersion.Type, "AWS::SSM::Parameter::Value<String>");
     assert.equal(synthesized.Parameters.BootstrapVersion.Default, "/cdk-bootstrap/hnb659fds/version");
     assert.ok(synthesized.Rules.CheckBootstrapVersion, "the default synthesizer bootstrap rule must remain intact");
@@ -587,11 +587,11 @@ test("pinned unmodified CDK deploy --all imports retained data into an API stack
     const multiAssembly = join(root, "deploy-all.out");
     const multiDigests = await semanticCdkAssemblyDigests(multiAssembly, ["DataStack.template.json", "ApiStack.template.json"], ["DataStack.assets.json", "ApiStack.assets.json", "manifest.json"]);
     assert.deepEqual(multiDigests, {
-      "DataStack.template.json": "6c02e99f9dbb4f130976d769e60b0496c0e18f35a9773ed2e934cacd0a6e7b6a",
-      "ApiStack.template.json": "d2c5223cbe654c6d75be984ed8e35d2154868a709bb3bcb7825e4aa3b676e5d8",
-      "DataStack.assets.json": "55c2b1e337399c08a9e945697e361f9e30010df8d80b03bb3620f7b3841ee990",
-      "ApiStack.assets.json": "3618046efc89180c516170cc6128e53708ddb14ee301bfc8a2f05e1da0562289",
-      "manifest.json": "53a55ae97016b5fb60f699089ffb55167c1c809aeea4f469ebb31656eaae575d",
+      "DataStack.template.json": "6e53ea35757c657608ce8c2ecd3d2bba69b90f19dbf5437e3c73f5f77d298960",
+      "ApiStack.template.json": "0312a4a068e3af7a69eff064f7badb0ab0c27da00fd2756960d9ce3f74dc4ed9",
+      "DataStack.assets.json": "d116e3576521c2323f40ad57ca3d5e63239020d8ffd5d588c9216aa629d9b267",
+      "ApiStack.assets.json": "3725060d454f069f7f5d9ddf2cd908fac79996985de9b5d261cb367de6e5eef9",
+      "manifest.json": "d01dc11d49361baa631a6350d7cffa771e91b725d37811ce3987404c35325974",
     }, "the pinned multi-stack semantic assembly drifted");
     const active = (await cloudformation.send(new ListStacksCommand({ StackStatusFilter: ["CREATE_COMPLETE", "UPDATE_COMPLETE"] }))).StackSummaries?.map(stack => stack.StackName).sort();
     assert.deepEqual(active, ["ApiStack", "DataStack"]);

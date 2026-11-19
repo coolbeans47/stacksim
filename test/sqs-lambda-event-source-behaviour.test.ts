@@ -75,7 +75,12 @@ test("SQS event source mappings behave like the Lambda poller", async t => {
       await sqs.send(new SendMessageCommand({ QueueUrl: source.QueueUrl, MessageBody: "delivered" }));
       await waitUntil(() => bodies("esm-unenforced-role"), value => value.length === 1, { timeoutMs: 15_000 });
       await waitUntil(() => drained(source.QueueUrl), Boolean, { timeoutMs: 15_000 });
-      assert.equal((await lambda.send(new GetEventSourceMappingCommand({ UUID: mapping.UUID }))).LastProcessingResult, "OK");
+      // The queue can drain before the mapping publishes the batch result.
+      await waitUntil(
+        async () => (await lambda.send(new GetEventSourceMappingCommand({ UUID: mapping.UUID }))).LastProcessingResult,
+        result => result === "OK",
+        { timeoutMs: 15_000, timeoutMessage: result => `Expected the mapping to report OK after delivery, got ${result}` },
+      );
     });
 
     await t.test("a FIFO queue delivers every message of one group, in order, within seconds", async () => {

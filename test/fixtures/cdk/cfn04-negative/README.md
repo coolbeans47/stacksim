@@ -7,8 +7,8 @@ asset, image-asset, and provider-admission boundaries without mutating a stack.
 
 ## Pinned toolchain and context
 
-- `cdk` 2.1132.0
-- `aws-cdk-lib` 2.265.0
+- `cdk` 2.1144.0
+- `aws-cdk-lib` 2.273.0
 - `constructs` 10.7.1
 - `tsx` 4.23.1
 - `esbuild` 0.28.1 (repository pin used by `tsx`; this fixture has no local
@@ -66,12 +66,12 @@ role and deliberately stops at the unimplemented ECR boundary before a build.
 The `lambda-gate` case is the historical phase gate: successful S3 publication
 must precede exact provider-type admission failure.
 
-`test/cloudformation-cfn04-negative.test.ts` freezes all three assembly
+`test/cloudformation-cfn04-negative.test.ts` freezes all three semantic assembly
 digests for every variant:
 
 | Variant | Template SHA-256 | `manifest.json` SHA-256 | Asset-manifest SHA-256 |
 | --- | --- | --- | --- |
-| baseline | `586462a70cf7584c24b13527184b07e6b416aa0151cc9879dccf1c39de37e8db` | `191ca70aa106f418a7440cc0d544ac5f38f172de3c86690825c09ead8b7461bb` | `ed758822871dd12982611dccec1765273589f98e3d883c04e4b8603d5dd092e2` |
-| `file` | `17b5b52a11239f6a3e83f723629be7c58e01a6f84fdefb4832bb596f71773f58` | `f2c5bafa104fdfc0b8c5e379ac7c51d89e67949c7ec58fe7936592ea590da4c1` | `152335d28b55a760cd8e8c57e911e4e7deaf4d6d8c3ca5602acb09fe735d5d97` |
-| `image` | `148359b9b60cb8129852c60934eb97ef4c1926e18a0c3c8658ce9724e0aa7617` | `8e1b756e3cd0c9500edea2e2faa8e59fe5ee36fc23ef70d3615c52026777dd21` | `7a19786de33dc35c33f2df42f87a768ae7087b1b4f54aff81ddf7dd74515738b` |
-| `lambda-gate` | `26eed95d0667f5d1af4f362bdc0236c45dcf85ec6e6ba268c5f45d474275c9fe` | `7d1cd70c2c638017b404128e9de170bf791dcbec520d1448ff8c40a5ce7bddd4` | `68694eb62b0301b02ea87e742d7976d5c2fff88a2e02d58ea2a5ee3ee61da936` |
+| baseline | `75559b26d9b068e5387bcd59e619b4d65acf3621e4ad3540a217ce86d3ab6e2f` | `848f23ee3b80f78d8cef45c9c822bf1688bbe52b4a75ba4141237d7d2c90b034` | `2dfcf5bd608d14f222420cf52449a2a3624e628c4e927ff4f94cbd4d71d81ecf` |
+| `file` | `38ab0a638d98ef5b8a622f5269e0b1c3cee3903355e50fe18f90e67a19a17a70` | `bc0626a1c364b1591c5a201e923397dd2e904ad4122aff73684879bdbc5e4eaa` | `7d4f99d5a5e80ef14c06a795da2c4ea7137499d40d4e0a03e0cab7988fe1983b` |
+| `image` | `c2dd9869420dd53d634cf61d87db48584a78038eaf0b1cd72cd9c140c42b8831` | `30643e63f9c69e1f26c4ad138fe91ee93e166a8890ca55165287024994440a03` | `bd07e92d88fe45843c38447f10bbd128b05aae1009330aa1c6bf8e4e68111489` |
+| `lambda-gate` | `67f62c6b51d8dde83cc08e221630899bb7f73c73a3cd580f6a594d28132a09ad` | `6eb7d965080498e898a51b6e934231a8a78f66a8268b7f94545d5e959dc87b56` | `446af20e5b6445f02205977c3715ba53e89ed8362eef7b30975cbd8dcf37a98e` |

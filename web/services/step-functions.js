@@ -144,9 +144,14 @@ function bindTagEditor(root) {
   if (!editor) return;
   const rows = editor.querySelector("[data-tag-rows]");
   const json = editor.querySelector("[data-tag-json-text]");
+  const syncJsonFromRows = () => {
+    json.value = JSON.stringify(Object.fromEntries(tagEditorRows(editor).filter(row => row.key).map(row => [row.key, row.value])), null, 2);
+    json.setCustomValidity("");
+  };
   const refresh = () => {
     editor.querySelector("[data-tag-empty]").hidden = Boolean(rows.children.length);
     associateFormLabels(editor);
+    syncJsonFromRows();
   };
   const bindRow = row => row.querySelector("[data-tag-remove]").addEventListener("click", () => { row.remove(); refresh(); setDirty(true, root.closest("dialog") ? "modal" : "page"); });
   rows.querySelectorAll("[data-tag-row]").forEach(bindRow);
@@ -156,16 +161,13 @@ function bindTagEditor(root) {
     refresh();
     rows.lastElementChild.querySelector("[data-tag-key]").focus();
   });
-  editor.querySelector("[data-tag-json]").addEventListener("toggle", event => {
-    if (event.target.open) json.value = JSON.stringify(Object.fromEntries(tagEditorRows(editor).filter(row => row.key).map(row => [row.key, row.value])), null, 2);
-  });
+  rows.addEventListener("input", syncJsonFromRows);
   json.addEventListener("change", () => {
     try {
       const value = JSON.parse(json.value || "{}");
       if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("Tags must be a JSON object.");
       rows.innerHTML = Object.entries(value).map(([key, item]) => tagRowMarkup({ key, value: String(item) })).join("");
       rows.querySelectorAll("[data-tag-row]").forEach(bindRow);
-      json.setCustomValidity("");
       refresh();
     } catch (error) {
       json.setCustomValidity(error instanceof Error ? error.message : "Tags must be a JSON object.");

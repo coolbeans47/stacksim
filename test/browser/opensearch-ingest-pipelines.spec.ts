@@ -33,5 +33,10 @@ for (const width of [1440, 390]) test(`Ingest pipeline editor, simulation, index
     await page.getByRole("heading", { name: "Ingest pipelines", exact: true }).scrollIntoViewIfNeeded(); await expect(page.locator("#toast-region")).toBeEmpty(); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true); await page.screenshot({ path: test.info().outputPath(`ingest-pipelines-${width}.png`) });
     await page.getByRole("button", { name: "Delete normalize", exact: true }).click(); await page.getByRole("dialog").getByRole("textbox").fill("normalize"); await page.getByRole("dialog").getByRole("button", { name: "Delete", exact: true }).click(); await expect(page.getByText("No saved ingest pipelines.", { exact: true })).toBeVisible();
     expect(errors).toEqual([]);
-  } finally { await search?.close(); await sim.stop(); await rm(root, { recursive: true, force: true }); }
+  } finally {
+    await page.context().close();
+    await search?.close();
+    await sim.stop();
+    await rm(root, { recursive: true, force: true });
+  }
 });

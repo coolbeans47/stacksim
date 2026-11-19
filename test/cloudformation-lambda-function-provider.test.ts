@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CreateRoleCommand, IAMClient } from "@aws-sdk/client-iam";
-import { CreateFunctionCommand, DeleteFunctionCommand, GetFunctionCommand, LambdaClient } from "@aws-sdk/client-lambda";
+import { CreateFunctionCommand, DeleteFunctionCommand, GetFunctionCommand, LambdaClient, PublishLayerVersionCommand, UpdateFunctionConfigurationCommand } from "@aws-sdk/client-lambda";
 import { CreateBucketCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type { PrincipalContext } from "../src/auth/sigv4.js";
+import { LEGACY_BUCKET_DEPLOYMENT_HANDLER_ASSET, PINNED_BUCKET_DEPLOYMENT_HANDLER_ASSET } from "../src/cloudformation/providers/cdk-bucket-deployment.js";
 import { createLambdaFunctionProvider, type LambdaFunctionModel } from "../src/cloudformation/providers/lambda-function.js";
 import type { ProviderContext } from "../src/cloudformation/providers/contract.js";
 import { createZip } from "../src/core/zip-create.js";
@@ -101,6 +103,60 @@ test("Lambda function provider consumes inline and versioned S3 ZIP code through
     assert.equal((await provider.delete(inline.FunctionName, updated, context())).status, "NOT_FOUND");
   } finally {
     iam?.destroy(); lambdaClient?.destroy(); s3?.destroy(); await simulator.stop().catch(() => undefined); await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the BucketDeployment Lambda upgrades its code, architecture and memory in place and can restore the previous release", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stacksim-cfn-bucket-helper-upgrade-"));
+  const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "off" });
+  try {
+    await simulator.start();
+    const options = { endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials };
+    const iam = new IAMClient(options);
+    const lambda = new LambdaClient(options);
+    const s3 = new S3Client({ ...options, forcePathStyle: true });
+    try {
+      const role = await iam.send(new CreateRoleCommand({ RoleName: "helper-role", AssumeRolePolicyDocument: trust }));
+      const layer = await lambda.send(new PublishLayerVersionCommand({
+        LayerName: "helper-cli", Content: { ZipFile: createZip([{ name: "aws", content: "fixture" }]) },
+      }));
+      const bucket = "helper-assets";
+      await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+      const provider = createLambdaFunctionProvider(simulator.lambda, simulator.s3);
+      const release = async (key: string, configuration: { Architectures?: string[]; MemorySize?: number }) => {
+        const zip = createZip([{ name: "index.py", content: `# ${key}\n` }]);
+        await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: zip }));
+        const model = provider.canonicalize({
+          Code: { S3Bucket: bucket, S3Key: key }, Handler: "index.handler", Runtime: "python3.13",
+          Timeout: 900, Role: role.Role!.Arn, Layers: [layer.LayerVersionArn],
+          Environment: { Variables: { AWS_CA_BUNDLE: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem" } },
+          ...configuration,
+        }, context());
+        return { model, digest: createHash("sha256").update(zip).digest("base64") };
+      };
+      const previous = await release(LEGACY_BUCKET_DEPLOYMENT_HANDLER_ASSET, {});
+      const current = await release(PINNED_BUCKET_DEPLOYMENT_HANDLER_ASSET, { Architectures: ["arm64"], MemorySize: 1024 });
+      const created = await settle(ctx => provider.create(previous.model, ctx));
+      assert.equal(created.status, "SUCCESS", created.message);
+      const functionName = created.physicalId;
+
+      for (const [from, to] of [[previous, current], [current, previous]] as const) {
+        const updated = await settle(ctx => provider.update(functionName, from.model, to.model, ctx));
+        assert.equal(updated.status, "SUCCESS", updated.message);
+        assert.equal(updated.physicalId, functionName);
+        const { Configuration } = await lambda.send(new GetFunctionCommand({ FunctionName: functionName }));
+        assert.equal(Configuration?.CodeSha256, to.digest);
+        assert.equal(Configuration.MemorySize, to.model.MemorySize ?? 128);
+        assert.deepEqual(Configuration.Architectures, to.model.Architectures ?? ["x86_64"]);
+      }
+      await assert.rejects(lambda.send(new UpdateFunctionConfigurationCommand({ FunctionName: functionName, Runtime: "python3.13" })),
+        (error: Error) => error.name === "InvalidParameterValueException");
+    } finally {
+      iam.destroy(); lambda.destroy(); s3.destroy();
+    }
+  } finally {
+    await simulator.stop();
+    await rm(root, { recursive: true, force: true });
   }
 });
 

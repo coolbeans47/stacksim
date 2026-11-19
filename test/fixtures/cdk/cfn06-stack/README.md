@@ -8,8 +8,8 @@ deployment wrapper.
 
 ## Pinned toolchain and context
 
-- `cdk` 2.1132.0
-- `aws-cdk-lib` 2.265.0
+- `cdk` 2.1144.0
+- `aws-cdk-lib` 2.273.0
 - `constructs` 10.7.1
 - `tsx` 4.23.1
 - `esbuild` 0.28.1
@@ -115,11 +115,11 @@ the files to the reduced bootstrap's versioned S3 bucket through the
 file-publishing role, then deploys through the deployment and CloudFormation
 execution roles.
 
-| Release | Template SHA-256 | Asset manifest SHA-256 | File asset IDs (sorted) |
+| Release | Semantic template SHA-256 | Semantic asset manifest SHA-256 | Normalized file asset IDs (sorted) |
 | --- | --- | --- | --- |
-| v1 | `a707cb8f9f49b4bc97602845403c97c4256b8417f91070eaa9f0415aafd7c2c5` | `22a116fcac3f8397a0caf01898764042a352362538b1e23c49a805f4fde005bf` | `9b10c0f44fc69e3f7e81d8b9d9c9c096eb210e6aa44673c33133b301f6539f30`, `a707cb8f9f49b4bc97602845403c97c4256b8417f91070eaa9f0415aafd7c2c5` |
-| v2 | `00b7d3cdef3322105c1f24cfce7e8e4715b33a533a4cb5504d4f0c445a8074ac` | `b181afa2dc34c37537d4f96ff47ca9ad46f074369e1c31f59801ee4e36f8ba0f` | `00b7d3cdef3322105c1f24cfce7e8e4715b33a533a4cb5504d4f0c445a8074ac`, `1ac5e9b5a25e405916726af422ab74525ea39dee08f535d710911699a8d13f9e` |
-| fail | `1539295d792cd08c6aa288fbcffd6de848a3d1762b67a8cb275f007ff6f7cab6` | `410d3fa51636911a95d1078bba0b58e3f29bd8d73d3392a77028587c95a040ed` | `1539295d792cd08c6aa288fbcffd6de848a3d1762b67a8cb275f007ff6f7cab6`, `2461b7c6e32e0d8e9be9bec5d7908bc8081a9e9cbce48c98ae81c235f0ffce13` |
+| v1 | `2aa3a901ba537886ef1c22c3ed87e80f6aa77fb60a9c4a403058d62af70d1864` | `ce3a09c4be25397e96cd03b5b572f6eb168b84a06e3e6177cdf62f8bd5bfb286` | `2aa3a901ba537886ef1c22c3ed87e80f6aa77fb60a9c4a403058d62af70d1864`, `9b10c0f44fc69e3f7e81d8b9d9c9c096eb210e6aa44673c33133b301f6539f30` |
+| v2 | `b8acf071f804bb4459b82ee73eae9a4fdb90ab39d3c2889cf93ab2044fbe2ae9` | `a024cce141c1f7fba6c255c75a5edf1f52531cf98f99ca169a5748e310263848` | `1ac5e9b5a25e405916726af422ab74525ea39dee08f535d710911699a8d13f9e`, `b8acf071f804bb4459b82ee73eae9a4fdb90ab39d3c2889cf93ab2044fbe2ae9` |
+| fail | `a37eb31066013f44efc0fe236130108ea44b29706317d18ea4e089945ab05718` | `cb97b1a784b22c560f63ccb89625b4a436837fc978dcf73ec00df59e0f70fb53` | `2461b7c6e32e0d8e9be9bec5d7908bc8081a9e9cbce48c98ae81c235f0ffce13`, `a37eb31066013f44efc0fe236130108ea44b29706317d18ea4e089945ab05718` |
 
 All three releases are frozen by `test/cloudformation-cdk-cfn06.test.ts`,
 including the failure release's 12-resource logical/type/dependency corpus.

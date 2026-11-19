@@ -54,13 +54,19 @@ function awsAction(service: string, body: Buffer, target: string | undefined, me
   catch { return path; }
 }
 
-async function tracingProxy(upstreamPort: number, calls: AwsCall[], currentCommand: () => string) {
+async function tracingProxy(getUpstreamPort: () => number | undefined, calls: AwsCall[], currentCommand: () => string) {
   const proxy = createServer(async (incoming, outgoing) => {
     const chunks: Buffer[] = [];
     for await (const chunk of incoming) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     const body = Buffer.concat(chunks);
     const service = signingService(incoming.headers.authorization);
     calls.push({ command: currentCommand(), method: incoming.method ?? "GET", path: incoming.url ?? "/", service, action: awsAction(service, body, incoming.headers["x-amz-target"]?.toString(), incoming.method ?? "GET", incoming.url ?? "/") });
+    const upstreamPort = getUpstreamPort();
+    if (upstreamPort === undefined) {
+      outgoing.writeHead(503);
+      outgoing.end("Simulator restarting");
+      return;
+    }
     const forwarded = request({ host: "127.0.0.1", port: upstreamPort, method: incoming.method, path: incoming.url, headers: incoming.headers }, response => {
       outgoing.writeHead(response.statusCode ?? 502, response.statusMessage, response.headers);
       response.pipe(outgoing);
@@ -138,15 +144,6 @@ async function objectBytes(s3: S3Client, bucket: string, key: string): Promise<{
   return { bytes: Buffer.from(await result.Body!.transformToByteArray()), contentType: result.ContentType, metadata: result.Metadata };
 }
 
-async function freePort(): Promise<number> {
-  const listener = createServer();
-  await new Promise<void>((resolvePromise, reject) => { listener.once("error", reject); listener.listen(0, "127.0.0.1", () => resolvePromise()); });
-  const address = listener.address();
-  assert.ok(address && typeof address === "object");
-  await new Promise<void>((resolvePromise, reject) => listener.close(error => error ? reject(error) : resolvePromise()));
-  return address.port;
-}
-
 async function waitForChangeSet(cloudformation: CloudFormationClient, stackName: string, changeSetName: string): Promise<void> {
   for (let attempt = 0; attempt < 300; attempt++) {
     const value = await cloudformation.send(new DescribeChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }));
@@ -189,7 +186,7 @@ test("pinned standard CDK synthesizes the exact public React S3 website assembly
     const lock = JSON.parse(await readFile(join(fixture, "expected-assembly.json"), "utf8"));
     const names = Object.keys(lock.files) as string[];
     const hashes = await semanticCdkAssemblyDigests(output, ["ReactBucketStack.template.json"], names.filter(name => name !== "ReactBucketStack.template.json"));
-    assert.deepEqual(hashes, lock.files, "the pinned CDK 2.1132.0/aws-cdk-lib 2.265.0 React semantic assembly drifted");
+    assert.deepEqual(hashes, lock.files, "the pinned CDK 2.1144.0/aws-cdk-lib 2.273.0 React semantic assembly drifted");
     const assemblyDigest = sha256(names.map(name => hashes[name]).join("\n"));
     assert.equal(assemblyDigest, lock.assemblySha256);
     const template = JSON.parse(await readFile(join(output, "ReactBucketStack.template.json"), "utf8"));
@@ -219,7 +216,7 @@ test("unmodified standard CDK deploys, updates, prunes, deduplicates, serves, re
   const clients: Array<{ destroy(): void }> = [];
   try {
     await simulator.start();
-    proxy = await tracingProxy(simulator.port, calls, () => command);
+    proxy = await tracingProxy(() => simulator.port, calls, () => command);
     let env = cdkEnvironment(proxy.endpoint, root, "v1");
     await buildFrontend(env);
     const expectedV1 = Object.fromEntries(await Promise.all(["index.html", "assets/app.js", "assets/app.css", "build.txt", "obsolete.txt"].map(async key => [key, await readFile(join(frontend, "dist", ...key.split("/")))])));
@@ -352,10 +349,6 @@ test("unmodified standard CDK deploys, updates, prunes, deduplicates, serves, re
 test("standard CDK deployment resumes after asset, bucket, helper-invocation, and object-copy restarts", { timeout: 900_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-react-recovery-"));
   const dataDir = join(root, "data");
-  const port = await freePort();
-  let invokePort = await freePort();
-  while (invokePort === port) invokePort = await freePort();
-  const endpoint = `http://127.0.0.1:${port}`;
   let simulator: StackSim | undefined;
   let proxy: Awaited<ReturnType<typeof tracingProxy>> | undefined;
   let verificationS3: S3Client | undefined;
@@ -371,15 +364,21 @@ test("standard CDK deployment resumes after asset, bucket, helper-invocation, an
     armed = { label, matches, resolve: resolvePromise };
   });
   const start = async () => {
-    const next = new StackSim({ port, invokePort, cloudFormationCustomResourceCallbackPort: 0, dataDir, region, authMode: "enforce", cdkBootstrap: true });
+    const next = new StackSim({ port: 0, invokePort: 0, cloudFormationCustomResourceCallbackPort: 0, dataDir, region, authMode: "enforce", cdkBootstrap: true });
     next.cloudformation.setCheckpointInterceptorForTest(interceptor);
     await next.start(); simulator = next; return next;
   };
-  const restart = async () => { await simulator?.stop(); simulator = undefined; return start(); };
+  const restart = async () => {
+    const previous = simulator;
+    simulator = undefined;
+    await previous?.stop();
+    return start();
+  };
   try {
     await start();
-    proxy = await tracingProxy(port, calls, () => command);
-    const env = cdkEnvironment(proxy.endpoint, root, "v1");
+    proxy = await tracingProxy(() => simulator?.port, calls, () => command);
+    const endpoint = proxy.endpoint;
+    const env = cdkEnvironment(endpoint, root, "v1");
     await buildFrontend(env);
     const expectedRecovery = Object.fromEntries(await Promise.all(["index.html", "assets/app.js", "assets/app.css"].map(async key => [key, await readFile(join(frontend, "dist", ...key.split("/")))])));
     const assemblyLock = JSON.parse(await readFile(join(fixture, "expected-assembly.json"), "utf8"));
@@ -426,7 +425,7 @@ test("standard CDK deployment resumes after asset, bucket, helper-invocation, an
     assert.equal((await simulator!.s3.listCurrentObjectsInternal(bucketResource!.physicalResourceId!)).length, 5);
     verificationS3 = new S3Client({ endpoint, region, credentials: { accessKeyId: "admin", secretAccessKey: "password" }, forcePathStyle: true, maxAttempts: 1 });
     for (const [key, expected] of Object.entries(expectedRecovery)) assert.deepEqual((await objectBytes(verificationS3, bucketResource!.physicalResourceId!, key)).bytes, expected, `${key} did not survive recovery with exact accepted bytes`);
-    const recoveredWebsite = `http://127.0.0.1:${port}/_stacksim/s3-website/${bucketResource!.physicalResourceId!}/`;
+    const recoveredWebsite = `${endpoint}/_stacksim/s3-website/${bucketResource!.physicalResourceId!}/`;
     for (const [key, expected] of Object.entries(expectedRecovery)) {
       const response = await fetch(new URL(key, recoveredWebsite));
       assert.equal(response.status, 200);

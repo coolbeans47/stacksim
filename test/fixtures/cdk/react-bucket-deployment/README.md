@@ -2,8 +2,8 @@
 
 This is an ordinary TypeScript AWS CDK v2 application. It uses the unmodified default synthesizer with the repository compatibility baseline:
 
-- `cdk@2.1132.0`
-- `aws-cdk-lib@2.265.0`
+- `cdk@2.1144.0`
+- `aws-cdk-lib@2.273.0`
 - `constructs@10.7.1`
 
 `frontend/build.mjs` bundles the small React application into deterministic `dist/index.html`, `dist/assets/app.js`, `dist/assets/app.css`, and build-marker files. `REACT_FIXTURE_VARIANT=v2` changes real application bytes and omits `obsolete.txt` so update and `prune: true` behavior can be tested. `CDK_FRONTEND_PREFIX` optionally selects a destination prefix.
@@ -14,11 +14,11 @@ This is an ordinary TypeScript AWS CDK v2 application. It uses the unmodified de
 
 | Artifact | SHA-256 / asset ID |
 |---|---|
-| Stack template | `d5dad329f28a49bdbb31f7bcb07b0775a59ccb889004a546c61ae0be605a739d` |
-| Asset manifest | `ab67226b39aa7076b77e8a806740e1f77fcecea42ae516d683a2f25b62b3efac` |
-| Cloud assembly | `50881699e70ecacdcfd93b7b92ad4a19ac6ddb4d5777dbf99f3fd8fd3c8fb2d6` |
+| Stack template | `c5090e1a6e201a2ce97d91a5d90259ae8ee093e99dffd797cc98303b0dc2ca69` |
+| Asset manifest | `d264aac8cec7de2be002ba619c9abd72ef4763e8ccf27703362a2055505da713` |
+| Cloud assembly | `146f1acb7bde0a20dcbb8147d72fb048562a918dca4e07dbc67dc42557c0f363` |
 | React build ZIP | `c33c74ebfe63491213ee51f5f01cd1cfcd661703cca2fbc78c0d182850c1a6a3` |
-| CDK bucket-deployment handler ZIP | `97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f` |
+| CDK bucket-deployment handler ZIP | `35328da138f26fbd9160297abc9a2522d93dbf75878cd5114a9c050419fc1ce0` |
 | CDK AWS CLI layer ZIP | `98f62bef9320f8c0a0a7be21d7c746f069131f196f51ffe3008a6bb730b368ec` |
 
 The pinned template contains exactly eight resources:

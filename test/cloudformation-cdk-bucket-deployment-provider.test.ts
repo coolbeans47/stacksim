@@ -19,6 +19,7 @@ import { CDK_BOOTSTRAP_POLICY_REVISION, cdkBootstrapNames } from "../src/cloudfo
 import {
   createCdkBucketDeploymentProvider,
   LEGACY_BUCKET_DEPLOYMENT_AWSCLI_ASSET,
+  LEGACY_BUCKET_DEPLOYMENT_HANDLER_ASSET,
   PINNED_BUCKET_DEPLOYMENT_AWSCLI_ASSET,
   PINNED_BUCKET_DEPLOYMENT_HANDLER_ASSET,
   type CdkBucketDeploymentModel,
@@ -63,13 +64,14 @@ async function seedPinnedHelper(
   destinationBucket: string,
   s3: S3Client,
   awsCliLayerAsset = PINNED_BUCKET_DEPLOYMENT_AWSCLI_ASSET,
+  handlerAsset = PINNED_BUCKET_DEPLOYMENT_HANDLER_ASSET,
 ): Promise<void> {
   const sourceBucket = cdkBootstrapNames(accountId, region).bucketName;
   const sourceArn = `arn:aws:s3:::${sourceBucket}`;
   const destinationArn = `arn:aws:s3:::${destinationBucket}`;
   const handlerZip = createZip([{ name: "index.py", content: "def handler(event, context): return {}\n" }]);
   const layerZip = createZip([{ name: "aws", content: "pinned aws cli layer\n" }]);
-  const handlerPut = await s3.send(new PutObjectCommand({ Bucket: sourceBucket, Key: PINNED_BUCKET_DEPLOYMENT_HANDLER_ASSET, Body: handlerZip }));
+  const handlerPut = await s3.send(new PutObjectCommand({ Bucket: sourceBucket, Key: handlerAsset, Body: handlerZip }));
   const layerPut = await s3.send(new PutObjectCommand({ Bucket: sourceBucket, Key: awsCliLayerAsset, Body: layerZip }));
   assert.ok(handlerPut.VersionId && layerPut.VersionId);
   simulator.store.ensureAccount().iam.roles[roleName] = {
@@ -134,7 +136,7 @@ async function seedPinnedHelper(
         logicalResourceId: "Helper",
         resourceType: "AWS::Lambda::Function",
         physicalResourceId: functionName,
-        properties: { Code: { S3Bucket: sourceBucket, S3Key: PINNED_BUCKET_DEPLOYMENT_HANDLER_ASSET, S3ObjectVersion: handlerPut.VersionId }, Role: roleArn },
+        properties: { Code: { S3Bucket: sourceBucket, S3Key: handlerAsset, S3ObjectVersion: handlerPut.VersionId }, Role: roleArn },
       },
       AwsCliLayer: {
         logicalResourceId: "AwsCliLayer",
@@ -295,7 +297,7 @@ test("native pinned BucketDeployment copies exact bytes, metadata, prunes, dedup
   }
 });
 
-test("legacy BucketDeployment AWS CLI layer supports create, update, retaining delete, and destructive delete", async () => {
+test("the legacy BucketDeployment handler and AWS CLI layer support create, update, retaining delete, and destructive delete", async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-cdk-bucket-legacy-"));
   const simulator = new StackSim({ port: 0, invokePort: 0, dataDir: root, accountId, region, authMode: "off"});
   let s3: S3Client | undefined;
@@ -306,7 +308,7 @@ test("legacy BucketDeployment AWS CLI layer supports create, update, retaining d
     const bootstrap = cdkBootstrapNames(accountId, region).bucketName;
     await simulator.s3.ensureManagedBucket(bootstrap, CDK_BOOTSTRAP_POLICY_REVISION);
     await s3.send(new CreateBucketCommand({ Bucket: destination }));
-    await seedPinnedHelper(simulator, destination, s3, LEGACY_BUCKET_DEPLOYMENT_AWSCLI_ASSET);
+    await seedPinnedHelper(simulator, destination, s3, LEGACY_BUCKET_DEPLOYMENT_AWSCLI_ASSET, LEGACY_BUCKET_DEPLOYMENT_HANDLER_ASSET);
 
     const firstKey = `${"5".repeat(64)}.zip`;
     await s3.send(new PutObjectCommand({ Bucket: bootstrap, Key: firstKey, Body: createZip([

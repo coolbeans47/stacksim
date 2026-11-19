@@ -29,5 +29,10 @@ for (const width of [1440, 390]) test(`Hybrid search pipeline editor, defaults, 
     await page.getByRole("button", { name: "Delete blend", exact: true }).click(); await page.getByRole("dialog").getByRole("textbox").fill("blend"); await page.getByRole("dialog").getByRole("button", { name: "Delete", exact: true }).click(); await expect(page.getByText("No saved search pipelines.", { exact: true })).toBeVisible();
     await expect(client.search({ index: "products", body: body as any })).rejects.toMatchObject({ statusCode: 404 }); await page.getByRole("button", { name: "Apply default pipeline", exact: true }).click(); await expect(page.locator("#os-search-pipeline-status")).toHaveText("Default search pipeline applied");
     expect((await client.search({ index: "products", body: { query: { match_all: {} } } })).body.hits.hits.length).toBe(2); expect(errors).toEqual([]);
-  } finally { await client?.close(); await sim.stop(); await rm(root, { recursive: true, force: true }); }
+  } finally {
+    await page.context().close();
+    await client?.close();
+    await sim.stop();
+    await rm(root, { recursive: true, force: true });
+  }
 });

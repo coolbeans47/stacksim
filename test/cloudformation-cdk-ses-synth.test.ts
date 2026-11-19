@@ -91,8 +91,8 @@ test("the pinned SES-03 CDK fixture synthesizes the frozen SES and grant boundar
   const output = await mkdtemp(join(tmpdir(), "stacksim-cdk-ses-synth-"));
   try {
     const packageJson = JSON.parse(await readFile(join(sourceRoot, "package.json"), "utf8"));
-    assert.equal(packageJson.devDependencies["aws-cdk-lib"], "2.265.0");
-    assert.equal(packageJson.devDependencies.cdk, "2.1132.0");
+    assert.equal(packageJson.devDependencies["aws-cdk-lib"], "2.273.0");
+    assert.equal(packageJson.devDependencies.cdk, "2.1144.0");
 
     const result = await runCdk(output, cdkEnvironment(output));
     assert.equal(result.code, 0, `cdk synth failed\n${result.stdout}\n${result.stderr}`);

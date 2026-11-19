@@ -1,6 +1,6 @@
 # Step Functions deployment lifecycle
 
-This companion to [OrderFlow Observatory](../cdk-orderflow-observatory/README.md) teaches deployment ownership and recovery. It uses the repository's unmodified pinned CDK CLI `2.1132.0`, `aws-cdk-lib` `2.265.0`, and SDK `@aws-sdk/client-sfn` `3.1090.0`. Run it from the repository after `npm ci`, on Node.js 22.13 or later. No separate install is needed.
+This companion to OrderFlow Observatory teaches deployment ownership and recovery. Run `npm ci` from the repository root on Node.js 22.13 or later. The example uses the root CDK CLI `2.1144.0`, `aws-cdk-lib` `2.273.0`, and `@aws-sdk/client-sfn` `3.1090.0`. [OrderFlow Observatory](../cdk-orderflow-observatory/README.md)
 
 Start StackSim in another terminal with `npm run dev`. Its reduced CDK bootstrap and local admin credentials are enabled by default. The example defaults to `http://127.0.0.1:4566`, `eu-west-1`, and account `000000000000`; it accepts the standard `AWS_ENDPOINT_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` environment settings. Only a loopback endpoint is admitted. CDK subprocesses use the acceptance tests' network tripwire, so they cannot contact public AWS.
 

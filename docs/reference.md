@@ -528,7 +528,7 @@ The relay is deliberate: the bounded `AWS::Events::Rule` provider accepts Lambda
 
 Custom-resource Lambda assets are trusted local code. The simulator sanitizes inherited host variables, copies only the public callback CA into the invocation directory, and blocks common process/network escape paths for the supported JavaScript helper corpus, but it is not an OS/container sandbox for hostile same-user code. Do not deploy untrusted provider ZIPs.
 
-The tested CDK packages remain `cdk@2.1132.0`, `aws-cdk-lib@2.265.0`, and `constructs@10.7.1`. The ordinary workflow is:
+The root CDK tests use `cdk@2.1144.0`, `aws-cdk-lib@2.273.0`, and `constructs@10.7.1`. To synthesize and deploy a stack, run the following commands.
 
 ```bash
 npx cdk synth
@@ -562,7 +562,7 @@ Create a normal CDK v2 TypeScript application. If CDK is not already installed i
 ```bash
 mkdir local-api
 cd local-api
-npx -p aws-cdk@2.1132.0 cdk init app --language typescript
+npx -p aws-cdk@2.1144.0 cdk init app --language typescript
 mkdir lambda
 ```
 
@@ -637,7 +637,7 @@ The checked-in [`test/fixtures/cdk/rest-stack`](../test/fixtures/cdk/rest-stack)
 
 ## Example CDK project: public React S3 website
 
-The checked-in [`test/fixtures/cdk/react-bucket-deployment`](../test/fixtures/cdk/react-bucket-deployment) fixture is an ordinary TypeScript CDK application pinned to `cdk@2.1132.0`, `aws-cdk-lib@2.265.0`, and `constructs@10.7.1`. Its deterministic local build bundles real React HTML, JavaScript, and CSS into `frontend/dist`; the CDK source contains no stacksim-specific construct:
+The React website fixture is a TypeScript CDK application that uses the root CDK versions. Its build bundles React HTML, JavaScript, and CSS into `frontend/dist`. The stack uses standard CDK constructs. [React website fixture](../test/fixtures/cdk/react-bucket-deployment)
 
 ```ts
 import { App, CfnOutput, RemovalPolicy, Stack } from "aws-cdk-lib";

@@ -62,7 +62,7 @@ S3 sends a differently shaped `s3:TestEvent` when the notification is saved. The
 - a running StackSim installation, or an AWS account configured for CDK;
 - optionally, AWS CLI v2 for manual testing.
 
-The example pins the same CDK versions as this repository. Do not run `cdk bootstrap` for StackSim; its local CDK bootstrap is managed automatically. A real AWS account must be bootstrapped normally before its first CDK deployment.
+The example pins its CDK dependencies in its own `package.json`. StackSim manages its local CDK bootstrap automatically. A real AWS account must be bootstrapped normally before its first CDK deployment.
 
 ## Build
 

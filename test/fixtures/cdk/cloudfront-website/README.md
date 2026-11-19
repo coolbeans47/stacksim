@@ -4,7 +4,7 @@ This is the self-contained ordinary AWS CDK v2 fixture for CFR-01. It uses the
 unmodified default synthesizer and only standard `aws-cdk-lib` constructs. It
 does not load files from the motivating Shipments repository.
 
-The repository pins `cdk@2.1132.0`, `aws-cdk-lib@2.265.0`, and
+The repository pins `cdk@2.1144.0`, `aws-cdk-lib@2.273.0`, and
 `constructs@10.7.1`. The fixture synthesizes two output-only producer stacks
 and a 17-resource Web stack. Four unique exports are consumed at five
 `Fn::ImportValue` sites: API ID is used by both CSP and runtime configuration.
@@ -15,7 +15,7 @@ Build and synthesize with portable Node.js commands:
 Set-Location frontend
 npm run build
 Set-Location ..
-npx --no-install cdk synth --all
+npx --no-install cdk synth
 ```
 
 `CLOUDFRONT_FIXTURE_VARIANT=v2` changes both application and immutable asset

@@ -104,7 +104,7 @@ Install:
 - Node.js 22.13 or newer; and
 - npm.
 
-The example uses the versions pinned by this repository:
+The example's own `package.json` pins these versions.
 
 - AWS CDK CLI `2.1132.0`;
 - `aws-cdk-lib` `2.265.0`; and

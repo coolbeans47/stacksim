@@ -180,10 +180,10 @@ const wrongTrust = (): PolicyDocument => ({
 test("pinned CFN-04 fixture variants freeze their complete standard-CDK assembly corpus", { timeout: 180_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "stacksim-cfn04-synth-corpus-"));
   const expected = {
-    baseline: { template: "920235a5c5692d680345dba59113ec9e6caacc9ff67573f39a8e2d609ed12a2c", manifest: "277183a0c3c87a0fe399d367e5753462b9d83fd89b6d9e9c008bbce23e355357", assets: "83f52d53c75f58b292b2bdeddcd9680064d95cf7e2650ec473718a20eeaf752a", resources: { "AWS::CDK::Metadata": 1 }, files: 1, images: 0 },
-    file: { template: "f396197a337effd0b31ef09d292a3ecf8d41315182f4c17105f1e391e1abcf21", manifest: "de69831c91773ae721b3e44bb99d09c12bbe7e8bb1796b76f1627501404efd88", assets: "6cb93060b7991e58e5d8294d0c75b49dec7fec56711cfcf6f660c33e381c0184", resources: { "AWS::CDK::Metadata": 1 }, files: 2, images: 0 },
-    image: { template: "56777a47d035fefa23df693a530e82f4dc645baa6e87e050cdd48338b6c43070", manifest: "c024fbf353acf19bf3f4f14d1ae4ad1fe9112516334bbcd87154acf9fcc21e4b", assets: "b6facad5c91f186e9d70256f00266ec3ea5bf031bee72e1980f3213e44495cb4", resources: { "AWS::CDK::Metadata": 1 }, files: 1, images: 1 },
-    "lambda-gate": { template: "fca7d1a83953ba5d205a64dec967f81dbe53b5ffbf2a2fcf66eb4d6099606f47", manifest: "b0b78a949173cc6b1eb81c59c2161ea70a0c80826b887256bf149c90ae385f7c", assets: "2a9adff4127f80c289d958ae18fd9fbc94ef8eda21536bf9c349431edcacd7eb", resources: { "AWS::CDK::Metadata": 1, "AWS::Lambda::Function": 1 }, files: 2, images: 0 },
+    baseline: { template: "75559b26d9b068e5387bcd59e619b4d65acf3621e4ad3540a217ce86d3ab6e2f", manifest: "848f23ee3b80f78d8cef45c9c822bf1688bbe52b4a75ba4141237d7d2c90b034", assets: "2dfcf5bd608d14f222420cf52449a2a3624e628c4e927ff4f94cbd4d71d81ecf", resources: { "AWS::CDK::Metadata": 1 }, files: 1, images: 0 },
+    file: { template: "38ab0a638d98ef5b8a622f5269e0b1c3cee3903355e50fe18f90e67a19a17a70", manifest: "bc0626a1c364b1591c5a201e923397dd2e904ad4122aff73684879bdbc5e4eaa", assets: "7d4f99d5a5e80ef14c06a795da2c4ea7137499d40d4e0a03e0cab7988fe1983b", resources: { "AWS::CDK::Metadata": 1 }, files: 2, images: 0 },
+    image: { template: "c2dd9869420dd53d634cf61d87db48584a78038eaf0b1cd72cd9c140c42b8831", manifest: "30643e63f9c69e1f26c4ad138fe91ee93e166a8890ca55165287024994440a03", assets: "bd07e92d88fe45843c38447f10bbd128b05aae1009330aa1c6bf8e4e68111489", resources: { "AWS::CDK::Metadata": 1 }, files: 1, images: 1 },
+    "lambda-gate": { template: "67f62c6b51d8dde83cc08e221630899bb7f73c73a3cd580f6a594d28132a09ad", manifest: "6eb7d965080498e898a51b6e934231a8a78f66a8268b7f94545d5e959dc87b56", assets: "446af20e5b6445f02205977c3715ba53e89ed8362eef7b30975cbd8dcf37a98e", resources: { "AWS::CDK::Metadata": 1, "AWS::Lambda::Function": 1 }, files: 2, images: 0 },
   } as const;
   try {
     for (const [variant, frozen] of Object.entries(expected)) {

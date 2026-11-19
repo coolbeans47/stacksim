@@ -6,7 +6,9 @@ This manifest records the exact private-S3 website slice. It is intentionally
 narrower than the CloudFront namespace. Fields, actions, resource types, and
 origins not named here remain unsupported before mutation.
 
-## Version and supply-chain lock
+## Original CFR-01 version and supply-chain lock
+
+These versions identify the August 2026 baseline. The fixture README lists the versions used for current synthesis checks. [CloudFront website fixture](../test/fixtures/cdk/cloudfront-website/README.md)
 
 | Component | Version / identity |
 |---|---|

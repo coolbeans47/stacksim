@@ -239,9 +239,13 @@ test.describe("Step Functions console", () => {
       await dialog.getByRole("button", { name: "Add new tag" }).click();
       await dialog.getByLabel("Key", { exact: true }).fill("owner");
       await dialog.getByLabel("Value - optional").fill("browser");
+      await dialog.getByText("Edit as JSON", { exact: true }).click();
+      const tagJson = dialog.getByLabel("Tags (JSON object)");
+      await expect(tagJson).toHaveValue(/"owner": "browser"/);
       await dialog.getByRole("button", { name: "Add new tag" }).click();
       await dialog.getByLabel("Key", { exact: true }).nth(1).fill("stage");
       await dialog.getByLabel("Value - optional").nth(1).fill("test");
+      await expect(tagJson).toHaveValue(/"stage": "test"/);
       await dialog.getByRole("button", { name: "Save tags" }).click();
       await expect(page.getByRole("cell", { name: "owner" })).toBeVisible();
       await expect(page.getByRole("cell", { name: "team" })).toHaveCount(0);

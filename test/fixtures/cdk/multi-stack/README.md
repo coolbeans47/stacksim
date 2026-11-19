@@ -9,8 +9,8 @@ synthesizer and no stacksim-specific construct or deployment wrapper.
 
 ## Pinned toolchain and context
 
-- `cdk` 2.1132.0
-- `aws-cdk-lib` 2.265.0
+- `cdk` 2.1144.0
+- `aws-cdk-lib` 2.273.0
 - `constructs` 10.7.1
 - `tsx` 4.23.1
 - `esbuild` 0.28.1 (repository pin used by `tsx`; no workload bundling)
@@ -63,18 +63,14 @@ deleted, the table remains available as declared.
 ## Bootstrap assets and frozen digest corpus
 
 Each stack asset manifest contains exactly one file asset, its stack template,
-and no image assets. `DataStack.assets.json` contains file asset
-`28f5f724c34e7e0f42fb2fd70a42712137046cb58b87bb3e1cf9408ed464147f`;
-`ApiStack.assets.json` contains
-`6061cf8eed7f0305531a8f49ea00c82a6f753fbe7ce2f691e433738b2653fc73`.
-Both templates are published through the reduced bootstrap's file-publishing
-role. Destroying both workload stacks retains both the declared DynamoDB table
-and the simulator-managed versioned bootstrap bucket.
+and no image assets. Both templates are published through the reduced
+bootstrap's file-publishing role. Destroying both workload stacks retains both
+the declared DynamoDB table and the simulator-managed versioned bootstrap bucket.
 
-| Artifact | SHA-256 |
+| Artifact | Semantic SHA-256 |
 | --- | --- |
-| `DataStack.template.json` | `28f5f724c34e7e0f42fb2fd70a42712137046cb58b87bb3e1cf9408ed464147f` |
-| `DataStack.assets.json` | `02ac102c0f3bc042bed4e25813c39ed031f599065405af393cd7a7984b7d32e8` |
-| `ApiStack.template.json` | `6061cf8eed7f0305531a8f49ea00c82a6f753fbe7ce2f691e433738b2653fc73` |
-| `ApiStack.assets.json` | `0b7f92acdd4c1d9a9a7bf8ea0910d7292071928107126302ad33f8bfc930c039` |
-| `manifest.json` | `0cc0c3323d23104b62fe89ffb5e2581935f62307d90a9676b2ab5ced9156c1eb` |
+| `DataStack.template.json` | `6e53ea35757c657608ce8c2ecd3d2bba69b90f19dbf5437e3c73f5f77d298960` |
+| `DataStack.assets.json` | `d116e3576521c2323f40ad57ca3d5e63239020d8ffd5d588c9216aa629d9b267` |
+| `ApiStack.template.json` | `0312a4a068e3af7a69eff064f7badb0ab0c27da00fd2756960d9ce3f74dc4ed9` |
+| `ApiStack.assets.json` | `3725060d454f069f7f5d9ddf2cd908fac79996985de9b5d261cb367de6e5eef9` |
+| `manifest.json` | `d01dc11d49361baa631a6350d7cffa771e91b725d37811ce3987404c35325974` |

@@ -1241,7 +1241,9 @@ export class LambdaService {
         const payload = await readBody(req); const input = JSON.parse(payload.toString("utf8")); const fn = this.require(name);
         if (isPinnedCdkHotswapRequest(req, "lambda")) { activeHotswapRecord = beginHotswapDrift(this.store.regionState(this.region).cloudformation, uniqueCompletedOwner(this.store.regionState(this.region).cloudformation, lambdaOwnershipKey(fn.functionName)), "lambda", "UpdateFunctionConfiguration", payload, fn.revisionId ?? "unknown", this.clock.now()); await this.store.save(); await hotswapCheckpoint(this.store.regionState(this.region).cloudformation, "before-direct-call", activeHotswapRecord); }
         if (input.RevisionId && input.RevisionId !== fn.revisionId) throw new AwsError("PreconditionFailedException", "The RevisionId provided does not match", 412);
-        this.validateConfiguration(input); this.validatePackageConfiguration(input, false, fn); if (input.Role) this.validateRole(input.Role, principal, fn.functionArn);
+        this.validateConfiguration(input, false, Boolean(getCloudFormationOwner(req)));
+        this.validatePackageConfiguration(input, false, fn);
+        if (input.Role) this.validateRole(input.Role, principal, fn.functionArn);
         const advanced = this.executableConfiguration(input, fn.functionName, fn, principal); const nextRuntime = fn.packageType === "Zip" ? input.Runtime ?? fn.runtime : fn.runtime;
         const nextLayers = fn.packageType === "Zip" ? (input.Layers !== undefined ? this.layers.resolveFunctionLayers(input.Layers, nextRuntime, fn.codeUnzippedSize ?? fn.codeSize, advanced.architectures[0]) : structuredClone(fn.layers ?? [])) : [];
         if (fn.packageType === "Zip") this.layers.validateFunctionLayers(nextLayers, nextRuntime, fn.codeUnzippedSize ?? fn.codeSize, advanced.architectures[0]);

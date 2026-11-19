@@ -7,8 +7,8 @@ the smallest possible templates.
 
 ## Pinned toolchain and context
 
-- `cdk` 2.1132.0
-- `aws-cdk-lib` 2.265.0
+- `cdk` 2.1144.0
+- `aws-cdk-lib` 2.273.0
 - `constructs` 10.7.1
 - `tsx` 4.23.1
 - `esbuild` 0.28.1 (repository pin used by `tsx`; no workload bundling)
@@ -71,10 +71,10 @@ bucket and its now-unreferenced object.
 
 For the default variant, the focused test freezes:
 
-| Artifact | SHA-256 |
+| Artifact | Semantic SHA-256 |
 | --- | --- |
-| `EmptyStack.template.json` | `718b879789aa5e3cb3c39c592d15a19b09ffc2c3399f91803a1bb2fe3937c2fc` |
-| `manifest.json` | `587f1031d0f19dfc512009421bb2f6646ec2947ade522e639e2a6d5af56f5687` |
+| `EmptyStack.template.json` | `773fc916cc31c5fb321a06ef55a3009d64057a721f473ca3771958a64eda1c8d` |
+| `manifest.json` | `cd66ba66dadfc27435e8f56f83711a380f97fd6bb4e6e6105f4d922a32593dc4` |
 
 No analytics or generic-asset template/manifest digest is asserted by the
 current focused test.

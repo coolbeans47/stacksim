@@ -8,8 +8,8 @@ invoke. There is no stacksim construct, wrapper, or template rewrite.
 
 ## Pinned toolchain and context
 
-- `cdk` 2.1132.0
-- `aws-cdk-lib` 2.265.0
+- `cdk` 2.1144.0
+- `aws-cdk-lib` 2.273.0
 - `constructs` 10.7.1
 - `tsx` 4.23.1
 - CDK context: `@aws-cdk/core:newStyleStackSynthesis=true`
@@ -104,8 +104,8 @@ bootstrap file-publishing role. The provider consumes the version-pinned
 OpenAPI object through `BodyS3Location`; it is never inlined or fetched from an
 external host.
 
-| Artifact | SHA-256 |
+| Artifact | Semantic SHA-256 |
 | --- | --- |
-| `Cfn07Stack.template.json` | `45c23ecca43f45aa9bb97a90087abe88e9b097e01fa6e649707227ee3ed6a546` |
-| `manifest.json` | `a824e4b2d66f7a1a2104156f1de4a33820fc57847c08d5b75a3a8ba893da69e4` |
-| `Cfn07Stack.assets.json` | `9b28ed2122c4ddf917ef1b8195f39b2ebd6e4f58ee484f4a6d4047fbe01850ab` |
+| `Cfn07Stack.template.json` | `bf9c92ec24f11a17af812a1fa154bce14d13bc3fd02798ae6bfea44a2a72b941` |
+| `manifest.json` | `da9c6b6414ecf3e48307d5d29e9ef5f4277714d498f8f0462ff8168f8e5387f9` |
+| `Cfn07Stack.assets.json` | `c18d790207bc7af9a17c5d0d88bc5dd7567b4f4f17bfc3f91877d79a9089ae88` |

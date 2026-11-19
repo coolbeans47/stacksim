@@ -4,6 +4,7 @@ import type { LambdaService } from "../../lambda.js";
 import type { S3Service } from "../../s3.js";
 import { AwsError } from "../../errors.js";
 import { createZip } from "../../core/zip-create.js";
+import { isSupportedBucketDeploymentHandlerAsset } from "./cdk-bucket-deployment.js";
 import { S3_BUCKET_NOTIFICATIONS_HANDLER_DESCRIPTION } from "./s3-bucket-notifications.js";
 import {
   ProviderReferenceError,
@@ -248,7 +249,7 @@ function validateNested(properties: Record<string, unknown>, context: ProviderCo
       && variables !== undefined
       && Object.keys(variables).length === 1
       && variables.AWS_CA_BUNDLE === "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
-      && content?.S3Key === "97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f.zip";
+      && isSupportedBucketDeploymentHandlerAsset(content?.S3Key);
     // The aws-cdk-lib S3 notifications helper is never invoked locally: the
     // native Custom::S3BucketNotifications provider applies the configuration.
     const bucketNotificationsHelper = properties.Handler === "index.handler"
