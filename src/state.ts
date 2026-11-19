@@ -124,6 +124,7 @@ export class StateStore {
         }
         if (!region.sns) { region.sns = { revision: 0, topics: {}, subscriptions: {} }; normalized = true; }
         if (!region.rdsDbInstances) { region.rdsDbInstances = {}; normalized = true; }
+        if (!region.rdsDbClusters) { region.rdsDbClusters = {}; normalized = true; }
         if (!region.rdsDbParameterGroups) { region.rdsDbParameterGroups = {}; normalized = true; }
         if (!region.rdsDbSnapshots) { region.rdsDbSnapshots = {}; normalized = true; }
         if (!region.s3Buckets) { region.s3Buckets = {}; normalized = true; }
@@ -224,12 +225,20 @@ export class StateStore {
     return Object.keys(this.ensureAccount(accountId).regions).sort();
   }
 
-  async save(): Promise<void> {
+  /** A staged update is visible during serialization and becomes visible to readers only after rename. */
+  async save(staged?: { apply(): void; restore(): void }): Promise<void> {
     this.saving = this.saving.catch(() => undefined).then(async () => {
       await mkdir(dirname(this.file), { recursive: true });
       const temporary = `${this.file}.tmp-${process.pid}-${randomUUID()}`;
       try {
-        await writeFile(temporary, JSON.stringify(this.state, null, 2), { mode: 0o600 });
+        let contents: string;
+        try {
+          staged?.apply();
+          contents = JSON.stringify(this.state, null, 2);
+        } finally {
+          staged?.restore();
+        }
+        await writeFile(temporary, contents, { mode: 0o600 });
         for (let attempt = 0; ; attempt++) {
           try {
             await rename(temporary, this.file);
@@ -239,6 +248,7 @@ export class StateStore {
             await new Promise(resolveDelay => setTimeout(resolveDelay, 10 * (attempt + 1)));
           }
         }
+        staged?.apply();
       } finally {
         await unlink(temporary).catch(() => undefined);
       }

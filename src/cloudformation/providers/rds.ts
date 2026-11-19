@@ -240,6 +240,7 @@ function instanceAttributes(state: RdsDbInstanceState): Record<string, unknown> 
 export function createRdsDbInstanceProvider(manager: RdsManager, region: string): ProductionResourceProvider<RdsDbInstanceModel> {
   const snapshot = async (physicalId: string, context: ProviderContext): Promise<{ state: RdsDbInstanceState; model: RdsDbInstanceModel; tags: Record<string, string> }> => {
     const state = manager.describe(region, { DBInstanceIdentifier: physicalId })[0];
+    if (state.storageType === "aurora") throw new AwsError("DBInstanceNotFound", "The identifier belongs to an Aurora cluster member", 404);
     const currentTags = manager.listTags(region, { ResourceName: state.dbInstanceArn });
     const secret = state.manageMasterUserPassword ? undefined : await manager.cloudFormationCredentials(region, physicalId);
     const model: RdsDbInstanceModel = stable({

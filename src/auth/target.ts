@@ -9,6 +9,7 @@ import { resolveSesV2Operation } from "../ses/protocol-v2.js";
 import type { IamState } from "../types.js";
 import { resolveIamAuthorizationTarget } from "./iam-target.js";
 import { xrayOperation } from "../xray/action-inventory.js";
+import { rdsDataOperation } from "../rds/data-protocol.js";
 import { moveTaskSource } from "../sqs/move-task.js";
 import { AwsError } from "../errors.js";
 import { parseLogLanguage } from "../cloudwatch-logs-query-languages.js";
@@ -130,6 +131,9 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
   let requestBody: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   const additionalTargets: Array<{ action: string; resource: string; operation: string; context?: Record<string, unknown> }> = [];
   if (service !== "s3") { requestBody = await readBody(req); if (service === "cloudfront" && requestBody.length > 1024 * 1024) throw new AwsError("InvalidArgument", "The CloudFront request body exceeds the 1 MiB authorization limit", 413); if (requestBody.length) { if (String(req.headers["content-type"] ?? "").includes("application/x-www-form-urlencoded")) input = parseAwsQuery(requestBody.toString("utf8"), { coerceTimestamps: service !== "cloudformation" }); else { try { input = JSON.parse(requestBody.toString("utf8")); } catch {} } } }
+  if (service === "rds-data" && (!input || typeof input !== "object" || Array.isArray(input))) {
+    throw new AwsError("BadRequestException", "The Data API request must be a JSON object.");
+  }
   if (service === "cloudfront") {
     const resolved = cloudFrontAuthorizationTarget(req, url, accountId, requestBody);
     const common = { "aws:PrincipalArn": principal.principalArn, "aws:PrincipalAccount": principal.accountId, "aws:RequestedRegion": region, "aws:CurrentTime": new Date(now).toISOString(), "aws:SecureTransport": Boolean((req.socket as any).encrypted) };
@@ -308,25 +312,46 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
       for (const statementTarget of targets.slice(1)) additionalTargets.push({ ...statementTarget, operation });
     }
   }
+  else if (service === "rds-data") {
+    operation = req.method === "POST" ? rdsDataOperation(url.pathname) ?? "Unknown" : "Unknown";
+    action = `rds-data:${operation}`;
+    resource = typeof input?.resourceArn === "string" && /^arn:aws:rds:[a-z0-9-]+:\d{12}:cluster:[a-z0-9-]+$/.test(input.resourceArn) ? input.resourceArn : "*";
+    const secretArn = typeof input?.secretArn === "string" && /^arn:aws:secretsmanager:[a-z0-9-]+:\d{12}:secret:[\w/+=.@-]+$/.test(input.secretArn) ? input.secretArn : "*";
+    additionalTargets.push({ action: "secretsmanager:GetSecretValue", operation: "GetSecretValue", resource: secretArn, context: { "secretsmanager:VersionStage": "AWSCURRENT" } });
+    input = {};
+  }
   else if (service === "rds") {
+    if (req.method === "GET") input = parseAwsQuery(url.searchParams);
     operation = String(input.Action ?? operation); action = `rds:${operation}`;
     const identifier = input.DBInstanceIdentifier ? String(input.DBInstanceIdentifier).toLowerCase() : undefined;
     const parameterGroup = input.DBParameterGroupName ? String(input.DBParameterGroupName).toLowerCase() : undefined;
     const snapshotIdentifier = input.DBSnapshotIdentifier ? String(input.DBSnapshotIdentifier).toLowerCase() : input.TargetDBSnapshotIdentifier ? String(input.TargetDBSnapshotIdentifier).toLowerCase() : undefined;
     const sourceSnapshot = input.SourceDBSnapshotIdentifier ? String(input.SourceDBSnapshotIdentifier) : undefined;
     const snapshotResource = snapshotIdentifier ? snapshotIdentifier.startsWith("arn:") ? snapshotIdentifier : `arn:aws:rds:${region}:${accountId}:snapshot:${snapshotIdentifier}` : undefined;
-    if (input.ResourceName) resource = String(input.ResourceName);
-    else if (identifier) resource = `arn:aws:rds:${region}:${accountId}:db:${identifier}`;
+    if (["CreateDBCluster", "DescribeDBClusters", "ModifyDBCluster", "DeleteDBCluster"].includes(operation)) {
+      const cluster = input.DBClusterIdentifier;
+      if (typeof cluster === "string" && cluster) {
+        resource = cluster.startsWith("arn:") ? cluster : `arn:aws:rds:${region}:${accountId}:cluster:${cluster.toLowerCase()}`;
+      }
+    } else if (["EnableHttpEndpoint", "DisableHttpEndpoint"].includes(operation)) {
+      resource = typeof input.ResourceArn === "string" ? input.ResourceArn : "*";
+    } else if (input.ResourceName) resource = String(input.ResourceName);
+    else if (identifier) resource = identifier.startsWith("arn:") ? identifier : `arn:aws:rds:${region}:${accountId}:db:${identifier}`;
     else if (snapshotResource) resource = snapshotResource;
     else if (parameterGroup) resource = `arn:aws:rds:${region}:${accountId}:pg:${parameterGroup}`;
     if (operation === "CreateDBSnapshot" && snapshotResource) additionalTargets.push({ action, resource: snapshotResource, operation });
+    if (operation === "CreateDBInstance" && typeof input.DBClusterIdentifier === "string") {
+      const clusterId = input.DBClusterIdentifier;
+      const parentArn = clusterId.startsWith("arn:") ? clusterId : `arn:aws:rds:${region}:${accountId}:cluster:${clusterId.toLowerCase()}`;
+      additionalTargets.push({ action, resource: parentArn, operation });
+    }
     if (sourceSnapshot) additionalTargets.push({ action, resource: sourceSnapshot.startsWith("arn:") ? sourceSnapshot : `arn:aws:rds:${region}:${accountId}:snapshot:${sourceSnapshot.toLowerCase()}`, operation });
     if (operation === "RestoreDBInstanceFromDBSnapshot" && input.DBSnapshotIdentifier) {
       const source = String(input.DBSnapshotIdentifier); additionalTargets.push({ action, resource: source.startsWith("arn:") ? source : `arn:aws:rds:${region}:${accountId}:snapshot:${source.toLowerCase()}`, operation });
     }
     const tagContainer = input.Tags?.Tag ?? input.Tags;
     const tags = Array.isArray(tagContainer) ? tagContainer : tagContainer ? [tagContainer] : [];
-    if (new Set(["CreateDBInstance", "CreateDBParameterGroup", "CreateDBSnapshot", "CopyDBSnapshot", "RestoreDBInstanceFromDBSnapshot"]).has(operation) && tags.length) additionalTargets.push({ action: "rds:AddTagsToResource", resource: operation === "CreateDBSnapshot" && snapshotResource ? snapshotResource : resource, operation: "AddTagsToResource" });
+    if (new Set(["CreateDBCluster", "CreateDBInstance", "CreateDBParameterGroup", "CreateDBSnapshot", "CopyDBSnapshot", "RestoreDBInstanceFromDBSnapshot"]).has(operation) && tags.length) additionalTargets.push({ action: "rds:AddTagsToResource", resource: operation === "CreateDBSnapshot" && snapshotResource ? snapshotResource : resource, operation: "AddTagsToResource" });
   }
   else if (service === "sqs") {
     // Legacy SQS Query requests may carry Action and operation inputs on a GET
@@ -788,7 +813,9 @@ export async function authorizationTarget(req: IncomingMessage, url: URL, servic
   return {
     action, resource, operation, input, context,
     additionalTargets: additionalTargets.map(target => {
-      let additionalContext = service === "dynamodb" && tableResource(target.resource) !== primaryTable ? { ...context } : context;
+      const separateTags = (service === "dynamodb" && tableResource(target.resource) !== primaryTable)
+        || service === "rds" || service === "rds-data";
+      let additionalContext = separateTags ? { ...context } : context;
       if (target.context) {
         additionalContext = { ...context };
         for (const key of Object.keys(operationContext)) delete additionalContext[key];

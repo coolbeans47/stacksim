@@ -45,7 +45,9 @@ export interface RdsEngineRuntime {
 export interface RdsEngineProvider {
   discover(): Promise<RdsEngineDiscovery>;
   /** Prepare and bootstrap a durable instance. A successful return leaves the provider stopped. */
-  initialize(config: RdsEngineConfig): Promise<void>;
+  initialize(config: RdsEngineConfig, options?: { recoverUnpublishedVolume: boolean }): Promise<void>;
+  /** Verify the ownership and files of a published volume without creating files or opening a listener. */
+  verifyStoppedVolume?(config: RdsEngineConfig): Promise<void>;
   /** Start the prepared instance and return only after authenticated readiness succeeds. */
   start(config: RdsEngineConfig): Promise<RdsEngineRuntime>;
   /** Return the current authenticated readiness state without changing lifecycle state. */

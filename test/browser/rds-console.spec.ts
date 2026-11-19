@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CreateDBInstanceCommand, DeleteDBInstanceCommand, DescribeDBInstancesCommand, RDSClient } from "@aws-sdk/client-rds";
+import { CreateDBClusterCommand, CreateDBInstanceCommand, DeleteDBInstanceCommand, DescribeDBClustersCommand, DescribeDBInstancesCommand, RDSClient } from "@aws-sdk/client-rds";
 import mysql, { type Connection } from "mysql2/promise";
 import { StackSim } from "../../src/server.js";
 
@@ -86,6 +86,66 @@ test.describe("RDS console", () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
+  test("lists a regional Aurora cluster, links its writer and toggles Data API access", async ({ page }) => {
+    const region = "us-east-1";
+    const client = new RDSClient({ endpoint: `http://127.0.0.1:${simulator.port}`, region, credentials, maxAttempts: 1 });
+    const errors = browserErrors(page);
+    const identifier = "browser-cluster";
+    try {
+      const { DBCluster: cluster } = await client.send(new CreateDBClusterCommand({
+        DBClusterIdentifier: identifier,
+        Engine: "aurora-mysql",
+        EngineVersion: "8.0.mysql_aurora.3.08.0",
+        EngineMode: "provisioned",
+        DatabaseName: "app",
+        MasterUsername: "developer",
+        MasterUserPassword: "BrowserClusterSecret123",
+        Port: await freePort(),
+        ServerlessV2ScalingConfiguration: { MinCapacity: 0.5, MaxCapacity: 2 },
+        Tags: [{ Key: "team", Value: "browser" }],
+      }));
+      assert.ok(cluster?.DBClusterArn);
+      await page.addInitScript(region => localStorage.setItem("stacksim-region", region), region);
+      await page.goto(`${consoleUrl}#/rds/databases`);
+      const row = page.getByRole("row").filter({ has: page.getByRole("link", { name: identifier }) });
+      await expect(row.getByRole("cell", { name: "available" })).toBeVisible();
+      await expect(row.getByRole("cell", { name: "0", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Create database" })).toBeDisabled();
+      await row.getByRole("link", { name: identifier }).click();
+      await expect(page).toHaveURL(/#\/rds\/clusters\/browser-cluster$/);
+      await expect(page.getByRole("heading", { name: identifier })).toBeVisible();
+      await expect(page.getByText(cluster.DBClusterArn, { exact: true })).toBeVisible();
+      await expect(page.getByText("0.5–2 ACUs")).toBeVisible();
+      await expect(page.getByRole("heading", { name: "DB cluster members (0)" })).toBeVisible();
+      await expect(page.getByText("No DB instances are attached to this cluster.")).toBeVisible();
+      await page.getByRole("button", { name: "Enable Data API" }).click();
+      await expect(page.getByRole("button", { name: "Disable Data API" })).toBeEnabled();
+      assert.equal((await client.send(new DescribeDBClustersCommand({ DBClusterIdentifier: identifier }))).DBClusters?.[0]?.HttpEndpointEnabled, true);
+      await page.getByRole("button", { name: "Disable Data API" }).click();
+      await expect(page.getByRole("button", { name: "Enable Data API" })).toBeEnabled();
+      await expect(page.getByRole("cell", { name: "team" })).toBeVisible();
+      await expect(page.locator("main").getByRole("link", { name: "Query editor" })).toHaveCount(0);
+      await expect(page.getByText("BrowserClusterSecret123")).toHaveCount(0);
+      await page.setViewportSize({ width: 390, height: 844 });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+      await client.send(new CreateDBInstanceCommand({ DBClusterIdentifier: identifier, DBInstanceIdentifier: "browser-writer", DBInstanceClass: "db.serverless", Engine: "aurora-mysql", PromotionTier: 2 }));
+      await waitForAvailable(client, "browser-writer");
+      await page.getByRole("button", { name: "Refresh" }).click();
+      const writerRow = page.getByRole("row").filter({ has: page.getByRole("link", { name: "browser-writer" }) });
+      await expect(writerRow.getByRole("cell", { name: "Writer", exact: true })).toBeVisible();
+      await expect(writerRow.getByRole("cell", { name: "2", exact: true })).toBeVisible();
+      await writerRow.getByRole("link", { name: "browser-writer" }).click();
+      await expect(page.locator("main").getByRole("link", { name: identifier })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Take snapshot" })).toHaveCount(0);
+      await page.goto(`${consoleUrl}#/rds/snapshots`);
+      await expect(page.getByText("Restore is disabled while the DB slot is occupied")).toBeVisible();
+      await expect(page.getByRole("button", { name: "Create snapshot", exact: true })).toBeDisabled();
+      expect(errors).toEqual([]);
+    } finally {
+      client.destroy();
+    }
+  });
+
   test("creates, inspects, and deletes the singleton without rendering its password", async ({ page }) => {
     let instance: Record<string, any> | undefined;
     let createInput: URLSearchParams | undefined;
@@ -97,6 +157,7 @@ test.describe("RDS console", () => {
       const action = input.get("Action") ?? "";
       let body: string;
       if (action === "DescribeDBInstances") body = queryResponse(action, `<DBInstances>${instanceXml(instance)}</DBInstances>`);
+      else if (action === "DescribeDBClusters") body = queryResponse(action, "<DBClusters/>");
       else if (action === "DescribeAccountAttributes") body = queryResponse(action, `<AccountQuotas><AccountQuota><AccountQuotaName>DBInstances</AccountQuotaName><Used>${instance ? 1 : 0}</Used><Max>1</Max></AccountQuota></AccountQuotas>`);
       else if (action === "DescribeDBEngineVersions") body = queryResponse(action, "<DBEngineVersions><DBEngineVersion><Engine>mysql</Engine><EngineVersion>8.0.local</EngineVersion></DBEngineVersion></DBEngineVersions>");
       else if (action === "DescribeOrderableDBInstanceOptions") body = queryResponse(action, "<OrderableDBInstanceOptions><OrderableDBInstanceOption><DBInstanceClass>db.t3.micro</DBInstanceClass><Engine>mysql</Engine><EngineVersion>8.0.local</EngineVersion><StorageType>gp2</StorageType><MinStorageSize>20</MinStorageSize><MaxStorageSize>100</MaxStorageSize></OrderableDBInstanceOption></OrderableDBInstanceOptions>");
@@ -574,6 +635,7 @@ ORDER BY b.bill_number;`);
       const action = input.get("Action") ?? "";
       let result = "";
       if (action === "DescribeDBInstances") result = `<DBInstances>${instanceXml(instance)}</DBInstances>`;
+      else if (action === "DescribeDBClusters") result = "<DBClusters/>";
       else if (action === "DescribeAccountAttributes") result = "<AccountQuotas><AccountQuota><AccountQuotaName>DBInstances</AccountQuotaName><Used>1</Used><Max>1</Max></AccountQuota></AccountQuotas>";
       else if (action === "DescribeDBParameterGroups") {
         const requested = input.get("DBParameterGroupName");

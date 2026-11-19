@@ -1,15 +1,36 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { readFile, unlink } from "node:fs/promises";
+import { readFile, stat, unlink } from "node:fs/promises";
 
 const BODY = Symbol.for("stacksim.request-body");
 const BODY_FILE = Symbol.for("stacksim.request-body-file");
 
-export async function readBody(req: IncomingMessage): Promise<Buffer> {
-  const cached = (req as any)[BODY] as Buffer | undefined; if (cached) return cached;
-  const staged = (req as any)[BODY_FILE] as { file: string } | undefined; if (staged) { const body = await readFile(staged.file); try { await unlink(staged.file); } catch {} delete (req as any)[BODY_FILE]; (req as any)[BODY] = body; return body; }
+export async function readBody(req: IncomingMessage, limit?: { bytes: number; exceeded: () => Error }): Promise<Buffer> {
+  const cached = (req as any)[BODY] as Buffer | undefined;
+  if (cached) {
+    if (limit && cached.length > limit.bytes) throw limit.exceeded();
+    return cached;
+  }
+  const staged = (req as any)[BODY_FILE] as { file: string } | undefined;
+  if (staged) {
+    if (limit && (await stat(staged.file)).size > limit.bytes) throw limit.exceeded();
+    const body = await readFile(staged.file);
+    await unlink(staged.file).catch(() => {});
+    delete (req as any)[BODY_FILE];
+    (req as any)[BODY] = body;
+    return body;
+  }
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  let length = 0;
+  for await (const chunk of limit ? req.iterator({ destroyOnReturn: false }) : req) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    length += bytes.length;
+    if (limit && length > limit.bytes) {
+      req.resume();
+      throw limit.exceeded();
+    }
+    chunks.push(bytes);
+  }
   const body = Buffer.concat(chunks); (req as any)[BODY] = body; return body;
 }
 

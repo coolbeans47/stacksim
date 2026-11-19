@@ -2,7 +2,7 @@
 
 This guide explains every panel in the StackSim RDS console: what each setting does, why you would use it in real AWS workloads, and how it maps to production Amazon RDS behavior.
 
-StackSim models one installation-wide, loopback-only DB instance backed by durable embedded SQLite and exposed through the fail-closed [`mysql8-orm-v1`](rds-mysql8-development-profile.md) subset, plus parameter groups, tags, a SQL query editor, and immutable manual/final snapshots. The pinned Knex 3.3.0 and Sequelize 6.37.8 fixtures are supported; other ORM/version combinations are outside the tested contract. PITR, automated backups, Aurora/clusters, replicas, Multi-AZ, public networking, and other engines remain unavailable or reference-only.
+StackSim has one installation-wide database slot. A standalone MySQL-compatible DB instance supports parameter groups, tags, a SQL query editor and manual/final snapshots. An Aurora MySQL cluster can occupy the slot and attach one Serverless v2 writer. Both use the same local SQL profile and durable SQLite storage. [SQL profile](rds-mysql8-development-profile.md)
 
 ---
 
@@ -22,7 +22,7 @@ Each section follows the same pattern:
 
 | Nav item | Route | Purpose |
 |----------|-------|---------|
-| **Databases** | `#/rds/databases` | List and manage DB instances |
+| **Databases** | `#/rds/databases` | Manage DB instances and inspect clusters |
 | **Snapshots** | `#/rds/snapshots` | Create, copy, restore, and delete manual snapshots |
 | **Query editor** | `#/rds/query-editor` | Run SQL against a local database |
 | **Parameter groups** | `#/rds/parameter-groups` | Custom engine parameter sets |
@@ -39,7 +39,7 @@ The console uses the RDS Query/XML API (`@aws-sdk/client-rds`).
 
 #### What it is
 
-Table of DB identifiers with status, engine, class, endpoint, port, and **Open editor** link. **Create database**, **Refresh**, and **Query editor** in the header. Installation quota banner (one instance per installation). Filter box searches identifiers and engines.
+The regional catalog shows clusters, writers and standalone instances. Open a cluster at `#/rds/clusters/{identifier}` to see its member, promotion tier and Data API status. Use the endpoint control to enable or disable Data API access. An empty cluster can be `available` before a writer is attached. Applications can run SQL once the writer is available.
 
 #### Why use it
 
@@ -47,7 +47,7 @@ Central inventory for relational data used by applications, Lambda, or stream pr
 
 #### How it works in StackSim
 
-One installation-wide MySQL-compatible instance; switching Regions may show the slot occupied elsewhere. Official RDS lifecycle calls, private master credentials, tags, safe parameter groups, and supported CloudFormation resources are active.
+Switching Regions may show the slot occupied elsewhere. Use the RDS Query API or Terraform to create and modify a cluster. Standalone instances also support private master credentials, safe parameter groups and CloudFormation provisioning.
 
 #### Example
 

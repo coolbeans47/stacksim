@@ -27,6 +27,7 @@ export function sendSecretsManagerError(res: ServerResponse, error: unknown): vo
 export class SecretsManagerService {
   readonly catalog: SecretsManagerStore;
   private admissionError?: Error;
+  private ready = false;
 
   constructor(
     store: StateStore,
@@ -40,15 +41,17 @@ export class SecretsManagerService {
   }
 
   async start(): Promise<void> {
+    if (this.ready) return;
     try {
       await this.catalog.start();
       this.admissionError = undefined;
+      this.ready = true;
     } catch (error) {
       this.admissionError = error instanceof Error ? error : new Error(String(error));
     }
   }
 
-  stop(): void { this.catalog.stop(); }
+  stop(): void { this.ready = false; this.catalog.stop(); }
 
   admissionStatus(): "available" | "unavailable" {
     return this.admissionError ? "unavailable" : "available";
@@ -87,7 +90,7 @@ export class SecretsManagerService {
   AttachSecretTargetCloudFormation(input: any, owner: string): Promise<any> { return this.catalog.AttachSecretTarget(input, owner); }
   DetachSecretTargetCloudFormation(secretId: unknown, owner: string): Promise<void> { return this.catalog.DetachSecretTarget(secretId, owner); }
   CreateManagedRdsSecret(input: Parameters<SecretsManagerStore["CreateManagedRdsSecret"]>[0]): ReturnType<SecretsManagerStore["CreateManagedRdsSecret"]> { return this.catalog.CreateManagedRdsSecret(input); }
-  DeleteManagedRdsSecret(secretId: string, managedResourceArn: string): Promise<void> { return this.catalog.DeleteManagedRdsSecret(secretId, managedResourceArn); }
+  DeleteManagedRdsSecret(secretId: string, managedResourceArn: string, unpublishedGeneration?: string): Promise<void> { return this.catalog.DeleteManagedRdsSecret(secretId, managedResourceArn, unpublishedGeneration); }
 
   async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const target = String(req.headers["x-amz-target"] ?? "");

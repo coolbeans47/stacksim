@@ -37,6 +37,8 @@ import { evaluateSqsQueuePolicy } from "./sqs/policy.js";
 import { EventBridgeService } from "./eventbridge.js";
 import { EventBridgeSchedulerService } from "./eventbridge-scheduler.js";
 import { RdsManager, RdsService } from "./rds.js";
+import { RdsDataService } from "./rds/data-api.js";
+import { rdsDataOperation, readRdsDataBody } from "./rds/data-protocol.js";
 import { CLOUDFORMATION_SUPPORTED_ACTIONS, CloudFormationService } from "./cloudformation.js";
 import { CloudFormationBootstrapManager } from "./cloudformation/bootstrap.js";
 import { CustomResourceCallbackBroker } from "./cloudformation/custom-resource-callbacks.js";
@@ -321,6 +323,7 @@ interface RegionalServices {
   eventbridge: EventBridgeService;
   eventscheduler: EventBridgeSchedulerService;
   rds: RdsService;
+  rdsData: RdsDataService;
   ses: SesService;
   cognito: CognitoService;
   cognitoIdentity: CognitoIdentityService;
@@ -547,6 +550,9 @@ export class StackSim {
     const rdsProvider = options.rdsProvider ?? new EmbeddedSqliteProvider({ instancesRoot: rdsInstancesRoot, startupTimeoutMs: rdsStartupTimeoutMs });
     const legacyDestroyProvider = options.rdsProvider ? undefined : new ManagedMariaDbProvider({ instancesRoot: rdsInstancesRoot, startupTimeoutMs: rdsStartupTimeoutMs });
     this.rdsManager = new RdsManager(this.store, rdsProvider, this.clock, { startupTimeoutMs: rdsStartupTimeoutMs, legacyDestroyProvider });
+    this.rdsManager.onDataInvalidated(resourceArn => {
+      for (const service of this.regionalServices.values()) service.rdsData.invalidate(resourceArn);
+    });
     this.opensearch = new OpenSearchService(this.store, this.clock, this.authMode);
     this.opensearch.setTelemetryPublisher((region, event) => this.services(region).telemetry.publish(event));
     this.iam = new IamService(this.store, this.clock);
@@ -829,6 +835,10 @@ export class StackSim {
         ),
       ),
     ));
+    // Cluster recovery can finish an interrupted master-secret publication or deletion.
+    for (const region of this.store.listRegions()) {
+      if (Object.keys(this.store.regionState(region).rdsDbClusters).length) await this.services(region).secretsmanager.start();
+    }
     await this.rdsManager.start();
     const callbackPki = await this.customResourceCallbacks.initializePki();
     this.cloudfront.configureTls({
@@ -993,7 +1003,7 @@ export class StackSim {
         opensearchDomainCount: this.opensearch.domains(region).length,
         cloudfrontDistributionCount: this.cloudfront.consoleSnapshot().distributions.length,
         lambdaImageSource: process.env.STACKSIM_LAMBDA_OCI_ROOT ? "oci" : process.env.STACKSIM_LAMBDA_DOCKER_SOCKET ? "docker" : undefined,
-        counts: { stacks: Object.values(this.store.regionState(region).cloudformation.stacks).filter(stack => stack.stackStatus !== "DELETE_COMPLETE").length, stateMachines: Object.keys(this.store.regionState(region).stepFunctions.stateMachines).length, parameters: Object.keys(this.store.regionState(region).parameterStore.parameters).length, secrets: Object.keys(this.store.regionState(region).secretsManager.secrets).length, functions: Object.keys(this.store.regionState(region).functions).length, capacityProviders: Object.keys(this.store.regionState(region).lambdaCapacityProviders).length, durableExecutions: Object.keys(this.store.regionState(region).lambdaDurableExecutions).length, tables: Object.keys(this.store.regionState(region).tables).length, rdsInstances: Object.keys(this.store.regionState(region).rdsDbInstances).length, buckets: Object.keys(this.store.regionState(region).s3Buckets).length, queues: Object.keys(this.store.regionState(region).sqsQueues).length, topics: Object.keys(this.store.regionState(region).sns.topics).length, subscriptions: Object.keys(this.store.regionState(region).sns.subscriptions).length, eventBuses: Object.keys(this.store.regionState(region).eventBuses).length, eventRules: Object.keys(this.store.regionState(region).eventRules).length, apis: Object.keys(this.store.regionState(region).apis).length, httpApis: Object.keys(this.store.regionState(region).httpApis).length, webSocketApis: Object.keys(this.store.regionState(region).webSocketApis).length, customDomains: Object.keys(this.store.regionState(region).apiGatewayDomainNames).length + Object.keys(this.store.regionState(region).apiGatewayV2DomainNames).length, logGroups: Object.keys(this.store.regionState(region).logs).length, users: Object.keys(this.store.ensureAccount().iam.users).length, groups: Object.keys(this.store.ensureAccount().iam.groups).length, roles: Object.keys(this.store.ensureAccount().iam.roles).length, policies: Object.keys(this.store.ensureAccount().iam.policies).length, sesIdentities: Object.keys(this.store.regionState(region).ses.identities).length, sesTemplates: Object.keys(this.store.regionState(region).ses.templates).length, sesConfigurationSets: Object.keys(this.store.regionState(region).ses.configurationSets).length, sesMessages: services.ses.summary().messageCount, cognitoUserPools: services.cognito.summary().poolCount, cognitoAppClients: services.cognito.summary().clientCount, cognitoIdentityPools: services.cognitoIdentity.summary().poolCount },
+        counts: { stacks: Object.values(this.store.regionState(region).cloudformation.stacks).filter(stack => stack.stackStatus !== "DELETE_COMPLETE").length, stateMachines: Object.keys(this.store.regionState(region).stepFunctions.stateMachines).length, parameters: Object.keys(this.store.regionState(region).parameterStore.parameters).length, secrets: Object.keys(this.store.regionState(region).secretsManager.secrets).length, functions: Object.keys(this.store.regionState(region).functions).length, capacityProviders: Object.keys(this.store.regionState(region).lambdaCapacityProviders).length, durableExecutions: Object.keys(this.store.regionState(region).lambdaDurableExecutions).length, tables: Object.keys(this.store.regionState(region).tables).length, rdsInstances: Object.keys(this.store.regionState(region).rdsDbInstances).length, rdsClusters: Object.keys(this.store.regionState(region).rdsDbClusters).length, buckets: Object.keys(this.store.regionState(region).s3Buckets).length, queues: Object.keys(this.store.regionState(region).sqsQueues).length, topics: Object.keys(this.store.regionState(region).sns.topics).length, subscriptions: Object.keys(this.store.regionState(region).sns.subscriptions).length, eventBuses: Object.keys(this.store.regionState(region).eventBuses).length, eventRules: Object.keys(this.store.regionState(region).eventRules).length, apis: Object.keys(this.store.regionState(region).apis).length, httpApis: Object.keys(this.store.regionState(region).httpApis).length, webSocketApis: Object.keys(this.store.regionState(region).webSocketApis).length, customDomains: Object.keys(this.store.regionState(region).apiGatewayDomainNames).length + Object.keys(this.store.regionState(region).apiGatewayV2DomainNames).length, logGroups: Object.keys(this.store.regionState(region).logs).length, users: Object.keys(this.store.ensureAccount().iam.users).length, groups: Object.keys(this.store.ensureAccount().iam.groups).length, roles: Object.keys(this.store.ensureAccount().iam.roles).length, policies: Object.keys(this.store.ensureAccount().iam.policies).length, sesIdentities: Object.keys(this.store.regionState(region).ses.identities).length, sesTemplates: Object.keys(this.store.regionState(region).ses.templates).length, sesConfigurationSets: Object.keys(this.store.regionState(region).ses.configurationSets).length, sesMessages: services.ses.summary().messageCount, cognitoUserPools: services.cognito.summary().poolCount, cognitoAppClients: services.cognito.summary().clientCount, cognitoIdentityPools: services.cognitoIdentity.summary().poolCount },
         rds: this.rdsManager.metadata(),
       });
       if (req.method === "GET" && url.pathname === "/_stacksim/api/environment") {
@@ -1100,6 +1110,7 @@ export class StackSim {
       const signingService = this.requestSigningService(req, url); let routedService = url.pathname === "/v20180820/configuration/publicAccessBlock" && req.headers["x-amz-account-id"] ? "s3-control" : signingService ?? this.routeService(req, url); if (routedService === "unknown") routedService = await this.queryProtocolService(req, url);
       let principal: PrincipalContext;
       try {
+        if (routedService === "rds-data") await readRdsDataBody(req);
         principal = routedService === "cognito-identity" && isCognitoIdentityNonIamTarget(req.headers["x-amz-target"])
           ? principalWithoutValidation(req, url, this.store, this.clock)
           : routedService === "cognito-idp" && isCognitoNonIamTarget(req.headers["x-amz-target"])
@@ -1122,6 +1133,7 @@ export class StackSim {
       if (routedService === "scheduler") return services.eventscheduler.handle(req, res, url);
       if (routedService === "states") return services.stepfunctions.handle(req, res);
       if (routedService === "rds") return services.rds.handle(req, res, currentRequestId);
+      if (routedService === "rds-data") return services.rdsData.handle(req, res, currentRequestId);
       if (routedService === "monitoring") return services.metrics.handle(req, res, currentRequestId, principal);
       if (routedService === "ses") return services.ses.handle(req, res, url, currentRequestId, principal);
       if (routedService === "cognito-identity") {
@@ -1309,6 +1321,26 @@ export class StackSim {
         for (const [key, value] of Object.entries(resourceTags)) { context[`aws:ResourceTag/${key}`] = value; context[`secretsmanager:ResourceTag/${key}`] = value; }
         await this.authorize(principal, { action, resource, operation: action.split(":")[1], input: {}, context }, requestId());
       } : undefined);
+      const rdsData = new RdsDataService(this.clock, resourceArn => {
+        const cluster = Object.values(this.store.regionState(region).rdsDbClusters).find(entry => entry.dbClusterArn === resourceArn);
+        if (!cluster) throw new AwsError("DatabaseNotFoundException", "The requested DB cluster does not exist in this account and Region.", 404);
+        if (!cluster.httpEndpointEnabled) throw new AwsError("HttpEndpointNotEnabledException", "The Data API is disabled for this DB cluster.");
+        const writer = this.rdsManager.resolveWriter(region, cluster);
+        if (!writer) throw new AwsError("DatabaseNotFoundException", "The DB cluster has no writer.", 404);
+        if (cluster.status !== "available" || writer.dbInstanceStatus !== "available") throw new AwsError("DatabaseUnavailableException", "The cluster writer is unavailable.", 504);
+        return { generation: cluster.dbClusterResourceId + "/" + writer.dbiResourceId, port: writer.port, database: cluster.databaseName };
+      }, async secretArn => {
+        if (secretsmanager.resolveArn(secretArn) !== secretArn) throw new AwsError("SecretsErrorException", "Secrets Manager could not retrieve the requested secret.");
+        let value;
+        try { value = await secretsmanager.getSecretForService({ SecretId: secretArn, VersionStage: "AWSCURRENT" }); }
+        catch { throw new AwsError("SecretsErrorException", "Secrets Manager could not retrieve the current secret value."); }
+        let credential;
+        try { credential = JSON.parse(value.SecretString); } catch { throw new AwsError("InvalidSecretException", "The current secret must contain a JSON credential."); }
+        if (typeof credential?.username !== "string" || !credential.username || typeof credential.password !== "string" || !credential.password) {
+          throw new AwsError("InvalidSecretException", "The current secret must contain a username and password.");
+        }
+        return { username: credential.username, password: credential.password };
+      });
       secretsmanager.setRotationInvoker({
         assertFunction: (lambdaArn, secretArn) => lambda.assertSecretsManagerRotationFunction(lambdaArn, secretArn),
         invoke: async (lambdaArn, event, currentRequestId, lineage) => { await lambda.invokeSecretsManagerRotation(lambdaArn, event, currentRequestId, lineage); },
@@ -1331,7 +1363,8 @@ export class StackSim {
       });
       this.rdsManager.setManagedSecretsPort(region, {
         create: input => secretsmanager.CreateManagedRdsSecret(input),
-        delete: (secretArn, targetArn) => secretsmanager.DeleteManagedRdsSecret(secretArn, targetArn),
+        rotate: (arn, target, version, password) => secretsmanager.catalog.RotateManagedRdsSecret(arn, target, version, password),
+        delete: (secretArn, targetArn, unpublishedGeneration) => secretsmanager.DeleteManagedRdsSecret(secretArn, targetArn, unpublishedGeneration),
       });
       const endpointHost = this.host === "0.0.0.0" ? "127.0.0.1" : this.host === "::" || this.host === "[::]" ? "[::1]" : this.host;
       const appsync = new AppSyncService(
@@ -1458,7 +1491,7 @@ export class StackSim {
       services = { cloudformation: new CloudFormationService(this.store, region, this.clock, s3, (roleArn, sessionName) => this.sts.assumeServiceRole(roleArn, sessionName, "cloudformation.amazonaws.com"), cloudFormationProviders, this.authMode === "enforce" ? async (principal, targets) => {
         const providerRequestId = requestId();
         for (const target of targets) await this.authorize(principal, { action: target.action, resource: target.resource, operation: "CloudFormationProvider", input: {}, context: { "aws:PrincipalArn": principal.principalArn, "aws:PrincipalAccount": principal.accountId, "aws:RequestedRegion": region, "aws:CurrentTime": new Date(this.clock.now()).toISOString(), "aws:SecureTransport": true, "aws:CalledVia": ["cloudformation.amazonaws.com"], ...(target.context ?? {}) } }, providerRequestId);
-      } : undefined, {}, generalCustomResourcesEnabled ? typeName => createLambdaCustomResourceProvider(typeName, this.store, lambda, this.customResourceCallbacks) : undefined, this.customResourceCallbacks), ssm, secretsmanager, lambda, stepfunctions, eventbridge, eventscheduler, dynamodb, rds: new RdsService(this.rdsManager, region), s3, sqs, sns, apigateway, apigatewayv2, apigatewaywebsocket, logs, metrics, telemetry, ses, cognito, cognitoIdentity, appsync, xray };
+      } : undefined, {}, generalCustomResourcesEnabled ? typeName => createLambdaCustomResourceProvider(typeName, this.store, lambda, this.customResourceCallbacks) : undefined, this.customResourceCallbacks), ssm, secretsmanager, lambda, stepfunctions, eventbridge, eventscheduler, dynamodb, rds: new RdsService(this.rdsManager, region), rdsData, s3, sqs, sns, apigateway, apigatewayv2, apigatewaywebsocket, logs, metrics, telemetry, ses, cognito, cognitoIdentity, appsync, xray };
       services.cloudformation.setSnsNotificationPublisher((topicArn, message, stackId) => sns.publishAuthorized({ TopicArn: topicArn, Message: message }, {
         principal: "cloudformation.amazonaws.com",
         sourceArn: stackId,
@@ -1787,6 +1820,7 @@ export class StackSim {
   }
 
   private routeService(req: import("node:http").IncomingMessage, url: URL): string {
+    if (req.headers["x-stacksim-service"] === "rds-data" || (req.method === "POST" && rdsDataOperation(url.pathname))) return "rds-data";
     if (req.headers["x-stacksim-service"] === "cloudfront" || url.pathname.startsWith("/2020-05-31/")) return "cloudfront";
     const target = String(req.headers["x-amz-target"] ?? ""); const explicit = String(req.headers["x-stacksim-service"] ?? ""); const host = String(req.headers.host ?? "").replace(/:\d+$/, ""); if (explicit === "appsync" || explicit === "iam" || explicit === "sts" || explicit === "xray") return explicit; if (new Set(["/TraceSegments", "/TraceSummaries", "/Traces", "/ServiceGraph", "/TraceGraph"]).has(url.pathname)) return "xray"; if (explicit === "states" || target.startsWith("AWSStepFunctions.")) return "states"; if (explicit === "cognito-identity" || isCognitoIdentityTarget(target) || cognitoIdentitySdkEndpointRegion(url.pathname)) return "cognito-identity"; if (explicit === "cognito-idp" || isCognitoIdentityProviderNamespace(target)) return "cognito-idp"; if (explicit === "sns") return "sns"; if (explicit === "ses" || url.pathname.startsWith("/v2/email/")) return "ses"; if (explicit === "cloudformation") return "cloudformation"; if (explicit === "ssm" || target.startsWith("AmazonSSM.")) return "ssm"; if (explicit === "secretsmanager" || target.startsWith("secretsmanager.")) return "secretsmanager"; if (explicit === "rds") return "rds"; if (explicit === "events" || target.startsWith("AWSEvents.")) return "events"; if (explicit === "scheduler") return "scheduler"; if (explicit === "sqs" || target.startsWith("AmazonSQS.")) return "sqs"; if (explicit === "s3" || /(?:^|\.)s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com$/i.test(host) || /.+\.(?:localhost|127\.0\.0\.1)$/i.test(host)) return "s3"; if (/^DynamoDB(?:Streams)?_/.test(target)) return "dynamodb"; if (target.startsWith("Logs_20140328")) return "logs"; if (target.startsWith("GraniteServiceVersion20100801.")) return "monitoring"; if (url.pathname.startsWith("/2014-11-13") || url.pathname.startsWith("/2015-03-31") || url.pathname.startsWith("/2016-08-19") || url.pathname.startsWith("/2017-03-31/tags/") || url.pathname.startsWith("/2017-10-31") || url.pathname.startsWith("/2018-10-31") || url.pathname.startsWith("/2019-09-25") || url.pathname.startsWith("/2019-09-30") || url.pathname.startsWith("/2020-04-22") || url.pathname.startsWith("/2020-06-30") || url.pathname.startsWith("/2021-07-20") || url.pathname.startsWith("/2021-10-31") || url.pathname.startsWith("/2021-11-15") || url.pathname.startsWith("/2024-08-31") || url.pathname.startsWith("/2025-11-30") || url.pathname.startsWith("/2025-12-01")) return "lambda"; if (url.pathname.startsWith("/v2") || url.pathname.startsWith("/restapis") || url.pathname === "/account" || url.pathname.startsWith("/tags/") || url.pathname.startsWith("/apikeys") || url.pathname.startsWith("/usageplans") || url.pathname.startsWith("/domainnames") || url.pathname.startsWith("/domainnameaccessassociations") || url.pathname === "/rejectdomainnameaccessassociations" || url.pathname.startsWith("/vpclinks") || url.pathname.startsWith("/clientcertificates") || url.pathname.startsWith("/sdktypes")) return "apigateway";
     // Path-style requests without a signature (browser CORS preflights, anonymous reads of public objects,
@@ -1806,6 +1840,7 @@ export class StackSim {
     const queryInput = req.method === "GET" ? Object.fromEntries(url.searchParams) : parseAwsQuery((await readBody(req)).toString("utf8"));
     if (queryInput.Version === "2010-12-01" && SES_V1_PHASE_01_02_ACTIONS.has(String(queryInput.Action ?? action ?? ""))) return "ses";
     if (queryInput.Version === "2010-03-31" && SNS_02_ACTIONS.has(String(queryInput.Action ?? action ?? ""))) return "sns";
+    if (queryInput.Version === "2014-10-31") return "rds";
     if (SQS_ACTIONS.has(action ?? "")) return "sqs";
     if (req.method === "GET") return "unknown";
     if (new Set(["CreateDBInstance", "DescribeDBInstances", "DeleteDBInstance", "ModifyDBInstance", "RebootDBInstance", "StopDBInstance", "StartDBInstance", "DescribeValidDBInstanceModifications", "AddTagsToResource", "RemoveTagsFromResource", "ListTagsForResource", "CreateDBParameterGroup", "DescribeDBParameterGroups", "ModifyDBParameterGroup", "ResetDBParameterGroup", "DeleteDBParameterGroup", "DescribeDBParameters", "DescribeEngineDefaultParameters", "DescribeDBEngineVersions", "DescribeOrderableDBInstanceOptions", "DescribeAccountAttributes"]).has(action ?? "")) return "rds";
@@ -1863,7 +1898,16 @@ export class StackSim {
         }
       }
     }
-    if (service === "rds" && target.resource.startsWith("arn:")) { const regional = this.store.regionState(region); const resourceTags = Object.values(regional.rdsDbInstances).find(candidate => candidate.dbInstanceArn === target.resource)?.tags ?? Object.values(regional.rdsDbParameterGroups).find(candidate => candidate.dbParameterGroupArn === target.resource)?.tags ?? {}; for (const [key, value] of Object.entries(resourceTags)) target.context[`aws:ResourceTag/${key}`] = value; }
+    if (service === "rds" || service === "rds-data") {
+      const regional = this.store.regionState(region);
+      for (const authorization of [target, ...(target.additionalTargets ?? [])]) {
+        if (!authorization.resource.startsWith("arn:aws:rds:")) continue;
+        const resourceTags = Object.values(regional.rdsDbClusters).find(cluster => cluster.dbClusterArn === authorization.resource)?.tags
+          ?? Object.values(regional.rdsDbInstances).find(instance => instance.dbInstanceArn === authorization.resource)?.tags
+          ?? Object.values(regional.rdsDbParameterGroups).find(group => group.dbParameterGroupArn === authorization.resource)?.tags;
+        for (const [key, value] of Object.entries(resourceTags ?? {})) authorization.context[`aws:ResourceTag/${key}`] = value;
+      }
+    }
     if (service === "sqs" && target.resource.startsWith("arn:")) { const match = target.resource.match(/^arn:[a-z0-9-]+:sqs:([^:]+):(\d{12}):/i); const queues = match ? this.store.state.accounts[match[2]]?.regions[match[1]]?.sqsQueues : this.store.regionState(region).sqsQueues; const queue = Object.values(queues ?? {}).find(candidate => candidate.queueArn === target.resource); for (const [key, value] of Object.entries(queue?.tags ?? {})) target.context[`aws:ResourceTag/${key}`] = value; }
     if (service === "sns" && target.resource.startsWith("arn:")) {
       const match = target.resource.match(/^arn:[a-z0-9-]+:sns:([^:]+):(\d{12}):([^:]+)(?::[^:]+)?$/i);
@@ -1883,14 +1927,17 @@ export class StackSim {
       enrichResourceTags(target);
       for (const additional of target.additionalTargets ?? []) enrichResourceTags(additional);
     }
-    if (service === "secretsmanager") {
+    if (service === "secretsmanager" || service === "rds-data") {
       const secretsManager = this.services(region).secretsmanager;
-      const actualArn = secretsManager.resolveArn(target.input.SecretId);
-      if (actualArn) target.resource = actualArn;
-      const tags = secretsManager.resourceTags(target.input.SecretId);
-      for (const [key, value] of Object.entries(tags)) {
-        target.context[`aws:ResourceTag/${key}`] = value;
-        target.context[`secretsmanager:ResourceTag/${key}`] = value;
+      const secretTargets = service === "secretsmanager" ? [target] : target.additionalTargets ?? [];
+      for (const secretTarget of secretTargets) {
+        const id = service === "secretsmanager" ? secretTarget.input.SecretId : secretTarget.resource;
+        const actualArn = secretsManager.resolveArn(id);
+        if (actualArn) secretTarget.resource = actualArn;
+        for (const [key, value] of Object.entries(secretsManager.resourceTags(id))) {
+          secretTarget.context[`aws:ResourceTag/${key}`] = value;
+          secretTarget.context[`secretsmanager:ResourceTag/${key}`] = value;
+        }
       }
     }
     if (service === "cognito-identity" && target.resource.startsWith("arn:")) {
@@ -3003,6 +3050,7 @@ export class StackSim {
     await Promise.all([...this.regionalServices.values()].map(services => services.stepfunctions.stop()));
     await Promise.all([...this.regionalServices.values()].map(services => services.ses.stop()));
     await Promise.all([...this.regionalServices.values()].map(services => services.xray.stop()));
+    for (const services of this.regionalServices.values()) services.rdsData.close();
     await this.rdsManager.stop();
     await this.customResourceCallbacks.flush();
     await Promise.all([...this.regionalServices.values()].map(services => services.metrics.flush()));

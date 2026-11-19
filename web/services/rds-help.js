@@ -4,7 +4,7 @@ const help = {
   instances: {
     level: "Partial",
     description: "A DB instance is a managed database server with its own identifier, endpoint, engine settings, and master credentials. Create one when an application needs a relational database it can reach with an ordinary MySQL client, then use the lifecycle controls to start, stop, reboot, modify, or delete it.",
-    support: "One installation-wide, loopback-only MySQL-compatible DB instance backed by durable embedded SQLite is supported. Official RDS Query/XML lifecycle, manual/final snapshot, local copy/restore, private master credential, tag, safe parameter-group, and supported CloudFormation calls are active. PITR, automated backups, clusters, replicas, Multi-AZ, public networking, IAM database authentication, other engines, and production capacity are unavailable.",
+    support: "One installation-wide database slot supports a standalone MySQL-compatible DB instance with a loopback listener or a regional Aurora cluster. The console shows the cluster status and its member list. Official RDS Query/XML lifecycle, manual/final snapshot, local copy/restore, private master credential, tag, safe parameter-group, and supported CloudFormation calls are active. PITR, automated backups, replicas, Multi-AZ, public networking, IAM database authentication, other engines, and production capacity are unavailable.",
   },
   configuration: {
     level: "Partial",

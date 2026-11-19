@@ -862,6 +862,28 @@ Archive payload segments use installation-owned AES-256-GCM and atomic write-new
 
 Replay accepts one event-time range and the source bus plus optional enabled rule ARNs. It snapshots eligible records, processes deterministic event-time/minute order without claiming original ingestion order, adds `replay-name`, routes only through that bus and rule selection, and never captures replayed envelopes in any archive. Checkpoints advance only after target work has been durably admitted, so an interrupted handoff/checkpoint boundary may deliver an event again. Cancellation stops future submissions and does not retract already admitted targets or remove archived data. The console labels counts, ordering, timing, and range-based progress as development-grade local behavior rather than AWS service metrics.
 
+### Terraform Aurora clusters
+
+A regional Aurora MySQL cluster reserves the installation's database slot and can reach `available` before its writer exists. Create one `aws_rds_cluster_instance` with class `db.serverless` and the parent's engine and version. Both the loopback MySQL listener and the RDS Data API use the cluster's volume. Replacing the writer gives it a new resource ID and preserves committed rows, cluster ARN and credentials. Destroying the cluster releases the slot and removes its volume and managed credential.
+
+The fixture pins `hashicorp/aws` 6.58.0 and `8.0.mysql_aurora.3.08.0` in `us-east-1`. It enables the Data API, requests an RDS-managed password, creates database `app` and configures 0.5–2 ACUs in `provisioned` engine mode. The ACU range is a configuration descriptor. The application reads the cluster ARN, secret ARN, database and SDK endpoint from Terraform outputs. It creates a table, binds named parameters, executes a batch, and verifies committed and rolled-back changes. [Terraform fixture](../examples/terraform-rds-cluster/main.tf) · [SDK application](../examples/terraform-rds-cluster/app.mjs)
+
+Install the repository dependencies, start StackSim, configure its local AWS credentials, and run the following commands from `examples/terraform-rds-cluster`. The fixture defaults to control port 4566 and SQL port 3306. Override them with `TF_VAR_stacksim_endpoint` and `TF_VAR_writer_port` if needed. The plan after apply should exit with code 0.
+
+```text
+terraform init
+terraform apply
+node app.mjs
+terraform plan -detailed-exitcode
+terraform destroy
+```
+
+For an isolated end-to-end check, run `npm run build` and `node scripts/verify-terraform-rds.mjs` from the repository root with Terraform on your PATH. The script also replaces the writer, toggles Data API access, expires an idle transaction and restarts StackSim before checking the final plan and destroy.
+
+A customer-created Secrets Manager secret can supply the writer's current username and password as JSON strings. With `manage_master_user_password = true`, use the ARN in `master_user_secret[0].secret_arn`. To rotate that managed credential, send `ModifyDBCluster` with `RotateMasterUserPassword=true` and `ApplyImmediately=true`. Switching back to a caller-supplied password requires the new password. The simulator cleans up its owned secret and preserves customer-created secrets. [Data API operations, permissions and limits](rds-data-action-inventory.md)
+
+### Standalone MySQL-compatible DB instances
+
 RDS works with the normal `npm install` and `npm start` flow. Its embedded SQLite provider opens the durable local database and serves a bounded MySQL-compatible listener using the installed `mysql2` npm package's protocol support; `mysql2` is not the database engine. There are no RDS database binaries to install, executable-path environment variables to set, or external database service to run.
 
 Database files created by the retired external provider are not converted or overwritten. On upgrade, such an instance is reported as `failed` with delete-and-recreate guidance; `DeleteDBInstance` still applies the retired provider's ownership and quiescence checks so the installation-wide slot can be released safely. A fresh `STACKSIM_DATA_DIR` is also an option when the old development data is no longer needed.

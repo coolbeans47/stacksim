@@ -10,7 +10,7 @@ export const metadata = {
   icon: "R",
   cls: "rds",
   links: [["Databases", "#/rds/databases"], ["Snapshots", "#/rds/snapshots"], ["Query editor", "#/rds/query-editor"], ["Parameter groups", "#/rds/parameter-groups"]],
-  search: ["rds", "relational database", "mysql", "database", "snapshot", "restore", "backup", "sql", "query editor", "run query", "database objects", "db instance", "parameter group"],
+  search: ["rds", "aurora", "db cluster", "relational database", "mysql", "database", "snapshot", "restore", "backup", "sql", "query editor", "run query", "database objects", "db instance", "parameter group"],
 };
 
 const elements = (root, name) => [...(root?.getElementsByTagName?.(name) ?? [])];
@@ -49,6 +49,7 @@ function parseInstance(root) {
   }));
   return {
     identifier: first(root, "DBInstanceIdentifier"),
+    clusterIdentifier: first(root, "DBClusterIdentifier"),
     status: first(root, "DBInstanceStatus"),
     arn: first(root, "DBInstanceArn"),
     resourceId: first(root, "DbiResourceId"),
@@ -77,6 +78,33 @@ function parseInstance(root) {
 
 const parseInstances = xml => elements(elements(xml, "DBInstances")[0] ?? xml, "DBInstance").map(parseInstance);
 
+function parseClusters(xml) {
+  return elements(elements(xml, "DBClusters")[0], "DBCluster").map(cluster => {
+    const scaling = elements(cluster, "ServerlessV2ScalingConfiguration")[0];
+    return {
+      identifier: first(cluster, "DBClusterIdentifier"),
+      status: first(cluster, "Status"),
+      engine: first(cluster, "Engine"),
+      version: first(cluster, "EngineVersion"),
+      mode: first(cluster, "EngineMode"),
+      arn: first(cluster, "DBClusterArn"),
+      endpoint: first(cluster, "Endpoint"),
+      port: numberValue(cluster, "Port"),
+      httpEndpointEnabled: booleanValue(cluster, "HttpEndpointEnabled"),
+      database: first(cluster, "DatabaseName"),
+      protected: booleanValue(cluster, "DeletionProtection"),
+      minCapacity: numberValue(scaling, "MinCapacity"),
+      maxCapacity: numberValue(scaling, "MaxCapacity"),
+      members: elements(elements(cluster, "DBClusterMembers")[0], "DBClusterMember").map(member => ({
+        identifier: first(member, "DBInstanceIdentifier"),
+        writer: booleanValue(member, "IsClusterWriter"),
+        promotionTier: numberValue(member, "PromotionTier"),
+      })),
+      tags: parseTags(cluster),
+    };
+  });
+}
+
 function parseSnapshot(root) {
   return {
     identifier: first(root, "DBSnapshotIdentifier"),
@@ -102,6 +130,8 @@ const parseSnapshots = xml => elements(elements(xml, "DBSnapshots")[0] ?? xml, "
 function parseQuotas(xml) {
   return elements(xml, "AccountQuota").map(quota => ({ name: first(quota, "AccountQuotaName"), used: numberValue(quota, "Used") ?? 0, max: numberValue(quota, "Max") ?? 0 }));
 }
+
+const databaseQuota = xml => parseQuotas(xml).find(item => item.name.toLowerCase().replace(/[^a-z]/g, "") === "dbinstances");
 
 function parseParameterGroup(root) {
   return {
@@ -201,7 +231,7 @@ function bindCreateDatabase(context, disabled = false) {
         const storageTypes = [...new Set(options.map(option => option.storageType))];
         const minimumStorage = Math.min(...options.map(option => option.minimumStorage));
         const maximumStorage = options.map(option => option.maximumStorage).filter(value => value !== undefined).sort((left, right) => right - left)[0];
-        context.showModal("Create database", `<div class="alert info"><strong>Single local MySQL instance</strong><br>This installation supports one loopback-only DB instance. Compute and storage values are compatibility descriptors, not reserved capacity.</div><div class="field"><label>DB instance identifier</label><input name="identifier" required pattern="[a-z][a-z0-9\\-]{0,62}" placeholder="development-db"></div><div class="field-row"><div class="field"><label>Engine</label><input value="mysql" disabled></div><div class="field"><label>Engine version</label><select name="engineVersion">${versions.map(item => `<option value="${escapeHtml(item.version)}">${escapeHtml(item.version)}</option>`).join("")}</select></div></div><div class="field-row"><div class="field"><label>DB instance class</label><select name="instanceClass">${classes.map(value => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}</select></div><div class="field"><label>Storage type</label><select name="storageType">${storageTypes.map(value => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}</select></div></div><div class="field-row"><div class="field"><label>Allocated storage (GiB)</label><input name="allocatedStorage" type="number" min="${minimumStorage}" ${maximumStorage ? `max="${maximumStorage}"` : ""} value="${minimumStorage}" required></div><div class="field"><label>Port</label><input name="port" type="number" min="1150" max="65535" value="3306" required><span class="hint">A collision fails explicitly; no fallback port is selected.</span></div></div><div class="field"><label>Initial database name (optional)</label><input name="databaseName" pattern="[A-Za-z][A-Za-z0-9_]{0,63}" placeholder="app"></div><div class="field-row"><div class="field"><label>Master username</label><input name="masterUsername" required autocomplete="username" pattern="[A-Za-z][A-Za-z0-9_]{0,15}" value="developer"></div><div class="field"><label>Master password</label><input name="masterPassword" type="password" minlength="8" maxlength="41" required autocomplete="new-password"><span class="hint">The password is never returned. It can be rotated later.</span></div></div><div class="field"><label>DB parameter group</label><select name="parameterGroup">${groups.map(group => `<option value="${escapeHtml(group.name)}">${escapeHtml(group.name)}</option>`).join("")}</select></div><div class="field"><label>Tags (JSON object)</label><textarea name="tags">{}</textarea></div><label class="field checkbox-label"><input type="checkbox" name="deletionProtection" value="true"> Enable deletion protection</label><div class="alert info"><strong>Development profile</strong><br>Automated backup retention is 0, public access is off, and Multi-AZ, replicas, clusters, proxies, and production sizing are unavailable.</div>`, "Create database", async data => {
+        context.showModal("Create database", `<div class="alert info"><strong>Single local MySQL instance</strong><br>This installation supports one loopback-only DB instance. Compute and storage values are compatibility descriptors, not reserved capacity.</div><div class="field"><label>DB instance identifier</label><input name="identifier" required pattern="[a-z][a-z0-9\\-]{0,62}" placeholder="development-db"></div><div class="field-row"><div class="field"><label>Engine</label><input value="mysql" disabled></div><div class="field"><label>Engine version</label><select name="engineVersion">${versions.map(item => `<option value="${escapeHtml(item.version)}">${escapeHtml(item.version)}</option>`).join("")}</select></div></div><div class="field-row"><div class="field"><label>DB instance class</label><select name="instanceClass">${classes.map(value => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}</select></div><div class="field"><label>Storage type</label><select name="storageType">${storageTypes.map(value => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}</select></div></div><div class="field-row"><div class="field"><label>Allocated storage (GiB)</label><input name="allocatedStorage" type="number" min="${minimumStorage}" ${maximumStorage ? `max="${maximumStorage}"` : ""} value="${minimumStorage}" required></div><div class="field"><label>Port</label><input name="port" type="number" min="1150" max="65535" value="3306" required><span class="hint">A collision fails explicitly; no fallback port is selected.</span></div></div><div class="field"><label>Initial database name (optional)</label><input name="databaseName" pattern="[A-Za-z][A-Za-z0-9_]{0,63}" placeholder="app"></div><div class="field-row"><div class="field"><label>Master username</label><input name="masterUsername" required autocomplete="username" pattern="[A-Za-z][A-Za-z0-9_]{0,15}" value="developer"></div><div class="field"><label>Master password</label><input name="masterPassword" type="password" minlength="8" maxlength="41" required autocomplete="new-password"><span class="hint">The password is never returned. It can be rotated later.</span></div></div><div class="field"><label>DB parameter group</label><select name="parameterGroup">${groups.map(group => `<option value="${escapeHtml(group.name)}">${escapeHtml(group.name)}</option>`).join("")}</select></div><div class="field"><label>Tags (JSON object)</label><textarea name="tags">{}</textarea></div><label class="field checkbox-label"><input type="checkbox" name="deletionProtection" value="true"> Enable deletion protection</label><div class="alert info"><strong>Development profile</strong><br>Automated backup retention is 0 and public access is off for standalone DB instances.</div>`, "Create database", async data => {
           const identifier = String(data.get("identifier"));
           const masterPassword = String(data.get("masterPassword"));
           clearPasswordInput("masterPassword");
@@ -232,28 +262,100 @@ function bindCreateDatabase(context, disabled = false) {
 }
 
 async function databasesPage(context) {
-  const [described, attributes] = await Promise.all([rds("DescribeDBInstances"), rds("DescribeAccountAttributes")]);
+  const [described, clusterOutput, attributes] = await Promise.all([
+    rds("DescribeDBInstances"),
+    rds("DescribeDBClusters").catch(error => {
+      if (error.status === 403) return undefined;
+      throw error;
+    }),
+    rds("DescribeAccountAttributes"),
+  ]);
   const instances = parseInstances(described.xml);
-  const quota = parseQuotas(attributes.xml).find(item => item.name.toLowerCase().replace(/[^a-z]/g, "") === "dbinstances");
-  const used = quota?.used ?? instances.length;
+  const clusters = parseClusters(clusterOutput?.xml);
+  const quota = databaseQuota(attributes.xml);
+  const used = quota?.used ?? instances.length + clusters.length;
   const maximum = quota?.max || 1;
   const occupied = used >= maximum;
-  const occupiedElsewhere = occupied && !instances.length;
+  const occupiedElsewhere = occupied && !instances.length && !clusters.length && Boolean(clusterOutput);
   context.setChrome("rds", ["RDS", "Databases"]);
   const createButton = `<button class="button primary" data-action="create-rds-database" ${occupied ? "disabled" : ""}>Create database</button>`;
-  context.main.innerHTML = `<div class="page-width">${pageHeader("Databases", "Create and operate one local MySQL-compatible DB instance.", `<button class="button refresh" data-action="refresh">&#8635;</button><a class="button" href="#/rds/query-editor">Query editor</a>${createButton}`)}${occupiedElsewhere ? '<div class="alert info"><strong>The installation-wide DB slot is occupied</strong><br>The instance belongs to another configured Region. Switch Regions to view it, or delete it there before creating another.</div>' : ""}<section class="card"><div class="card-header"><div><h2>DB instances <span class="muted">(${instances.length})</span></h2><p class="muted small">Installation quota: ${used} of ${maximum} in use.</p></div></div><div class="toolbar"><label class="filter"><span>&#8981;</span><input data-filter-table placeholder="Find databases"></label></div><div class="table-wrap">${instances.length ? `<table><thead><tr><th>DB identifier</th><th>Status</th><th>Engine</th><th>Class</th><th>Endpoint</th><th>Port</th><th>Query</th></tr></thead><tbody>${instances.map(instance => `<tr data-search-row="${escapeHtml(`${instance.identifier} ${instance.engine} ${instance.status}`.toLowerCase())}"><td><a href="#/rds/databases/${encodeURIComponent(instance.identifier)}/connectivity">${escapeHtml(instance.identifier)}</a></td><td>${statusMarkup(instance.status)}</td><td>${escapeHtml(`${instance.engine} ${instance.engineVersion}`.trim())}</td><td>${escapeHtml(instance.instanceClass)}</td><td class="mono">${instance.status === "stopped" ? "Listener stopped" : escapeHtml(instance.endpoint?.address || "Pending readiness")}</td><td>${instance.status === "stopped" ? "-" : instance.endpoint?.port ?? "-"}</td><td><a href="#/rds/query-editor/${encodeURIComponent(instance.identifier)}">Open editor</a></td></tr>`).join("")}</tbody></table>` : emptyState("R", occupiedElsewhere ? "No DB instances in this Region" : "No databases", occupiedElsewhere ? "The single local DB instance is managed from another configured Region." : "Create a local MySQL-compatible database for development.", occupied ? "" : createButton)}</div></section></div>`;
+  const instanceRows = instances.map(instance => `<tr data-search-row="${escapeHtml(`${instance.identifier} ${instance.engine} ${instance.status}`.toLowerCase())}"><td><a href="#/rds/databases/${encodeURIComponent(instance.identifier)}/connectivity">${escapeHtml(instance.identifier)}</a></td><td>${statusMarkup(instance.status)}</td><td>${escapeHtml(`${instance.engine} ${instance.engineVersion}`.trim())}</td><td>${escapeHtml(instance.instanceClass)}</td><td class="mono">${instance.status === "stopped" ? "Listener stopped" : escapeHtml(instance.endpoint?.address || "Pending readiness")}</td><td>${instance.status === "stopped" ? "-" : instance.endpoint?.port ?? "-"}</td><td><a href="#/rds/query-editor/${encodeURIComponent(instance.identifier)}">Open editor</a></td></tr>`).join("");
+  const clusterRows = clusters.map(cluster => `<tr data-search-row="${escapeHtml(`${cluster.identifier} ${cluster.engine} ${cluster.status}`.toLowerCase())}">
+    <td><a href="#/rds/clusters/${encodeURIComponent(cluster.identifier)}">${escapeHtml(cluster.identifier)}</a></td>
+    <td>${statusMarkup(cluster.status)}</td><td>${escapeHtml(`${cluster.engine} ${cluster.version}`.trim())}</td><td>${cluster.members.length}</td></tr>`).join("");
+  const filter = '<div class="toolbar"><label class="filter"><span>&#8981;</span><input data-filter-table placeholder="Find databases"></label></div>';
+  const actions = `<button class="button refresh" data-action="refresh" aria-label="Refresh">&#8635;</button><a class="button" href="#/rds/query-editor">Query editor</a>${createButton}`;
+  const emptyTitle = occupiedElsewhere ? "No databases in this Region" : clusterOutput ? "No databases" : "No DB instances";
+  const emptyMessage = occupied ? "The local DB slot is occupied." : "Create a local MySQL-compatible database for development.";
+  context.main.innerHTML = `<div class="page-width">
+    ${pageHeader("Databases", "View regional DB instances and Aurora clusters.", actions)}
+    ${occupiedElsewhere ? '<div class="alert info"><strong>The installation-wide DB slot is occupied</strong><br>Switch to the Region that owns the database to view it.</div>' : ""}
+    ${!clusterOutput ? '<div class="alert info">You need permission to describe DB clusters to view them here.</div>' : ""}
+    <p class="muted small">Installation quota: ${used} of ${maximum} in use.</p>${filter}
+    ${clusters.length ? `<section class="card"><div class="card-header"><h2>DB clusters <span class="muted">(${clusters.length})</span></h2></div>
+      <div class="table-wrap"><table><thead><tr><th>DB cluster identifier</th><th>Status</th><th>Engine</th><th>Members</th></tr></thead><tbody>${clusterRows}</tbody></table></div></section>` : ""}
+    ${instances.length || !clusters.length ? `<section class="card"><div class="card-header"><h2>DB instances <span class="muted">(${instances.length})</span></h2></div>
+      <div class="table-wrap">${instances.length ? `<table><thead><tr><th>DB identifier</th><th>Status</th><th>Engine</th><th>Class</th><th>Endpoint</th><th>Port</th><th>Query</th></tr></thead><tbody>${instanceRows}</tbody></table>` : emptyState("R", emptyTitle, emptyMessage, occupied ? "" : createButton)}</div></section>` : ""}
+    </div>`;
   context.bindTableFilter();
   context.main.querySelector('[data-action="refresh"]')?.addEventListener("click", context.route);
   bindCreateDatabase(context, occupied);
-  if (instances.some(instance => transitionStatuses.has(instance.status))) scheduleRefresh(context);
+  if ([...instances, ...clusters].some(database => transitionStatuses.has(database.status))) scheduleRefresh(context);
+}
+
+async function clusterDetail(context, identifier) {
+  const result = await rds("DescribeDBClusters", { DBClusterIdentifier: identifier });
+  const cluster = parseClusters(result.xml)[0];
+  if (!cluster) throw new Error(`DB cluster ${identifier} was not found`);
+  context.setChrome("rds", ["RDS", "Databases", identifier]);
+  const actions = '<button class="button" data-action="refresh">Refresh</button>';
+  context.main.innerHTML = `<div class="page-width">
+    ${pageHeader(identifier, `Aurora DB cluster in ${escapeHtml(session.region)}.`, actions)}
+    <section class="card"><div class="card-header"><h2>Cluster configuration</h2></div><div class="card-body detail-grid">
+      <dl class="key-value"><dt>Status</dt><dd>${statusMarkup(cluster.status)}</dd><dt>Database name</dt><dd>${escapeHtml(cluster.database || "–")}</dd></dl>
+      <dl class="key-value"><dt>Engine</dt><dd>${escapeHtml(`${cluster.engine} ${cluster.version}`.trim())}</dd><dt>Engine mode</dt><dd>${escapeHtml(cluster.mode)}</dd></dl>
+      <dl class="key-value"><dt>Deletion protection</dt><dd>${cluster.protected ? "On" : "Off"}</dd>
+        ${cluster.minCapacity !== undefined && cluster.maxCapacity !== undefined ? `<dt>Serverless v2 capacity range</dt><dd>${cluster.minCapacity}–${cluster.maxCapacity} ACUs</dd>` : ""}</dl>
+      <dl class="key-value"><dt>Cluster ARN</dt><dd class="mono">${escapeHtml(cluster.arn)}</dd></dl>
+    </div></section>
+    <section class="card"><div class="card-header"><h2>Connectivity</h2>
+      <button class="button" data-action="toggle-data-api" ${cluster.status === "available" ? "" : "disabled"}>${cluster.httpEndpointEnabled ? "Disable" : "Enable"} Data API</button></div>
+      <div class="card-body detail-grid"><dl class="key-value"><dt>RDS Data API</dt><dd>${cluster.httpEndpointEnabled ? "Enabled" : "Disabled"}</dd></dl>
+        <dl class="key-value"><dt>Writer endpoint</dt><dd class="mono">${cluster.endpoint ? escapeHtml(cluster.endpoint) + (cluster.port ? ":" + cluster.port : "") : "Unavailable"}</dd></dl></div></section>
+    <section class="card"><div class="card-header"><h2>DB cluster members <span class="muted">(${cluster.members.length})</span></h2></div>
+      ${cluster.members.length ? `<div class="table-wrap"><table><thead><tr><th>DB instance identifier</th><th>Role</th><th>Promotion tier</th></tr></thead>
+        <tbody>${cluster.members.map(member => `<tr><td><a href="#/rds/databases/${encodeURIComponent(member.identifier)}/connectivity">${escapeHtml(member.identifier)}</a></td>
+          <td>${member.writer ? "Writer" : "Reader"}</td><td>${member.promotionTier ?? "–"}</td></tr>`).join("")}</tbody></table></div>` :
+        '<div class="card-body">No DB instances are attached to this cluster.</div>'}</section>
+    ${cluster.tags.length ? tagsContent(cluster.tags, false) : ""}
+    </div>`;
+  context.main.querySelector('[data-action="refresh"]').addEventListener("click", context.route);
+  context.main.querySelector('[data-action="toggle-data-api"]').addEventListener("click", async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await rds(cluster.httpEndpointEnabled ? "DisableHttpEndpoint" : "EnableHttpEndpoint", { ResourceArn: cluster.arn });
+      await context.route(false);
+    } catch (error) { context.showError(error); }
+    finally { if (button.isConnected) button.disabled = false; }
+  });
+  if (transitionStatuses.has(cluster.status)) scheduleRefresh(context);
 }
 
 async function snapshotsPage(context) {
-  const [snapshotOutput, instanceOutput] = await Promise.all([rds("DescribeDBSnapshots"), rds("DescribeDBInstances")]);
-  const snapshots = parseSnapshots(snapshotOutput.xml); const instances = parseInstances(instanceOutput.xml); const slotFree = instances.length === 0;
+  const [snapshotOutput, instanceOutput, accountOutput] = await Promise.all([
+    rds("DescribeDBSnapshots"), rds("DescribeDBInstances"),
+    rds("DescribeAccountAttributes").catch(error => {
+      if (error.status === 403) return undefined;
+      throw error;
+    }),
+  ]);
+  const snapshots = parseSnapshots(snapshotOutput.xml);
+  const instances = parseInstances(instanceOutput.xml);
+  const slotFree = (databaseQuota(accountOutput?.xml)?.used ?? instances.length) === 0;
   context.setChrome("rds", ["RDS", "Snapshots"]);
-  const sourceOptions = instances.filter(instance => ["available", "stopped"].includes(instance.status));
-  context.main.innerHTML = `<div class="page-width">${pageHeader("Snapshots", "Immutable, checksummed manual recovery points for the local MySQL development profile.", `<button class="button refresh" data-action="refresh">&#8635;</button><button class="button primary" data-action="create-rds-snapshot" ${sourceOptions.length ? "" : "disabled"}>Create snapshot</button>`)}<div class="alert info"><strong>Local recovery boundary</strong><br>Snapshot publication uses a consistent stopped-provider backup, checksums, ownership markers, and atomic rename. Restore requires the one live DB slot to be free and always asks for a new master credential. Point-in-time recovery is unavailable.</div><section class="card"><div class="card-header"><div><h2>Manual snapshots <span class="muted">(${snapshots.length})</span></h2><p class="muted small">Stored under the simulator data directory; descriptor GiB is not local file size.</p></div></div><div class="table-wrap">${snapshots.length ? `<table><thead><tr><th>Snapshot</th><th>Source</th><th>Status</th><th>Created</th><th>Validated data</th><th>Checksum</th><th>Actions</th></tr></thead><tbody>${snapshots.map(snapshot => `<tr><td>${escapeHtml(snapshot.identifier)}</td><td>${escapeHtml(snapshot.sourceIdentifier)}</td><td>${statusMarkup(snapshot.status)}${snapshot.message ? `<div class="muted small">${escapeHtml(snapshot.message)}</div>` : ""}</td><td>${escapeHtml(formatDate(snapshot.createdAt))}</td><td>${snapshot.sizeBytes === undefined ? "-" : `${snapshot.sizeBytes.toLocaleString()} bytes`} · ${snapshot.fileCount ?? 0} file(s)</td><td class="mono">${escapeHtml(snapshot.checksum ? snapshot.checksum.slice(0, 16) + "…" : "-")}</td><td><button class="button small" data-copy-rds-snapshot="${escapeHtml(snapshot.identifier)}" ${snapshot.status === "available" ? "" : "disabled"}>Copy</button> <button class="button small" data-restore-rds-snapshot="${escapeHtml(snapshot.identifier)}" ${snapshot.status === "available" && slotFree ? "" : "disabled"}>Restore</button> <button class="button small danger" data-delete-rds-snapshot="${escapeHtml(snapshot.identifier)}" ${["available", "failed"].includes(snapshot.status) ? "" : "disabled"}>Delete</button></td></tr>`).join("")}</tbody></table>` : emptyState("R", "No manual snapshots", sourceOptions.length ? "Create a recovery point before a destructive schema experiment." : "Create or switch to an available/stopped DB instance before taking a snapshot.")}</div></section>${!slotFree ? '<div class="alert info"><strong>Restore is disabled while the DB slot is occupied</strong><br>Delete the current DB instance, retaining a final snapshot if needed, before restoring under a new identity.</div>' : ""}</div>`;
+  const sourceOptions = instances.filter(instance => !instance.clusterIdentifier && ["available", "stopped"].includes(instance.status));
+  context.main.innerHTML = `<div class="page-width">${pageHeader("Snapshots", "Immutable, checksummed manual recovery points for the local MySQL development profile.", `<button class="button refresh" data-action="refresh">&#8635;</button><button class="button primary" data-action="create-rds-snapshot" ${sourceOptions.length ? "" : "disabled"}>Create snapshot</button>`)}<div class="alert info"><strong>Local recovery boundary</strong><br>Snapshot publication uses a consistent stopped-provider backup, checksums, ownership markers, and atomic rename. Restore requires the one live DB slot to be free and always asks for a new master credential. Point-in-time recovery is unavailable.</div><section class="card"><div class="card-header"><div><h2>Manual snapshots <span class="muted">(${snapshots.length})</span></h2><p class="muted small">Stored under the simulator data directory; descriptor GiB is not local file size.</p></div></div><div class="table-wrap">${snapshots.length ? `<table><thead><tr><th>Snapshot</th><th>Source</th><th>Status</th><th>Created</th><th>Validated data</th><th>Checksum</th><th>Actions</th></tr></thead><tbody>${snapshots.map(snapshot => `<tr><td>${escapeHtml(snapshot.identifier)}</td><td>${escapeHtml(snapshot.sourceIdentifier)}</td><td>${statusMarkup(snapshot.status)}${snapshot.message ? `<div class="muted small">${escapeHtml(snapshot.message)}</div>` : ""}</td><td>${escapeHtml(formatDate(snapshot.createdAt))}</td><td>${snapshot.sizeBytes === undefined ? "-" : `${snapshot.sizeBytes.toLocaleString()} bytes`} · ${snapshot.fileCount ?? 0} file(s)</td><td class="mono">${escapeHtml(snapshot.checksum ? snapshot.checksum.slice(0, 16) + "…" : "-")}</td><td><button class="button small" data-copy-rds-snapshot="${escapeHtml(snapshot.identifier)}" ${snapshot.status === "available" ? "" : "disabled"}>Copy</button> <button class="button small" data-restore-rds-snapshot="${escapeHtml(snapshot.identifier)}" ${snapshot.status === "available" && slotFree ? "" : "disabled"}>Restore</button> <button class="button small danger" data-delete-rds-snapshot="${escapeHtml(snapshot.identifier)}" ${["available", "failed"].includes(snapshot.status) ? "" : "disabled"}>Delete</button></td></tr>`).join("")}</tbody></table>` : emptyState("R", "No manual snapshots", sourceOptions.length ? "Create a recovery point before a destructive schema experiment." : "Create or switch to an available/stopped DB instance before taking a snapshot.")}</div></section>${!slotFree ? '<div class="alert info"><strong>Restore is disabled while the DB slot is occupied</strong><br>Restore becomes available when the instance or cluster that owns the slot has been deleted.</div>' : ""}</div>`;
   context.main.querySelector('[data-action="refresh"]')?.addEventListener("click", context.route);
   context.main.querySelector('[data-action="create-rds-snapshot"]')?.addEventListener("click", () => context.showModal("Create manual snapshot", `<div class="field"><label>Source DB instance</label><select name="source">${sourceOptions.map(instance => `<option value="${escapeHtml(instance.identifier)}">${escapeHtml(instance.identifier)} · ${escapeHtml(instance.status)}</option>`).join("")}</select></div><div class="field"><label>DB snapshot identifier</label><input name="identifier" required pattern="[a-z][a-z0-9\\-]{0,254}" placeholder="before-destructive-change"></div><div class="field"><label>Tags (JSON object)</label><textarea name="tags">{}</textarea></div><div class="alert info">Active SQL connections are drained briefly while SQLite creates a consistent backup. The snapshot is not available until its manifest and file checksums validate.</div>`, "Create snapshot", async data => {
     await rds("CreateDBSnapshot", { DBInstanceIdentifier: data.get("source"), DBSnapshotIdentifier: data.get("identifier"), Tags: parseTagInput(data.get("tags")) }); context.toast("Manual snapshot published"); await context.route(false);
@@ -357,6 +459,19 @@ async function databaseDetail(context, identifier, active) {
   if (!instance) throw new Error(`DB instance ${identifier} was not found`);
   if (active === "tags") instance.tags = parseTags((await rds("ListTagsForResource", { ResourceName: instance.arn })).xml);
   context.setChrome("rds", ["RDS", "Databases", identifier]);
+  if (instance.clusterIdentifier) {
+    const parentLink = `<a href="#/rds/clusters/${encodeURIComponent(instance.clusterIdentifier)}">${escapeHtml(instance.clusterIdentifier)}</a>`;
+    const editor = `<a class="button" href="#/rds/query-editor/${encodeURIComponent(identifier)}">Query editor</a>`;
+    context.main.innerHTML = `<div class="page-width">${pageHeader(instance.identifier, "Aurora cluster instance", editor)}
+      <section class="card"><div class="card-header"><h2>Instance configuration</h2></div><div class="card-body detail-grid">
+        <dl class="key-value"><dt>DB cluster</dt><dd>${parentLink}</dd><dt>Status</dt><dd>${statusMarkup(instance.status)}</dd></dl>
+        <dl class="key-value"><dt>Engine</dt><dd>${escapeHtml(`${instance.engine} ${instance.engineVersion}`)}</dd><dt>Instance class</dt><dd>${escapeHtml(instance.instanceClass)}</dd></dl>
+        <dl class="key-value"><dt>Endpoint</dt><dd>${instance.endpoint ? escapeHtml(instance.endpoint.address) + ":" + instance.endpoint.port : "Unavailable"}</dd></dl>
+        <dl class="key-value"><dt>Instance ARN</dt><dd class="mono">${escapeHtml(instance.arn)}</dd></dl>
+      </div></section></div>`;
+    if (transitionStatuses.has(instance.status)) scheduleRefresh(context);
+    return;
+  }
   const transitioning = transitionStatuses.has(instance.status);
   const canEdit = new Set(["available", "stopped"]).has(instance.status);
   const canStop = instance.status === "available";
@@ -444,6 +559,7 @@ export async function routeRds(parts, context) {
     return result;
   };
   if (parts.length === 1 || (parts[1] === "databases" && parts.length === 2)) return render(databasesPage(context));
+  if (parts[1] === "clusters" && parts.length === 3) return render(clusterDetail(context, parts[2]));
   if (parts[1] === "snapshots" && parts.length === 2) return render(snapshotsPage(context));
   if (parts[1] === "query-editor") {
     if (parts.length === 2 || parts.length === 3) return render(rdsQueryEditor(context, parts[2]));

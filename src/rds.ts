@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { createServer } from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -11,7 +11,10 @@ import { awsQueryList, awsQueryXml, parseAwsQuery, sendAwsQueryXml } from "./pro
 import type { RdsEngineConfig, RdsEngineProvider, RdsEngineSnapshotFile } from "./rds/provider.js";
 import { effectiveParameterValues, parameterDefinition, RDS_PARAMETER_DEFINITIONS, validateParameterValue } from "./rds/parameters.js";
 import type { StateStore } from "./state.js";
-import type { RdsDbInstanceState, RdsDbParameterGroupState, RdsDbSnapshotState, RdsInstanceLease, RdsPendingModifiedValuesState } from "./types.js";
+import { boolean, integer, namedList, rejectUnsupportedInput, requiredString, tags, validatePassword } from "./rds/query-input.js";
+import { clusterChanges, clusterMatches, newCluster, type ClusterInput } from "./rds/clusters.js";
+import { createWriterDescriptor, writerChanges } from "./rds/cluster-writer.js";
+import type { RdsClusterLease, RdsDbClusterState, RdsDbInstanceState, RdsDbParameterGroupState, RdsDbSnapshotState, RdsInstanceLease, RdsPendingModifiedValuesState } from "./types.js";
 import { readBody } from "./util.js";
 
 const NAMESPACE = "http://rds.amazonaws.com/doc/2014-10-31/";
@@ -35,7 +38,10 @@ interface RdsSecret {
   masterUsername: string;
   masterPassword: string;
   pendingMasterPassword?: string;
+  clusterChange?: { managed: boolean; versionId: string };
 }
+
+type CredentialOwner = Pick<RdsDbInstanceState, "dbiResourceId" | "dbName" | "masterUsername">;
 
 interface RdsSnapshotManifest {
   schemaVersion: 1;
@@ -109,55 +115,6 @@ function queryEditorFieldMetadata(field: FieldPacket): RdsQueryEditorResult["col
   };
 }
 
-function namedList(value: any, memberName: string): any[] {
-  const members = value?.[memberName] ?? value;
-  if (members === undefined || members === null) return [];
-  return Array.isArray(members) ? members : [members];
-}
-
-function requiredString(value: unknown, field: string): string {
-  if (typeof value !== "string" || !value) throw new AwsError("InvalidParameterValue", `${field} is required`);
-  return value;
-}
-
-function integer(value: unknown, fallback: number, field: string): number {
-  const parsed = value === undefined ? fallback : Number(value);
-  if (!Number.isInteger(parsed)) throw new AwsError("InvalidParameterValue", `${field} must be an integer`);
-  return parsed;
-}
-
-function boolean(value: unknown, fallback = false): boolean {
-  if (value === undefined) return fallback;
-  if (value === true || value === "true") return true;
-  if (value === false || value === "false") return false;
-  throw new AwsError("InvalidParameterValue", "Boolean parameters must be true or false");
-}
-
-function rejectUnsupportedInput(input: Record<string, unknown>, supported: readonly string[]): void {
-  const allowed = new Set(supported);
-  const field = Object.keys(input).find(key => !allowed.has(key));
-  if (field) throw new AwsError("InvalidParameterCombination", `${field} is not supported by the local RDS development profile`);
-}
-
-function tags(value: unknown): Record<string, string> {
-  const result: Record<string, string> = {};
-  const entries = namedList(value, "Tag");
-  if (entries.length > 50) throw new AwsError("InvalidParameterValue", "A maximum of 50 tags is allowed");
-  for (const entry of entries) {
-    const key = String(entry?.Key ?? ""); const tagValue = String(entry?.Value ?? "");
-    if (!key || key.length > 128 || tagValue.length > 256 || key.toLowerCase().startsWith("aws:")) throw new AwsError("InvalidParameterValue", "Tag keys or values are invalid");
-    if (Object.hasOwn(result, key)) throw new AwsError("InvalidParameterValue", `Duplicate tag key ${key}`);
-    result[key] = tagValue;
-  }
-  return result;
-}
-
-function validatePassword(value: unknown): string {
-  const password = requiredString(value, "MasterUserPassword");
-  if (password.length < 8 || password.length > 41 || /[^\x20-\x7e]/.test(password) || /[\/@\"]/.test(password)) throw new AwsError("InvalidParameterValue", "MasterUserPassword must be 8-41 printable ASCII characters and cannot contain slash, at-sign, or double quote");
-  return password;
-}
-
 function parameterGroupName(value: unknown): string {
   const name = requiredString(value, "DBParameterGroupName").toLowerCase();
   if (name === DEFAULT_PARAMETER_GROUP) return name;
@@ -177,6 +134,8 @@ function dbInstanceView(instance: RdsDbInstanceState): Record<string, unknown> {
     : instance.providerVersion ? [{ StatusType: "local-provider", Normal: true, Status: instance.dbInstanceStatus, Message: `Local SQL provider ${instance.providerVersion}` }] : [];
   return {
     DBInstanceIdentifier: instance.dbInstanceIdentifier,
+    DBClusterIdentifier: instance.dbClusterIdentifier,
+    PromotionTier: instance.promotionTier,
     DBInstanceClass: instance.dbInstanceClass,
     Engine: instance.engine,
     DBInstanceStatus: instance.dbInstanceStatus,
@@ -200,17 +159,17 @@ function dbInstanceView(instance: RdsDbInstanceState): Record<string, unknown> {
     } : {},
     MultiAZ: instance.multiAZ,
     EngineVersion: instance.engineVersion,
-    AutoMinorVersionUpgrade: false,
+    AutoMinorVersionUpgrade: instance.autoMinorVersionUpgrade ?? false,
     ReadReplicaDBInstanceIdentifiers: awsQueryList("ReadReplicaDBInstanceIdentifier", []),
     LicenseModel: "general-public-license",
-    OptionGroupMemberships: awsQueryList("OptionGroupMembership", [{ OptionGroupName: "default:mysql-8-0", Status: "in-sync" }]),
+    OptionGroupMemberships: awsQueryList("OptionGroupMembership", instance.dbClusterIdentifier ? [] : [{ OptionGroupName: "default:mysql-8-0", Status: "in-sync" }]),
     PubliclyAccessible: instance.publiclyAccessible,
     StatusInfos: awsQueryList("DBInstanceStatusInfo", statusInfos),
     StorageType: instance.storageType,
     StorageEncrypted: false,
     DbiResourceId: instance.dbiResourceId,
     DomainMemberships: awsQueryList("DomainMembership", []),
-    CopyTagsToSnapshot: false,
+    CopyTagsToSnapshot: instance.copyTagsToSnapshot ?? false,
     MonitoringInterval: 0,
     DBInstanceArn: instance.dbInstanceArn,
     IAMDatabaseAuthenticationEnabled: false,
@@ -220,6 +179,39 @@ function dbInstanceView(instance: RdsDbInstanceState): Record<string, unknown> {
     NetworkType: "IPV4",
     DedicatedLogVolume: false,
     ...(instance.manageMasterUserPassword && instance.masterUserSecretArn ? { MasterUserSecret: { SecretArn: instance.masterUserSecretArn, SecretStatus: "active" } } : {}),
+  };
+}
+
+function dbClusterView(cluster: RdsDbClusterState, writer?: RdsDbInstanceState): Record<string, unknown> {
+  const scaling = cluster.serverlessV2ScalingConfiguration;
+  return {
+    DBClusterIdentifier: cluster.dbClusterIdentifier,
+    DBClusterArn: cluster.dbClusterArn,
+    DbClusterResourceId: cluster.dbClusterResourceId,
+    ClusterCreateTime: new Date(cluster.clusterCreateTime),
+    Status: cluster.status,
+    Engine: cluster.engine,
+    EngineVersion: cluster.engineVersion,
+    EngineMode: cluster.engineMode,
+    DatabaseName: cluster.databaseName,
+    MasterUsername: cluster.masterUsername,
+    Port: cluster.port,
+    DBClusterParameterGroup: "default.aurora-mysql8.0",
+    Endpoint: "127.0.0.1",
+    ReaderEndpoint: "127.0.0.1",
+    DBClusterMembers: awsQueryList("DBClusterMember", writer ? [{
+      DBInstanceIdentifier: writer.dbInstanceIdentifier, IsClusterWriter: true, PromotionTier: writer.promotionTier,
+      DBClusterParameterGroupStatus: writer.parameterApplyStatus,
+    }] : []),
+    AutoMinorVersionUpgrade: cluster.autoMinorVersionUpgrade,
+    DeletionProtection: cluster.deletionProtection,
+    BackupRetentionPeriod: cluster.backupRetentionPeriod,
+    CopyTagsToSnapshot: cluster.copyTagsToSnapshot,
+    StorageEncrypted: cluster.storageEncrypted,
+    HttpEndpointEnabled: cluster.httpEndpointEnabled ?? false,
+    MasterUserSecret: cluster.masterUserSecretArn ? { SecretArn: cluster.masterUserSecretArn, SecretStatus: "active" } : undefined,
+    ServerlessV2ScalingConfiguration: scaling && { MinCapacity: scaling.minCapacity, MaxCapacity: scaling.maxCapacity },
+    TagList: awsQueryList("Tag", Object.entries(cluster.tags).sort(([left], [right]) => left.localeCompare(right)).map(([Key, Value]) => ({ Key, Value }))),
   };
 }
 
@@ -291,8 +283,9 @@ export interface RdsManagerOptions {
 }
 
 export interface RdsManagedSecretsPort {
-  create(input: { resourceId: string; targetArn: string; dbInstanceIdentifier: string; username: string; port: number; currentPassword?: string }): Promise<{ arn: string; generationId: string; versionId: string; password: string }>;
-  delete(secretArn: string, targetArn: string): Promise<void>;
+  create(input: { resourceId: string; targetArn: string; dbInstanceIdentifier?: string; dbClusterIdentifier?: string; username: string; port: number; currentPassword?: string }): Promise<{ arn: string; generationId: string; versionId: string; password: string }>;
+  rotate(secretArn: string, targetArn: string, versionId: string, password: string): Promise<void>;
+  delete(secretArn: string, targetArn: string, unpublishedGeneration?: string): Promise<void>;
 }
 
 export class RdsManager {
@@ -300,6 +293,7 @@ export class RdsManager {
   private engineQueue = Promise.resolve();
   private readonly rdsRoot: string;
   private readonly managedSecrets = new Map<string, RdsManagedSecretsPort>();
+  private readonly dataInvalidationListeners = new Set<(resourceArn: string) => void>();
 
   constructor(
     private readonly store: StateStore,
@@ -312,12 +306,34 @@ export class RdsManager {
 
   get accountId(): string { return this.store.accountId; }
 
+  onDataInvalidated(listener: (resourceArn: string) => void): void { this.dataInvalidationListeners.add(listener); }
+
+  private invalidateData(resourceArn: string): void {
+    for (const listener of this.dataInvalidationListeners) listener(resourceArn);
+  }
+
+  async setHttpEndpoint(region: string, input: ClusterInput, enabled: boolean) {
+    rejectUnsupportedInput(input, ["ResourceArn"]);
+    const arn = requiredString(input.ResourceArn, "ResourceArn");
+    return this.exclusive(async () => {
+      const cluster = Object.values(this.store.regionState(region).rdsDbClusters).find(candidate => candidate.dbClusterArn === arn);
+      if (!cluster) throw new AwsError("ResourceNotFoundFault", "The requested cluster ARN was not found", 404);
+      if (cluster.status !== "available") throw new AwsError("InvalidResourceStateFault", "The cluster must be available");
+      const previous = cluster.httpEndpointEnabled;
+      await this.store.save({ apply: () => { cluster.httpEndpointEnabled = enabled; }, restore: () => { cluster.httpEndpointEnabled = previous; } });
+      if (!enabled) this.invalidateData(arn);
+      return { ResourceArn: arn, HttpEndpointEnabled: enabled };
+    });
+  }
+
   setManagedSecretsPort(region: string, port: RdsManagedSecretsPort): void { this.managedSecrets.set(region, port); }
 
   async start(): Promise<void> {
     await this.reconcileSnapshots();
     let lease = this.store.state.installation.rds.instanceLease;
     const descriptors = this.allInstances();
+    if (await this.reconcileCluster(Boolean(lease) || descriptors.some(({ instance }) => !instance.dbClusterIdentifier))) return;
+    if (descriptors.some(({ instance }) => instance.dbClusterIdentifier)) throw new Error("An RDS writer has no owning cluster");
     if (descriptors.length > 1) throw new Error("RDS state contains multiple DB instances; the installation-wide singleton cannot be reconciled safely");
     if (!lease) {
       if (!descriptors.length) return;
@@ -362,7 +378,393 @@ export class RdsManager {
     await this.provider.stop();
   }
 
+  async createCluster(region: string, input: ClusterInput): Promise<RdsDbClusterState> {
+    const { cluster, password } = newCluster(input, this.store.accountId, region, this.clock.now());
+    const lease: RdsClusterLease = {
+      accountId: this.store.accountId, region,
+      dbClusterIdentifier: cluster.dbClusterIdentifier, dbClusterResourceId: cluster.dbClusterResourceId,
+    };
+    await this.exclusive(async () => {
+      const catalog = this.store.regionState(region).rdsDbClusters;
+      const installation = this.store.state.installation.rds;
+      if (Object.hasOwn(catalog, cluster.dbClusterIdentifier)) throw new AwsError("DBClusterAlreadyExistsFault", "The DB cluster already exists");
+      if (installation.instanceLease || installation.clusterLease) throw new AwsError("DBClusterQuotaExceededFault", "The installation's single RDS database slot is occupied", 403);
+      installation.clusterLease = lease;
+      catalog[cluster.dbClusterIdentifier] = cluster;
+      // Journal ownership before writing the private credential or allocating provider files.
+      try { await this.store.save(); }
+      catch (error) { delete installation.clusterLease; delete catalog[cluster.dbClusterIdentifier]; throw error; }
+      try { await this.writeSecret(this.clusterCredentialOwner(cluster), password ?? randomBytes(24).toString("base64url")); }
+      catch (error) { await this.dropCluster(lease, cluster); throw error; }
+    });
+    const result = structuredClone(cluster);
+    void this.enqueueEngine(() => this.finishClusterTransition(lease));
+    return result;
+  }
+
+  describeClusters(region: string, input: ClusterInput): RdsDbClusterState[] {
+    const matches = clusterMatches(input);
+    const entries = input.DBClusterIdentifier === undefined
+      ? Object.values(this.store.regionState(region).rdsDbClusters)
+      : [this.requireCluster(region, input.DBClusterIdentifier)];
+    return entries.filter(matches).map(cluster => structuredClone(cluster));
+  }
+
+  resolveWriter(region: string, cluster: RdsDbClusterState): RdsDbInstanceState | undefined {
+    if (!cluster.members.length) return undefined;
+    const writer = this.store.regionState(region).rdsDbInstances[cluster.members[0]];
+    if (!writer || writer.dbClusterIdentifier !== cluster.dbClusterIdentifier || writer.dbClusterResourceId !== cluster.dbClusterResourceId) return undefined;
+    return structuredClone(writer);
+  }
+
+  private writerParent(writer: RdsDbInstanceState): RdsDbClusterState {
+    const lease = this.store.state.installation.rds.clusterLease;
+    const parent = lease && this.clusterForLease(lease);
+    const current = lease && this.store.state.accounts[lease.accountId].regions[lease.region].rdsDbInstances[writer.dbInstanceIdentifier];
+    if (!parent || parent.dbClusterResourceId !== writer.dbClusterResourceId || parent.dbClusterIdentifier !== writer.dbClusterIdentifier ||
+      parent.members[0] !== writer.dbInstanceIdentifier || current?.dbiResourceId !== writer.dbiResourceId) {
+      throw new AwsError("InvalidDBInstanceState", "The writer no longer belongs to its cluster generation");
+    }
+    return parent;
+  }
+
+  private async createWriter(region: string, input: ClusterInput): Promise<RdsDbInstanceState> {
+    const result = await this.exclusive(async () => {
+      const parent = this.requireCluster(region, input.DBClusterIdentifier);
+      const lease = this.store.state.installation.rds.clusterLease;
+      if (!lease || this.clusterForLease(lease) !== parent || parent.status !== "available") {
+        throw new AwsError("InvalidDBClusterStateFault", "The cluster must be available and own the database slot before attaching a writer");
+      }
+      const writer = createWriterDescriptor(input, parent, this.store.accountId, region, this.clock.now());
+      const catalog = this.store.regionState(region).rdsDbInstances;
+      if (Object.hasOwn(catalog, writer.dbInstanceIdentifier)) throw new AwsError("DBInstanceAlreadyExists", "The DB instance identifier is already in use");
+      if (parent.members.length) throw new AwsError("InvalidDBClusterStateFault", "This local Aurora cluster supports one writer");
+      await this.assertPortAvailable(parent.port);
+      catalog[writer.dbInstanceIdentifier] = writer;
+      parent.members = [writer.dbInstanceIdentifier];
+      try { await this.store.save(); }
+      catch (error) {
+        delete catalog[writer.dbInstanceIdentifier];
+        parent.members = [];
+        throw error;
+      }
+      return { lease, writer: structuredClone(writer) };
+    });
+    void this.enqueueEngine(() => this.finishWriterTransition(result.lease, result.writer.dbiResourceId));
+    return result.writer;
+  }
+
+  private async modifyWriter(region: string, expected: RdsDbInstanceState, input: ClusterInput): Promise<RdsDbInstanceState> {
+    const changes = writerChanges(input, expected);
+    return this.exclusive(async () => {
+      const writer = this.requireInstance(region, expected.dbInstanceIdentifier);
+      this.writerParent(expected);
+      if (writer.dbInstanceStatus !== "available") throw new AwsError("InvalidDBInstanceState", "The writer must be available before modification");
+      const previous = structuredClone(writer);
+      Object.assign(writer, changes);
+      try { await this.store.save(); }
+      catch (error) { Object.assign(writer, previous); throw error; }
+      return structuredClone(writer);
+    });
+  }
+
+  private async deleteWriter(region: string, expected: RdsDbInstanceState, input: ClusterInput): Promise<RdsDbInstanceState> {
+    if (input.FinalDBSnapshotIdentifier !== undefined || !boolean(input.SkipFinalSnapshot, true) || !boolean(input.DeleteAutomatedBackups, true)) {
+      throw new AwsError("InvalidParameterCombination", "Snapshots and backups belong to the parent cluster");
+    }
+    const result = await this.exclusive(async () => {
+      const parent = this.writerParent(expected);
+      const writer = this.requireInstance(region, expected.dbInstanceIdentifier);
+      if (!["available", "failed", "deleting"].includes(writer.dbInstanceStatus)) throw new AwsError("InvalidDBInstanceState", "Wait for writer creation to finish before detaching");
+      const previous = writer.dbInstanceStatus;
+      writer.dbInstanceStatus = "deleting";
+      try { await this.store.save(); }
+      catch (error) { writer.dbInstanceStatus = previous; throw error; }
+      this.invalidateData(parent.dbClusterArn);
+      return { writer: structuredClone(writer), lease: this.store.state.installation.rds.clusterLease! };
+    });
+    void this.enqueueEngine(() => this.finishWriterTransition(result.lease, result.writer.dbiResourceId));
+    return result.writer;
+  }
+
+  private async finishWriterTransition(lease: RdsClusterLease, generation: string): Promise<void> {
+    await this.exclusive(async () => {
+      const parent = this.clusterForLease(lease);
+      if (!parent) return;
+      const catalog = this.store.state.accounts[lease.accountId].regions[lease.region].rdsDbInstances;
+      const writer = catalog[parent.members[0]];
+      if (!writer || writer.dbiResourceId !== generation || writer.dbClusterResourceId !== parent.dbClusterResourceId) return;
+      if (writer.dbInstanceStatus === "failed") return;
+      try {
+        if (writer.dbInstanceStatus === "deleting") {
+          await this.provider.stop();
+          delete catalog[writer.dbInstanceIdentifier];
+          parent.members = [];
+          try { await this.store.save(); }
+          catch (error) {
+            catalog[writer.dbInstanceIdentifier] = writer;
+            parent.members = [writer.dbInstanceIdentifier];
+            throw error;
+          }
+          return;
+        }
+        if (parent.status !== "available") throw new Error("The cluster storage is unavailable");
+        const owner = this.clusterCredentialOwner(parent);
+        let credential = await this.readSecret(owner);
+        if (credential.clusterChange) {
+          await this.finishClusterCredentialChange(lease.region, parent, credential, false);
+          credential = await this.readSecret(owner);
+        }
+        const config: RdsEngineConfig = {
+          resourceId: owner.dbiResourceId, resourceDir: this.resourceDir(owner.dbiResourceId),
+          databaseName: owner.dbName, masterUsername: owner.masterUsername, masterPassword: credential.masterPassword,
+          port: parent.port, parameters: writer.appliedParameters,
+        };
+        await this.provider.start(config);
+        const ready = await this.provider.readiness(config);
+        if (!ready.ready || ready.endpoint.address !== "127.0.0.1" || ready.endpoint.port !== parent.port) throw new Error("Writer readiness failed");
+        writer.dbInstanceStatus = "available";
+        writer.providerVersion = ready.engineVersion;
+        delete writer.statusMessage;
+        await this.store.save();
+      } catch {
+        await this.provider.stop().catch(() => undefined);
+        this.invalidateData(parent.dbClusterArn);
+        writer.dbInstanceStatus = "failed";
+        writer.statusMessage = "Writer transition failed. Verify cluster storage and loopback port availability before replacing the writer.";
+        await this.store.save();
+      }
+    });
+  }
+
+  async modifyCluster(region: string, input: ClusterInput): Promise<RdsDbClusterState> {
+    const changes = clusterChanges(input);
+    return this.exclusive(async () => {
+      const cluster = this.requireCluster(region, input.DBClusterIdentifier);
+      const credentialRequest = input.ManageMasterUserPassword !== undefined || input.MasterUserPassword !== undefined || input.RotateMasterUserPassword !== undefined;
+      const releasingProtection = cluster.status === "failed" && !credentialRequest && changes.deletionProtection === false && Object.keys(changes).length === 1;
+      if (cluster.status !== "available" && !releasingProtection) throw new AwsError("InvalidDBClusterStateFault", "The DB cluster must be available to modify it. Only disabling deletion protection is allowed on a failed cluster");
+      if (credentialRequest) await this.modifyClusterCredential(region, cluster, input);
+      if (!Object.keys(changes).length) return structuredClone(cluster);
+      const catalog = this.store.regionState(region).rdsDbClusters;
+      const updated = { ...cluster, ...changes };
+      await this.store.save({
+        apply: () => { catalog[cluster.dbClusterIdentifier] = updated; },
+        restore: () => { catalog[cluster.dbClusterIdentifier] = cluster; },
+      });
+      return structuredClone(updated);
+    });
+  }
+
+  private clusterSecrets(region: string): RdsManagedSecretsPort {
+    const secrets = this.managedSecrets.get(region);
+    if (!secrets) throw new AwsError("InvalidDBClusterStateFault", "Secrets Manager is unavailable for this cluster", 503);
+    return secrets;
+  }
+
+  private managedClusterSecret(region: string, cluster: RdsDbClusterState, password: string) {
+    return this.clusterSecrets(region).create({
+      resourceId: cluster.dbClusterResourceId, targetArn: cluster.dbClusterArn, dbClusterIdentifier: cluster.dbClusterIdentifier,
+      username: cluster.masterUsername, port: cluster.port, currentPassword: password,
+    });
+  }
+
+  private async deleteClusterCredential(region: string, cluster: RdsDbClusterState): Promise<void> {
+    if (cluster.masterUserSecretArn) {
+      await this.clusterSecrets(region).delete(cluster.masterUserSecretArn, cluster.dbClusterArn);
+    } else {
+      // A managed value can already be durable when RDS has not yet published its ARN.
+      const secrets = cluster.manageMasterUserPassword ? this.clusterSecrets(region) : this.managedSecrets.get(region);
+      await secrets?.delete("rds/" + cluster.dbClusterResourceId, cluster.dbClusterArn, cluster.dbClusterResourceId);
+    }
+  }
+
+  private async modifyClusterCredential(region: string, cluster: RdsDbClusterState, input: ClusterInput): Promise<void> {
+    const owner = this.clusterCredentialOwner(cluster);
+    let secret = await this.readSecret(owner);
+    if (secret.clusterChange) {
+      await this.finishClusterCredentialChange(region, cluster, secret, true);
+      secret = await this.readSecret(owner);
+    }
+    const wasManaged = Boolean(cluster.manageMasterUserPassword);
+    const managed = boolean(input.ManageMasterUserPassword, wasManaged);
+    const rotate = boolean(input.RotateMasterUserPassword);
+    const supplied = input.MasterUserPassword === undefined ? undefined : validatePassword(input.MasterUserPassword);
+    if (managed && supplied !== undefined) throw new AwsError("InvalidParameterCombination", "A managed cluster generates its master password");
+    if (rotate && (!wasManaged || !managed || !boolean(input.ApplyImmediately))) throw new AwsError("InvalidParameterCombination", "Rotating the managed master password requires ApplyImmediately=true on a managed cluster");
+    if (wasManaged && !managed && !supplied) throw new AwsError("InvalidParameterCombination", "Supply a replacement master password when disabling managed credentials");
+    if (managed === wasManaged && !rotate && (supplied === undefined || supplied === secret.masterPassword)) return;
+    const pending = { ...secret, pendingMasterPassword: supplied ?? randomBytes(24).toString("base64url"), clusterChange: { managed, versionId: randomUUID() } };
+    await this.writeSecretValue(owner, pending);
+    await this.finishClusterCredentialChange(region, cluster, pending, true);
+  }
+
+  private async finishClusterCredentialChange(region: string, cluster: RdsDbClusterState, secret: RdsSecret, running: boolean): Promise<void> {
+    const change = secret.clusterChange;
+    if (!change) return;
+    const owner = this.clusterCredentialOwner(cluster);
+    const next = validatePassword(secret.pendingMasterPassword);
+    const previousArn = cluster.masterUserSecretArn;
+    const previouslyManaged = cluster.manageMasterUserPassword;
+    this.invalidateData(cluster.dbClusterArn);
+    try {
+      // Verify ownership before changing the writer password. A customer-created name collision is recoverable.
+      let managed: Awaited<ReturnType<RdsManagedSecretsPort["create"]>> | undefined;
+      if (change.managed) {
+        try { managed = await this.managedClusterSecret(region, cluster, secret.masterPassword); }
+        catch (error) {
+          if (!previouslyManaged && error instanceof AwsError && error.code === "ResourceExistsException") await this.writeSecret(owner, secret.masterPassword);
+          throw error;
+        }
+      }
+      const online = running && this.resolveWriter(region, cluster)?.dbInstanceStatus === "available" && next !== secret.masterPassword;
+      const config = {
+        resourceId: owner.dbiResourceId, resourceDir: this.resourceDir(owner.dbiResourceId),
+        databaseName: owner.dbName, masterUsername: owner.masterUsername, port: cluster.port,
+      };
+      if (online && !(await this.provider.readiness({ ...config, masterPassword: next })).ready) {
+        await this.provider.rotateMasterPassword({ ...config, masterPassword: secret.masterPassword }, next);
+      }
+      try {
+        if (managed && managed.password !== next) await this.clusterSecrets(region).rotate(managed.arn, cluster.dbClusterArn, change.versionId, next);
+        else if (!managed && previousArn) await this.clusterSecrets(region).delete(previousArn, cluster.dbClusterArn);
+      } catch (error) {
+        // Secrets Manager kept its previous version. Restore the live writer while retaining the private journal for retry.
+        if (online && (!managed || managed.password === secret.masterPassword)) {
+          await this.provider.rotateMasterPassword({ ...config, masterPassword: next }, secret.masterPassword);
+        }
+        throw error;
+      }
+      const publish = (managedFlag: boolean | undefined, arn: string | undefined) => {
+        if (managedFlag) cluster.manageMasterUserPassword = true; else delete cluster.manageMasterUserPassword;
+        if (arn) cluster.masterUserSecretArn = arn; else delete cluster.masterUserSecretArn;
+      };
+      await this.store.save({
+        apply: () => publish(change.managed, managed?.arn),
+        restore: () => publish(previouslyManaged, previousArn),
+      });
+      await this.writeSecret(owner, next);
+    } finally {
+      // Sessions admitted during a credential transition cannot outlive it.
+      this.invalidateData(cluster.dbClusterArn);
+    }
+  }
+
+  async deleteCluster(region: string, input: ClusterInput): Promise<RdsDbClusterState> {
+    rejectUnsupportedInput(input, ["DBClusterIdentifier", "SkipFinalSnapshot", "FinalDBSnapshotIdentifier", "DeleteAutomatedBackups"]);
+    if (!boolean(input.SkipFinalSnapshot) || input.FinalDBSnapshotIdentifier !== undefined) throw new AwsError("InvalidParameterCombination", "Final cluster snapshots are unsupported. Specify SkipFinalSnapshot=true without a final snapshot identifier");
+    if (!boolean(input.DeleteAutomatedBackups, true)) throw new AwsError("InvalidParameterCombination", "Automated cluster backup retention is unsupported");
+    const result = await this.exclusive(async () => {
+      const cluster = this.requireCluster(region, input.DBClusterIdentifier);
+      if (cluster.deletionProtection) throw new AwsError("InvalidParameterCombination", "You must disable deletion protection before deleting the DB cluster");
+      if (cluster.members.length || cluster.status === "creating") throw new AwsError("InvalidDBClusterStateFault", "The DB cluster must be empty and finished creating before deletion");
+      const lease = this.store.state.installation.rds.clusterLease;
+      if (!lease || this.clusterForLease(lease) !== cluster) throw new AwsError("InvalidDBClusterStateFault", "The DB cluster does not own the installation slot");
+      const previous = cluster.status;
+      cluster.status = "deleting";
+      try { await this.store.save(); } catch (error) { cluster.status = previous; throw error; }
+      return { lease, cluster: structuredClone(cluster) };
+    });
+    void this.enqueueEngine(() => this.finishClusterTransition(result.lease));
+    return result.cluster;
+  }
+
+  private requireCluster(region: string, value: unknown): RdsDbClusterState {
+    const id = requiredString(value, "DBClusterIdentifier");
+    const found = Object.values(this.store.regionState(region).rdsDbClusters).find(cluster => id === cluster.dbClusterArn || id.toLowerCase() === cluster.dbClusterIdentifier);
+    if (!found) throw new AwsError("DBClusterNotFoundFault", "The requested DB cluster does not exist", 404);
+    return found;
+  }
+
+  private clusterForLease(lease: RdsClusterLease): RdsDbClusterState | undefined {
+    const cluster = this.store.state.accounts[lease.accountId]?.regions[lease.region]?.rdsDbClusters[lease.dbClusterIdentifier];
+    return cluster?.dbClusterResourceId === lease.dbClusterResourceId ? cluster : undefined;
+  }
+
+  private clusterCredentialOwner(cluster: RdsDbClusterState): CredentialOwner {
+    if (!/^cluster-[a-f0-9]{26}$/.test(cluster.dbClusterResourceId) || cluster.storageResourceId !== "db-" + cluster.dbClusterResourceId.slice(8)) throw new Error("Invalid RDS cluster storage ownership");
+    return { dbiResourceId: cluster.storageResourceId, dbName: cluster.databaseName, masterUsername: cluster.masterUsername };
+  }
+
+  private async reconcileCluster(standalonePresent: boolean): Promise<boolean> {
+    const installation = this.store.state.installation.rds;
+    const clusters: RdsClusterLease[] = [];
+    for (const [accountId, account] of Object.entries(this.store.state.accounts)) {
+      for (const [region, state] of Object.entries(account.regions)) {
+        for (const cluster of Object.values(state.rdsDbClusters)) {
+          clusters.push({ accountId, region, dbClusterIdentifier: cluster.dbClusterIdentifier, dbClusterResourceId: cluster.dbClusterResourceId });
+        }
+      }
+    }
+    if (!clusters.length && !installation.clusterLease) return false;
+    if (standalonePresent || clusters.length !== 1 || (installation.clusterLease && !this.clusterForLease(installation.clusterLease))) {
+      throw new Error("The RDS cluster catalog conflicts with the installation lease; refusing to change database ownership");
+    }
+    if (!installation.clusterLease) { installation.clusterLease = clusters[0]; await this.store.save(); }
+    const lease = clusters[0];
+    const cluster = this.clusterForLease(lease)!;
+    const members = this.allInstances();
+    const writer = members[0]?.instance;
+    if (cluster.members.length !== members.length || members.length > 1 || (writer && (
+      members[0].region !== lease.region || members[0].accountId !== lease.accountId ||
+      cluster.members[0] !== writer.dbInstanceIdentifier || writer.dbClusterIdentifier !== cluster.dbClusterIdentifier ||
+      writer.dbClusterResourceId !== cluster.dbClusterResourceId || cluster.status === "deleting"
+    ))) throw new Error("The RDS writer and cluster catalogs disagree. Refusing to change database ownership");
+    await this.enqueueEngine(() => this.finishClusterTransition(lease));
+    if (writer) await this.enqueueEngine(() => this.finishWriterTransition(lease, writer.dbiResourceId));
+    return true;
+  }
+
+  private async finishClusterTransition(lease: RdsClusterLease): Promise<void> {
+    // The same serialized transition runs on admission and restart. Never start a listener for an empty cluster.
+    await this.exclusive(async () => {
+      const cluster = this.clusterForLease(lease);
+      if (!cluster) return;
+      const owner = this.clusterCredentialOwner(cluster);
+      const resource = { resourceId: cluster.storageResourceId, resourceDir: this.resourceDir(cluster.storageResourceId), port: cluster.port };
+      try {
+        if (cluster.status === "deleting") {
+          await this.provider.destroy(resource);
+          await this.deleteClusterCredential(lease.region, cluster);
+          await this.deleteSecret(resource.resourceId);
+          await this.dropCluster(lease, cluster);
+        } else if (cluster.status === "creating") {
+          if (!await exists(this.secretPath(resource.resourceId))) {
+            // Admission stopped after saving the lease but before publishing the private credential.
+            await this.provider.destroy(resource);
+            await this.deleteClusterCredential(lease.region, cluster);
+            await this.deleteSecret(resource.resourceId);
+            await this.dropCluster(lease, cluster);
+            return;
+          }
+          const secret = await this.readSecret(owner);
+          if (cluster.manageMasterUserPassword) cluster.masterUserSecretArn = (await this.managedClusterSecret(lease.region, cluster, secret.masterPassword)).arn;
+          await this.provider.initialize({ ...resource, masterUsername: owner.masterUsername, databaseName: owner.dbName, masterPassword: secret.masterPassword }, { recoverUnpublishedVolume: true });
+          cluster.status = "available";
+          await this.store.save();
+        } else if (cluster.status === "available") {
+          const secret = await this.readSecret(owner);
+          await this.finishClusterCredentialChange(lease.region, cluster, secret, false);
+          await this.provider.verifyStoppedVolume?.({ ...resource, masterUsername: owner.masterUsername, databaseName: owner.dbName, masterPassword: secret.masterPassword });
+        }
+      } catch {
+        // Keep the lease for a failed, explicitly deletable resource. Never disclose engine paths or secrets.
+        cluster.status = "failed";
+        await this.store.save();
+      }
+    });
+  }
+
+  private async dropCluster(lease: RdsClusterLease, cluster: RdsDbClusterState): Promise<void> {
+    const catalog = this.store.state.accounts[lease.accountId].regions[lease.region].rdsDbClusters;
+    delete catalog[lease.dbClusterIdentifier];
+    delete this.store.state.installation.rds.clusterLease;
+    try { await this.store.save(); }
+    catch (error) { catalog[lease.dbClusterIdentifier] = cluster; this.store.state.installation.rds.clusterLease = lease; throw error; }
+  }
+
   async create(region: string, input: any): Promise<RdsDbInstanceState> {
+    if (input.DBClusterIdentifier !== undefined) return this.createWriter(region, input);
     const validated = this.validateCreate(region, input);
     await this.exclusive(async () => this.assertCreateSlot(region, validated.identifier));
     try { await this.provider.discover(); }
@@ -421,7 +823,8 @@ export class RdsManager {
     rejectUnsupportedInput(input, ["DBInstanceIdentifier", "Filters", "MaxRecords"]);
     let instances = Object.values(this.store.regionState(region).rdsDbInstances);
     if (input.DBInstanceIdentifier !== undefined) {
-      const identifier = String(input.DBInstanceIdentifier).toLowerCase(); const found = this.store.regionState(region).rdsDbInstances[identifier];
+      const identifier = String(input.DBInstanceIdentifier).toLowerCase();
+      const found = instances.find(instance => instance.dbInstanceIdentifier === identifier || instance.dbInstanceArn === identifier);
       if (!found) throw new AwsError("DBInstanceNotFound", `DB instance ${identifier} was not found`, 404);
       instances = [found];
     }
@@ -431,6 +834,7 @@ export class RdsManager {
       const name = String(filter?.Name ?? ""); const values = namedList(filter?.Values, "Value").map(String);
       if (!values.length) throw new AwsError("InvalidParameterValue", `Filter ${name} must include a value`);
       if (name === "db-instance-id") instances = instances.filter(instance => values.includes(instance.dbInstanceIdentifier));
+      else if (name === "db-cluster-id") instances = instances.filter(instance => instance.dbClusterIdentifier && (values.includes(instance.dbClusterIdentifier) || values.includes(`arn:aws:rds:${region}:${this.store.accountId}:cluster:${instance.dbClusterIdentifier}`)));
       else if (name === "engine") instances = instances.filter(instance => values.includes(instance.engine));
       else if (name === "db-instance-status") instances = instances.filter(instance => values.includes(instance.dbInstanceStatus));
       else throw new AwsError("InvalidParameterValue", `Unsupported RDS filter ${name}`);
@@ -448,6 +852,7 @@ export class RdsManager {
       if (regional.rdsDbSnapshots[identifier]) throw new AwsError("DBSnapshotAlreadyExists", `DB snapshot ${identifier} already exists`);
       if (Object.keys(regional.rdsDbSnapshots).length >= SNAPSHOT_QUOTA) throw new AwsError("SnapshotQuotaExceeded", `The local manual snapshot quota of ${SNAPSHOT_QUOTA} has been reached`);
       const instance = this.requireInstance(region, dbIdentifier);
+      if (instance.storageType === "aurora") throw new AwsError("InvalidDBInstanceState", "Snapshots of a cluster writer require cluster snapshot support");
       if (!new Set(["available", "stopped"]).has(instance.dbInstanceStatus)) throw new AwsError("InvalidDBInstanceState", `DB instance ${dbIdentifier} must be available or stopped before snapshot creation`);
       if (instance.providerEngine === "mariadb" || !this.provider.captureSnapshot) throw new AwsError("InvalidDBInstanceState", "Manual snapshots require the embedded SQLite provider");
       wasAvailable = instance.dbInstanceStatus === "available";
@@ -637,6 +1042,8 @@ export class RdsManager {
   async delete(region: string, input: any): Promise<RdsDbInstanceState> {
     rejectUnsupportedInput(input, ["DBInstanceIdentifier", "SkipFinalSnapshot", "FinalDBSnapshotIdentifier", "DeleteAutomatedBackups"]);
     const identifier = requiredString(input.DBInstanceIdentifier, "DBInstanceIdentifier").toLowerCase();
+    const current = this.requireInstance(region, identifier);
+    if (current.dbClusterIdentifier) return this.deleteWriter(region, current, input);
     const skipFinalSnapshot = boolean(input.SkipFinalSnapshot, false);
     if (skipFinalSnapshot && input.FinalDBSnapshotIdentifier !== undefined) throw new AwsError("InvalidParameterCombination", "FinalDBSnapshotIdentifier cannot be specified when SkipFinalSnapshot=true");
     if (!skipFinalSnapshot && input.FinalDBSnapshotIdentifier === undefined) throw new AwsError("InvalidParameterCombination", "FinalDBSnapshotIdentifier is required unless SkipFinalSnapshot=true");
@@ -684,10 +1091,19 @@ export class RdsManager {
   }
 
   accountQuota(): { used: number; max: number } {
-    return { used: this.store.state.installation.rds.instanceLease ? 1 : 0, max: 1 };
+    const { instanceLease, clusterLease } = this.store.state.installation.rds;
+    return { used: instanceLease || clusterLease ? 1 : 0, max: 1 };
   }
 
-  metadata(): { controlPlane: "available"; instanceStatus: RdsDbInstanceState["dbInstanceStatus"] | "none"; ownerRegion?: string; dbInstanceIdentifier?: string } {
+  metadata(): { controlPlane: "available"; instanceStatus: RdsDbInstanceState["dbInstanceStatus"] | "none"; ownerRegion?: string; dbInstanceIdentifier?: string; dbClusterIdentifier?: string } {
+    const clusterLease = this.store.state.installation.rds.clusterLease;
+    if (clusterLease) {
+      const cluster = this.clusterForLease(clusterLease);
+      const catalog = this.store.state.accounts[clusterLease.accountId]?.regions[clusterLease.region]?.rdsDbInstances;
+      const writer = cluster?.members.length ? catalog?.[cluster.members[0]] : undefined;
+      return { controlPlane: "available", instanceStatus: writer?.dbInstanceStatus ?? "none", ownerRegion: clusterLease.region,
+        dbClusterIdentifier: clusterLease.dbClusterIdentifier, ...(writer ? { dbInstanceIdentifier: writer.dbInstanceIdentifier } : {}) };
+    }
     const lease = this.store.state.installation.rds.instanceLease;
     const instance = lease ? this.instanceForLease(lease) : undefined;
     return {
@@ -806,6 +1222,7 @@ export class RdsManager {
       ? Object.values(this.store.regionState(region).rdsDbInstances).find(candidate => candidate.dbInstanceArn === targetId)
       : this.store.regionState(region).rdsDbInstances[targetId.toLowerCase()];
     if (!instance) throw new AwsError("ResourceNotFoundException", `RDS target ${targetId} was not found`, 404);
+    if (instance.dbClusterIdentifier) throw new AwsError("InvalidDBInstanceState", "The Aurora master credential belongs to the parent cluster");
     if (instance.dbInstanceStatus === "deleting" || instance.dbInstanceStatus === "failed") throw new AwsError("InvalidDBInstanceState", `RDS target ${targetId} isn't attachable while ${instance.dbInstanceStatus}`);
     return { targetArn: instance.dbInstanceArn, targetGenerationId: instance.dbiResourceId, engine: "mysql", host: "127.0.0.1", port: instance.port, username: instance.masterUsername };
   }
@@ -877,6 +1294,8 @@ export class RdsManager {
   }
 
   async modify(region: string, input: any): Promise<RdsDbInstanceState> {
+    const existing = this.requireInstance(region, requiredString(input.DBInstanceIdentifier, "DBInstanceIdentifier").toLowerCase());
+    if (existing.dbClusterIdentifier) return this.modifyWriter(region, existing, input);
     rejectUnsupportedInput(input, ["DBInstanceIdentifier", "AllocatedStorage", "DBInstanceClass", "ApplyImmediately", "MasterUserPassword", "ManageMasterUserPassword", "MasterUserSecretKmsKeyId", "DBParameterGroupName", "BackupRetentionPeriod", "MultiAZ", "EngineVersion", "AutoMinorVersionUpgrade", "PubliclyAccessible", "StorageType", "DBPortNumber", "DeletionProtection"]);
     if (input.MasterUserSecretKmsKeyId !== undefined) throw new AwsError("InvalidParameterCombination", "MasterUserSecretKmsKeyId requires customer KMS, which is outside the local profile");
     const identifier = requiredString(input.DBInstanceIdentifier, "DBInstanceIdentifier").toLowerCase();
@@ -973,26 +1392,40 @@ export class RdsManager {
 
   validModifications(region: string, input: any): Record<string, unknown> {
     rejectUnsupportedInput(input, ["DBInstanceIdentifier"]);
-    this.requireInstance(region, requiredString(input.DBInstanceIdentifier, "DBInstanceIdentifier").toLowerCase());
+    const instance = this.requireInstance(region, requiredString(input.DBInstanceIdentifier, "DBInstanceIdentifier").toLowerCase());
+    if (instance.dbClusterIdentifier) throw new AwsError("InvalidParameterCombination", "Cluster writer storage belongs to its parent");
     const option = (storageType: "gp2" | "gp3") => ({ StorageType: storageType, StorageSize: awsQueryList("Range", [{ From: 20, To: 65_536, Step: 1 }]), ProvisionedIops: awsQueryList("Range", []), IopsToStorageRatio: awsQueryList("DoubleRange", []), ProvisionedStorageThroughput: awsQueryList("Range", []), StorageThroughputToIopsRatio: awsQueryList("DoubleRange", []), SupportsStorageAutoscaling: false });
     return { ValidDBInstanceModificationsMessage: { Storage: awsQueryList("ValidStorageOptions", [option("gp2"), option("gp3")]), ValidProcessorFeatures: awsQueryList("AvailableProcessorFeature", []), SupportsDedicatedLogVolume: false, AdditionalStorage: { SupportsAdditionalStorageVolumes: false, Volumes: awsQueryList("ValidVolumeOptions", []) } } };
   }
 
   async addTags(region: string, input: any): Promise<void> {
     rejectUnsupportedInput(input, ["ResourceName", "Tags"]);
-    const resource = this.taggedResource(region, requiredString(input.ResourceName, "ResourceName")); const additions = tags(input.Tags);
-    const merged = { ...resource.tags, ...additions };
-    if (Object.keys(merged).length > 50) throw new AwsError("InvalidParameterValue", "A maximum of 50 tags is allowed");
-    resource.replace(merged); await this.store.save();
+    const additions = tags(input.Tags);
+    await this.updateTags(region, requiredString(input.ResourceName, "ResourceName"), current => {
+      const merged = { ...current, ...additions };
+      if (Object.keys(merged).length > 50) throw new AwsError("InvalidParameterValue", "A maximum of 50 tags is allowed");
+      return merged;
+    });
   }
 
   async removeTags(region: string, input: any): Promise<void> {
     rejectUnsupportedInput(input, ["ResourceName", "TagKeys"]);
-    const resource = this.taggedResource(region, requiredString(input.ResourceName, "ResourceName"));
     const keys = namedList(input.TagKeys, "member").map(String);
     if (!keys.length) throw new AwsError("InvalidParameterValue", "At least one TagKey is required");
     for (const key of keys) if (!key || key.length > 128 || key.toLowerCase().startsWith("aws:")) throw new AwsError("InvalidParameterValue", "Tag keys are invalid");
-    const next = { ...resource.tags }; for (const key of keys) delete next[key]; resource.replace(next); await this.store.save();
+    await this.updateTags(region, requiredString(input.ResourceName, "ResourceName"), current => {
+      const next = { ...current };
+      for (const key of keys) delete next[key];
+      return next;
+    });
+  }
+
+  private updateTags(region: string, arn: string, update: (tags: Record<string, string>) => Record<string, string>): Promise<void> {
+    return this.exclusive(async () => {
+      const resource = this.taggedResource(region, arn);
+      const updated = update(resource.tags);
+      await this.store.save({ apply: () => resource.replace(updated), restore: () => resource.replace(resource.tags) });
+    });
   }
 
   listTags(region: string, input: any): Record<string, string> {
@@ -1116,9 +1549,9 @@ export class RdsManager {
   }
 
   private requireInstance(region: string, identifier: string): RdsDbInstanceState {
-    const instance = this.store.regionState(region).rdsDbInstances[identifier];
-    if (!instance) throw new AwsError("DBInstanceNotFound", `DB instance ${identifier} was not found`, 404);
-    return instance;
+    const catalog = this.store.regionState(region).rdsDbInstances;
+    if (!Object.hasOwn(catalog, identifier)) throw new AwsError("DBInstanceNotFound", `DB instance ${identifier} was not found`, 404);
+    return catalog[identifier];
   }
 
   private queryEditorInstance(region: string, rawIdentifier: string): RdsDbInstanceState {
@@ -1127,7 +1560,8 @@ export class RdsManager {
     if (instance.dbInstanceStatus !== "available") {
       throw new AwsError("InvalidDBInstanceState", `DB instance ${identifier} must be available before using the query editor`, 409);
     }
-    this.requireLease(instance);
+    if (instance.dbClusterIdentifier) this.writerParent(instance);
+    else this.requireLease(instance);
     return instance;
   }
 
@@ -1153,7 +1587,8 @@ export class RdsManager {
   }
 
   private async queryEditorConnection(instance: RdsDbInstanceState, database?: string): Promise<Connection> {
-    const secret = await this.readSecret(instance);
+    const owner = instance.dbClusterIdentifier ? this.clusterCredentialOwner(this.writerParent(instance)) : instance;
+    const secret = await this.readSecret(owner);
     try {
       return await mysql.createConnection({
         host: "127.0.0.1",
@@ -1237,6 +1672,10 @@ export class RdsManager {
 
   private taggedResource(region: string, arn: string): { tags: Record<string, string>; replace(value: Record<string, string>): void } {
     const prefix = `arn:aws:rds:${region}:${this.store.accountId}:`; if (!arn.startsWith(prefix)) throw new AwsError("InvalidParameterValue", "ResourceName must be an RDS ARN in the requested Region and account");
+    if (arn.startsWith(prefix + "cluster:")) {
+      const cluster = this.requireCluster(region, arn);
+      return { tags: { ...cluster.tags }, replace: value => { cluster.tags = value; } };
+    }
     const instance = Object.values(this.store.regionState(region).rdsDbInstances).find(candidate => candidate.dbInstanceArn === arn);
     if (instance) return { tags: { ...instance.tags }, replace: value => { instance.tags = value; } };
     const group = Object.values(this.store.regionState(region).rdsDbParameterGroups).find(candidate => candidate.dbParameterGroupArn === arn);
@@ -1645,16 +2084,33 @@ export class RdsManager {
     return join(this.rdsRoot, "secrets", `${resourceId}.json`);
   }
 
-  private async writeSecret(instance: RdsDbInstanceState, password: string): Promise<void> {
+  private async secretDirectory(create: boolean): Promise<string> {
+    const directory = join(this.rdsRoot, "secrets");
+    for (const path of [this.rdsRoot, directory]) {
+      if (create) await mkdir(path, { recursive: true, mode: 0o700 });
+      if (!(await lstat(path)).isDirectory()) throw new Error("The RDS credential directory is unsafe");
+    }
+    return directory;
+  }
+
+  private async writeSecret(instance: CredentialOwner, password: string): Promise<void> {
     const value: RdsSecret = { version: 2, resourceId: instance.dbiResourceId, ...(instance.dbName ? { databaseName: instance.dbName } : {}), masterUsername: instance.masterUsername, masterPassword: password };
     await this.writeSecretValue(instance, value);
   }
 
-  private async writeSecretValue(instance: RdsDbInstanceState, value: RdsSecret): Promise<void> {
-    const directory = join(this.rdsRoot, "secrets"); await mkdir(directory, { recursive: true, mode: 0o700 });
-    const path = this.secretPath(instance.dbiResourceId); const temporary = `${path}.${randomUUID()}.tmp`;
-    try { await writeFile(temporary, JSON.stringify(value), { mode: 0o600 }); await rename(temporary, path); }
-    finally { await rm(temporary, { force: true }).catch(() => undefined); }
+  private async writeSecretValue(instance: CredentialOwner, value: RdsSecret): Promise<void> {
+    const path = this.secretPath(instance.dbiResourceId);
+    await this.secretDirectory(true);
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    const file = await open(temporary, "wx", 0o600);
+    try {
+      try { await file.writeFile(JSON.stringify(value)); await file.sync(); }
+      finally { await file.close(); }
+      await rename(temporary, path);
+    } catch (error) {
+      await rm(temporary, { force: true });
+      throw error;
+    }
   }
 
   private async stagePendingPassword(instance: RdsDbInstanceState, password: string): Promise<void> {
@@ -1671,13 +2127,26 @@ export class RdsManager {
     const cleaned = { ...secret }; delete cleaned.pendingMasterPassword; await this.writeSecretValue(instance, cleaned); return cleaned;
   }
 
-  private async readSecret(instance: RdsDbInstanceState): Promise<RdsSecret> {
+  private async readSecret(instance: CredentialOwner): Promise<RdsSecret> {
     const value = JSON.parse(await readFile(this.secretPath(instance.dbiResourceId), "utf8")) as RdsSecret;
     if (!new Set([1, 2]).has(value.version) || value.resourceId !== instance.dbiResourceId || value.databaseName !== instance.dbName || value.masterUsername !== instance.masterUsername || typeof value.masterPassword !== "string" || (value.pendingMasterPassword !== undefined && typeof value.pendingMasterPassword !== "string")) throw new Error("The local RDS credential file is invalid");
     return value;
   }
 
-  private async deleteSecret(resourceId: string): Promise<void> { await rm(this.secretPath(resourceId), { force: true }); }
+  private async deleteSecret(resourceId: string): Promise<void> {
+    const path = this.secretPath(resourceId);
+    let directory: string;
+    try { directory = await this.secretDirectory(false); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+    const prefix = `${resourceId}.json.`;
+    const stagingSuffix = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.tmp$/;
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.startsWith(prefix) && stagingSuffix.test(entry.name.slice(prefix.length))) {
+        await rm(join(directory, entry.name), { force: true });
+      }
+    }
+    await rm(path, { force: true });
+  }
 
   private instanceForLease(lease: RdsInstanceLease): RdsDbInstanceState | undefined {
     const instance = this.store.state.accounts[lease.accountId]?.regions[lease.region]?.rdsDbInstances?.[lease.dbInstanceIdentifier];
@@ -1691,6 +2160,7 @@ export class RdsManager {
   }
 
   private assertCreateSlot(region: string, identifier: string): void {
+    if (this.store.state.installation.rds.clusterLease) throw new AwsError("InstanceQuotaExceeded", "An RDS cluster owns the installation's single RDS database slot");
     const existingLease = this.store.state.installation.rds.instanceLease;
     if (existingLease) {
       if (existingLease.accountId === this.store.accountId && existingLease.region === region && existingLease.dbInstanceIdentifier === identifier) throw new AwsError("DBInstanceAlreadyExists", `DB instance ${identifier} already exists`);
@@ -1728,11 +2198,19 @@ export class RdsService {
 
   async handle(req: IncomingMessage, res: ServerResponse, requestId: string): Promise<void> {
     try {
-      const input = parseAwsQuery((await readBody(req)).toString("utf8")) as any;
+      const query = req.method === "GET" ? new URL(req.url ?? "/", "http://localhost").searchParams : (await readBody(req)).toString("utf8");
+      const input = parseAwsQuery(query) as any;
       const action = String(input.Action ?? ""); const version = input.Version; delete input.Action; delete input.Version;
       if (version !== "2014-10-31") throw new AwsError("InvalidParameterValue", "Version must be 2014-10-31");
       let result: Record<string, unknown>;
+      const clusterView = (cluster: RdsDbClusterState) => dbClusterView(cluster, this.manager.resolveWriter(this.region, cluster));
       if (action === "CreateDBInstance") result = { DBInstance: dbInstanceView(await this.manager.create(this.region, input)) };
+      else if (action === "CreateDBCluster") result = { DBCluster: clusterView(await this.manager.createCluster(this.region, input)) };
+      else if (action === "DescribeDBClusters") result = { DBClusters: awsQueryList("DBCluster", this.manager.describeClusters(this.region, input).map(clusterView)) };
+      else if (action === "ModifyDBCluster") result = { DBCluster: clusterView(await this.manager.modifyCluster(this.region, input)) };
+      else if (action === "DeleteDBCluster") result = { DBCluster: clusterView(await this.manager.deleteCluster(this.region, input)) };
+      else if (action === "DescribeGlobalClusters") result = this.describeGlobalClusters(input);
+      else if (action === "EnableHttpEndpoint" || action === "DisableHttpEndpoint") result = await this.manager.setHttpEndpoint(this.region, input, action === "EnableHttpEndpoint");
       else if (action === "DescribeDBInstances") result = { DBInstances: awsQueryList("DBInstance", this.manager.describe(this.region, input).map(dbInstanceView)) };
       else if (action === "DeleteDBInstance") result = { DBInstance: dbInstanceView(await this.manager.delete(this.region, input)) };
       else if (action === "CreateDBSnapshot") result = { DBSnapshot: dbSnapshotView(await this.manager.createSnapshot(this.region, input)) };
@@ -1770,8 +2248,24 @@ export class RdsService {
     } catch (error) {
       const aws = error instanceof AwsError ? error : new AwsError("InternalFailure", "The local RDS operation failed", 500);
       res.statusCode = aws.status; res.setHeader("content-type", "text/xml; charset=utf-8");
-      res.end(awsQueryXml("ErrorResponse", { Error: { Type: aws.status >= 500 ? "Receiver" : "Sender", Code: aws.code.replace(/(?:Exception|Fault)$/, ""), Message: aws.message }, RequestId: requestId }, NAMESPACE));
+      res.end(awsQueryXml("ErrorResponse", { Error: { Type: aws.status >= 500 ? "Receiver" : "Sender", Code: aws.code.replace(/Exception$/, ""), Message: aws.message }, RequestId: requestId }, NAMESPACE));
     }
+  }
+
+  private describeGlobalClusters(input: Record<string, unknown>): Record<string, unknown> {
+    rejectUnsupportedInput(input, ["Filters", "MaxRecords"]);
+    const filters = namedList(input.Filters, "Filter");
+    const maxRecords = integer(input.MaxRecords, 100, "MaxRecords");
+    if (maxRecords < 20 || maxRecords > 100) throw new AwsError("InvalidParameterValue", "MaxRecords must be between 20 and 100");
+    if (filters.length !== 1 || filters[0]?.Name !== "db-cluster-id") {
+      throw new AwsError("InvalidParameterCombination", "Only the db-cluster-id global membership lookup is supported");
+    }
+    const arns = namedList(filters[0].Values, "Value");
+    const prefix = `arn:aws:rds:${this.region}:${this.manager.accountId}:cluster:`;
+    if (!arns.length || arns.some(arn => typeof arn !== "string" || !arn.startsWith(prefix) || !/^[a-z][a-z0-9-]{0,62}$/i.test(arn.slice(prefix.length)))) {
+      throw new AwsError("InvalidParameterValue", "The db-cluster-id filter requires cluster ARNs in this account and Region");
+    }
+    return { GlobalClusters: awsQueryList("GlobalClusterMember", []) };
   }
 
   private describeDBEngineVersions(input: any): Record<string, unknown> {

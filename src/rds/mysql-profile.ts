@@ -17,7 +17,7 @@ export interface MysqlProfileContext {
 }
 
 export type MysqlProfilePlan =
-  | { kind: "sqlite"; sql: string; returnsRows: boolean; informationSchema: boolean }
+  | { kind: "sqlite"; sql: string; returnsRows: boolean; informationSchema: boolean; insertTable?: string }
   | { kind: "set" }
   | { kind: "createDatabase"; database: string; ifNotExists: boolean }
   | { kind: "useDatabase"; database: string }
@@ -429,7 +429,8 @@ function compileQuery(sql: string, tokens: Token[], context: MysqlProfileContext
       edits.push({ start: token.start, end: tokens[index + 1].end, value: "" });
     }
   }
-  return sqlitePlan(applyEdits(sql, 0, sql.length, edits), returnsRows, informationSchema);
+  const insertTable = root === "INSERT" ? identifier(tokens[tokens[3]?.raw === "." ? 4 : 2]) : undefined;
+  return { kind: "sqlite", sql: applyEdits(sql, 0, sql.length, edits), returnsRows, informationSchema, insertTable };
 }
 
 function rewriteInsertDefaults(tokens: Token[]): Array<{ start: number; end: number; value: string }> {
@@ -489,7 +490,53 @@ function sqlitePlan(sql: string, returnsRows: boolean, informationSchema = false
   return { kind: "sqlite", sql, returnsRows, informationSchema };
 }
 
-function lex(source: string): Token[] {
+/** Bind names using the same quote, comment and statement boundaries as the SQL provider. */
+export function dataApiStatement(source: string): { sql: string; names: string[]; command: string } {
+  const sql = stripOneTerminator(source);
+  const tokens = lex(sql, true);
+  const names: string[] = [];
+  const parts: string[] = [];
+  let offset = 0;
+  for (const token of tokens) {
+    if (token.kind !== "parameter") continue;
+    if (token.raw === "?") unsupported("Data API requires named SQL parameters");
+    names.push(token.raw.slice(1));
+    parts.push(sql.slice(offset, token.start), "?");
+    offset = token.end;
+  }
+  parts.push(sql.slice(offset));
+  return { sql: parts.join(""), names, command: tokens[0]?.upper ?? "" };
+}
+
+export function countMysqlParameters(sql: string): number {
+  return lex(stripOneTerminator(sql)).filter(token => token.kind === "parameter").length;
+}
+
+/** Original column labels for older SQLite bindings that expose only a view's deduplicated names. */
+export function mysqlProjectionLabels(sql: string): string[] {
+  const tokens = lex(stripOneTerminator(sql));
+  const endClauses = new Set(["FROM", "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "UNION", "FOR"]);
+  let start = -1, end = tokens.length, depth = 0;
+  for (const [index, token] of tokens.entries()) {
+    if (token.raw === "(") depth++;
+    else if (token.raw === ")") depth--;
+    else if (depth === 0 && token.kind === "word") {
+      if (start === -1 && token.upper === "SELECT") start = index + 1;
+      else if (start !== -1 && endClauses.has(token.upper)) { end = index; break; }
+    }
+  }
+  if (start === -1) return [];
+  if (["ALL", "DISTINCT"].includes(tokens[start]?.upper)) start++;
+  return splitTokenRanges(tokens, start, end).map(range => {
+    const last = tokens[range.end - 1];
+    const previous = range.end >= range.start + 2 ? tokens[range.end - 2] : undefined;
+    if (previous?.upper === "AS" && last.kind === "string") return decodeMysqlString(last.raw);
+    if (last.kind === "identifier" || last.kind === "word") return identifier(last);
+    return sql.trim().slice(tokens[range.start].start, last.end);
+  });
+}
+
+function lex(source: string, namedParameters = false): Token[] {
   const tokens: Token[] = [];
   let index = 0;
   while (index < source.length) {
@@ -532,6 +579,13 @@ function lex(source: string): Token[] {
     if (/[0-9]/.test(character)) {
       index += 1; while (index < source.length && /[0-9A-Fa-f.xXeE+-]/.test(source[index])) index += 1;
       const raw = source.slice(start, index); tokens.push({ kind: "number", raw, upper: raw.toUpperCase(), start, end: index }); continue;
+    }
+    if (namedParameters && character === ":" && /[A-Za-z_]/.test(source[index + 1] ?? "")) {
+      index += 2;
+      while (index < source.length && /[A-Za-z0-9_]/.test(source[index])) index++;
+      const raw = source.slice(start, index);
+      tokens.push({ kind: "parameter", raw, upper: raw, start, end: index });
+      continue;
     }
     if (character === "?") { index += 1; tokens.push({ kind: "parameter", raw: "?", upper: "?", start, end: index }); continue; }
     const pair = source.slice(index, index + 2);
