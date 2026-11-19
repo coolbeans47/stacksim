@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { createReadStream, existsSync, lstatSync, readdirSync } from "node:fs";
-import { copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { createReadStream, lstatSync, readdirSync } from "node:fs";
+import { copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import * as sqlite from "node:sqlite";
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue, type StatementColumnMetadata } from "node:sqlite";
 import { basename, join, parse, relative, resolve, sep } from "node:path";
@@ -16,6 +16,8 @@ import {
 } from "./provider.js";
 import {
   compileMysqlStatement,
+  countMysqlParameters,
+  mysqlProjectionLabels,
   MYSQL_SERVER_VERSION,
   mysqlProfileError,
   type MysqlProfilePlan,
@@ -24,6 +26,7 @@ import {
 const PROVIDER_NAME = "embedded-sqlite";
 const LOOPBACK = "127.0.0.1" as const;
 const MARKER_FILE = ".stacksim-rds-sqlite.json";
+const FIRST_MARKER_STAGE = `${MARKER_FILE}.initializing`;
 const ENGINE_VERSION = process.versions.sqlite ?? "unknown";
 const MYSQL_COMPATIBILITY_VERSION = MYSQL_SERVER_VERSION;
 const DEFAULT_PARAMETERS: Record<string, string> = {
@@ -39,6 +42,7 @@ const DATABASE_NAME = /^[A-Za-z][A-Za-z0-9_$]{0,63}$/;
 // mysql2 intentionally exposes only a small public server type even though its
 // server-side protocol implementation offers these methods and events.
 interface MysqlServerConnection {
+  handlePacket(packet?: MysqlCommandPacket): void;
   stream: NodeJS.ReadWriteStream & { remoteAddress?: string; destroy(): void; end(): void };
   on(event: string, listener: (...args: any[]) => void): this;
   once(event: string, listener: (...args: any[]) => void): this;
@@ -51,6 +55,29 @@ interface MysqlServerConnection {
   writePacket(packet: WirePacket): void;
   sequenceId: number;
 }
+
+interface MysqlCommandPacket {
+  buffer: Buffer;
+  offset: number;
+  end: number;
+  sequenceId: number;
+  numPackets: number;
+  readInt8(): number;
+  readInt16(): number;
+  readInt32(): number;
+  readSInt8(): number;
+  readSInt16(): number;
+  readSInt32(): number;
+  readInt64String(): string;
+  readSInt64String(): string;
+  readFloat(): number;
+  readDouble(): number;
+  readDateTime(): Date;
+  readLengthCodedBuffer(): Buffer;
+  readLengthCodedString(encoding: string): string;
+}
+
+interface PreparedStatement { sql: string; parameterCount: number; types?: number[] }
 
 interface MysqlServer {
   _server: import("node:net").Server;
@@ -93,14 +120,16 @@ interface ActiveEngine {
 interface ConnectionState {
   database?: string;
   sqlite?: DatabaseSync;
-  statements: Map<number, string>;
+  statements: Map<number, PreparedStatement>;
   nextStatementId: number;
   lastInsertId: number;
   closed: boolean;
 }
 
+type SqlRow = Record<string, SQLOutputValue> | SQLOutputValue[];
+
 interface SqlResult {
-  rows?: Record<string, SQLOutputValue>[];
+  rows?: SqlRow[];
   metadata?: StatementColumnMetadata[];
   affectedRows?: number;
   insertId?: number;
@@ -148,24 +177,12 @@ export class EmbeddedSqliteProvider implements RdsEngineProvider {
     };
   }
 
-  async initialize(input: RdsEngineConfig): Promise<void> {
+  async initialize(input: RdsEngineConfig, options?: { recoverUnpublishedVolume: boolean }): Promise<void> {
     if (this.active) throw new RdsEngineProviderError("INITIALIZATION_CONFLICT", "An embedded SQLite RDS listener is already active.");
     const config = this.validateConfig(input);
     const discovery = await this.discover();
     await this.assertSafeResourceDirectory(config.resourceDir, false);
     const marker = await this.readMarker(config.resourceDir);
-    if (marker) {
-      if (marker.state === "ready" && this.markerMatches(marker, config)) return;
-      throw new RdsEngineProviderError("INITIALIZATION_CONFLICT", "The RDS resource directory contains an incomplete or different embedded SQLite instance. Destroy it explicitly before retrying.");
-    }
-    const entries = await readdir(config.resourceDir).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? [] : Promise.reject(error));
-    if (entries.length) {
-      throw new RdsEngineProviderError("INITIALIZATION_CONFLICT", "The RDS resource directory is not empty and has no embedded SQLite ownership marker.");
-    }
-
-    await mkdir(join(config.resourceDir, "data"), { recursive: true, mode: 0o700 });
-    await mkdir(join(config.resourceDir, "logs"), { recursive: true, mode: 0o700 });
-    await this.assertSafeResourceDirectory(config.resourceDir, true);
     const initializing: ProviderMarker = {
       schemaVersion: 1,
       providerName: PROVIDER_NAME,
@@ -175,15 +192,62 @@ export class EmbeddedSqliteProvider implements RdsEngineProvider {
       engineVersion: discovery.engineVersion,
       state: "initializing",
     };
-    await this.writeMarker(config.resourceDir, initializing);
+    if (marker) {
+      if (!this.markerMatches(marker, config)) throw new RdsEngineProviderError("INITIALIZATION_CONFLICT", "The volume belongs to a different RDS resource.");
+      if (marker.state === "ready") {
+        if (options?.recoverUnpublishedVolume) await this.verifyStoppedVolume(config);
+        return;
+      }
+      if (!options?.recoverUnpublishedVolume || marker.state !== "initializing") throw new RdsEngineProviderError("INITIALIZATION_CONFLICT", "The RDS volume has incomplete initialization.");
+    } else {
+      await mkdir(config.resourceDir, { recursive: true, mode: 0o700 });
+      await this.assertSafeResourceDirectory(config.resourceDir, true);
+      const entries = await readdir(config.resourceDir, { withFileTypes: true });
+      if (options?.recoverUnpublishedVolume && entries.length === 1 && entries[0].name === FIRST_MARKER_STAGE && entries[0].isFile()) {
+        // This generation stopped while publishing its very first marker, before creating any data.
+        await rm(join(config.resourceDir, FIRST_MARKER_STAGE));
+      } else if (entries.length) {
+        throw new RdsEngineProviderError("INITIALIZATION_CONFLICT", "The RDS resource directory is not empty and has no embedded SQLite ownership marker.");
+      }
+      try { await this.writeMarker(config.resourceDir, initializing, join(config.resourceDir, FIRST_MARKER_STAGE)); }
+      catch (error) {
+        // Failed admission can leave an empty directory. rmdir preserves any unrelated files.
+        await rmdir(config.resourceDir).catch(() => undefined);
+        throw error;
+      }
+    }
     try {
+      await mkdir(join(config.resourceDir, "data"), { recursive: true, mode: 0o700 });
+      await mkdir(join(config.resourceDir, "logs"), { recursive: true, mode: 0o700 });
       if (config.databaseName) this.createDatabaseFile(config.resourceDir, config.databaseName, true);
-      await writeFile(join(config.resourceDir, "logs", "sqlite.log"), "", { encoding: "utf8", mode: 0o600, flag: "wx" });
+      const logPath = join(config.resourceDir, "logs", "sqlite.log");
+      if (marker && await pathExists(logPath)) {
+        if (!(await lstat(logPath)).isFile()) throw new RdsEngineProviderError("UNSAFE_RESOURCE_PATH", "The embedded SQLite log is not a regular file.");
+      } else {
+        await writeFile(logPath, "", { encoding: "utf8", mode: 0o600, flag: "wx" });
+      }
       await this.writeMarker(config.resourceDir, { ...initializing, state: "ready" });
     } catch (error) {
       try { await this.writeMarker(config.resourceDir, { ...initializing, state: "failed", failureCode: "INITIALIZATION_FAILED" }); } catch {}
       if (error instanceof RdsEngineProviderError) throw error;
       throw new RdsEngineProviderError("INITIALIZATION_FAILED", "The embedded SQLite RDS data directory could not be initialized.");
+    }
+  }
+
+  async verifyStoppedVolume(input: RdsEngineConfig): Promise<void> {
+    const config = this.validateConfig(input);
+    await this.assertSafeResourceDirectory(config.resourceDir, true);
+    const marker = await this.readMarker(config.resourceDir);
+    if (marker?.state !== "ready" || !this.markerMatches(marker, config)) {
+      throw new RdsEngineProviderError("INITIALIZATION_CONFLICT", "The published RDS volume has no matching ready marker.");
+    }
+    await readdir(join(config.resourceDir, "data"));
+    if (config.databaseName) {
+      const path = this.databasePath(config.resourceDir, config.databaseName);
+      assertSafeDatabaseFiles(path, true);
+      const database = new DatabaseSync(path, { readOnly: true });
+      try { database.prepare("SELECT count(*) FROM sqlite_schema").get(); }
+      finally { database.close(); }
     }
   }
 
@@ -423,6 +487,21 @@ export class EmbeddedSqliteProvider implements RdsEngineProvider {
     }
     active.connections.add(connection);
     const state: ConnectionState = { statements: new Map(), nextStatementId: 1, lastInsertId: 0, closed: false };
+    let authenticated = false;
+    // mysql2's server decoder guesses the parameter count from packet contents. The prepare
+    // exchange already supplies that count. Use it to decode the command before SQL runs.
+    const dispatch = connection.handlePacket.bind(connection);
+    connection.handlePacket = packet => {
+      if (!authenticated || !packet || packet.buffer[packet.offset] !== 0x17) return dispatch(packet);
+      connection.sequenceId = (packet.sequenceId + packet.numPackets) & 0xff;
+      this.respond(connection, () => {
+        packet.offset++;
+        const statement = state.statements.get(packet.readInt32());
+        if (!statement) throw mysqlError(1243, "Unknown prepared statement handler");
+        const values = decodeStatementValues(packet, statement);
+        this.executeAndWrite(active, state, connection, statement.sql, values, true);
+      });
+    };
     const cleanup = () => {
       if (state.closed) return;
       state.closed = true;
@@ -446,14 +525,13 @@ export class EmbeddedSqliteProvider implements RdsEngineProvider {
         lastInsertId: state.lastInsertId,
       });
       const id = state.nextStatementId++;
-      state.statements.set(id, sql);
-      this.writePreparedHeader(connection, id, countParameters(sql));
+      const parameterCount = countMysqlParameters(sql);
+      state.statements.set(id, { sql, parameterCount });
+      this.writePreparedHeader(connection, id, parameterCount);
     }));
-    connection.on("stmt_execute", (statementId: number | null, _flags: number, _iterations: number, values: unknown[] | null, textSql?: string) => this.respond(connection, () => {
+    connection.on("stmt_execute", (_statementId: number | null, _flags: number, _iterations: number, _values: unknown[] | null, textSql?: string) => this.respond(connection, () => {
       if (textSql) return this.executeAndWrite(active, state, connection, textSql, [], false);
-      const sql = statementId === null ? undefined : state.statements.get(statementId);
-      if (!sql) throw mysqlError(1243, "Unknown prepared statement handler");
-      return this.executeAndWrite(active, state, connection, sql, values ?? [], true);
+      throw mysqlError(1243, "Unknown prepared statement handler");
     }));
     connection.on("packet", (packet: { readInt32(): number }, _known: boolean, command: number) => {
       // mysql2's server dispatcher does not currently expose COM_STMT_CLOSE.
@@ -481,6 +559,7 @@ export class EmbeddedSqliteProvider implements RdsEngineProvider {
           return;
         }
         state.database = auth.database || undefined;
+        authenticated = true;
         done(null);
         queueMicrotask(() => { connection.sequenceId = 0; });
       },
@@ -504,7 +583,7 @@ export class EmbeddedSqliteProvider implements RdsEngineProvider {
     const columns = buildColumns(result.rows, result.metadata, sourceSql, state.database);
     connection.writeColumns(columns);
     for (const row of result.rows) {
-      const ordered = columns.map(column => row[column.name] ?? null);
+      const ordered = Array.isArray(row) ? row : columns.map(column => row[column.name] ?? null);
       if (binary) connection.writePacket(binaryRowPacket(ordered, columns));
       else connection.writePacket(textRowPacket(ordered));
     }
@@ -551,19 +630,58 @@ export class EmbeddedSqliteProvider implements RdsEngineProvider {
     const values = suppliedValues.map(toSqliteValue);
     const statement = database.prepare(translated);
     if (plan.returnsRows) {
+      // Preserve signed 64-bit columns until the wire encoder applies the column's MySQL type.
+      statement.setReadBigInts(true);
+      const metadata = typeof statement.columns === "function" ? statement.columns() : this.resultColumns(database, statement.expandedSQL, sourceSql);
+      if (typeof statement.setReturnArrays === "function") {
+        statement.setReturnArrays(true);
+        return { rows: statement.all(...values) as unknown as SQLOutputValue[][], metadata };
+      }
+      if (new Set(metadata.map(column => column.name)).size !== metadata.length) {
+        // Older Node SQLite clients expose rows as objects. Give each output position a
+        // distinct internal name so an original duplicate label cannot overwrite a value.
+        const slots = metadata.map((_, index) => `slot_${index}`);
+        const positional = database.prepare(`WITH "__stacksim_positional" (${slots.join(",")}) AS (${translated}\n) SELECT * FROM "__stacksim_positional"`);
+        positional.setReadBigInts(true);
+        return { rows: positional.all(...values).map(row => slots.map(slot => row[slot])), metadata };
+      }
       const rows = statement.all(...values);
-      const metadata = typeof (statement as unknown as { columns?: () => StatementColumnMetadata[] }).columns === "function"
-        ? (statement as unknown as { columns: () => StatementColumnMetadata[] }).columns()
-        : undefined;
       return { rows, metadata };
     }
     const outcome = statement.run(...values);
-    const insert = /^\s*INSERT\b/i.test(translated);
-    if (insert) state.lastInsertId = Number(outcome.lastInsertRowid);
+    const generated = plan.insertTable !== undefined && tableHasAutoIncrement(database, plan.insertTable);
+    if (generated) state.lastInsertId = Number(outcome.lastInsertRowid);
     return {
       affectedRows: Number(outcome.changes),
-      insertId: insert ? state.lastInsertId : 0,
+      insertId: generated ? state.lastInsertId : 0,
     };
+  }
+
+  private resultColumns(database: DatabaseSync, unboundSql: string, sourceSql: string): StatementColumnMetadata[] {
+    // Node 22.13–22.15 lack StatementSync.columns(). SQLite can describe a temporary view
+    // without running the query. expandedSQL is read before binding, so placeholders are NULL.
+    database.exec(`CREATE TEMP VIEW "__stacksim_result_columns" AS ${unboundSql}`);
+    try {
+      const columns = database.prepare("PRAGMA temp.table_info('__stacksim_result_columns')").all().map(column => ({
+        name: String(column.name), type: column.type ? String(column.type) : null, column: null, database: null, table: null,
+      }));
+      if (columns.some(column => /:\d+$/.test(column.name))) {
+        // SQLite suffixes colliding view labels with :1, :2, etc. Only recover them
+        // when the original projections identify each ambiguous label.
+        const labels = mysqlProjectionLabels(sourceSql);
+        for (const [index, column] of columns.entries()) {
+          if (!/:\d+$/.test(column.name)) continue;
+          const label = labels[index];
+          if (labels.length !== columns.length || !label || (label !== column.name && label.toLowerCase() !== column.name.replace(/:\d+$/, "").toLowerCase())) {
+            throw mysqlError(1235, "This Node.js SQLite version cannot resolve the original duplicate column labels; use distinct aliases");
+          }
+          column.name = label;
+        }
+      }
+      return columns;
+    } finally {
+      database.exec('DROP VIEW temp."__stacksim_result_columns"');
+    }
   }
 
   private showTables(database: DatabaseSync, databaseName: string, full: boolean): SqlResult {
@@ -684,6 +802,7 @@ export class EmbeddedSqliteProvider implements RdsEngineProvider {
     const path = state.database ? this.databasePath(active.config.resourceDir, state.database) : ":memory:";
     if (state.database) assertSafeDatabaseFiles(path, true);
     const database = new DatabaseSync(path);
+    database.exec("PRAGMA temp_store = MEMORY");
     database.exec("PRAGMA foreign_keys = ON");
     database.exec("PRAGMA busy_timeout = 5000");
     if (state.database) {
@@ -801,12 +920,15 @@ export class EmbeddedSqliteProvider implements RdsEngineProvider {
     }
   }
 
-  private async writeMarker(resourceDir: string, marker: ProviderMarker): Promise<void> {
+  private async writeMarker(resourceDir: string, marker: ProviderMarker, stagingPath?: string): Promise<void> {
     const target = join(resourceDir, MARKER_FILE);
-    const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(marker, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    try { await rename(temporary, target); }
-    catch (error) { await rm(temporary, { force: true }); throw error; }
+    const temporary = stagingPath ?? `${target}.${process.pid}.${Date.now()}.tmp`;
+    const file = await open(temporary, "wx", 0o600);
+    try {
+      try { await file.writeFile(`${JSON.stringify(marker, null, 2)}\n`); await file.sync(); }
+      finally { await file.close(); }
+      await rename(temporary, target);
+    } catch (error) { await rm(temporary, { force: true }); throw error; }
   }
 
   private async prepareRoot(): Promise<void> {
@@ -875,11 +997,15 @@ class WirePacket {
   }
 }
 
-function buildColumns(rows: Record<string, SQLOutputValue>[], metadata: StatementColumnMetadata[] | undefined, sourceSql: string, database?: string): MysqlColumn[] {
+function buildColumns(rows: SqlRow[], metadata: StatementColumnMetadata[] | undefined, sourceSql: string, database?: string): MysqlColumn[] {
   const names = metadata?.map(column => column.name) ?? (rows[0] ? Object.keys(rows[0]) : selectColumnNames(sourceSql));
   return names.map((name, index) => {
     const source = metadata?.[index];
-    const sample = rows.find(row => row[name] !== null && row[name] !== undefined)?.[name];
+    let sample: SQLOutputValue | undefined;
+    for (const row of rows) {
+      sample = Array.isArray(row) ? row[index] : row[name];
+      if (sample != null) break;
+    }
     const type = mysqlType(source?.type, sample);
     return mysqlColumn(name, type, source?.database ?? database ?? "", source?.table ?? "", type === 0x03 ? 11 : 1024);
   });
@@ -891,11 +1017,14 @@ function mysqlColumn(name: string, columnType: number, schema: string, table: st
 
 function mysqlType(declared: string | null | undefined, sample: SQLOutputValue | undefined): number {
   const type = declared?.toUpperCase() ?? "";
-  if (/\b(?:INT|INTEGER|TINYINT|SMALLINT|MEDIUMINT|BOOLEAN)\b/.test(type)) return 0x03;
+  if (/\b(?:BOOLEAN|BOOL)\b|\bTINYINT\s*\(1\)/.test(type)) return 0x01;
+  if (/\bBIGINT\b/.test(type)) return 0x08;
+  if (/\b(?:DECIMAL|NUMERIC)\b/.test(type)) return 0xf6;
+  if (/\b(?:INT|INTEGER|TINYINT|SMALLINT|MEDIUMINT)\b/.test(type)) return 0x03;
   if (/\b(?:REAL|FLOAT|DOUBLE)\b/.test(type)) return 0x05;
   if (/\b(?:BLOB|BINARY)\b/.test(type) || sample instanceof Uint8Array) return 0xfc;
   if (typeof sample === "number") return Number.isInteger(sample) && sample >= -2_147_483_648 && sample <= 2_147_483_647 ? 0x03 : 0x05;
-  if (typeof sample === "bigint") return 0x08;
+  if (typeof sample === "bigint") return sample >= -2147483648n && sample <= 2147483647n ? 0x03 : 0x08;
   return 0xfd;
 }
 
@@ -908,7 +1037,9 @@ function binaryRowPacket(values: unknown[], columns: MysqlColumn[]): WirePacket 
       return;
     }
     const type = columns[index].columnType;
-    if (type === 0x03) {
+    if (type === 0x01) {
+      const buffer = Buffer.allocUnsafe(1); buffer.writeInt8(Number(value)); encoded.push(buffer);
+    } else if (type === 0x03) {
       const buffer = Buffer.allocUnsafe(4); buffer.writeInt32LE(Number(value)); encoded.push(buffer);
     } else if (type === 0x08) {
       const buffer = Buffer.allocUnsafe(8); buffer.writeBigInt64LE(BigInt(value as bigint | number)); encoded.push(buffer);
@@ -961,6 +1092,43 @@ function lengthEncodedInteger(value: number): Buffer {
   const result = Buffer.allocUnsafe(4); result[0] = 0xfd; result[1] = value & 0xff; result[2] = (value >>> 8) & 0xff; result[3] = (value >>> 16) & 0xff; return result;
 }
 
+function decodeStatementValues(packet: MysqlCommandPacket, statement: PreparedStatement): unknown[] {
+  const invalid = () => mysqlError(1210, "Invalid prepared statement parameter data");
+  packet.offset += 5; // cursor flag and iteration count
+  const count = statement.parameterCount;
+  if (count === 0) {
+    if (packet.offset !== packet.end) throw invalid();
+    return [];
+  }
+  const bitmapStart = packet.offset;
+  packet.offset += Math.ceil(count / 8);
+  if (packet.offset >= packet.end) throw invalid();
+  const sendTypes = packet.readInt8();
+  if (sendTypes === 1) {
+    if (packet.end - packet.offset < 2 * count) throw invalid();
+    statement.types = Array.from({ length: count }, () => packet.readInt16());
+  } else if (sendTypes !== 0 || !statement.types) throw invalid();
+  const values = statement.types!.map((descriptor, index) => {
+    if (packet.buffer[bitmapStart + (index >> 3)] & (1 << (index & 7))) return null;
+    const unsigned = (descriptor & 0x8000) !== 0;
+    switch (descriptor & 0xff) {
+      case 1: return unsigned ? packet.readInt8() : packet.readSInt8();
+      case 2: return unsigned ? packet.readInt16() : packet.readSInt16();
+      case 3: case 9: return unsigned ? packet.readInt32() : packet.readSInt32();
+      case 8: return BigInt(unsigned ? packet.readInt64String() : packet.readSInt64String());
+      case 4: return packet.readFloat();
+      case 5: return packet.readDouble();
+      case 6: return null;
+      case 10: case 12: return packet.readDateTime();
+      case 249: case 250: case 251: case 252: return packet.readLengthCodedBuffer();
+      case 0: case 15: case 245: case 246: case 253: case 254: return packet.readLengthCodedString("utf8");
+      default: throw invalid();
+    }
+  });
+  if (packet.offset !== packet.end) throw invalid();
+  return values;
+}
+
 function selectColumnNames(sql: string): string[] {
   const select = sql.match(/^\s*SELECT\s+([\s\S]+?)(?:\s+FROM\s|$)/i)?.[1];
   if (!select) return [];
@@ -990,20 +1158,6 @@ function splitSqlList(value: string): string[] {
   }
   result.push(value.slice(start).trim());
   return result;
-}
-
-function countParameters(sql: string): number {
-  let count = 0; let quote = "";
-  for (let index = 0; index < sql.length; index += 1) {
-    const character = sql[index];
-    if (quote) {
-      if (character === "\\") { index += 1; continue; }
-      if (character === quote && sql[index + 1] === quote) { index += 1; continue; }
-      if (character === quote) quote = "";
-    } else if (character === "'" || character === '"' || character === "`") quote = character;
-    else if (character === "?") count += 1;
-  }
-  return count;
 }
 
 function verifyNativePassword(password: string, seed1: Buffer, seed2: Buffer, token: Buffer): boolean {
@@ -1158,10 +1312,12 @@ function samePath(left: string, right: string, platform: NodeJS.Platform): boole
 async function pathExists(path: string): Promise<boolean> { try { await lstat(path); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } }
 
 function assertSafeDatabaseFiles(databasePath: string, requireDatabase: boolean): void {
-  if (requireDatabase && !existsSync(databasePath)) throw mysqlError(1049, "The selected database no longer exists");
   for (const path of [databasePath, `${databasePath}-journal`, `${databasePath}-wal`, `${databasePath}-shm`]) {
-    if (!existsSync(path)) continue;
-    const metadata = lstatSync(path);
+    const metadata = lstatSync(path, { throwIfNoEntry: false });
+    if (!metadata) {
+      if (path === databasePath && requireDatabase) throw mysqlError(1049, "The selected database no longer exists");
+      continue;
+    }
     if (metadata.isSymbolicLink() || !metadata.isFile()) {
       throw new RdsEngineProviderError("UNSAFE_RESOURCE_PATH", "An embedded SQLite database or journal path is not a regular owned file.");
     }

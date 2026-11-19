@@ -11,6 +11,7 @@ import {
   CreateDBSnapshotCommand,
   DeleteDBInstanceCommand,
   DeleteDBSnapshotCommand,
+  DescribeDBClustersCommand,
   DescribeDBInstancesCommand,
   DescribeDBSnapshotAttributesCommand,
   DescribeDBSnapshotsCommand,
@@ -63,6 +64,64 @@ async function rawRds(simulator: StackSim, action: string, input: Record<string,
   for (const [key, value] of Object.entries(input)) body.set(key, String(value));
   return fetch(`http://127.0.0.1:${simulator.port}`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", "x-stacksim-service": "rds" }, body });
 }
+
+test("RDS-06 upgrades a v90 standalone database in place with its rows, credential and snapshot", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "stacksim-rds06-upgrade-"));
+  const options = { dataDir, port: 0, invokePort: 0, authMode: "off" as const };
+  const port = await freePort();
+  const login = { host: "127.0.0.1", port, user: "developer", password: "MigrationFixture123", database: "app" };
+  const id = "pre-cluster-db";
+  let simulator = new StackSim(options);
+  let rds: RDSClient | undefined;
+  let sql: mysql.Connection | undefined;
+  try {
+    await simulator.start();
+    rds = client(simulator);
+    await rds.send(new CreateDBInstanceCommand({
+      DBInstanceIdentifier: id, DBInstanceClass: "db.t3.micro", Engine: "mysql", AllocatedStorage: 20,
+      DBName: login.database, MasterUsername: login.user, MasterUserPassword: login.password, Port: port,
+    }));
+    const original = await waitForStatus(rds, id, "available");
+    sql = await mysql.createConnection(login);
+    await sql.query("CREATE TABLE upgrade_rows (id INT PRIMARY KEY)");
+    await sql.execute("INSERT INTO upgrade_rows (id) VALUES (?)", [42]);
+    await sql.end();
+    sql = undefined;
+    const snapshot = (await rds.send(new CreateDBSnapshotCommand({
+      DBInstanceIdentifier: id, DBSnapshotIdentifier: "before-clusters",
+    }))).DBSnapshot!;
+    assert.equal(snapshot.Status, "available");
+    rds.destroy();
+    await simulator.stop();
+
+    // v90 held the same database files, snapshot files and instance lease, but had no cluster catalog.
+    const statePath = join(dataDir, "state.json");
+    const legacy = JSON.parse(await readFile(statePath, "utf8"));
+    legacy.schemaVersion = 90;
+    for (const region of Object.values<Record<string, unknown>>(legacy.accounts["000000000000"].regions)) delete region.rdsDbClusters;
+    await writeFile(statePath, JSON.stringify(legacy));
+
+    simulator = new StackSim(options);
+    await simulator.start();
+    rds = client(simulator);
+    assert.deepEqual((await rds.send(new DescribeDBClustersCommand({}))).DBClusters, []);
+    const migrated = await waitForStatus(rds, id, "available");
+    assert.equal(migrated.DbiResourceId, original.DbiResourceId);
+    assert.equal(migrated.Endpoint?.Port, port);
+    sql = await mysql.createConnection(login);
+    const [rows] = await sql.query("SELECT id FROM upgrade_rows");
+    assert.deepEqual(rows, [{ id: 42 }]);
+    const retained = (await rds.send(new DescribeDBSnapshotsCommand({ DBSnapshotIdentifier: "before-clusters" }))).DBSnapshots?.[0];
+    assert.equal(retained?.DBSnapshotArn, snapshot.DBSnapshotArn);
+    assert.equal(retained?.Status, "available");
+    assert.deepEqual(simulator.store.state.installation.rds.instanceLease, legacy.installation.rds.instanceLease);
+  } finally {
+    await sql?.end();
+    rds?.destroy();
+    await simulator.stop();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
 
 test("RDS-03 manual snapshots, copy, restore, final snapshot, restart cleanup, and pinned ORM learning proof", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "stacksim-rds03-"));

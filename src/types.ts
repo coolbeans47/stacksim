@@ -3465,7 +3465,7 @@ export interface SecretRotationState {
 }
 
 export interface SecretTargetAttachmentState {
-  targetType: "AWS::RDS::DBInstance";
+  targetType: "AWS::RDS::DBInstance" | "AWS::RDS::DBCluster";
   targetId: string;
   targetArn: string;
   targetGenerationId: string;
@@ -3840,6 +3840,7 @@ export interface RegionState {
   cognitoIdentity: CognitoIdentityRegionState;
   sns: SnsRegionState;
   rdsDbInstances: Record<string, RdsDbInstanceState>;
+  rdsDbClusters: Record<string, RdsDbClusterState>;
   rdsDbParameterGroups: Record<string, RdsDbParameterGroupState>;
   rdsDbSnapshots: Record<string, RdsDbSnapshotState>;
   s3Buckets: Record<string, S3BucketState>;
@@ -3888,20 +3889,58 @@ export interface RegionState {
   dynamodbTransactionTokens?: Record<string, { hash: string; expiresAt: number; response: unknown }>;
 }
 
+export interface RdsDbClusterState {
+  httpEndpointEnabled?: boolean;
+  manageMasterUserPassword?: boolean;
+  masterUserSecretArn?: string;
+  dbClusterIdentifier: string;
+  dbClusterResourceId: string;
+  dbClusterArn: string;
+  storageResourceId: string;
+  status: "creating" | "available" | "deleting" | "failed";
+  engine: "aurora-mysql";
+  engineVersion: string;
+  engineMode: "provisioned";
+  databaseName?: string;
+  masterUsername: string;
+  port: number;
+  deletionProtection: boolean;
+  copyTagsToSnapshot: boolean;
+  autoMinorVersionUpgrade: boolean;
+  backupRetentionPeriod: 1;
+  storageEncrypted: false;
+  serverlessV2ScalingConfiguration?: { minCapacity: number; maxCapacity: number };
+  clusterCreateTime: number;
+  members: string[];
+  tags: Record<string, string>;
+}
+
+export interface RdsClusterLease {
+  accountId: string;
+  region: string;
+  dbClusterIdentifier: string;
+  dbClusterResourceId: string;
+}
+
 export interface RdsDbInstanceState {
   dbInstanceIdentifier: string;
   dbiResourceId: string;
+  dbClusterIdentifier?: string;
+  dbClusterResourceId?: string;
+  promotionTier?: number;
+  autoMinorVersionUpgrade?: boolean;
+  copyTagsToSnapshot?: boolean;
   dbInstanceArn: string;
   dbInstanceClass: string;
   dbInstanceStatus: "creating" | "available" | "backing-up" | "modifying" | "rebooting" | "stopping" | "stopped" | "starting" | "deleting" | "failed";
-  engine: "mysql";
+  engine: "mysql" | "aurora-mysql";
   engineVersion: string;
   allocatedStorage: number;
-  storageType: "gp2" | "gp3";
+  storageType: "gp2" | "gp3" | "aurora";
   dbName?: string;
   masterUsername: string;
   port: number;
-  backupRetentionPeriod: 0;
+  backupRetentionPeriod: 0 | 1;
   publiclyAccessible: false;
   multiAZ: false;
   deletionProtection: boolean;
@@ -4100,7 +4139,7 @@ export interface AccountState {
 
 export interface SimState {
   schemaVersion: number;
-  installation: { id: string; paginationSecret: string; s3EncryptionKey: string; sqsEncryptionKey: string; snsEncryptionKey: string; eventBridgeArchiveEncryptionKey: string; sesSigningSecret: string; s3BucketNames: Record<string, { accountId: string; region: string }>; rds: { instanceLease?: RdsInstanceLease }; defaultAdministrators: Record<string, DefaultAdministratorInitialization> };
+  installation: { id: string; paginationSecret: string; s3EncryptionKey: string; sqsEncryptionKey: string; snsEncryptionKey: string; eventBridgeArchiveEncryptionKey: string; sesSigningSecret: string; s3BucketNames: Record<string, { accountId: string; region: string }>; rds: { instanceLease?: RdsInstanceLease; clusterLease?: RdsClusterLease }; defaultAdministrators: Record<string, DefaultAdministratorInitialization> };
   accounts: Record<string, AccountState>;
 }
 

@@ -189,6 +189,19 @@ export class SecretsManagerStore {
     };
   }
 
+  private async publishSecretRecord(secret: SecretState): Promise<void> {
+    const catalog = this.control;
+    const previous = catalog.secrets[secret.name];
+    const revision = catalog.revision;
+    await this.store.save({
+      apply: () => { catalog.secrets[secret.name] = secret; catalog.revision = revision + 1; },
+      restore: () => {
+        if (previous) catalog.secrets[secret.name] = previous; else delete catalog.secrets[secret.name];
+        catalog.revision = revision;
+      },
+    });
+  }
+
   private allocateSuffix(name: string): string {
     const unavailable = new Set([
       ...Object.values(this.control.secrets).map(secret => secret.arnSuffix),
@@ -264,7 +277,7 @@ export class SecretsManagerStore {
     return candidate;
   }
 
-  async CreateSecret(input: any, cloudFormationOwner?: string, cloudFormationGeneration?: Readonly<Record<string, unknown>>): Promise<any> {
+  async CreateSecret(input: any, cloudFormationOwner?: string, cloudFormationGeneration?: Readonly<Record<string, unknown>>, managed?: Pick<SecretState, "owningService" | "managedResourceArn" | "targetAttachment">): Promise<any> {
     this.requireStarted();
     rejectUnsupported(input, ["KmsKeyId", "AddReplicaRegions", "ForceOverwriteReplicaSecret", "Type"]);
     const name = secretName(input?.Name);
@@ -296,6 +309,7 @@ export class SecretsManagerStore {
           lastChangedAt: now,
           policyRevision: 0,
           owner: "application",
+          ...managed,
           ...(cloudFormationOwner ? { cloudFormationOwner } : {}),
           ...(cloudFormationGeneration ? { cloudFormationGeneration: structuredClone(cloudFormationGeneration) } : {}),
           revision: 1,
@@ -309,16 +323,8 @@ export class SecretsManagerStore {
             draft.materialId = materialId;
             secret.versions[token] = draft;
           }
-          const before = structuredClone(this.control);
-          try {
-            this.control.secrets[name] = secret;
-            this.control.revision++;
-            await this.store.save();
-            catalogCommitted = true;
-          } catch (error) {
-            this.store.regionState(this.region).secretsManager = before;
-            throw error;
-          }
+          await this.publishSecretRecord(secret);
+          catalogCommitted = true;
           if (materialId) await this.materials.commit(materialId).catch(() => undefined);
           return { ARN: secret.arn, Name: secret.name, ...(token ? { VersionId: token } : {}) };
         } catch (error) {
@@ -394,22 +400,16 @@ export class SecretsManagerStore {
         try {
           materialId = (await this.materials.publish(this.binding(secret, draft), value.bytes)).materialId;
           draft.materialId = materialId;
-          const before = structuredClone(this.control);
-          try {
-            if (pruned) delete secret.versions[pruned.versionId];
-            this.attachStagesForWrite(secret, draft, action === "PutSecretValue" ? this.versionStages(input?.VersionStages) : undefined);
-            secret.versions[token] = draft;
-            if (action === "UpdateSecret" && nextDescription !== undefined) secret.description = nextDescription;
-            if (cloudFormationGeneration) secret.cloudFormationGeneration = structuredClone(cloudFormationGeneration);
-            secret.lastChangedAt = now;
-            secret.revision++;
-            this.control.revision++;
-            await this.store.save();
-            catalogCommitted = true;
-          } catch (error) {
-            this.store.regionState(this.region).secretsManager = before;
-            throw error;
-          }
+          const updated = structuredClone(secret);
+          if (pruned) delete updated.versions[pruned.versionId];
+          this.attachStagesForWrite(updated, draft, action === "PutSecretValue" ? this.versionStages(input?.VersionStages) : undefined);
+          updated.versions[token] = draft;
+          if (action === "UpdateSecret" && nextDescription !== undefined) updated.description = nextDescription;
+          if (cloudFormationGeneration) updated.cloudFormationGeneration = structuredClone(cloudFormationGeneration);
+          updated.lastChangedAt = now;
+          updated.revision++;
+          await this.publishSecretRecord(updated);
+          catalogCommitted = true;
           await this.materials.commit(materialId).catch(() => undefined);
           if (pruned) await this.materials.remove(pruned.materialId).catch(() => undefined);
           return this.versionResponse(secret, draft);
@@ -611,6 +611,7 @@ export class SecretsManagerStore {
   }
 
   async UpdateSecretVersionStage(input: any): Promise<any> {
+    if (this.find(input?.SecretId)?.targetAttachment?.targetType === "AWS::RDS::DBCluster") invalidRequest("The cluster manages the stages of its master credential.");
     const stage = this.stageName(input?.VersionStage);
     const moveTo = input?.MoveToVersionId === undefined ? undefined : this.versionId(input.MoveToVersionId, "MoveToVersionId");
     const removeFrom = input?.RemoveFromVersionId === undefined ? undefined : this.versionId(input.RemoveFromVersionId, "RemoveFromVersionId");
@@ -790,6 +791,7 @@ export class SecretsManagerStore {
   async RotateSecret(input: any, cloudFormationOwner?: string, cloudFormationRotateImmediatelyOnUpdate?: boolean): Promise<any> {
     if (input?.ExternalSecretRotationMetadata !== undefined || input?.ExternalSecretRotationRoleArn !== undefined) invalid("Managed external and hosted rotation are outside the local PSS-06 profile.");
     const secret = this.required(input?.SecretId);
+    if (secret.targetAttachment?.targetType === "AWS::RDS::DBCluster") invalidRequest("Rotate the cluster master credential through ModifyDBCluster.");
     const lambdaArn = String(input?.RotationLambdaARN ?? secret.rotation?.lambdaArn ?? "");
     if (!lambdaArn) invalid("RotationLambdaARN is required when rotation isn't already configured.");
     this.assertRotationAdmission(secret, lambdaArn);
@@ -874,6 +876,7 @@ export class SecretsManagerStore {
     const secret = this.required(secretId);
     const attachment = secret.targetAttachment;
     if (!attachment) return;
+    if (secret.owningService === "rds.amazonaws.com" && attachment.targetType === "AWS::RDS::DBCluster") invalidRequest("A cluster master credential cannot be detached directly.");
     if (attachment.cloudFormationOwner && attachment.cloudFormationOwner !== cloudFormationOwner) throw new AwsError("AccessDeniedException", `The target attachment on ${secret.arn} is owned by another CloudFormation resource.`, 400);
     if (cloudFormationOwner && attachment.cloudFormationOwner !== cloudFormationOwner) throw new AwsError("ResourceExistsException", `The target attachment on ${secret.arn} isn't owned by this CloudFormation resource.`, 400);
     if (secret.rotation?.operation && new Set(["ACTIVE", "CANCELLING"]).has(secret.rotation.operation.status)) invalidRequest("A target attachment can't change during rotation.");
@@ -886,29 +889,65 @@ export class SecretsManagerStore {
     });
   }
 
-  async CreateManagedRdsSecret(input: { resourceId: string; targetArn: string; dbInstanceIdentifier: string; username: string; port: number; currentPassword?: string }): Promise<{ arn: string; generationId: string; versionId: string; password: string }> {
-    if (!/^db-[a-f0-9]{26}$/.test(input.resourceId)) invalid("The managed RDS resource identity is invalid.");
+  async CreateManagedRdsSecret(input: { resourceId: string; targetArn: string; dbInstanceIdentifier?: string; dbClusterIdentifier?: string; username: string; port: number; currentPassword?: string }): Promise<{ arn: string; generationId: string; versionId: string; password: string }> {
+    const cluster = input.dbClusterIdentifier !== undefined;
+    const targetId = input.dbClusterIdentifier ?? input.dbInstanceIdentifier;
+    const validId = cluster ? /^cluster-[a-f0-9]{26}$/ : /^db-[a-f0-9]{26}$/;
+    if (!targetId || !validId.test(input.resourceId)) invalid("The managed RDS resource identity is invalid.");
+    const name = `rds/${input.resourceId}`;
+    const existing = this.find(name);
+    if (existing) {
+      if (existing.owningService !== "rds.amazonaws.com" || existing.managedResourceArn !== input.targetArn || existing.targetAttachment?.targetGenerationId !== input.resourceId) {
+        throw new AwsError("ResourceExistsException", "The credential name is already in use", 400);
+      }
+      const current = await this.GetSecretValue({ SecretId: existing.arn });
+      return { arn: existing.arn, generationId: existing.generationId, versionId: current.VersionId, password: JSON.parse(current.SecretString).password };
+    }
     const password = input.currentPassword ?? String((await this.GetRandomPassword({ PasswordLength: 32, ExcludeCharacters: "/@\"" })).RandomPassword);
     const versionId = randomUUID();
-    const name = `rds/${input.resourceId}`;
-    const value = JSON.stringify({ engine: "mysql", host: "127.0.0.1", port: input.port, dbInstanceIdentifier: input.dbInstanceIdentifier, username: input.username, password });
-    const created = await this.CreateSecret({ Name: name, ClientRequestToken: versionId, SecretString: value, Description: `RDS managed master credential for ${input.dbInstanceIdentifier}` });
-    await this.store.withMutationLock(`secretsmanager:${this.store.accountId}:${this.region}`, async () => {
-      const secret = this.required(created.ARN);
-      secret.owningService = "rds.amazonaws.com"; secret.managedResourceArn = input.targetArn;
-      secret.targetAttachment = { targetType: "AWS::RDS::DBInstance", targetId: input.dbInstanceIdentifier, targetArn: input.targetArn, targetGenerationId: input.resourceId, attachedAt: this.clock.now() };
-      secret.lastChangedAt = this.clock.now(); secret.revision++; this.control.revision++; await this.store.save();
+    const value = JSON.stringify({ engine: "mysql", host: "127.0.0.1", port: input.port, [cluster ? "dbClusterIdentifier" : "dbInstanceIdentifier"]: targetId, username: input.username, password });
+    const created = await this.CreateSecret({ Name: name, ClientRequestToken: versionId, SecretString: value, Description: `RDS managed master credential for ${targetId}` }, undefined, undefined, {
+      owningService: "rds.amazonaws.com", managedResourceArn: input.targetArn,
+      targetAttachment: { targetType: cluster ? "AWS::RDS::DBCluster" : "AWS::RDS::DBInstance", targetId, targetArn: input.targetArn, targetGenerationId: input.resourceId, attachedAt: this.clock.now() },
     });
     return { arn: String(created.ARN), generationId: this.required(created.ARN).generationId, versionId, password };
   }
 
-  async DeleteManagedRdsSecret(secretId: string, managedResourceArn: string): Promise<void> {
-    const secret = this.required(secretId, true);
-    if (secret.owningService !== "rds.amazonaws.com" || secret.managedResourceArn !== managedResourceArn) throw new AwsError("AccessDeniedException", "The RDS managed-secret ownership boundary doesn't match.", 403);
-    const removedMaterials = Object.values(secret.versions).map(version => version.materialId);
-    await this.store.withMutationLock(`secretsmanager:${this.store.accountId}:${this.region}`, async () => {
-      const current = this.required(secret.arn, true);
-      delete this.control.secrets[current.name]; (this.control.retiredSuffixes[current.name] ??= []).push(current.arnSuffix); this.control.revision++; await this.store.save();
+  async RotateManagedRdsSecret(secretId: string, targetArn: string, versionId: string, password: string): Promise<void> {
+    const secret = this.required(secretId);
+    if (secret.owningService !== "rds.amazonaws.com" || secret.managedResourceArn !== targetArn) throw new AwsError("AccessDeniedException", "The credential is owned by a different resource", 403);
+    const current = await this.currentSecretObject(secret);
+    await this.writeVersion({ SecretId: secret.arn, ClientRequestToken: versionId, SecretString: JSON.stringify({ ...current, password }) }, "PutSecretValue");
+  }
+
+  async DeleteManagedRdsSecret(secretId: string, managedResourceArn: string, unpublishedGeneration?: string): Promise<void> {
+    const removedMaterials = await this.store.withMutationLock(`secretsmanager:${this.store.accountId}:${this.region}`, async () => {
+      const current = this.find(secretId);
+      if (!current) return [];
+      const owned = current.owningService === "rds.amazonaws.com" && current.managedResourceArn === managedResourceArn;
+      if (unpublishedGeneration !== undefined) {
+        // A failed create can leave either an owned credential or an unrelated name collision.
+        if (secretId !== "rds/" + unpublishedGeneration || !owned || current.targetAttachment?.targetGenerationId !== unpublishedGeneration) return [];
+      } else if (!owned) {
+        throw new AwsError("AccessDeniedException", "The RDS managed-secret ownership boundary doesn't match.", 403);
+      }
+      const catalog = this.control;
+      const priorSuffixes = catalog.retiredSuffixes[current.name];
+      const revision = catalog.revision;
+      await this.store.save({
+        apply: () => {
+          delete catalog.secrets[current.name];
+          catalog.retiredSuffixes[current.name] = [...(priorSuffixes ?? []), current.arnSuffix];
+          catalog.revision = revision + 1;
+        },
+        restore: () => {
+          catalog.secrets[current.name] = current;
+          if (priorSuffixes === undefined) delete catalog.retiredSuffixes[current.name];
+          else catalog.retiredSuffixes[current.name] = priorSuffixes;
+          catalog.revision = revision;
+        },
+      });
+      return Object.values(current.versions).map(version => version.materialId);
     });
     for (const materialId of removedMaterials) await this.materials.remove(materialId).catch(() => undefined);
   }
