@@ -75,6 +75,59 @@ const knexSecond = {
   },
 };
 
+async function checkColumnChanges(db: mysql.Connection) {
+  await db.query("CREATE TABLE parents (id INT AUTO_INCREMENT PRIMARY KEY, code VARCHAR(4) UNIQUE DEFAULT 'old', note TEXT)");
+  await db.query("CREATE INDEX idx_code ON parents(code, note)");
+  await db.query("CREATE TABLE children (parent_code VARCHAR(4), FOREIGN KEY(parent_code) REFERENCES parents(code) ON DELETE CASCADE)");
+  await db.query("INSERT INTO parents(code) VALUES ('12'), ('99')");
+  await db.query("DELETE FROM parents WHERE code = '99'");
+  await db.query("INSERT INTO children VALUES ('12')");
+
+  await db.beginTransaction();
+  await assert.rejects(db.query("ALTER TABLE parents MODIFY code VARCHAR(16)"), { errno: 1064 });
+  await db.rollback();
+  await db.execute("ALTER TABLE parents MODIFY COLUMN code VARCHAR(16) NOT NULL DEFAULT 'new  value'");
+  assert.equal((await db.query<mysql.RowDataPacket[]>("DESCRIBE parents"))[0][1].Default, "'new  value'");
+  await db.query("ALTER TABLE parents CHANGE code `item``code` VARCHAR(20) NOT NULL");
+  const columns = (await db.query<mysql.RowDataPacket[]>("DESCRIBE parents"))[0];
+  assert.deepEqual(columns.map(c => c.Field), ["id", "item`code", "note"]);
+  assert.equal(columns[1].Type.toUpperCase(), "VARCHAR(20)");
+  assert.equal(columns[1].Null, "NO");
+  assert.equal(columns[1].Default, null);
+  const indexes = (await db.query<mysql.RowDataPacket[]>("SHOW INDEX FROM parents"))[0];
+  assert.deepEqual(indexes.filter(i => i.Key_name === "idx_code").map(i => i.Column_name), ["item`code", "note"]);
+  assert.deepEqual((await db.query("SELECT * FROM children"))[0], [{ parent_code: "12" }]);
+  await assert.rejects(db.query("INSERT INTO children VALUES ('absent')"), { errno: 1452 });
+  await assert.rejects(db.query("INSERT INTO parents(`item``code`) VALUES ('12')"), { errno: 1062 });
+  assert.equal((await db.query<mysql.ResultSetHeader>("INSERT INTO parents(`item``code`) VALUES ('18')"))[0].insertId, 3);
+  await db.query("ALTER TABLE parents CHANGE COLUMN id parent_id BIGINT AUTO_INCREMENT");
+  assert.equal((await db.query<mysql.ResultSetHeader>("INSERT INTO parents(`item``code`) VALUES ('19')"))[0].insertId, 4);
+  await db.query("DELETE FROM parents WHERE parent_id = 1");
+  assert.deepEqual((await db.query("SELECT * FROM children"))[0], []);
+
+  await db.query("CREATE TABLE amounts (amount VARCHAR(30) UNIQUE, note TEXT)");
+  await db.query("INSERT INTO amounts VALUES ('12', NULL), ('012', NULL)");
+  for (const suffix of ["AFTER note", "FIRST", ", MODIFY note TEXT", "NOT DEFAULT 5"]) {
+    await assert.rejects(db.query(`ALTER TABLE amounts MODIFY amount INT ${suffix}`), { errno: 1064 });
+  }
+  await assert.rejects(db.query("ALTER TABLE amounts CHANGE amount quantity INT"), { errno: 1062 });
+  await assert.rejects(db.query("ALTER TABLE amounts MODIFY note TEXT NOT NULL"), { errno: 1048 });
+  await assert.rejects(db.query("ALTER TABLE amounts MODIFY amount VARCHAR(1)"), { errno: 1406 });
+  assert.deepEqual((await db.query("SELECT amount FROM amounts ORDER BY amount"))[0], [{ amount: "012" }, { amount: "12" }]);
+  await db.query("UPDATE amounts SET amount = 'bad' WHERE amount = '012'");
+  await assert.rejects(db.query("ALTER TABLE amounts MODIFY amount INT"), { errno: 1366 });
+  await db.query("UPDATE amounts SET amount = '128' WHERE amount = 'bad'");
+  await assert.rejects(db.query("ALTER TABLE amounts MODIFY amount TINYINT"), { errno: 1264 });
+  await db.beginTransaction();
+  await db.execute("ALTER TABLE amounts CHANGE COLUMN amount quantity INT NOT NULL DEFAULT 7");
+  await db.query("INSERT INTO amounts(note) VALUES ('new')");
+  assert.deepEqual((await db.query("SELECT quantity FROM amounts ORDER BY quantity"))[0], [{ quantity: 7 }, { quantity: 12 }, { quantity: 128 }]);
+  await db.rollback();
+  assert.deepEqual((await db.query("SELECT amount FROM amounts ORDER BY amount"))[0], [{ amount: "12" }, { amount: "128" }]);
+  await db.query("ALTER TABLE amounts MODIFY note TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP()");
+  await assert.rejects(db.query("ALTER TABLE amounts MODIFY amount DATE"), { errno: 1064 });
+}
+
 test("DUG-10 bounded MySQL profile runs pinned Knex and Sequelize migrations and CRUD across restart", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "stacksim-rds-dug10-"));
   const sqlPort = await freePort(); const password = "MysqlProfileSecret123"; const identifier = "orm-profile";
@@ -191,6 +244,7 @@ test("DUG-10 bounded MySQL profile runs pinned Knex and Sequelize migrations and
 
     // Differential corpus: rejection occurs before mutation and carries stable MySQL number/state.
     const differential = await mysql.createConnection({ host: "127.0.0.1", port: sqlPort, user: "developer", password, database: "orm_profile" });
+    await checkColumnChanges(differential);
     await differential.query("SET NAMES utf8mb4 COLLATE utf8mb4_bin");
     await differential.query("SET time_zone = '+00:00'");
     await differential.query("CREATE TABLE `odd``table` (`odd``id` INT PRIMARY KEY, value VARCHAR(20) DEFAULT 'ready' COLLATE utf8mb4_bin)");

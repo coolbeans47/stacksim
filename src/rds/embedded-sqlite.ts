@@ -5,6 +5,7 @@ import * as sqlite from "node:sqlite";
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue, type StatementColumnMetadata } from "node:sqlite";
 import { basename, join, parse, relative, resolve, sep } from "node:path";
 import mysql from "mysql2";
+import { alterColumn } from "./alter-column.js";
 import {
   RdsEngineProviderError,
   type RdsEngineConfig,
@@ -625,6 +626,10 @@ export class EmbeddedSqliteProvider implements RdsEngineProvider {
     if (plan.kind === "showTables") return this.showTables(database, state.database!, plan.full);
     if (plan.kind === "describe") return this.describeTable(database, state.database!, plan.table);
     if (plan.kind === "showIndex") return this.showIndexes(database, state.database!, plan.table);
+    if (plan.kind === "alterColumn") {
+      alterColumn(database, plan);
+      return { affectedRows: 0 };
+    }
     const translated = plan.sql;
     if (plan.informationSchema) this.refreshInformationSchema(active, database, state.database);
     const values = suppliedValues.map(toSqliteValue);

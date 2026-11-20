@@ -18,6 +18,7 @@ export interface MysqlProfileContext {
 
 export type MysqlProfilePlan =
   | { kind: "sqlite"; sql: string; returnsRows: boolean; informationSchema: boolean; insertTable?: string }
+  | AlterColumnPlan
   | { kind: "set" }
   | { kind: "createDatabase"; database: string; ifNotExists: boolean }
   | { kind: "useDatabase"; database: string }
@@ -25,6 +26,17 @@ export type MysqlProfilePlan =
   | { kind: "showTables"; full: boolean }
   | { kind: "describe"; table: string }
   | { kind: "showIndex"; table: string };
+
+export interface AlterColumnPlan {
+  kind: "alterColumn";
+  table: string;
+  oldName: string;
+  name: string;
+  type: string;
+  attributes: string;
+  autoIncrement: boolean;
+  unsigned: boolean;
+}
 
 export interface MysqlProfileError extends Error {
   mysqlCode: number;
@@ -305,6 +317,13 @@ function compileAlter(sql: string, tokens: Token[], context: MysqlProfileContext
   if (tokens[1]?.upper !== "TABLE") unsupported("Only ALTER TABLE is supported");
   const table = identifier(tokens[2]);
   let index = 3;
+  if (tokens[index]?.upper === "MODIFY" || tokens[index]?.upper === "CHANGE") {
+    const change = tokens[index++].upper === "CHANGE";
+    if (tokens[index]?.kind === "word" && tokens[index].upper === "COLUMN") index++;
+    const oldName = identifier(tokens[index]);
+    if (change) index++;
+    return compileAlterColumn(table, oldName, tokens.slice(index));
+  }
   if (tokens[index]?.upper === "ADD" && (tokens[index + 1]?.upper === "INDEX" || tokens[index + 1]?.upper === "KEY" || tokens[index + 1]?.upper === "UNIQUE")) {
     let unique = "";
     index += 1;
@@ -340,6 +359,99 @@ function compileAlter(sql: string, tokens: Token[], context: MysqlProfileContext
     return sqlitePlan(`ALTER TABLE ${quoteIdentifier(table)} RENAME TO ${quoteIdentifier(identifier(tokens[index + 2]))}`, false);
   }
   unsupported("This ALTER TABLE form is outside the selected ORM migration profile");
+}
+
+function compileAlterColumn(table: string, oldName: string, tokens: Token[]): AlterColumnPlan {
+  const name = identifier(tokens[0]);
+  const base = tokens[1]?.upper;
+  if (tokens[1]?.kind !== "word" || !MYSQL_TYPES.has(base)) unsupported("Expected a supported MySQL column type");
+  const end = typeArgumentsEnd(tokens, 1);
+  const args = tokens.slice(2, end + 1).map(token => token.raw).join("");
+  const argumentPattern = ["DECIMAL", "NUMERIC", "FLOAT", "DOUBLE", "REAL"].includes(base) ? /^\(\d+(?:,\d+)?\)$/ : /^\(\d+\)$/;
+  if (args && !argumentPattern.test(args)) unsupported("Invalid column type arguments");
+  if (["VARCHAR", "VARBINARY"].includes(base) && !args) unsupported(`${base} requires a length`);
+  let index = end + 1;
+  function take(...words: string[]): boolean {
+    if (!words.every((word, offset) => tokens[index + offset]?.kind === "word" && tokens[index + offset].upper === word)) return false;
+    index += words.length;
+    return true;
+  }
+  const unsigned = take("UNSIGNED");
+  if (unsigned && !/^(?:TINYINT|SMALLINT|MEDIUMINT|INT|INTEGER|BIGINT)$/.test(base)) unsupported("Only integer UNSIGNED conversions are supported");
+  const attributes = new Map<string, string>();
+  function attribute(key: string, value: string): void {
+    if (attributes.has(key)) unsupported(`Duplicate ${key} column attribute`);
+    attributes.set(key, value);
+  }
+  let autoIncrement = false;
+  while (index < tokens.length) {
+    if (take("NOT", "NULL")) attribute("nullability", "NOT NULL");
+    else if (take("NULL")) attribute("nullability", "NULL");
+    else if (take("AUTO_INCREMENT")) {
+      if (autoIncrement) unsupported("Duplicate AUTO_INCREMENT column attribute");
+      autoIncrement = true;
+    } else if (take("COLLATE", "UTF8MB4_BIN")) attribute("collation", "COLLATE BINARY");
+    else if (take("CHARACTER", "SET", "UTF8MB4")) attribute("charset", "");
+    else if (take("DEFAULT")) {
+      const token = tokens[index++];
+      if (token?.kind === "string") attribute("default", "DEFAULT " + sqlString(decodeMysqlString(token.raw)));
+      else if (token?.kind === "word" && ["NULL", "TRUE", "FALSE", "CURRENT_TIMESTAMP"].includes(token.upper)) {
+        if (token.upper === "CURRENT_TIMESTAMP" && tokens[index]?.raw === "(") {
+          index++;
+          if (tokens[index]?.kind === "number" && /^[0-6]$/.test(tokens[index].raw)) index++;
+          if (tokens[index++]?.raw !== ")") unsupported("Invalid CURRENT_TIMESTAMP precision");
+        }
+        attribute("default", "DEFAULT " + token.upper);
+      }
+      else {
+        const literal = token?.raw === "-" || token?.raw === "+" ? token.raw + tokens[index++]?.raw : token?.raw;
+        if (!literal || !/^[+-]?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(literal)) unsupported("Expected a literal column default");
+        attribute("default", "DEFAULT " + literal);
+      }
+    } else unsupported("Unsupported MODIFY or CHANGE column attribute");
+  }
+  return { kind: "alterColumn", table, oldName, name, type: base + args, attributes: [...attributes.values()].filter(Boolean).join(" "), autoIncrement, unsigned };
+}
+
+/** Replace one column in persisted SQLite DDL, retaining table constraints and inline keys. */
+export function alteredTableBody(createSql: string, ordinal: number, plan: AlterColumnPlan): string {
+  const tokens = lex(createSql, false, true);
+  const open = tokens.findIndex(token => token.raw === "(");
+  const close = matchingClose(tokens, open);
+  const range = splitTokenRanges(tokens, open + 1, close)[ordinal];
+  if (!range) unsupported("Could not locate the stored column definition");
+  const column = tokens.slice(range.start, range.end);
+  const constraints: string[] = [];
+  let wasAuto = false;
+  let index = typeArgumentsEnd(column, 1) + 1;
+  while (index < column.length) {
+    const start = index;
+    const word = column[index++].upper;
+    if (word === "PRIMARY" && column[index]?.upper === "KEY") {
+      index++;
+      constraints.push("PRIMARY KEY");
+      if (column[index]?.upper === "AUTOINCREMENT") { index++; wasAuto = true; }
+    } else if (word === "UNIQUE") constraints.push("UNIQUE");
+    else if (word === "REFERENCES") {
+      index++; // Referenced table and optional column list, followed by referential actions.
+      if (column[index]?.raw === "(") index = matchingClose(column, index) + 1;
+      while (column[index]?.upper === "ON") {
+        index += 2;
+        index += ["NO", "SET"].includes(column[index]?.upper) ? 2 : 1;
+      }
+      constraints.push(createSql.slice(column[start].start, column[index - 1].end));
+    } else if (word === "DEFAULT") {
+      if (["+", "-"].includes(column[index]?.raw)) index++;
+      index = column[index]?.raw === "(" ? matchingClose(column, index) + 1 : index + 1;
+    } else if (word === "COLLATE" || (word === "NOT" && column[index]?.upper === "NULL")) index++;
+    else if (word !== "NULL") unsupported("Unsupported stored column constraint");
+  }
+  if (plan.autoIncrement && (!wasAuto || !/^(?:TINYINT|SMALLINT|MEDIUMINT|INT|INTEGER|BIGINT)(?:\(\d+\))?$/.test(plan.type))) {
+    unsupported("AUTO_INCREMENT can only be retained on an existing integer auto-increment key");
+  }
+  if (plan.autoIncrement) constraints[constraints.indexOf("PRIMARY KEY")] = "PRIMARY KEY AUTOINCREMENT";
+  const definition = [quoteIdentifier(plan.name), plan.autoIncrement ? "INTEGER" : plan.type, plan.attributes, ...constraints].filter(Boolean).join(" ");
+  return createSql.slice(tokens[open].start, column[0].start) + definition + createSql.slice(column.at(-1)!.end, tokens[close].end);
 }
 
 function compileDrop(sql: string, tokens: Token[]): MysqlProfilePlan {
@@ -536,7 +648,7 @@ export function mysqlProjectionLabels(sql: string): string[] {
   });
 }
 
-function lex(source: string, namedParameters = false): Token[] {
+function lex(source: string, namedParameters = false, sqliteCatalog = false): Token[] {
   const tokens: Token[] = [];
   let index = 0;
   while (index < source.length) {
@@ -554,7 +666,7 @@ function lex(source: string, namedParameters = false): Token[] {
     if (character === "'" || character === '"') {
       const quote = character; index += 1;
       while (index < source.length) {
-        if (source[index] === "\\") { index += 2; continue; }
+        if (!sqliteCatalog && source[index] === "\\") { index += 2; continue; }
         if (source[index] === quote && source[index + 1] === quote) { index += 2; continue; }
         if (source[index] === quote) { index += 1; break; }
         index += 1;
@@ -613,7 +725,7 @@ function identifier(token: Token | undefined): string {
 }
 
 function unquoteIdentifier(value: string): string { return value.startsWith("`") ? value.slice(1, -1).replace(/``/g, "`") : value; }
-function quoteIdentifier(value: string): string { return `\`${value.replace(/`/g, "``")}\``; }
+export function quoteIdentifier(value: string): string { return `\`${value.replace(/`/g, "``")}\``; }
 function sqlString(value: string): string { return `'${value.replace(/'/g, "''")}'`; }
 
 function decodeMysqlString(raw: string): string {

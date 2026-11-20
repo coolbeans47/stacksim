@@ -20,7 +20,7 @@ The fixture versions are exact development/test dependencies. A newer ORM releas
 | Table DDL | `CREATE TABLE [IF NOT EXISTS]`, `DROP TABLE [IF EXISTS]`, common column/table primary, unique and foreign keys | Triggers, generated columns, partitions, checks, full-text/spatial features, arbitrary table options, and SQLite `STRICT`/`WITHOUT ROWID` are rejected |
 | Column types/defaults | `INT` family, `BIGINT`, `DECIMAL`/`NUMERIC`, float family, `BOOL`/`BOOLEAN`, `CHAR`/`VARCHAR`, text/blob/binary families, `DATE`/`TIME`/`DATETIME`/`TIMESTAMP`, `JSON`; literals, `NULL`, and `CURRENT_TIMESTAMP` defaults | MySQL storage width, unsigned range enforcement, temporal precision/time-zone conversion, JSON validation/operators, enum/set, bit geometry, and implicit coercion parity are not claimed |
 | Generated IDs | Integer primary-key `AUTO_INCREMENT`, protocol insert IDs, and connection-local `LAST_INSERT_ID()` | Auto-increment offsets, sequences, non-key or multi-column auto increment are rejected |
-| Alter/index | `ALTER TABLE` add/drop/rename column, rename table, add/drop ordinary or unique index; `CREATE [UNIQUE] INDEX`; `DROP INDEX [ON table]` | Constraint alteration, column type/change/reorder, online DDL algorithms/locks, invisible/descending/prefix/full-text/spatial indexes are rejected |
+| Alter/index | `ALTER TABLE` add/drop/rename column, `MODIFY [COLUMN]` and `CHANGE [COLUMN]` as described below, rename table, add/drop ordinary or unique index; `CREATE [UNIQUE] INDEX`; `DROP INDEX [ON table]` | Constraint alteration, column reordering, multiple alterations per statement, online DDL algorithms/locks, invisible/descending/prefix/full-text/spatial indexes are rejected |
 | DML/query | Parameterized and text `INSERT INTO`, `SELECT`, `UPDATE`, `DELETE FROM`; bounded `WITH [RECURSIVE]` queries; joins, predicates, grouping, ordering and limits; `ABS`, `AVG`, `COALESCE`, `COUNT`, `IFNULL`, `LENGTH`, `LOWER`, `MAX`, `MIN`, `NULLIF`, `ROUND`, `SUM`, `UPPER`; repository `ON DUPLICATE KEY UPDATE` and `ORDER BY BINARY` forms | Stored programs, window-query promises, optimizer hints, unlisted functions, SQLite `INSERT OR REPLACE`, `ON CONFLICT`, `RETURNING`, `GLOB`, `==`, `||`, `rowid`, and SQLite functions are rejected |
 | Metadata | `SHOW DATABASES`, `SHOW [FULL] TABLES`, `SHOW [FULL] COLUMNS`/`FIELDS`, `SHOW INDEX`/`KEYS`, `DESCRIBE`; read-only bounded `information_schema.SCHEMATA`, `.TABLES`, `.COLUMNS`, and `.STATISTICS` | Other `SHOW`, writable metadata, routines, triggers, events, privileges, engines, process lists, and broader `information_schema` are rejected |
 | Identifiers/charset/collation | Backtick identifiers (including escaped backticks), a 64-character profile bound, `utf8mb4`, and SQL `utf8mb4_bin`/`BINARY` behavior | Other SQL collations are rejected because SQLite cannot provide their MySQL equality/order/unique semantics; Unicode normalization and every MySQL identifier case/platform rule are not claimed |
@@ -29,6 +29,17 @@ The fixture versions are exact development/test dependencies. A newer ORM releas
 | Errors/fail-closed edge | Unsupported input is rejected as stable `ER_PARSE_ERROR` number `1064`, SQLSTATE `42000`, with profile name; common duplicate, foreign-key, missing-table/column, and null failures use MySQL-shaped numbers/states | Message text is StackSim-specific and the complete MySQL warning/error catalog is not emulated |
 
 The metadata aliases include the exact ORM-emitted `SHOW FULL COLUMNS` form.
+
+### Changing existing columns
+
+```sql
+ALTER TABLE customers MODIFY COLUMN surname VARCHAR(120) NOT NULL;
+ALTER TABLE customers CHANGE surname last_name VARCHAR(120) NOT NULL;
+```
+
+Each statement supplies the new column definition. Repeat attributes such as `NOT NULL`, `DEFAULT`, and `AUTO_INCREMENT` to retain them. Existing primary keys, unique indexes, foreign keys, and column order are preserved. Use `RENAME COLUMN` for a name-only change.
+
+Empty tables and columns containing only nulls can change to any supported type. For existing non-null values, the profile supports conversions within and between the integer and character/text families. Other types can retain their declared type and arguments while changing their name or attributes. Existing values must fit the target integer range or declared `CHAR`/`VARCHAR` width. Text converted to an integer must contain decimal digits with an optional leading sign. The maximum stored integer is the signed 64-bit SQLite maximum. A failed conversion or constraint check rolls back the entire alteration. Run the alteration in autocommit mode if another table or the table itself has a foreign key referencing it.
 
 The classifier lexes comments, strings, parameters, identifiers, punctuation, and statement structure before opening or preparing a user statement. User SQL never receives direct `PRAGMA`, `ATTACH`, `sqlite_master`, or another SQLite-only catalog escape. StackSim itself reads SQLite's catalog through private provider code to synthesize the bounded MySQL metadata rows.
 

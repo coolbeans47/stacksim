@@ -89,6 +89,9 @@ test("Data API binds typed parameters, encodes SDK typed and JSON results, and e
   assert.deepEqual(bulk.updateResults, [{ generatedFields: [{ longValue: 2 }] }, { generatedFields: [{ longValue: 3 }] }]);
   await execute("CREATE TABLE counters (n BIGINT)");
   await execute("INSERT INTO counters VALUES (9223372036854775807)");
+  await execute("ALTER TABLE counters CHANGE n digits VARCHAR(20) NOT NULL");
+  assert.deepEqual((await execute("SELECT digits FROM counters")).records, [[{ stringValue: "9223372036854775807" }]]);
+  await execute("ALTER TABLE counters CHANGE COLUMN digits n BIGINT");
   assert.deepEqual((await execute("SELECT n FROM counters", { resultSetOptions: { longReturnType: "STRING" } })).records, [[{ stringValue: "9223372036854775807" }]]);
   await assert.rejects(execute("SELECT n FROM counters"), { name: "UnsupportedResultException" });
 });
