@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { CreateMultipartUploadCommand, DeleteObjectCommand, GetObjectAclCommand, ListMultipartUploadsCommand, ListObjectVersionsCommand, PutBucketOwnershipControlsCommand, PutBucketVersioningCommand, PutObjectCommand, PutPublicAccessBlockCommand, S3Client } from "@aws-sdk/client-s3";
+import { CreateBucketCommand, CreateMultipartUploadCommand, DeleteObjectCommand, GetObjectAclCommand, ListMultipartUploadsCommand, ListObjectsV2Command, ListObjectVersionsCommand, PutBucketOwnershipControlsCommand, PutBucketVersioningCommand, PutObjectCommand, PutPublicAccessBlockCommand, S3Client } from "@aws-sdk/client-s3";
 import { CreateQueueCommand, GetQueueAttributesCommand, SetQueueAttributesCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -45,6 +45,69 @@ test.describe("S3-01 through S3-08 console", () => {
     await page.getByRole("link", { name: "copied.txt" }).click(); await expect(page.getByRole("heading", { name: "Metadata", exact: true })).toBeVisible(); await page.getByText("Presigned URL guidance", { exact: true }).click(); await expect(page.getByText("Secret keys are used to sign locally", { exact: false })).toBeVisible(); await page.getByRole("link", { name: "notes/" }).click();
     await page.getByRole("checkbox", { name: "Select notes/copied.txt" }).check(); await page.getByRole("button", { name: "Delete", exact: true }).first().click(); await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click(); await expect(page.getByRole("link", { name: "copied.txt" })).not.toBeVisible(); await expect(page.locator("#toast-region")).toContainText("1 deleted");
     await page.getByRole("tab", { name: "Management" }).click(); await expect(page.getByRole("heading", { name: "No incomplete uploads" })).toBeVisible(); expect(errors).toEqual([]);
+  });
+
+  test("hides folder markers and deletes only the selected folders and objects", async ({ page }) => {
+    const errors = browserErrors(page);
+    const Bucket = "browser-s3-folder-list";
+    const s3 = new S3Client(sdkOptions(simulator));
+    const dialog = page.getByRole("dialog");
+    const list = async () => (await s3.send(new ListObjectsV2Command({ Bucket }))).Contents?.map(entry => entry.Key) ?? [];
+    try {
+      await s3.send(new CreateBucketCommand({ Bucket, CreateBucketConfiguration: { LocationConstraint: "eu-west-1" } }));
+      await page.goto(`${consoleUrl}#/s3/buckets/${Bucket}/objects`);
+      await expect(page.getByRole("heading", { name: "No objects" })).toBeVisible();
+      await page.getByRole("button", { name: "Create folder" }).click();
+      await dialog.getByLabel("Folder name").fill("logs");
+      await dialog.getByRole("button", { name: "Create folder" }).click();
+      await expect(page.getByRole("heading", { name: "Objects (1)" })).toBeVisible();
+      await page.getByRole("link", { name: /logs\// }).click();
+      await expect(page.getByRole("heading", { name: "No objects" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Preview" })).toHaveCount(0);
+      await page.getByRole("button", { name: "Create folder" }).click();
+      await dialog.getByLabel("Folder name").fill("child");
+      await dialog.getByRole("button", { name: "Create folder" }).click();
+      await expect(page.getByRole("heading", { name: "Objects (1)" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "📁 child/" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Preview" })).toHaveCount(0);
+      await page.getByRole("link", { name: /Parent/ }).click();
+      await page.getByRole("button", { name: "Delete folder" }).click();
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+      expect(await list()).toEqual(["logs/", "logs/child/"]);
+      await page.getByRole("button", { name: "Delete folder" }).click();
+      await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "No objects" })).toBeVisible();
+      expect(await list()).toEqual([]);
+
+      await s3.send(new PutBucketVersioningCommand({ Bucket, VersioningConfiguration: { Status: "Enabled" } }));
+      const files = ["logs/nested/", "logs/nested/empty.txt", "logs/a & %.txt", "logs-old/keep", "logs", "remove.txt"];
+      for (const Key of files) await s3.send(new PutObjectCommand({ Bucket, Key, Body: Buffer.alloc(0), ContentLength: 0 }));
+      await page.reload();
+      await page.getByRole("link", { name: "📁 logs/" }).click();
+      await expect(page.getByRole("link", { name: "a & %.txt" })).toBeVisible();
+      await page.getByRole("link", { name: "📁 nested/" }).click();
+      await expect(page.getByRole("heading", { name: "Objects (1)" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "empty.txt" })).toBeVisible();
+      await page.getByRole("tab", { name: "Objects" }).click();
+      let recursivePages = 0;
+      await page.route(url => url.searchParams.get("list-type") === "2" && url.searchParams.get("prefix") === "logs/" && !url.searchParams.has("delimiter"), async route => {
+        const url = new URL(route.request().url()); url.searchParams.set("max-keys", "1");
+        recursivePages++;
+        await route.fulfill({ response: await route.fetch({ url: url.href }) });
+      });
+      await page.getByRole("checkbox", { name: "Select logs/", exact: true }).check();
+      await page.getByRole("checkbox", { name: "Select remove.txt", exact: true }).check();
+      await page.getByRole("button", { name: "Delete", exact: true }).click();
+      await expect(dialog).toContainText("including nested folders");
+      await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "Objects (2)" })).toBeVisible();
+      expect(recursivePages).toBe(3);
+      expect(await list()).toEqual(["logs", "logs-old/keep"]);
+      const history = await s3.send(new ListObjectVersionsCommand({ Bucket }));
+      expect(history.Versions).toHaveLength(files.length);
+      expect(history.DeleteMarkers).toHaveLength(4);
+      expect(errors).toEqual([]);
+    } finally { s3.destroy(); }
   });
 
   test("object routes preserve unusual keys and expose version-scoped ACL permissions", async ({ page }) => {

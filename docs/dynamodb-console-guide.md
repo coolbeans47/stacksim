@@ -157,7 +157,7 @@ Open it with **Explore table items** on a table page, or choose **Explore items*
 
 **Query** is the primary access pattern in DynamoDB — it reads one partition efficiently. **Scan** reads every partition and should be used sparingly in production (migrations, admin tools, small tables).
 
-Filters apply after data is read, so they still consume capacity for scanned items even when filtered out. The Scan warning under the results shows how many items were evaluated to return the page.
+Filters apply after data is read, so they still consume capacity for scanned items even when filtered out. Scan follows every continuation key for the selected table, index, or segment, including pages with zero matches. The summary shows totals for the entire scan. **Previous** and **Next** page through the collected matches without reading the table again. Query retrieves one service page at a time.
 
 ##### How it works in StackSim
 
@@ -191,7 +191,7 @@ Full pages, as in AWS, with a **Form** / **JSON view** switch (**View DynamoDB J
 
 ##### How it works in StackSim
 
-Create and duplicate send `PutItem` with `attribute_not_exists` on the partition key, so an existing key is reported instead of overwritten. Edit sends `PutItem` with the unchanged key; key values are read-only while editing, so use **Duplicate item** to give an item a new key. **Duplicate item** starts with every attribute of the source item, including its key values, ready to change.
+Create and duplicate send `PutItem` with `attribute_not_exists` on the partition key. **Duplicate item** starts with every attribute of the source item and keeps the original when saved. Editing ordinary attributes uses `PutItem`. When you change the partition or sort key, turn on the acknowledgement switch and choose **Save and close**. The editor deletes the original and creates the edited item in one transaction. If the original is missing or the destination key already exists, the transaction fails and neither write takes effect.
 
 ##### Common AWS use cases
 

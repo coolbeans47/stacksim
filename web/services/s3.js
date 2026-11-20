@@ -465,18 +465,83 @@ function objectPageHeader(bucket, key, versionId, { downloadable = true } = {}) 
   return pageHeader(key.split("/").at(-1) || key, `<span class="mono s3-object-full-key">${escapeHtml(key)}</span>${version}`, `${downloadable ? '<button class="button" data-object-page-download>Download</button><button class="button" data-object-page-copy>Copy</button>' : ""}<button class="button danger" data-object-page-delete>${versionId !== undefined ? "Delete version permanently" : "Delete object"}</button>`);
 }
 
-async function objectsPage(context, bucket, prefix = "") {
-  const result = await s3Request(`${objectPath(bucket)}?list-type=2&delimiter=%2F&prefix=${encodeURIComponent(prefix)}&fetch-owner=true`); const root = result.xml.documentElement; const objects = direct(root, "Contents").map(node => ({ key: first(node, "Key"), size: Number(first(node, "Size")), modified: first(node, "LastModified"), etag: first(node, "ETag"), storageClass: first(node, "StorageClass") || "STANDARD" })); const prefixes = direct(root, "CommonPrefixes").map(node => first(node, "Prefix")); context.setChrome("s3", ["S3", "General purpose buckets", bucket]);
-  const parent = prefix ? prefix.replace(/[^/]+\/$/, "") : ""; context.main.innerHTML = `<div class="page-width">${pageHeader(bucket, `s3://${escapeHtml(bucket)}/${escapeHtml(prefix)}`, `<button class="button" data-action="create-folder">Create folder</button><button class="button primary" data-action="upload-object">Upload</button>`)}${bucketTabs(bucket, "objects")}<div class="toolbar"><div class="actions">${prefix ? `<a class="button" href="#/s3/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(parent)}">← Parent</a>` : ""}<a class="button" href="#/s3/buckets/${encodeURIComponent(bucket)}/versions">Show versions</a><button class="button danger" data-action="delete-selected" disabled>Delete</button></div><span id="s3-upload-progress" class="muted" hidden></span></div><section class="card"><div class="card-header"><h2>Objects <span class="muted">(${objects.length + prefixes.length})</span></h2></div><div class="table-wrap">${objects.length || prefixes.length ? `<table><thead><tr><th><input type="checkbox" data-select-all aria-label="Select all objects"></th><th>Name</th><th>Type</th><th>Last modified</th><th>Size</th><th>Actions</th></tr></thead><tbody>${prefixes.map(value => `<tr><td></td><td><a href="#/s3/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(value)}">📁 ${escapeHtml(value.slice(prefix.length))}</a></td><td>Folder</td><td>–</td><td>–</td><td></td></tr>`).join("")}${objects.map(object => `<tr><td><input type="checkbox" data-object-select value="${escapeHtml(object.key)}" aria-label="Select ${escapeHtml(object.key)}"></td><td><a href="${objectPageHref(bucket, object.key)}">${escapeHtml(object.key.slice(prefix.length))}</a></td><td>Object</td><td>${escapeHtml(new Date(object.modified).toLocaleString())}</td><td>${humanBytes(object.size)}</td><td class="no-wrap"><button class="button link" data-object-preview="${escapeHtml(object.key)}">Preview</button><button class="button link" data-object-copy="${escapeHtml(object.key)}">Copy</button><button class="button link" data-object-download="${escapeHtml(object.key)}">Download</button></td></tr>`).join("")}</tbody></table>` : emptyState("◇", "No objects", prefix ? "This prefix is empty." : "Upload an object or create a folder marker.", '<button class="button primary" data-action="upload-object">Upload</button>')}</div></section></div>`;
-  context.main.querySelector("thead th:last-child")?.insertAdjacentHTML("beforebegin", "<th>Storage class</th>");
-  for (const row of context.main.querySelectorAll("tbody tr")) {
-    const objectLink = row.querySelector(`a[href*="/object/"]`); const key = objectLink ? objects.find(object => objectPageHref(bucket, object.key) === objectLink.getAttribute("href"))?.key : undefined;
-    row.lastElementChild?.insertAdjacentHTML("beforebegin", `<td>${key ? escapeHtml(objects.find(object => object.key === key)?.storageClass || "STANDARD") : "–"}</td>`);
+async function collectFolderKeys(bucket, folder, keys) {
+  const query = new URLSearchParams({ "list-type": "2", "encoding-type": "url", prefix: folder });
+  // StackSim's continuation tokens contain offsets. Finish listing before deleting any keys.
+  while (true) {
+    const result = await s3Request(`${objectPath(bucket)}?${query}`);
+    const root = result.xml.documentElement;
+    for (const entry of direct(root, "Contents")) {
+      const key = decodeURIComponent(first(entry, "Key"));
+      if (!key.startsWith(folder)) throw new Error("S3 returned an object outside the selected folder.");
+      keys.add(key);
+    }
+    if (first(root, "IsTruncated") !== "true") return;
+    const next = first(root, "NextContinuationToken");
+    if (!next || next === query.get("continuation-token")) throw new Error("S3 did not return the next page of objects.");
+    query.set("continuation-token", next);
   }
-  const selected = () => [...document.querySelectorAll("[data-object-select]:checked")].map(input => input.value); const updateDelete = () => { document.querySelector('[data-action="delete-selected"]').disabled = selected().length === 0; }; document.querySelectorAll("[data-object-select]").forEach(input => input.addEventListener("change", updateDelete)); document.querySelector("[data-select-all]")?.addEventListener("change", event => { document.querySelectorAll("[data-object-select]").forEach(input => { input.checked = event.target.checked; }); updateDelete(); });
+}
+
+function deleteEntriesAction(context, bucket, entries) {
+  if (!entries.length) return;
+  const folders = entries.filter(key => key.endsWith("/"));
+  const title = folders.length ? (entries.length === 1 ? "Delete folder" : "Delete selected items") : "Delete objects";
+  const notice = folders.length ? "This deletes the selected items and every object inside the selected folders, including nested folders." : "This deletes the selected objects.";
+  context.showModal(title, `<div class="alert warning">${notice} In a versioned bucket this creates delete markers.</div><p>${entries.map(escapeHtml).join("<br>")}</p>`, "Delete", async () => {
+    const keys = new Set(entries.filter(key => !key.endsWith("/")));
+    for (const folder of folders) await collectFolderKeys(bucket, folder, keys);
+    const list = [...keys];
+    let deleted = 0;
+    let failed = 0;
+    // A hundred XML-escaped 1 KiB keys fit under the service's 1 MiB request limit.
+    for (let offset = 0; offset < list.length; offset += 100) {
+      const objects = list.slice(offset, offset + 100).map(key => {
+        const escaped = xmlEscape(key).replace(/\s/g, character => `&#${character.codePointAt(0)};`);
+        return `<Object><Key>${escaped}</Key></Object>`;
+      });
+      const body = `<Delete>${objects.join("")}<Quiet>false</Quiet></Delete>`;
+      const result = await s3Request(`${objectPath(bucket)}?delete`, { method: "POST", headers: { "content-type": "application/xml", "x-amz-checksum-sha256": await sha256Base64(body) }, body });
+      deleted += direct(result.xml.documentElement, "Deleted").length;
+      failed += direct(result.xml.documentElement, "Error").length;
+    }
+    context.toast(`${deleted} deleted${failed ? `, ${failed} failed` : ""}`, failed ? "error" : "success");
+  }, false, { danger: true });
+}
+
+async function objectsPage(context, bucket, prefix = "") {
+  const result = await s3Request(`${objectPath(bucket)}?list-type=2&delimiter=%2F&encoding-type=url&prefix=${encodeURIComponent(prefix)}&fetch-owner=true`);
+  const root = result.xml.documentElement;
+  const objects = direct(root, "Contents").map(node => ({
+    key: decodeURIComponent(first(node, "Key")), size: Number(first(node, "Size")), modified: first(node, "LastModified"), storageClass: first(node, "StorageClass") || "STANDARD",
+  })).filter(object => object.key && object.key !== prefix);
+  const prefixes = direct(root, "CommonPrefixes").map(node => decodeURIComponent(first(node, "Prefix")))
+    .filter(folder => folder.startsWith(prefix) && folder.endsWith("/") && folder !== prefix);
+  context.setChrome("s3", ["S3", "General purpose buckets", bucket]);
+  const parent = prefix.slice(0, prefix.slice(0, -1).lastIndexOf("/") + 1);
+  const keys = [...prefixes, ...objects.map(object => object.key)];
+  const selectBox = index => `<input type="checkbox" data-object-select value="${index}" aria-label="Select ${escapeHtml(keys[index])}">`;
+  const folderRows = prefixes.map((value, index) => `<tr><td>${selectBox(index)}</td><td><a href="#/s3/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(value)}">📁 ${escapeHtml(value.slice(prefix.length))}</a></td><td>Folder</td><td>–</td><td>–</td><td>–</td><td><button class="button link danger" data-delete-folder="${index}">Delete folder</button></td></tr>`).join("");
+  const objectRows = objects.map((object, index) => `<tr><td>${selectBox(prefixes.length + index)}</td><td><a href="${objectPageHref(bucket, object.key)}">${escapeHtml(object.key.slice(prefix.length))}</a></td><td>Object</td><td>${escapeHtml(new Date(object.modified).toLocaleString())}</td><td>${humanBytes(object.size)}</td><td>${escapeHtml(object.storageClass)}</td><td class="no-wrap"><button class="button link" data-object-preview="${escapeHtml(object.key)}">Preview</button><button class="button link" data-object-copy="${escapeHtml(object.key)}">Copy</button><button class="button link" data-object-download="${escapeHtml(object.key)}">Download</button></td></tr>`).join("");
+  context.main.innerHTML = `<div class="page-width">${pageHeader(bucket, `s3://${escapeHtml(bucket)}/${escapeHtml(prefix)}`, `<button class="button" data-action="create-folder">Create folder</button><button class="button primary" data-action="upload-object">Upload</button>`)}${bucketTabs(bucket, "objects")}<div class="toolbar"><div class="actions">${prefix ? `<a class="button" href="#/s3/buckets/${encodeURIComponent(bucket)}/objects/${encodeURIComponent(parent)}">← Parent</a>` : ""}<a class="button" href="#/s3/buckets/${encodeURIComponent(bucket)}/versions">Show versions</a><button class="button danger" data-action="delete-selected" disabled>Delete</button></div><span id="s3-upload-progress" class="muted" hidden></span></div><section class="card"><div class="card-header"><h2>Objects <span class="muted">(${objects.length + prefixes.length})</span></h2></div><div class="table-wrap">${objects.length || prefixes.length ? `<table><thead><tr><th><input type="checkbox" data-select-all aria-label="Select all objects and folders"></th><th>Name</th><th>Type</th><th>Last modified</th><th>Size</th><th>Storage class</th><th>Actions</th></tr></thead><tbody>${folderRows}${objectRows}</tbody></table>` : emptyState("◇", "No objects", prefix ? "This prefix is empty." : "Upload an object or create a folder marker.", '<button class="button primary" data-action="upload-object">Upload</button>')}</div></section></div>`;
+  const selected = () => [...context.main.querySelectorAll("[data-object-select]:checked")].map(input => keys[Number(input.value)]);
+  const deleteButton = context.main.querySelector('[data-action="delete-selected"]');
+  const boxes = [...context.main.querySelectorAll("[data-object-select]")];
+  const selectAll = context.main.querySelector("[data-select-all]");
+  const updateDelete = () => {
+    const count = selected().length;
+    deleteButton.disabled = !count;
+    selectAll.checked = count === boxes.length;
+    selectAll.indeterminate = count > 0 && count < boxes.length;
+  };
+  boxes.forEach(box => box.addEventListener("change", updateDelete));
+  selectAll?.addEventListener("change", () => { boxes.forEach(box => { box.checked = selectAll.checked; }); updateDelete(); });
   document.querySelectorAll('[data-action="upload-object"]').forEach(button => button.addEventListener("click", () => { let controller; context.showModal("Upload object", `<div class="field"><label>File</label><input type="file" name="file" required></div><div class="field"><label>Destination key</label><input name="key" value="${escapeHtml(prefix)}"><span class="hint">Leave this as a folder prefix to use the file name. Files larger than 5 MiB use restart-safe multipart upload with one retry per part.</span></div><button class="button danger" type="button" data-cancel-s3-upload hidden>Abort transfer</button>`, "Upload", async data => { const file = data.get("file"); if (!(file instanceof File) || !file.name) throw new Error("Choose a file"); let key = String(data.get("key")); if (!key || key.endsWith("/")) key += file.name; controller = new AbortController(); const cancel = document.querySelector("[data-cancel-s3-upload]"); cancel.hidden = false; cancel.onclick = () => controller.abort(); try { await uploadObject(bucket, key, file, context, controller.signal); context.toast("Object uploaded"); } finally { cancel.hidden = true; } }); }));
   document.querySelector('[data-action="create-folder"]')?.addEventListener("click", () => context.showModal("Create folder", `<div class="field"><label>Folder name</label><input name="name" required pattern="[^/]+" placeholder="images"></div>`, "Create folder", async data => { const key = `${prefix}${data.get("name")}/`; await s3Request(objectPath(bucket, key), { method: "PUT", body: new Uint8Array() }); context.toast("Folder created"); }));
-  document.querySelector('[data-action="delete-selected"]')?.addEventListener("click", () => { const keys = selected(); context.showModal("Delete objects", `<div class="alert warning"><strong>Permanent request</strong><br>${keys.length} selected object${keys.length === 1 ? "" : "s"} will be deleted. In a versioned bucket this creates delete markers.</div><p>${keys.map(escapeHtml).join("<br>")}</p>`, "Delete", async () => { const body = `<Delete>${keys.map(key => `<Object><Key>${xmlEscape(key)}</Key></Object>`).join("")}<Quiet>false</Quiet></Delete>`; const checksum = await sha256Base64(body); const result = await s3Request(`${objectPath(bucket)}?delete`, { method: "POST", headers: { "content-type": "application/xml", "x-amz-checksum-sha256": checksum }, body }); const deleted = result.xml?.getElementsByTagName("Deleted").length ?? 0; const errors = result.xml?.getElementsByTagName("Error").length ?? 0; context.toast(`${deleted} deleted${errors ? `, ${errors} failed` : ""}`, errors ? "error" : "success"); }, false, { danger: true }); });
+  deleteButton.addEventListener("click", () => deleteEntriesAction(context, bucket, selected()));
+  context.main.querySelectorAll("[data-delete-folder]").forEach(button => button.addEventListener("click", () => {
+    deleteEntriesAction(context, bucket, [prefixes[Number(button.dataset.deleteFolder)]]);
+  }));
   document.querySelectorAll("[data-object-download]").forEach(button => button.addEventListener("click", () => inlineAction(context, () => downloadObject(bucket, button.dataset.objectDownload))));
   document.querySelectorAll("[data-object-preview]").forEach(button => button.addEventListener("click", async () => { const key = button.dataset.objectPreview; const output = await s3Request(objectPath(bucket, key), { headers: { range: "bytes=0-4095" } }); context.showModal("Object preview", `<p class="muted">First ${output.body.length.toLocaleString()} bytes of ${escapeHtml(key)}</p><pre class="code-box">${escapeHtml(output.text)}</pre>`, "Close", async () => undefined, true, { refreshAfterSubmit: false }); }));
   document.querySelectorAll("[data-object-copy]").forEach(button => button.addEventListener("click", () => copyObjectAction(context, bucket, button.dataset.objectCopy)));

@@ -191,7 +191,7 @@ export function bindEnhancedDynamoItems(context, table) {
     const input = { TableName: table.TableName, Limit: Number($("#item-limit").value), ReturnConsumedCapacity: "TOTAL" };
     const index = selectedIndex();
     if (index) input.IndexName = index.IndexName;
-    if (state.tokens[pageIndex]) input.ExclusiveStartKey = state.tokens[pageIndex];
+    if (operationValue() === "query" && state.tokens[pageIndex]) input.ExclusiveStartKey = state.tokens[pageIndex];
     if ($("#item-consistent").checked) input.ConsistentRead = true;
     const countOnly = $("#item-count-only").checked;
     if (countOnly) input.Select = "COUNT";
@@ -283,23 +283,37 @@ export function bindEnhancedDynamoItems(context, table) {
   const renderResults = () => {
     const result = state.result;
     if (!result) return;
-    const items = result.Items ?? [];
+    const scan = state.operation === "scan";
+    const allItems = result.Items ?? [];
+    const items = scan ? allItems.slice(state.page * state.pageSize, (state.page + 1) * state.pageSize) : allItems;
     state.items = items; state.selected.clear(); state.columns = columnsFor(items);
     const countOnly = state.countOnly;
-    $("#items-returned-count").textContent = `(${countOnly ? result.Count ?? 0 : items.length})`;
+    $("#items-returned-count").textContent = `(${result.Count ?? allItems.length})`;
     const capacity = result.ConsumedCapacity?.CapacityUnits ?? 0;
     $("#item-result-summary").innerHTML = `<div class="alert success card-inset item-run-summary" role="status"><strong>Completed.</strong> Read capacity units consumed: ${escapeHtml(formatCapacity(capacity))}</div>`;
-    const warning = state.operation === "scan" ? `<div class="alert warning card-inset"><strong>Scan reads every evaluated item</strong><br>This page evaluated ${Number(result.ScannedCount ?? 0).toLocaleString()} items to return ${Number(result.Count ?? 0).toLocaleString()}. Use Query with a partition key whenever the access pattern allows it; filters reduce returned items, not read work.</div>` : "";
+    const warning = scan ? `<div class="alert warning card-inset"><strong>Scan reads every evaluated item</strong><br>This scan evaluated ${Number(result.ScannedCount ?? 0).toLocaleString()} items and returned ${Number(result.Count ?? 0).toLocaleString()}.</div>` : "";
     const view = $("#item-results-view").value;
     let body;
-    if (countOnly) body = emptyState("#", `${result.Count ?? 0} matching items`, `${result.ScannedCount ?? 0} items were evaluated on this page.`);
+    if (countOnly) body = emptyState("#", `${result.Count ?? 0} matching items`, `${result.ScannedCount ?? 0} items were evaluated.`);
     else if (!items.length) body = emptyState("◇", "No items returned", "Change the key condition or filters, or create an item.");
     else if (view === "dynamodb") body = `<pre class="code-box item-json-results">${escapeHtml(JSON.stringify(items, null, 2))}</pre>`;
     else if (view === "plain") body = `<pre class="code-box item-json-results">${escapeHtml(JSON.stringify(items.map(plainItem), null, 2))}</pre>`;
     else body = itemsTable(items);
-    root.querySelector("#items-table").innerHTML = `${warning}${body}<div class="card-body item-pagination"><span class="muted" id="items-page-label">Page ${state.page + 1}</span><div class="actions"><button class="button" id="items-previous" ${state.page === 0 ? "disabled" : ""}>Previous</button><button class="button" id="items-next" ${result.LastEvaluatedKey ? "" : "disabled"}>Next</button></div></div>`;
-    $("#items-previous").addEventListener("click", () => runPage(state.page - 1));
-    $("#items-next").addEventListener("click", () => { state.tokens[state.page + 1] = result.LastEvaluatedKey; runPage(state.page + 1); });
+    const pages = Math.max(1, Math.ceil(allItems.length / state.pageSize));
+    const hasNext = scan ? state.page + 1 < pages : result.LastEvaluatedKey;
+    root.querySelector("#items-table").innerHTML = `${warning}${body}<div class="card-body item-pagination"><span class="muted" id="items-page-label">Page ${state.page + 1}${scan ? ` of ${pages}` : ""}</span><div class="actions"><button class="button" id="items-previous" ${state.page === 0 || state.stale ? "disabled" : ""}>Previous</button><button class="button" id="items-next" ${hasNext && !state.stale ? "" : "disabled"}>Next</button></div></div>`;
+    if (state.stale) $("#items-page-label").textContent = "Request settings changed. Run again before paging.";
+    const goToPage = page => {
+      if (!scan) {
+        if (page > state.page) state.tokens[page] = result.LastEvaluatedKey;
+        return runPage(page);
+      }
+      state.page = page;
+      renderResults();
+      saveExplorerState();
+    };
+    $("#items-previous").addEventListener("click", () => goToPage(state.page - 1));
+    $("#items-next").addEventListener("click", () => goToPage(state.page + 1));
     root.querySelectorAll("[data-item-select]").forEach(box => box.addEventListener("change", () => {
       const index = Number(box.dataset.itemSelect);
       if (box.checked) state.selected.add(index); else state.selected.delete(index);
@@ -316,28 +330,45 @@ export function bindEnhancedDynamoItems(context, table) {
     syncSelection();
   };
 
+  let requestVersion = 0;
   const runPage = async (pageIndex = 0) => {
     if (state.running || pageIndex < 0) return;
     state.running = true; $("#run-items").disabled = true;
-    root.querySelector("#items-table").innerHTML = '<div class="loading" role="status"><span></span>Reading a bounded page…</div>';
+    const version = ++requestVersion;
+    const current = () => root.isConnected && version === requestVersion;
+    const operation = operationValue();
+    state.result = undefined;
+    state.items = []; state.selected.clear(); syncSelection();
+    $("#items-returned-count").textContent = "";
+    $("#item-result-summary").replaceChildren();
+    root.querySelector("#items-table").innerHTML = `<div class="loading" role="status"><span></span>${operation === "scan" ? "Scanning items…" : "Reading items…"}</div>`;
     try {
       const input = requestInput(pageIndex);
-      const operation = operationValue();
-      const result = await dynamo(operation === "query" ? "Query" : "Scan", input);
-      if (!root.isConnected) return;
+      let result;
+      if (operation === "scan") {
+        result = { Items: [], Count: 0, ScannedCount: 0, ConsumedCapacity: { CapacityUnits: 0 } };
+        do {
+          const batch = await dynamo("Scan", input);
+          if (!current()) return;
+          for (const item of batch.Items ?? []) result.Items.push(item);
+          result.Count += batch.Count ?? 0;
+          result.ScannedCount += batch.ScannedCount ?? 0;
+          result.ConsumedCapacity.CapacityUnits += batch.ConsumedCapacity?.CapacityUnits ?? 0;
+          input.ExclusiveStartKey = batch.LastEvaluatedKey;
+        } while (input.ExclusiveStartKey && Object.keys(input.ExclusiveStartKey).length);
+        pageIndex = Math.min(pageIndex, Math.max(0, Math.ceil(result.Items.length / input.Limit) - 1));
+      } else result = await dynamo("Query", input);
+      if (!current()) return;
+      state.pageSize = input.Limit; state.stale = false;
       state.operation = operation; state.countOnly = input.Select === "COUNT"; state.result = result; state.page = pageIndex; state.hasRun = true;
       renderResults();
       saveExplorerState();
     } catch (error) {
-      if (!root.isConnected) return;
+      if (!current()) return;
       showError(error);
-      state.items = []; state.selected.clear(); syncSelection();
-      $("#items-returned-count").textContent = "";
-      $("#item-result-summary").innerHTML = "";
       root.querySelector("#items-table").innerHTML = `<div class="alert error card-inset" role="alert"><strong>${escapeHtml(error.code ?? "Request error")}</strong><br>${escapeHtml(error.message)}</div>`;
     } finally {
-      state.running = false;
-      if (root.isConnected) $("#run-items").disabled = false;
+      if (current()) { state.running = false; $("#run-items").disabled = false; }
     }
   };
 
@@ -440,6 +471,13 @@ export function bindEnhancedDynamoItems(context, table) {
   };
 
   function invalidatePaging() {
+    requestVersion++;
+    if (state.running) {
+      state.running = false;
+      $("#run-items").disabled = false;
+      root.querySelector("#items-table").textContent = "Request settings changed. Choose Run to read items.";
+    }
+    state.stale = true;
     resetPaging();
     root.querySelector("#items-previous")?.setAttribute("disabled", "");
     root.querySelector("#items-next")?.setAttribute("disabled", "");
@@ -460,6 +498,7 @@ export function bindEnhancedDynamoItems(context, table) {
   $("#add-item-filter").addEventListener("click", () => { addFilterRow().querySelector("[data-filter-name]").focus(); invalidatePaging(); });
   $("#run-items").addEventListener("click", () => { resetPaging(); void runPage(0); });
   $("#reset-items").addEventListener("click", () => {
+    invalidatePaging();
     explorerStates.delete(table.TableName);
     for (const id of ["#query-key", "#query-sort-value", "#query-sort-value-2", "#item-projection", "#item-filter-expression", "#item-segment", "#item-total-segments"]) $(id).value = "";
     setOperation("scan"); indexSelect.value = ""; projectionMode.value = "all"; $("#query-sort-operator").value = "=";
@@ -511,7 +550,7 @@ export async function dynamoItemEditorPage(context, tableName, mode, encodedKey)
   const keyRole = name => table.KeySchema.find(key => key.AttributeName === name)?.KeyType === "HASH" ? "Partition key" : "Sort key";
   const initial = mode === "create" ? Object.fromEntries(keyNames.map(name => [name, emptyAttribute(attributeType(table, name))])) : structuredClone(source);
   const description = mode === "edit"
-    ? "Change attribute values, add attributes, or remove them. Primary key values can't be changed; use Duplicate item to create an item with a new key."
+    ? "Change attribute values, add attributes, or remove them."
     : mode === "duplicate"
       ? "The new item starts as a copy of the selected item, including its key values. Change the key values, then create the item."
       : "Enter the primary key values, then add any other attributes.";
@@ -521,6 +560,7 @@ export async function dynamoItemEditorPage(context, tableName, mode, encodedKey)
     + `<div id="item-form-editor"><div class="attr-header" aria-hidden="true"><span>Attribute name</span><span>Value</span><span>Type</span><span></span></div><div id="attribute-rows"></div><div class="item-editor-add">${addAttributeMenu("top", "Add new attribute")}</div></div>`
     + `<div class="field" id="item-json-editor" hidden><label for="item-json-text">DynamoDB JSON</label><textarea id="item-json-text" class="code-editor item-json-editor" spellcheck="false"></textarea></div>`
     + `<div class="field" id="item-plain-editor" hidden><label for="item-plain-text">Plain JSON</label><textarea id="item-plain-text" class="code-editor item-json-editor" spellcheck="false"></textarea><span class="hint">Number, binary, and set types already in the item are preserved. Use DynamoDB JSON to change an attribute's type.</span></div></div></section>`
+    + (mode === "edit" ? '<div id="item-key-change" class="alert warning" hidden><label class="switch-label"><input type="checkbox" role="switch" id="item-key-ack"><span class="switch-track" aria-hidden="true"></span>I acknowledge that saving deletes the original item and creates an item with the new primary key.</label></div>' : "")
     + `<div class="actions page-actions"><a class="button" href="${backHash}">Cancel</a><button class="button primary" type="submit" id="item-editor-submit">${mode === "edit" ? "Save and close" : "Create item"}</button></div></form></div>`;
 
   const $ = selector => document.querySelector(selector);
@@ -530,7 +570,7 @@ export async function dynamoItemEditorPage(context, tableName, mode, encodedKey)
   const markDirty = () => setDirty(true, "page");
   const renderForm = item => {
     const ordered = [...keyNames.map(name => [name, item[name] ?? emptyAttribute(attributeType(table, name))]), ...Object.entries(item).filter(([name]) => !keyNames.includes(name))];
-    rowsRoot.innerHTML = ordered.map(([name, value]) => attributeNode(name, value, keyNames.includes(name) ? { keyRole: keyRole(name), valueReadonly: mode === "edit" } : {})).join("");
+    rowsRoot.innerHTML = ordered.map(([name, value]) => attributeNode(name, value, keyNames.includes(name) ? { keyRole: keyRole(name) } : {})).join("");
   };
   const readForm = () => {
     const item = {};
@@ -562,6 +602,27 @@ export async function dynamoItemEditorPage(context, tableName, mode, encodedKey)
     else if (next === "plain") $("#item-plain-text").value = JSON.stringify(plainItem(item), null, 2);
     else renderForm(item);
   };
+  const acknowledgement = $("#item-key-ack");
+  const submit = $("#item-editor-submit");
+  let pendingKey;
+  let saving = false;
+  const syncKeyChange = () => {
+    if (!acknowledgement) return;
+    let key;
+    if (activeMode === "form") {
+      key = Object.fromEntries([...rowsRoot.querySelectorAll("[data-key-attribute]")].map(node => {
+        const name = node.querySelector("[data-attribute-name]").value;
+        return [name, readNode(node, name)];
+      }));
+    } else {
+      try { key = itemKey(table, readMode(activeMode)); } catch { /* Incomplete JSON while typing. */ }
+    }
+    const changed = key && !sameItemKey(table, key, originalKey);
+    if (!changed || !pendingKey || !sameItemKey(table, key, pendingKey)) acknowledgement.checked = false;
+    pendingKey = changed ? key : undefined;
+    $("#item-key-change").hidden = !changed;
+    submit.disabled = saving || Boolean(changed && !acknowledgement.checked);
+  };
   const showEditorError = error => {
     errorRoot.hidden = false;
     errorRoot.innerHTML = `<strong>${escapeHtml(error.code ?? "Error")}</strong><br>${escapeHtml(error.message)}`;
@@ -578,6 +639,7 @@ export async function dynamoItemEditorPage(context, tableName, mode, encodedKey)
     hints = attributeTypeHints(item);
     writeMode(next, item);
     activeMode = next;
+    syncKeyChange();
     $("#item-form-editor").hidden = next !== "form";
     $("#item-json-editor").hidden = next !== "json";
     $("#item-plain-editor").hidden = next !== "plain";
@@ -627,6 +689,7 @@ export async function dynamoItemEditorPage(context, tableName, mode, encodedKey)
   });
   form.addEventListener("input", event => {
     markDirty();
+    syncKeyChange();
     if (event.target.matches("[data-attribute-name]")) {
       const toggle = event.target.closest(".attr-name")?.querySelector("[data-toggle-node]");
       if (toggle) { toggle.dataset.nodeLabel = event.target.value || "new attribute"; syncToggle(toggle.closest(".attr-node")); }
@@ -636,16 +699,28 @@ export async function dynamoItemEditorPage(context, tableName, mode, encodedKey)
 
   form.addEventListener("submit", async event => {
     event.preventDefault();
-    const submit = $("#item-editor-submit");
+    if (saving) return;
+    saving = true;
     submit.disabled = true; errorRoot.hidden = true;
     try {
       const item = readMode(activeMode);
-      if (originalKey && mode === "edit" && !sameItemKey(table, item, originalKey)) throw new Error("Primary key values can't be changed while editing. Use Duplicate item to create an item with a new key.");
+      const moving = mode === "edit" && !sameItemKey(table, item, originalKey);
+      if (moving && (!acknowledgement.checked || !pendingKey || !sameItemKey(table, item, pendingKey))) {
+        throw new Error("Acknowledge the primary key change before saving.");
+      }
       const put = { TableName: tableName, Item: item };
-      if (mode !== "edit") { put.ConditionExpression = "attribute_not_exists(#primaryKey)"; put.ExpressionAttributeNames = { "#primaryKey": hashName }; }
-      try { await dynamo("PutItem", put); }
+      if (mode !== "edit" || moving) { put.ConditionExpression = "attribute_not_exists(#primaryKey)"; put.ExpressionAttributeNames = { "#primaryKey": hashName }; }
+      try {
+        if (moving) {
+          await dynamo("TransactWriteItems", { TransactItems: [
+            { Delete: { TableName: tableName, Key: originalKey, ConditionExpression: "attribute_exists(#primaryKey)", ExpressionAttributeNames: put.ExpressionAttributeNames } },
+            { Put: put },
+          ] });
+        } else await dynamo("PutItem", put);
+      }
       catch (error) {
         if (mode !== "edit" && error.code === "ConditionalCheckFailedException") { error.message = `An item with this primary key already exists. ${error.message}`; }
+        if (moving && error.details?.CancellationReasons?.[1]?.Code === "ConditionalCheckFailed") error.message = "An item with the new primary key already exists.";
         throw error;
       }
       setDirty(false, "page");
@@ -653,7 +728,9 @@ export async function dynamoItemEditorPage(context, tableName, mode, encodedKey)
       location.hash = backHash;
     } catch (error) {
       showEditorError(error); showError(error);
+      saving = false;
       submit.disabled = false;
+      syncKeyChange();
     }
   });
 
@@ -688,7 +765,7 @@ function syncToggle(node) {
   toggle.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${toggle.dataset.nodeLabel}`);
 }
 
-function attributeNode(name, value, { keyRole, valueReadonly = false, listIndex } = {}) {
+function attributeNode(name, value, { keyRole, listIndex } = {}) {
   const [type, raw] = Object.entries(value ?? { S: "" })[0];
   const nested = type === "M" || type === "L";
   const label = listIndex !== undefined ? `element ${listIndex}` : name || "new attribute";
@@ -701,7 +778,7 @@ function attributeNode(name, value, { keyRole, valueReadonly = false, listIndex 
   else if (type === "NULL") valueControl = '<span class="muted" data-null-value>Null</span>';
   else if (SET_TYPES.has(type)) valueControl = `<div class="attr-set" data-set-values>${(raw.length ? raw : [""]).map(setValueRow).join("")}<button type="button" class="button link" data-add-set-value>Add value</button></div>`;
   else if (nested) valueControl = `<span class="muted small" data-nested-summary>${nestedSummary(type, raw)}</span>`;
-  else valueControl = `<input data-attribute-value aria-label="${escapeHtml(valueLabel)}" value="${escapeHtml(String(raw ?? ""))}" ${type === "N" ? 'inputmode="decimal"' : ""} ${type === "B" ? 'placeholder="Base64-encoded value"' : ""} ${valueReadonly ? "readonly" : ""}>`;
+  else valueControl = `<input data-attribute-value aria-label="${escapeHtml(valueLabel)}" value="${escapeHtml(String(raw ?? ""))}" ${type === "N" ? 'inputmode="decimal"' : ""} ${type === "B" ? 'placeholder="Base64-encoded value"' : ""}>`;
   const toggle = nested ? `<button type="button" class="attr-toggle" data-toggle-node data-node-label="${escapeHtml(label)}" aria-expanded="true" aria-label="Collapse ${escapeHtml(label)}">▾</button>` : '<span class="attr-toggle-spacer" aria-hidden="true"></span>';
   const children = type === "M" ? Object.entries(raw).map(([childName, child]) => attributeNode(childName, child)).join("") : type === "L" ? raw.map((child, index) => attributeNode("", child, { listIndex: index })).join("") : "";
   return `<div class="attr-node" data-attr-type="${type}" ${keyRole ? "data-key-attribute" : ""}><div class="attr-row"><div class="attr-name">${toggle}${nameControl}</div><div class="attr-value">${valueControl}</div><div class="attr-type"><span>${TYPE_LABELS[type] ?? escapeHtml(type)}</span>${keyRole ? `<span class="type-tag">${keyRole}</span>` : ""}</div><div class="attr-remove">${keyRole ? "" : '<button type="button" class="button link" data-remove-attribute>Remove</button>'}</div></div>`
@@ -799,5 +876,25 @@ function plainAttribute(value) {
   if ("L" in value) return value.L.map(plainAttribute); if ("M" in value) return Object.fromEntries(Object.entries(value.M).map(([name, child]) => [name, plainAttribute(child)]));
   for (const type of ["SS", "NS", "BS"]) if (type in value) return type === "NS" ? value[type].map(number => number.replace(/[^0-9]/g, "").replace(/^0+/, "").length <= 15 ? Number(number) : number) : value[type]; return value;
 }
-function canonicalNumber(value) { const match = String(value).toLowerCase().match(/^([+-]?)(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/); if (!match) return String(value); const negative = match[1] === "-"; const fraction = match[3] ?? ""; let digits = `${match[2] || "0"}${fraction}`.replace(/^0+/, "") || "0"; let exponent = Number(match[4] ?? 0) - fraction.length; while (digits.length > 1 && digits.endsWith("0")) { digits = digits.slice(0, -1); exponent++; } return `${negative && digits !== "0" ? "-" : ""}${digits}e${exponent}`; }
-function sameItemKey(table, item, original) { return table.KeySchema.every(key => { const left = item[key.AttributeName]; const right = original[key.AttributeName]; if (!left || !right) return false; const leftType = Object.keys(left)[0]; const rightType = Object.keys(right)[0]; if (leftType !== rightType) return false; return leftType === "N" ? canonicalNumber(left.N) === canonicalNumber(right.N) : JSON.stringify(left) === JSON.stringify(right); }); }
+function canonicalNumber(value) {
+  const match = String(value).match(/^([+-]?)(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i);
+  if (!match || !(match[2] || match[3])) return String(value);
+  const fraction = match[3] ?? "";
+  const digits = (match[2] + fraction).replace(/^0+/, "");
+  if (!digits) return "0";
+  const significant = digits.replace(/0+$/, "");
+  const exponent = Number(match[4] ?? 0) - fraction.length + digits.length - significant.length;
+  return `${match[1] === "-" ? "-" : ""}${significant}e${exponent}`;
+}
+function sameItemKey(table, item, original) {
+  return table.KeySchema.every(({ AttributeName }) => {
+    const left = item[AttributeName];
+    const right = original[AttributeName];
+    if (!left || !right || typeOf(left) !== typeOf(right)) return false;
+    if (typeOf(left) === "N") return canonicalNumber(left.N) === canonicalNumber(right.N);
+    if (typeOf(left) === "B") {
+      try { return atob(left.B) === atob(right.B); } catch { return false; }
+    }
+    return left.S === right.S;
+  });
+}

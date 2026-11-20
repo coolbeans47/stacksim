@@ -83,6 +83,29 @@ test.describe("DynamoDB query and search console", () => {
       await page.getByLabel("Run a scan when this page opens").check();
       await expect(count).toHaveText("(18)");
 
+      const filterTops = await filterRow(0).locator("input:visible, select:visible").evaluateAll(controls => controls.map(control => control.getBoundingClientRect().top));
+      expect(Math.max(...filterTops) - Math.min(...filterTops)).toBeLessThanOrEqual(1);
+      await page.getByLabel("Page size (Limit)").selectOption("10");
+      await page.getByRole("button", { name: "Run", exact: true }).click();
+      await expect(page.locator("#items-page-label")).toHaveText("Page 1 of 2");
+      await expect(page.locator("#items-table tbody tr")).toHaveCount(10);
+      const scansBeforePaging = requests.filter(entry => entry.target.endsWith(".Scan")).length;
+      await page.getByRole("button", { name: "Next" }).click();
+      await expect(page.locator("#items-table tbody tr")).toHaveCount(8);
+      expect(requests.filter(entry => entry.target.endsWith(".Scan"))).toHaveLength(scansBeforePaging);
+      const lateSortKey = await page.locator("#items-table tbody tr").first().locator("td").nth(2).innerText();
+      await filterRow(0).getByLabel("Attribute name").fill("sk");
+      await filterRow(0).getByLabel("Type").selectOption("N");
+      await filterRow(0).locator("[data-filter-value]").fill(lateSortKey);
+      await page.getByRole("button", { name: "Run", exact: true }).click();
+      await expect(count).toHaveText("(1)");
+      await expect(page.locator("#items-page-label")).toHaveText("Page 1 of 1");
+      await expect(page.locator("#items-table")).toContainText("This scan evaluated 18 items and returned 1.");
+      await page.getByLabel("Count only (Select COUNT)").check();
+      await page.getByRole("button", { name: "Run", exact: true }).click();
+      await expect(page.getByText("1 matching items", { exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Next" })).toBeDisabled();
+      await page.getByRole("button", { name: "Reset" }).click();
       await page.locator('input[name="item-operation"][value="query"]').check();
       await page.getByLabel("Partition key", { exact: true }).fill("tenant-a");
       await page.getByLabel("Sort key condition").selectOption("BETWEEN");
@@ -159,7 +182,9 @@ test.describe("DynamoDB query and search console", () => {
       await expect(page.getByRole("heading", { name: "Edit item" })).toBeVisible();
       const node = (name: string) => page.locator("#attribute-rows > .attr-node").filter({ has: page.locator(`[data-attribute-name][value="${name}"]`) });
       await expect(node("notes").locator("[data-attribute-value]")).toHaveValue(/unprojected-/);
-      await expect(page.getByLabel("tenant value")).toHaveAttribute("readonly", "");
+      await expect(page.getByLabel("tenant value")).toBeEditable();
+      await page.getByLabel("sk value").fill("0.00");
+      await expect(page.getByRole("switch")).toBeHidden();
       await expect(node("featured").locator("select[data-attribute-value]")).toHaveValue(/true|false/);
       await node("title").locator("[data-attribute-value]").fill("Draft synchronized edit");
       await page.getByRole("button", { name: "JSON view", exact: true }).click();
@@ -263,6 +288,49 @@ test.describe("DynamoDB query and search console", () => {
       await expect(page.getByRole("heading", { name: "Edit item" })).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       expect(errors).toEqual([]);
+    } finally { client.destroy(); }
+  });
+
+  test("requires acknowledgement to move an item and preserves both records on a key collision", async ({ page }) => {
+    const client = new DynamoDBClient(sdkOptions());
+    const TableName = "BrowserKeyChange";
+    const key = (pk: string, sk: number) => ({ pk: { S: pk }, sk: { N: String(sk) } });
+    const read = async (pk: string, sk: number) => (await client.send(new GetItemCommand({ TableName, Key: key(pk, sk), ConsistentRead: true }))).Item;
+    try {
+      await client.send(new CreateTableCommand({ TableName, BillingMode: "PAY_PER_REQUEST",
+        AttributeDefinitions: [{ AttributeName: "pk", AttributeType: "S" }, { AttributeName: "sk", AttributeType: "N" }],
+        KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }, { AttributeName: "sk", KeyType: "RANGE" }] }));
+      await waitForTableActive(client, TableName);
+      for (const [sk, body] of [[1, "source"], [2, "occupied"]] as const) {
+        await client.send(new PutItemCommand({ TableName, Item: { ...key("a", sk), body: { S: body } } }));
+      }
+      await page.goto(`${consoleUrl}#/dynamodb/tables/${TableName}/items`);
+      await page.getByRole("row").filter({ hasText: "source" }).getByRole("link").click();
+      const ack = page.getByRole("switch", { name: /saving deletes the original item/ });
+      const save = page.getByRole("button", { name: "Save and close" });
+      await page.getByLabel("sk value").fill("2");
+      await expect(save).toBeDisabled();
+      await ack.check();
+      await save.click();
+      await expect(page.locator("#item-editor-error")).toBeVisible();
+      expect((await read("a", 1))?.body.S).toBe("source");
+      expect((await read("a", 2))?.body.S).toBe("occupied");
+      await page.getByLabel("sk value").fill("1");
+      await expect(ack).toBeHidden();
+      await expect(save).toBeEnabled();
+      await page.getByRole("button", { name: "JSON view" }).click();
+      const typed = page.getByRole("textbox", { name: "DynamoDB JSON", exact: true });
+      await typed.fill(JSON.stringify({ ...key("b", 3), body: { S: "edited" } }));
+      await expect(save).toBeDisabled();
+      await page.getByLabel("View DynamoDB JSON").uncheck();
+      await ack.check();
+      await page.getByLabel("Plain JSON").fill(JSON.stringify({ pk: "b", sk: 4, body: "edited" }));
+      await expect(ack).not.toBeChecked();
+      await ack.check();
+      await save.click();
+      await expect(page).toHaveURL(/\/items$/);
+      expect(await read("a", 1)).toBeUndefined();
+      expect((await read("b", 4))?.body.S).toBe("edited");
     } finally { client.destroy(); }
   });
 

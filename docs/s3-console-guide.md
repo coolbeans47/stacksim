@@ -89,7 +89,9 @@ Create bucket `learning-assets` in your configured Region, then upload `docs/gui
 
 #### What it is
 
-The **Objects** panel shows the contents of a bucket prefix. Folders are prefix groupings; object names are links to the object detail page. Toolbar actions include **Upload**, **Create folder**, **Show versions**, and bulk **Delete selected**. Row actions offer **Preview**, **Copy**, and **Download**.
+The **Objects** panel shows the files and child folders in the current prefix. An empty folder shows **No objects**. Select an object name to open its details, or use **Preview**, **Copy**, and **Download**. The toolbar includes **Upload**, **Create folder**, **Show versions**, and **Delete**.
+
+Choose **Delete folder** on a folder row, or select files and folders together and choose **Delete** in the toolbar. Confirming deletes the folder marker and its contents, including nested folders. In a versioning-enabled bucket, this creates delete markers and keeps earlier versions.
 
 Files larger than 5 MiB use restart-safe multipart upload with one retry per part.
 
